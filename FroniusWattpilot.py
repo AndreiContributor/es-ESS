@@ -109,6 +109,9 @@ class FroniusWattpilot (esESSService):
     def initWorkerThreads(self):
         self.registerWorkerThread(self._update, 5000)
 
+    def signOfLive(self):
+        pass
+
     def initFinalize(self):
         #Create the Wattpilot object and connect. 
         self.wattpilot = Wattpilot(self.config["FroniusWattpilot"]["Host"], self.config["FroniusWattpilot"]["Password"])

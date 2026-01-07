@@ -43,6 +43,9 @@ class Grid2Bat(esESSService):
     def handleSigterm(self):
        pass
 
+    def signOfLive(self):
+        pass
+
     def _update(self):
         consumption = self.consumptionL1Dbus.value + self.consumptionL2Dbus.value + self.consumptionL3Dbus.value
         now = datetime.datetime.now()

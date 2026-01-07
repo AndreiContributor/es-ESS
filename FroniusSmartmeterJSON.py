@@ -85,6 +85,9 @@ class FroniusSmartmeterJSON(esESSService):
     def initMqttSubscriptions(self):
         pass
 
+    def signOfLive(self):
+        pass
+
     def initFinalize(self):
         pass
     

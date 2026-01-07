@@ -157,6 +157,9 @@ class SolarOverheadDistributor(esESSService):
             i(self, "Found MqttConsumer: " + s)
             self.parseAndPubMqttConsumer(s)
             
+   def signOfLive(self):
+        pass
+
    def parseAndPubHttpConsumer(self, section):
       try:
          #Consumer found. Create Request.

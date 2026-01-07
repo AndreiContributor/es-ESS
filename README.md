@@ -205,6 +205,7 @@ Each section needs to match the pattern `[MattExporter:uniqueKey]` where uniqueK
 | [MqttExporter:XXX]  | Service |  Service name, see details bellow | String  | com.victronenergy.system |
 | [MqttExporter:XXX]  | DbusKey |  Key of the dbus-value to export | String  | /Ac/Grid/L1/Power |
 | [MqttExporter:XXX]  | MqttTopic |  Topic on Mqtt | String  | Grid/Ac/L1/Power |
+| [MqttExporter:XXX]  | PublishType |  How to publish? | String, optional, Default ONCHANGE  | ONCHANGE, INTERVAL_1S, INTERVAL_10S, INTERVAL_60S |
 
 **Note that dbus-paths start with a "/" and MQTT Topics don't.**
 

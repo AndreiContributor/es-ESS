@@ -85,6 +85,9 @@ class FroniusSmartmeterRS485(esESSService):
     def initMqttSubscriptions(self):
         pass
 
+    def signOfLive(self):
+        pass
+
     def initFinalize(self):
         try:
             self._client= ModbusSerialClient(

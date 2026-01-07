@@ -3,11 +3,12 @@
 
 import dbus.service
 import logging
-import traceback
 import os
 import weakref
 from collections import defaultdict
 from ve_utils import wrap_dbus_value, unwrap_dbus_value
+
+notset = object()
 
 # vedbus contains three classes:
 # VeDbusItemImport -> use this to read data from the dbus, ie import
@@ -58,7 +59,7 @@ from ve_utils import wrap_dbus_value, unwrap_dbus_value
 
 # Export ourselves as a D-Bus service.
 class VeDbusService(object):
-	def __init__(self, servicename, bus=None, register=True):
+	def __init__(self, servicename, bus=None, register=None):
 		# dict containing the VeDbusItemExport objects, with their path as the key.
 		self._dbusobjects = {}
 		self._dbusnodes = {}
@@ -68,6 +69,7 @@ class VeDbusService(object):
 
 		# dict containing the onchange callbacks, for each object. Object path is the key
 		self._onchangecallbacks = {}
+		self._onsetcallbacks = {}
 
 		# Connect to session bus whenever present, else use the system bus
 		self._dbusconn = bus or (dbus.SessionBus() if 'DBUS_SESSION_BUS_ADDRESS' in os.environ else dbus.SystemBus())
@@ -76,14 +78,16 @@ class VeDbusService(object):
 		self.dbusconn = self._dbusconn
 
 		# Add the root item that will return all items as a tree
-		self._dbusnodes['/'] = VeDbusRootExport(self._dbusconn, '/', self)
+		self._dbusnodes['/'] = self.root = VeDbusRootExport(self._dbusconn, '/', self)
 
 		# Immediately register the service unless requested not to
-		if register:
+		if register is None:
 			logging.warning("USING OUTDATED REGISTRATION METHOD!")
 			logging.warning("Please set register=False, then call the register method "
 				"after adding all mandatory paths. See "
 				"https://github.com/victronenergy/venus/wiki/dbus-api")
+			self.register()
+		elif register:
 			self.register()
 
 	def register(self):
@@ -105,20 +109,26 @@ class VeDbusService(object):
 		self._dbusname = None
 
 	def get_name(self):
-		return self._dbusname.get_name()
+		return self.name
 
-	# @param callbackonchange	function that will be called when this value is changed. First parameter will
+	# @param onchangecallback	function that will be called when this value is changed. First parameter will
 	#							be the path of the object, second the new value. This callback should return
 	#							True to accept the change, False to reject it.
+	# @param onsetcallback	    function that will be called when this value is set. First parameter will
+	#							be the path of the object, second the new value. This callback should return
+	#							True to accept the change, False to reject it. Fires despite of value changes.
 	def add_path(self, path, value, description="", writeable=False,
-					onchangecallback=None, gettextcallback=None, valuetype=None, itemtype=None):
+					onchangecallback=None, gettextcallback=None, valuetype=None, itemtype=None, onsetcallback=None):
 
 		if onchangecallback is not None:
 			self._onchangecallbacks[path] = onchangecallback
 
+		if onsetcallback is not None:
+			self._onsetcallbacks[path] = onsetcallback
+
 		itemtype = itemtype or VeDbusItemExport
 		item = itemtype(self._dbusconn, path, value, description, writeable,
-				self._value_changed, gettextcallback, deletecallback=self._item_deleted, valuetype=valuetype)
+				self._value_changed, gettextcallback, deletecallback=self._item_deleted, valuetype=valuetype, onsetcallback=self._value_set)
 
 		spl = path.split('/')
 		for i in range(2, len(spl)):
@@ -151,6 +161,12 @@ class VeDbusService(object):
 			return True
 
 		return self._onchangecallbacks[path](path, newvalue)
+	
+	def _value_set(self, path, newvalue):
+		if path not in self._onsetcallbacks:
+			return True
+
+		return self._onsetcallbacks[path](path, newvalue)
 
 	def _item_deleted(self, path):
 		self._dbusobjects.pop(path)
@@ -210,7 +226,7 @@ class ServiceContext(object):
 
 	def flush(self):
 		if self.changes:
-			self.parent._dbusnodes['/'].ItemsChanged(self.changes)
+			self.parent.root.ItemsChanged(self.changes)
 			self.changes.clear()
 
 	def add_path(self, path, value, *args, **kwargs):
@@ -295,7 +311,7 @@ make sure to also subscribe to the NamerOwnerChanged signal on bus-level. Or jus
 because that takes care of all of that for you.
 """
 class VeDbusItemImport(object):
-	def __new__(cls, bus, serviceName, path, eventCallback=None, createsignal=True):
+	def __new__(cls, bus, serviceName, path, eventCallback=None, createsignal=True, initialValue=notset):
 		instance = object.__new__(cls)
 
 		# If signal tracking should be done, also add to root tracker
@@ -313,7 +329,7 @@ class VeDbusItemImport(object):
 	# @param createSignal   only set this to False if you use this function to one time read a value. When
 	#						leaving it to True, make sure to also subscribe to the NameOwnerChanged signal
 	#						elsewhere. See also note some 15 lines up.
-	def __init__(self, bus, serviceName, path, eventCallback=None, createsignal=True):
+	def __init__(self, bus, serviceName, path, eventCallback=None, createsignal=True, initialValue=notset):
 		# TODO: is it necessary to store _serviceName and _path? Isn't it
 		# stored in the bus_getobjectsomewhere?
 		self._serviceName = serviceName
@@ -329,15 +345,20 @@ class VeDbusItemImport(object):
 				"PropertiesChanged", weak_functor(self._properties_changed_handler))
 			self._roots[serviceName].add(self)
 
-		# store the current value in _cachedvalue. When it doesn't exists set _cachedvalue to
-		# None, same as when a value is invalid
-		self._cachedvalue = None
-		try:
-			v = self._proxy.GetValue()
-		except dbus.exceptions.DBusException:
-			pass
+		# store the current value in _cachedvalue. When it doesn't exists set
+		# _cachedvalue to None, same as when a value is invalid. If an
+		# initialValue is provided, used that. That allows passing in a value
+		# if already known and skip the GetValue.
+		if initialValue is notset:
+			self._cachedvalue = None
+			try:
+				v = self._proxy.GetValue()
+			except dbus.exceptions.DBusException:
+				pass
+			else:
+				self._cachedvalue = unwrap_dbus_value(v)
 		else:
-			self._cachedvalue = unwrap_dbus_value(v)
+			self._cachedvalue = initialValue
 
 	def __del__(self):
 		if self._match is not None:
@@ -424,6 +445,7 @@ class VeDbusItemImport(object):
 				try:
 					self._eventCallback(self._serviceName, self._path, changes)
 				except:
+					import traceback
 					traceback.print_exc()
 					os._exit(1)  # sys.exit() is not used, since that also throws an exception
 
@@ -431,22 +453,15 @@ class VeDbusItemImport(object):
 class VeDbusTreeExport(dbus.service.Object):
 	def __init__(self, bus, objectPath, service):
 		dbus.service.Object.__init__(self, bus, objectPath)
+		self._path = objectPath
 		self._service = service
 		logging.debug("VeDbusTreeExport %s has been created" % objectPath)
 
 	def __del__(self):
-		# self._get_path() will raise an exception when retrieved after the call to .remove_from_connection,
-		# so we need a copy.
-		path = self._get_path()
-		if path is None:
-			return
+		if self._path is None: return
 		self.remove_from_connection()
-		logging.debug("VeDbusTreeExport %s has been removed" % path)
-
-	def _get_path(self):
-		if len(self._locations) == 0:
-			return None
-		return self._locations[0][1]
+		logging.debug("VeDbusTreeExport %s has been removed" % self._path)
+		self._path = None
 
 	def _get_value_handler(self, path, get_text=False):
 		logging.debug("_get_value_handler called for %s" % path)
@@ -463,12 +478,12 @@ class VeDbusTreeExport(dbus.service.Object):
 
 	@dbus.service.method('com.victronenergy.BusItem', out_signature='v')
 	def GetValue(self):
-		value = self._get_value_handler(self._get_path())
+		value = self._get_value_handler(self._path)
 		return dbus.Dictionary(value, signature=dbus.Signature('sv'), variant_level=1)
 
 	@dbus.service.method('com.victronenergy.BusItem', out_signature='v')
 	def GetText(self):
-		return self._get_value_handler(self._get_path(), True)
+		return self._get_value_handler(self._path, True)
 
 	def local_get_value(self):
 		return self._get_value_handler(self.path)
@@ -503,9 +518,11 @@ class VeDbusItemExport(dbus.service.Object):
 	#					  value. This callback should return True to accept the change, False to reject it.
 	def __init__(self, bus, objectPath, value=None, description=None, writeable=False,
 					onchangecallback=None, gettextcallback=None, deletecallback=None,
-					valuetype=None):
+					valuetype=None, onsetcallback=None):
 		dbus.service.Object.__init__(self, bus, objectPath)
+		self._path = objectPath
 		self._onchangecallback = onchangecallback
+		self._onsetcallback = onsetcallback
 		self._gettextcallback = gettextcallback
 		self._value = value
 		self._description = description
@@ -515,20 +532,12 @@ class VeDbusItemExport(dbus.service.Object):
 
 	# To force immediate deregistering of this dbus object, explicitly call __del__().
 	def __del__(self):
-		# self._get_path() will raise an exception when retrieved after the
-		# call to .remove_from_connection, so we need a copy.
-		path = self._get_path()
-		if path == None:
-			return
+		if self._path is None: return
 		if self._deletecallback is not None:
-			self._deletecallback(path)
+			self._deletecallback(self._path)
 		self.remove_from_connection()
-		logging.debug("VeDbusItemExport %s has been removed" % path)
-
-	def _get_path(self):
-		if len(self._locations) == 0:
-			return None
-		return self._locations[0][1]
+		logging.debug("VeDbusItemExport %s has been removed" % self._path)
+		self._path = None
 
 	## Sets the value. And in case the value is different from what it was, a signal
 	# will be emitted to the dbus. This function is to be used in the python code that
@@ -576,6 +585,12 @@ class VeDbusItemExport(dbus.service.Object):
 			except (ValueError, TypeError):
 				return 1 # NOT OK
 
+		#call the onset callback always, even if there was no change. 
+		if self._onsetcallback is not None:
+			if not self._onsetcallback(self.__dbus_object_path__, newvalue):
+				return 2 # Not ok, needs no further valuechanged consideration.
+			
+		#only proceed to onchange callback, if there was a change.
 		if newvalue == self._value:
 			return 0  # OK
 

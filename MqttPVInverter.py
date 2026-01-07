@@ -97,9 +97,12 @@ class MqttPVInverter(esESSService):
     def handleSigterm(self):
        pass
 
+    def signOfLive(self):
+        pass
+
     def _checkStale(self):
         for (inverter) in self.mqttPVInverters.values():
-            if (time.time() - inverter.lastMessageReceived > 5):
+            if (time.time() - inverter.lastMessageReceived > 10 * 3600):
                 w(self, "PVInverter detected stale: {0}".format(inverter.customName))
                 inverter.setStale()
     

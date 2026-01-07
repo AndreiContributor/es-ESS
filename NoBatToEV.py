@@ -20,6 +20,9 @@ class NoBatToEV(esESSService):
     def initDbusService(self):
         pass
 
+    def signOfLive(self):
+        pass
+
     def initDbusSubscriptions(self):
         if (not "FroniusWattpilot" in Globals.esESS._services):
             self.evChargerPowerDbus = self.registerDbusSubscription("com.victronenergy.evcharger", "/Ac/Power")

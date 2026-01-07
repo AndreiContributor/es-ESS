@@ -26,6 +26,9 @@ class TimeToGoCalculator(esESSService):
     def initFinalize(self):
         pass
 
+    def signOfLive(self):
+        pass
+
     def updateTimeToGo(self):
       try:
         

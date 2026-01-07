@@ -46,6 +46,9 @@ class MqttDC(esESSService):
         for (sensor) in self.dcLoads.values():
             sensor.initDbusService()
 
+    def signOfLive(self):
+        pass
+
     def initDbusSubscriptions(self):
         pass
         

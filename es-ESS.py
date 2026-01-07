@@ -9,6 +9,7 @@ import sys
 import os
 import logging
 import threading
+import json
 import time
 from builtins import Exception, int, str
 from concurrent.futures import ThreadPoolExecutor
@@ -68,9 +69,9 @@ class esESS:
             self._gridSetPointCurrent = -99999 #use a unreal number at first, so es-ESS will detect a change upon restart and guarantee to set default GSP.
             self._threadExecutionsMinute = 0
             
-            i(self, "Initializing thread pool with a size of {0}".format(self.config["Common"]["NumberOfThreads"]))
+            i(self, "Initializing thread pool with a size of {0} and sleeping 20 seconds... ".format(self.config["Common"]["NumberOfThreads"]))
 
-            #wait 20 seconds after startup
+            #wait 20 seconds after startup, lot of services may not yet have hit dbus. 
             Helper.waitTimeout(lambda: False, 20) 
 
             self.threadPool = ThreadPoolExecutor(int(self.config["Common"]["NumberOfThreads"]), "TPt")
@@ -442,16 +443,17 @@ class esESS:
     def _dbusValueChanged(self, dbusServiceName, dbusPath, dict, changes, deviceInstance):
         try:
             key = DbusSubscription.buildValueKey(dbusServiceName, dbusPath)
-            t(self, "Change on dbus for {0} (new value: {1})".format(key, changes['Value'])) 
+            #t(self, "Change on dbus for {0} (new value: {1})".format(key, changes['Value'])) 
 
-            for sub in self._dbusSubscriptions[key]:
-                #verify serviceinstance. if the subscription is to the more global
-                #servicename, we are fine with it.
-                if (dbusServiceName.startswith(sub.serviceName)):
-                    sub.value = changes["Value"]
+            if key in self._dbusSubscriptions:
+                for sub in self._dbusSubscriptions[key]:
+                    #verify serviceinstance. if the subscription is to the more global
+                    #servicename, we are fine with it.
+                    if (dbusServiceName.startswith(sub.serviceName)):
+                        sub.value = changes["Value"]
 
-                if (sub.callback is not None):
-                    self.threadPool.submit(sub.callback(sub))
+                    if (sub.callback is not None):
+                        self.threadPool.submit(sub.callback(sub))
 
         except Exception as ex:
             c(self, "Exception", exc_info=ex)
@@ -467,7 +469,7 @@ class esESS:
         
             t(self, "Running thread: {0}".format(Helper.formatCallback(workerThread.thread)))
             if (workerThread.future is None or workerThread.future.done()):
-                self._threadExecutionsMinute+=1
+                self._threadExecutionsMinute += 1
                 workerThread.future = self.threadPool.submit(workerThread.thread)
             else:
                 w(self, "Thread {0} from {1} is scheduled to run every {2}ms - Future not done, skipping call attempt. Consider lowering the execution-frequency".format(workerThread.thread.__name__,workerThread.service.__class__.__name__, workerThread.interval))
@@ -482,6 +484,7 @@ class esESS:
     
     def _signOfLive(self):
         self.publishServiceMessage(self, "Executed {0} threads in the past minute.".format(self._threadExecutionsMinute))
+        i(self, "Executed {0} threads in the past minute.".format(self._threadExecutionsMinute))
         load1, load5, load15 = os.getloadavg()
 
         self.publishMainMqtt("{0}/$SYS/Load/1".format(Globals.esEssTag), load1, 0, False, True)
@@ -489,6 +492,10 @@ class esESS:
         self.publishMainMqtt("{0}/$SYS/Load/15".format(Globals.esEssTag), load15, 0, False, True)
 
         self._threadExecutionsMinute = 0
+
+        for service in self._services.values():
+            service.signOfLive()
+
         return True
     
     def _manageGridSetPoint(self):
@@ -630,10 +637,6 @@ class esESS:
                self._localSendCount = 0
 
     def publishServiceMessage(self, service, message, type=Globals.ServiceMessageType.Operational):
-        #Na, that's annoying - for now ;)
-        #if (type == Globals.ServiceMessageType.Operational):
-        #   i(service, "Service Message: {0}".format(message))
-
         if (self.mainMqttClient is None or not self.mainMqttClient.is_connected):
            #cant send service messages by now. 
            return
@@ -652,14 +655,12 @@ class esESS:
            self._serviceMessageIndex[key] = 1
 
         if (type == Globals.ServiceMessageType.Operational):
-            i(self, "ServiceMessage: {0}".format(message))
+            d(self, "ServiceMessage: {0}".format(message))
 
         self.publishMainMqtt("{tag}/{service}/ServiceMessages/{type}/Message{id:02d}".format(tag=Globals.esEssTag, service=serviceName, type=type, id=self._serviceMessageIndex[key]), "{0} | {1}".format(Globals.getUserTime(), message) , 0, True, True)
         nextOne = self._serviceMessageIndex[key] +1
         if (nextOne > int(self.config["Common"]["ServiceMessageCount"]) + 1):
             nextOne = 1
-        
-        #self.publishMainMqtt("{tag}/{service}ServiceMessages/{type}/Message{id:02d}".format(tag=Globals.esEssTag, service=serviceName, type=type, id=nextOne), "{0} | {1}".format(Globals.getUserTime(), "-------------------------") , 0, True, True)
 
     def handleSigterm(self, signum, frame):
         self.publishServiceMessage(self, "SIGTERM received. Shuting down services gracefully.")

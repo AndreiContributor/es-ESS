@@ -52,6 +52,9 @@ class MqttTemperature(esESSService):
     def initWorkerThreads(self):
         pass
 
+    def signOfLive(self):
+        pass
+
     def initMqttSubscriptions(self):
         for sensor in self.temperatureSensors.values():
             self.registerMqttSubscription(sensor.valueTopic, callback=sensor.onMqttMessage)

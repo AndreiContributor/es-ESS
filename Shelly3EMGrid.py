@@ -98,6 +98,9 @@ class Shelly3EMGrid(esESSService):
     def initDbusSubscriptions(self):
         pass
         
+    def signOfLive(self):
+        pass
+    
     def initWorkerThreads(self):
         self.registerWorkerThread(self.queryShelly, self.pollFrequencyMs)
 

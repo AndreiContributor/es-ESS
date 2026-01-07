@@ -59,6 +59,9 @@ class ShellyPMInverter(esESSService):
     def handleSigterm(self):
        pass
 
+    def signOfLive(self):
+        pass
+
 class ShellyPMInverterDevice:
     def __init__(self, rootService, key, cfgSection):
         self.key = key
