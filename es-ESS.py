@@ -1,7 +1,7 @@
 #!/usr/bin/env python
  
 # imports
-import configparser # for config/ini file
+import configparser
 import datetime
 from logging.handlers import TimedRotatingFileHandler
 import signal
@@ -443,7 +443,6 @@ class esESS:
     def _dbusValueChanged(self, dbusServiceName, dbusPath, dict, changes, deviceInstance):
         try:
             key = DbusSubscription.buildValueKey(dbusServiceName, dbusPath)
-            #t(self, "Change on dbus for {0} (new value: {1})".format(key, changes['Value'])) 
 
             if key in self._dbusSubscriptions:
                 for sub in self._dbusSubscriptions[key]:
@@ -452,8 +451,8 @@ class esESS:
                     if (dbusServiceName.startswith(sub.serviceName)):
                         sub.value = changes["Value"]
 
-                    if (sub.callback is not None):
-                        self.threadPool.submit(sub.callback(sub))
+                        if (sub.callback is not None):
+                            self.threadPool.submit(sub.callback(sub))
 
         except Exception as ex:
             c(self, "Exception", exc_info=ex)

@@ -63,6 +63,8 @@ class MqttExporter(esESSService):
 
     def initDbusSubscriptions(self):
         for topicExport in self.topicExports.values():
+            #FIXME: We can already distinguish here between comon service and full service.
+            #       that would allow us to make two value change handlers that are more efficient.
             self.registerDbusSubscription(topicExport.service, topicExport.source, self._dbusValueChanged)
         
     def initWorkerThreads(self):
@@ -87,6 +89,7 @@ class MqttExporter(esESSService):
             self.topicExports[key].value = sub.value # Update stored value
             if self.topicExports[key].publishType == PublishType.ONCHANGE:
                 self.publishMainMqtt(self.topicExports[key].target, sub.value, 0, True)
+                self.forwardedTopicsPastMinute += 1
         else:
             key = "{0}{1}".format(sub.commonServiceName, sub.dbusPath)
 
@@ -94,35 +97,31 @@ class MqttExporter(esESSService):
                 self.topicExports[key].value = sub.value # Update stored value
                 if self.topicExports[key].publishType == PublishType.ONCHANGE:
                     self.publishMainMqtt(self.topicExports[key].target, sub.value, 0, True)
-
-        self.forwardedTopicsPastMinute += 1
+                    self.forwardedTopicsPastMinute += 1
 
     def handleSigterm(self):
        pass
 
     def process_1s_interval(self):
         for topicExport in self.topicExports_1s.values():
-            if topicExport.publishType == PublishType.INTERVAL_1S:
-                value = topicExport.value
-                if value is not None:
-                    self.publishMainMqtt(topicExport.target, value, 0, True)
-                    self.forwardedTopicsPastMinute += 1
+            value = topicExport.value
+            if value is not None:
+                self.publishMainMqtt(topicExport.target, value, 0, True)
+                self.forwardedTopicsPastMinute += 1
     
     def process_10s_interval(self):
         for topicExport in self.topicExports_10s.values():
-            if topicExport.publishType == PublishType.INTERVAL_10S:
-                value = topicExport.value
-                if value is not None:
-                    self.publishMainMqtt(topicExport.target, value, 0, True)
-                    self.forwardedTopicsPastMinute += 1
+            value = topicExport.value
+            if value is not None:
+                self.publishMainMqtt(topicExport.target, value, 0, True)
+                self.forwardedTopicsPastMinute += 1
     
     def process_60s_interval(self):
         for topicExport in self.topicExports_60s.values():
-            if topicExport.publishType == PublishType.INTERVAL_60S:
-                value = topicExport.value
-                if value is not None:
-                    self.publishMainMqtt(topicExport.target, value, 0, True)
-                    self.forwardedTopicsPastMinute += 1
+            value = topicExport.value
+            if value is not None:
+                self.publishMainMqtt(topicExport.target, value, 0, True)
+                self.forwardedTopicsPastMinute += 1
 
 class TopicExport:
     def __init__(self, service, source, target, publishType=PublishType.ONCHANGE):
