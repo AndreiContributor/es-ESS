@@ -61,6 +61,13 @@ class FroniusWattpilot (esESSService):
         self.batteryAssistMaxShortfallW = float(
             settings.get("BatteryAssistMaxShortfallW", 3000)
         )
+        # After the maximum bridge time is reached, require a sustained period
+        # where PV fully covers the active EV demand before battery assist may
+        # be used again. This prevents repeated 300-second assist windows
+        # during one long cloud event.
+        self.batteryAssistRecoverySeconds = max(
+            0, int(settings.get("BatteryAssistRecoverySeconds", 60))
+        )
 
         # Grid import is an emergency stop guard. Configure the sign convention
         # per site: true means positive grid power is import; false reverses it.
@@ -102,6 +109,11 @@ class FroniusWattpilot (esESSService):
         self.batteryAssistSince = 0
         self.batteryAssistActive = False
         self.batteryAssistShortfallW = 0
+        # A timeout lockout persists after the active assist timer is cleared.
+        # It is released only after verified PV recovery or a real disconnect.
+        self.batteryAssistLockedOut = False
+        self.batteryAssistLockoutSince = 0
+        self.batteryAssistRecoverySince = 0
         self.gridImportSince = 0
 
         # Startup / phase-transition telemetry bridge. This is not a battery
@@ -180,6 +192,8 @@ class FroniusWattpilot (esESSService):
         self.dbusService.add_path('/BatteryAssist/Active', 0)
         self.dbusService.add_path('/BatteryAssist/Elapsed', 0)
         self.dbusService.add_path('/BatteryAssist/Shortfall', 0)
+        self.dbusService.add_path('/BatteryAssist/LockedOut', 0)
+        self.dbusService.add_path('/BatteryAssist/RecoveryElapsed', 0)
         self.dbusService.add_path('/GridImport', 0)
 
         self.dbusService.register()
@@ -445,6 +459,7 @@ class FroniusWattpilot (esESSService):
                 self.surplusSince = 0
                 self.noAllowanceForcedOff = False
                 self.clearBatteryAssist()
+                self.clearBatteryAssistLockout("car disconnected")
                 self.clearPowerTransitionGrace()
 
             elif self.wattpilot.modelStatus.value in [3, 12, 15, 19, 20]:
@@ -636,6 +651,10 @@ class FroniusWattpilot (esESSService):
         pvAllowance = max(0, self.allowance)
         activeDemandW = self.currentChargeDemandPower()
         shortfallW = max(0, activeDemandW - pvAllowance)
+
+        # A completed assist window stays locked out until PV has continuously
+        # covered the current EV demand for the configured recovery period.
+        self.updateBatteryAssistLockoutRecovery(shortfallW)
 
         # A battery bridge is allowed only for a currently-running charge. It
         # holds the existing phase/current and never affects fresh starts or
@@ -1046,6 +1065,12 @@ class FroniusWattpilot (esESSService):
         self.dbusService["/BatteryAssist/Shortfall"] = int(
             round(self.batteryAssistShortfallW)
         )
+        self.dbusService["/BatteryAssist/LockedOut"] = int(
+            self.batteryAssistLockedOut
+        )
+        self.dbusService["/BatteryAssist/RecoveryElapsed"] = int(
+            round(self.getBatteryAssistRecoverySeconds())
+        )
 
     def gridImportLimitExceeded(self):
         if self.allowGridCharging:
@@ -1082,14 +1107,81 @@ class FroniusWattpilot (esESSService):
             return 0
         return time.time() - self.batteryAssistSince
 
+    def getBatteryAssistRecoverySeconds(self):
+        if self.batteryAssistRecoverySince == 0:
+            return 0
+        return time.time() - self.batteryAssistRecoverySince
+
     def clearBatteryAssist(self):
+        # Intentionally do not clear the timeout lockout here. The active
+        # timer must be cleared when a bridge ends, while the lockout has to
+        # survive subsequent control cycles during the same low-PV event.
         self.batteryAssistSince = 0
         self.batteryAssistActive = False
         self.batteryAssistShortfallW = 0
 
+    def lockBatteryAssist(self):
+        self.clearBatteryAssist()
+        self.batteryAssistLockedOut = True
+        self.batteryAssistLockoutSince = time.time()
+        self.batteryAssistRecoverySince = 0
+
+    def clearBatteryAssistLockout(self, reason):
+        wasLockedOut = self.batteryAssistLockedOut
+        self.batteryAssistLockedOut = False
+        self.batteryAssistLockoutSince = 0
+        self.batteryAssistRecoverySince = 0
+
+        if wasLockedOut:
+            self.publishServiceMessage(
+                self,
+                "Battery assist lockout cleared: {0}.".format(reason)
+            )
+
+    def updateBatteryAssistLockoutRecovery(self, shortfallW):
+        # A lockout means the bridge has used its full allowed time during the
+        # current low-PV event. Do not open another window until PV has fully
+        # covered the live EV demand for the configured recovery duration.
+        if not self.batteryAssistLockedOut:
+            return
+
+        if shortfallW > 0:
+            if self.batteryAssistRecoverySince != 0:
+                d(
+                    self,
+                    "PV recovery interrupted before battery-assist lockout "
+                    "could clear."
+                )
+            self.batteryAssistRecoverySince = 0
+            return
+
+        if self.batteryAssistRecoverySince == 0:
+            self.batteryAssistRecoverySince = time.time()
+            self.publishServiceMessage(
+                self,
+                "PV fully covers EV demand. Waiting {0}s before allowing "
+                "battery assist again.".format(
+                    self.batteryAssistRecoverySeconds
+                )
+            )
+
+        if self.getBatteryAssistRecoverySeconds() >= self.batteryAssistRecoverySeconds:
+            self.clearBatteryAssistLockout(
+                "PV covered EV demand continuously for {0}s".format(
+                    self.batteryAssistRecoverySeconds
+                )
+            )
+
     def startOrContinueBatteryAssist(self, shortfallW):
         # No shortfall means PV covers the present EV load. End any bridge.
         if shortfallW <= 0:
+            self.clearBatteryAssist()
+            return False
+
+        # Once the configured bridge time has been consumed, preserve the
+        # lockout through all later 5-second control cycles. It is cleared
+        # only by updateBatteryAssistLockoutRecovery() or car disconnect.
+        if self.batteryAssistLockedOut:
             self.clearBatteryAssist()
             return False
 
@@ -1118,12 +1210,13 @@ class FroniusWattpilot (esESSService):
         self.batteryAssistActive = True
         self.batteryAssistShortfallW = shortfallW
 
-        if self.getBatteryAssistSeconds() > self.batteryAssistMaxSeconds:
+        if self.getBatteryAssistSeconds() >= self.batteryAssistMaxSeconds:
             self.publishServiceMessage(
                 self,
-                "Battery assist time limit reached. Returning to PV-only charging."
+                "Battery assist time limit reached. Locking out further "
+                "battery assist until PV recovery or car disconnect."
             )
-            self.clearBatteryAssist()
+            self.lockBatteryAssist()
             return False
 
         return True
