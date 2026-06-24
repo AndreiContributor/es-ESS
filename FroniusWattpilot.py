@@ -69,6 +69,23 @@ class FroniusWattpilot (esESSService):
             0, int(settings.get("BatteryAssistRecoverySeconds", 60))
         )
 
+        # A vehicle near its requested SOC can remain connected while drawing
+        # only a small balancing or keep-alive load. In Auto mode, hold that
+        # completed session instead of repeatedly re-entering PV control.
+        self.chargeCompletePowerThresholdW = max(
+            0.0, float(settings.get("ChargeCompletePowerThresholdW", 100))
+        )
+        self.chargeCompleteConfirmSeconds = max(
+            5, int(settings.get("ChargeCompleteConfirmSeconds", 120))
+        )
+        self.chargeCompleteResumePowerW = max(
+            self.chargeCompletePowerThresholdW,
+            float(settings.get("ChargeCompleteResumePowerW", 300))
+        )
+        self.chargeCompleteResumeSeconds = max(
+            5, int(settings.get("ChargeCompleteResumeSeconds", 30))
+        )
+
         # Grid import is an emergency stop guard. Configure the sign convention
         # per site: true means positive grid power is import; false reverses it.
         self.allowGridCharging = settings.get(
@@ -114,6 +131,13 @@ class FroniusWattpilot (esESSService):
         self.batteryAssistLockedOut = False
         self.batteryAssistLockoutSince = 0
         self.batteryAssistRecoverySince = 0
+
+        # Charge-complete hold persists for the current plugged-in session.
+        # It is not a stop command: the Wattpilot remains in its present state.
+        self.chargeCompleteHold = False
+        self.chargeCompleteSince = 0
+        self.chargeCompleteResumeSince = 0
+
         self.gridImportSince = 0
 
         # Startup / phase-transition telemetry bridge. This is not a battery
@@ -194,6 +218,9 @@ class FroniusWattpilot (esESSService):
         self.dbusService.add_path('/BatteryAssist/Shortfall', 0)
         self.dbusService.add_path('/BatteryAssist/LockedOut', 0)
         self.dbusService.add_path('/BatteryAssist/RecoveryElapsed', 0)
+        self.dbusService.add_path('/ChargeComplete/Hold', 0)
+        self.dbusService.add_path('/ChargeComplete/Elapsed', 0)
+        self.dbusService.add_path('/ChargeComplete/ResumeElapsed', 0)
         self.dbusService.add_path('/GridImport', 0)
 
         self.dbusService.register()
@@ -348,6 +375,7 @@ class FroniusWattpilot (esESSService):
 
             elif (fromMode == VrmEvChargerControlMode.Auto and toMode == VrmEvChargerControlMode.Manual):
                 self.autostart = 0
+                self.clearChargeCompleteHold("manual mode selected")
                 self.wattpilot.set_mode(WattpilotControlMode.Default)
 
         elif (toMode == VrmEvChargerControlMode.Scheduled):
@@ -419,6 +447,7 @@ class FroniusWattpilot (esESSService):
             else:
                 self.autostart = 0
                 self.mode = VrmEvChargerControlMode.Manual
+                self.clearChargeCompleteHold("manual mode selected")
 
             self.reportStartStopValue(
                 VrmEvChargerStartStop.Start
@@ -460,6 +489,7 @@ class FroniusWattpilot (esESSService):
                 self.noAllowanceForcedOff = False
                 self.clearBatteryAssist()
                 self.clearBatteryAssistLockout("car disconnected")
+                self.clearChargeCompleteHold("car disconnected")
                 self.clearPowerTransitionGrace()
 
             elif self.wattpilot.modelStatus.value in [3, 12, 15, 19, 20]:
@@ -512,16 +542,42 @@ class FroniusWattpilot (esESSService):
             c(self, "Exception during duty-cycle.", exc_info=ex)
 
     def handleChargingState(self):
-        if self.wattpilot.power is None or self.wattpilot.power <= 0:
+        measuredPowerW = self.actualMeasuredPowerW()
+
+        # Near a vehicle's target SOC, it can report a Charging model state
+        # while drawing only a small balancing or keep-alive load. Use a
+        # configurable threshold rather than requiring an exact 0 W reading.
+        if measuredPowerW <= self.chargeCompletePowerThresholdW:
             self.noChargeSince += 5
         else:
             self.noChargeSince = 0
 
-        if self.noChargeSince >= 120:
-            d(self, "No charge since 2 minutes... Assuming car is fully charged.")
-            self.reportVRMStatus(VrmEvChargerStatus.Charged)
-            self.clearBatteryAssist()
-            return
+        if self.mode == VrmEvChargerControlMode.Auto:
+            if self.chargeCompleteHold:
+                if not self.updateChargeCompleteHoldResume(measuredPowerW):
+                    self.clearBatteryAssist()
+                    self.clearPowerTransitionGrace()
+                    self.publishRetained(
+                        "/LastChargeModeLiteral", "ChargeCompleteHold"
+                    )
+                    self.reportVRMStatus(VrmEvChargerStatus.Charged)
+                    self.reportConsumption()
+                    return
+
+                # A genuine sustained resume was detected. Continue with the
+                # normal Auto path in this same cycle.
+                self.noChargeSince = 0
+
+            if self.noChargeSince >= self.chargeCompleteConfirmSeconds:
+                self.enterChargeCompleteHold()
+                self.clearBatteryAssist()
+                self.clearPowerTransitionGrace()
+                self.publishRetained(
+                    "/LastChargeModeLiteral", "ChargeCompleteHold"
+                )
+                self.reportVRMStatus(VrmEvChargerStatus.Charged)
+                self.reportConsumption()
+                return
 
         self.chargingTime += 5
         self.publishRetained("/LastChargeModeLiteral", "SolarOverhead")
@@ -565,6 +621,14 @@ class FroniusWattpilot (esESSService):
             return
 
         self.clearBatteryAssist()
+
+        # Do not restart, phase switch, or force the charger off after a car
+        # has completed charging. The hold is cleared by a real unplug event,
+        # Manual mode, or a sustained meaningful charging resume.
+        if self.chargeCompleteHold:
+            self.publishRetained("/LastChargeModeLiteral", "ChargeCompleteHold")
+            self.reportVRMStatus(VrmEvChargerStatus.Charged)
+            return
 
         if self.mode != VrmEvChargerControlMode.Auto:
             self.reportVRMStatus(VrmEvChargerStatus.Connected)
@@ -631,6 +695,13 @@ class FroniusWattpilot (esESSService):
         self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Start.name
 
     def controlAutomaticCharging(self):
+        # Defensive guard: a completed EV session must not re-enter automatic
+        # PV, phase-switch, battery-assist, or stop logic while it remains
+        # plugged in.
+        if self.chargeCompleteHold:
+            self.clearBatteryAssist()
+            return VrmEvChargerStatus.Charged
+
         # The Wattpilot may report a temporary 0 W allowance while it is still
         # bringing a valid new charge command online. Keep the session alive
         # until one distributor cycle has seen the real EV power telemetry.
@@ -732,7 +803,8 @@ class FroniusWattpilot (esESSService):
         if (
             self.mode == VrmEvChargerControlMode.Auto
             and self.wattpilot.carConnected
-            and self.noChargeSince <= 120
+            and not self.chargeCompleteHold
+            and self.noChargeSince < self.chargeCompleteConfirmSeconds
         ):
             maxRequest = self.getEffectiveMaxCurrent() * self.threePhaseVoltage()
             self.publishMainMqtt(
@@ -1071,6 +1143,13 @@ class FroniusWattpilot (esESSService):
         self.dbusService["/BatteryAssist/RecoveryElapsed"] = int(
             round(self.getBatteryAssistRecoverySeconds())
         )
+        self.dbusService["/ChargeComplete/Hold"] = int(self.chargeCompleteHold)
+        self.dbusService["/ChargeComplete/Elapsed"] = int(
+            round(self.getChargeCompleteSeconds())
+        )
+        self.dbusService["/ChargeComplete/ResumeElapsed"] = int(
+            round(self.getChargeCompleteResumeSeconds())
+        )
 
     def gridImportLimitExceeded(self):
         if self.allowGridCharging:
@@ -1220,6 +1299,92 @@ class FroniusWattpilot (esESSService):
             return False
 
         return True
+
+    def getChargeCompleteSeconds(self):
+        if self.chargeCompleteSince == 0:
+            return 0
+        return time.time() - self.chargeCompleteSince
+
+    def getChargeCompleteResumeSeconds(self):
+        if self.chargeCompleteResumeSince == 0:
+            return 0
+        return time.time() - self.chargeCompleteResumeSince
+
+    def enterChargeCompleteHold(self):
+        if self.chargeCompleteHold:
+            return
+
+        self.chargeCompleteHold = True
+        self.chargeCompleteSince = time.time()
+        self.chargeCompleteResumeSince = 0
+        self.surplusSince = 0
+        self.publishServiceMessage(
+            self,
+            "EV appears fully charged: power stayed at or below {0:.0f}W "
+            "for {1}s. Holding the connected session without a stop command.".format(
+                self.chargeCompletePowerThresholdW,
+                self.chargeCompleteConfirmSeconds
+            )
+        )
+
+    def clearChargeCompleteHold(self, reason):
+        if not self.chargeCompleteHold:
+            self.chargeCompleteSince = 0
+            self.chargeCompleteResumeSince = 0
+            return
+
+        self.chargeCompleteHold = False
+        self.chargeCompleteSince = 0
+        self.chargeCompleteResumeSince = 0
+        self.publishServiceMessage(
+            self,
+            "Charge-complete hold cleared: {0}.".format(reason)
+        )
+
+    def updateChargeCompleteHoldResume(self, measuredPowerW):
+        """Return True after a completed EV session has genuinely resumed.
+
+        Tiny balancing / keep-alive draws must not leave the hold. A sustained
+        significant draw is treated as a new charging phase without requiring
+        an unplug/replug.
+        """
+        if not self.chargeCompleteHold:
+            return False
+
+        if measuredPowerW < self.chargeCompleteResumePowerW:
+            if self.chargeCompleteResumeSince != 0:
+                d(
+                    self,
+                    "Charge-complete resume was interrupted before confirmation."
+                )
+            self.chargeCompleteResumeSince = 0
+            return False
+
+        if self.chargeCompleteResumeSince == 0:
+            self.chargeCompleteResumeSince = time.time()
+            self.publishServiceMessage(
+                self,
+                "EV power rose to {0:.0f}W. Waiting {1}s before leaving "
+                "charge-complete hold.".format(
+                    measuredPowerW,
+                    self.chargeCompleteResumeSeconds
+                )
+            )
+            return False
+
+        if (
+            self.getChargeCompleteResumeSeconds()
+            >= self.chargeCompleteResumeSeconds
+        ):
+            self.clearChargeCompleteHold(
+                "EV resumed at least {0:.0f}W for {1}s".format(
+                    self.chargeCompleteResumePowerW,
+                    self.chargeCompleteResumeSeconds
+                )
+            )
+            return True
+
+        return False
 
     def forceStopForNoAllowance(self):
         # Strict policy: stop immediately and retain ForceStateOff. Do not issue
