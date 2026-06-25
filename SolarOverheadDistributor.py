@@ -369,8 +369,13 @@ class SolarOverheadDistributor(esESSService):
          #Either all consumers then are running at maximum, or the remaining overhead doesn't satisfy the
          #need of additional consumers. In that case, the remaining overhead will be consumed by the house battery.
          overheadDistribution = self.doAssign(overhead, overheadDistribution, minBatCharge) 
-         
 
+         if overheadDistribution is None:
+            overheadDistribution = {}
+
+         for consumerKey in self.consumers:
+            overheadDistribution.setdefault(consumerKey, 0)
+         
          for consumerKey in self._knownSolarOverheadConsumers:
             consumer = self._knownSolarOverheadConsumers[consumerKey]
             
@@ -378,7 +383,7 @@ class SolarOverheadDistributor(esESSService):
                if (Globals.esESS._sigTermInvoked == True):
                   return
                
-               consumer.updateAllowance(overheadDistribution[consumerKey], self)
+               consumer.updateAllowance(overheadDistribution.get(consumerKey, 0), self)
                overheadAssigned += consumer.allowance
                overhead -= consumer.allowance
                self.publishServiceMessage(self, "Assigned {0}W to {1} ({2}, {3})".format(consumer.allowance, consumer.customName, consumer.priority, consumerKey))
@@ -432,7 +437,7 @@ class SolarOverheadDistributor(esESSService):
                if not (consumer.isInitialized and consumer.isAutomatic):
                   continue
 
-               assigned = overheadDistribution[consumerKey]
+               assigned = overheadDistribution.get(consumerKey, 0)
                if assigned >= consumer.request:
                   continue
 
