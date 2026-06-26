@@ -1,9 +1,10 @@
-"""Hardware-free regression coverage for Wattpilot PV-control fixes."""
+"""Hardware-free regression coverage for Wattpilot PV-control behavior."""
 
 import importlib.util
 import sys
 import types
 import unittest
+from enum import IntEnum
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -39,7 +40,7 @@ def _install_runtime_stubs():
 
     _module("vedbus", VeDbusService=object)
     _module("requests")
-    _module("Globals", esEssTagService="test", esEssTag="test")
+    _module("Globals", esEssTagService="test", esEssTag="test", currentVersionString="test")
     _module(
         "Helper",
         i=lambda *args, **kwargs: None,
@@ -57,6 +58,17 @@ def _install_runtime_stubs():
         Auto = 1
         Scheduled = 2
 
+    class VrmEvChargerStatus:
+        Disconnected = 0
+        Connected = 1
+        WaitingForSun = 2
+        StartCharging = 3
+        StopCharging = 4
+        Charging = 5
+        SwitchingTo1Phase = 6
+        SwitchingTo3Phase = 7
+        Charged = 8
+
     class WattpilotStartStop:
         Off = 0
         On = 1
@@ -65,14 +77,14 @@ def _install_runtime_stubs():
         Default = 0
         ECO = 1
 
-    class VrmEvChargerStartStop:
+    class VrmEvChargerStartStop(IntEnum):
         Stop = 0
         Start = 1
 
     _module(
         "enums",
         VrmEvChargerControlMode=VrmEvChargerControlMode,
-        VrmEvChargerStatus=type("VrmEvChargerStatus", (), {}),
+        VrmEvChargerStatus=VrmEvChargerStatus,
         VrmEvChargerStartStop=VrmEvChargerStartStop,
         WattpilotModelStatus=type("WattpilotModelStatus", (), {}),
         WattpilotStartStop=WattpilotStartStop,
@@ -98,7 +110,9 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.threePhasePvSurplusStartW = 4200
         controller.threePhasePvSurplusStopW = 4140
         controller.minimumPhaseSwitchSeconds = 0
+        controller.minimumOnOffSeconds = 300
         controller.lastPhaseSwitchTime = 0
+        controller.lastOnOffTime = 0
         controller.currentPhaseMode = 1
         controller.allowance = 0
         controller.allowanceUpdatedAt = 0
@@ -110,39 +124,109 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.carDisconnectConfirmSeconds = 15
         controller.carDisconnectedSince = 0
         controller.lastConfirmedCarConnected = False
-        controller.effectiveCarConnected = False
+        controller.effectiveCarConnected = True
         controller.powerTransitionUntil = 0
         controller.powerTransitionExpectedW = 0
+        controller.powerTransitionReason = ""
         controller.powerTransitionTelemetryReadyAt = 0
+        controller.startupGraceSeconds = 60
         controller.startupTelemetryRatio = 0.8
-        controller.minimumOnOffSeconds = 300
+        controller.pendingPhaseSwitchMode = 0
+        controller.pendingPhaseSwitchSince = 0
+        controller.rawOverheadFreshSeconds = 15
+        controller.mqttRawOverheadW = None
+        controller.mqttRawOverheadUpdatedAt = 0
+        controller.mode = 1
+        controller.autostart = 1
+        controller.noChargeSince = 0
+        controller.noAllowanceForcedOff = False
+        controller.chargeCompleteHold = False
+        controller.chargeCompleteConfirmSeconds = 120
+        controller.chargeCompletePowerThresholdW = 100
+        controller.chargeCompleteResumePowerW = 300
+        controller.chargeCompleteResumeSeconds = 30
+        controller.chargeCompleteSince = 0
+        controller.chargeCompleteResumeSince = 0
+        controller.batteryAssistEnabled = True
+        controller.batteryAssistSocMin = 60
+        controller.batteryAssistMaxSeconds = 300
+        controller.batteryAssistMaxShortfallW = 3000
+        controller.batteryAssistRecoverySeconds = 60
+        controller.batteryAssistSince = 0
+        controller.batteryAssistActive = False
+        controller.batteryAssistShortfallW = 0
+        controller.batteryAssistLockedOut = False
+        controller.batteryAssistLockoutSince = 0
+        controller.batteryAssistRecoverySince = 0
+        controller.allowGridCharging = False
+        controller.gridImportPositive = True
+        controller.gridImportStopW = 150
+        controller.gridImportStopSeconds = 5
+        controller.gridImportSince = 0
+        controller.evPriorityOverBatteryCharge = True
+        controller.evPriorityMinSoc = 0
+        controller.config = {
+            "FroniusWattpilot": {
+                "VRMInstanceID_OverheadRequest": "42",
+                "OverheadPriority": "35",
+            }
+        }
         controller.wattpilot = SimpleNamespace(
             ampLimit=None,
             voltage1=230,
             voltage2=230,
             voltage3=230,
+            power=0,
+            power1=0,
+            power2=0,
+            power3=0,
+            amp=0,
             carConnected=True,
             carStateReady=True,
-            power=0,
-            amp=0,
+            connected=True,
+            startState=0,
+            mode=1,
             modelStatus=SimpleNamespace(value=4),
             set_power=Mock(),
             set_phases=Mock(),
             set_start_stop=Mock(),
+            set_mode=Mock(),
         )
+        controller.batterySocDbus = SimpleNamespace(value=80)
+        controller.batteryPowerDbus = SimpleNamespace(value=0)
+        controller.gridL1Dbus = SimpleNamespace(value=0)
+        controller.gridL2Dbus = SimpleNamespace(value=0)
+        controller.gridL3Dbus = SimpleNamespace(value=0)
         controller.overheadAvailableDbus = SimpleNamespace(value=0)
+        controller.dbusService = {"/StartStop": 0, "/StartStopLiteral": "Stop"}
         controller.publishServiceMessage = lambda *args, **kwargs: None
+        controller.publishMainMqtt = lambda *args, **kwargs: None
+        controller.publishRetained = lambda *args, **kwargs: None
+        controller.publish = lambda *args, **kwargs: None
+        controller.reportPhaseMode = lambda: None
+        controller.reportConsumption = lambda: None
         controller.dumpEvChargerInfo = lambda: None
         return controller
+
+    def _record_reported_request(self, controller):
+        published = {}
+        controller.publishMainMqtt = lambda topic, value: published.__setitem__(
+            topic, value
+        )
+        controller.shouldIgnoreBatteryReservation = lambda: False
+        controller.reportPhaseMode = lambda: None
+        controller.reportBaseRequest()
+        return published[
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request"
+        ]
+
+    # Existing regressions -------------------------------------------------
 
     def test_transition_grace_expires_even_when_meter_telemetry_is_ready(self):
         controller = self._controller()
         controller.powerTransitionUntil = 100
         controller.powerTransitionExpectedW = 1000
         controller.actualMeasuredPowerW = lambda: 1000
-        controller.clearPowerTransitionGrace = (
-            self.fwp.FroniusWattpilot.clearPowerTransitionGrace.__get__(controller)
-        )
 
         with patch.object(self.fwp.time, "time", return_value=101):
             self.assertFalse(controller.powerTransitionGraceActive())
@@ -168,75 +252,45 @@ class WattpilotControlRegressionTests(unittest.TestCase):
     def test_request_is_zero_when_wattpilot_limit_is_below_minimum(self):
         controller = self._controller()
         controller.wattpilot.ampLimit = 5
-        published = {}
-        controller.mode = 1
-        controller.chargeCompleteHold = False
-        controller.noChargeSince = 0
-        controller.chargeCompleteConfirmSeconds = 120
-        controller.effectiveCarConnected = True
-        controller.config = {
-            "FroniusWattpilot": {
-                "VRMInstanceID_OverheadRequest": "42",
-                "OverheadPriority": "35",
-            }
-        }
-        controller.publishMainMqtt = lambda topic, value: published.__setitem__(
-            topic, value
-        )
-        controller.shouldIgnoreBatteryReservation = lambda: False
-        controller.reportPhaseMode = lambda: None
 
-        controller.reportBaseRequest()
-        self.assertEqual(
-            published["es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request"],
-            0,
-        )
+        self.assertEqual(self._record_reported_request(controller), 0)
 
-    def test_one_phase_request_only_advertises_three_phase_when_phase_up_is_possible(self):
+    def test_request_voltage_reflects_the_active_phase_mode(self):
         controller = self._controller()
-        controller.overheadAvailableDbus.value = 3000
         self.assertEqual(controller.maxRequestVoltageForCurrentPhase(), 230)
 
-        controller.overheadAvailableDbus.value = 5000
-        self.assertEqual(controller.maxRequestVoltageForCurrentPhase(), 690)
-
         controller.currentPhaseMode = 2
-        controller.overheadAvailableDbus.value = None
         self.assertEqual(controller.maxRequestVoltageForCurrentPhase(), 690)
 
-    def test_reported_request_matches_current_or_reachable_phase_capacity(self):
+    def test_reported_request_uses_a_limited_three_phase_probe(self):
         controller = self._controller()
-        controller.mode = 1
-        controller.chargeCompleteHold = False
-        controller.noChargeSince = 0
-        controller.chargeCompleteConfirmSeconds = 120
-        controller.effectiveCarConnected = True
-        controller.config = {
-            "FroniusWattpilot": {
-                "VRMInstanceID_OverheadRequest": "42",
-                "OverheadPriority": "35",
-            }
-        }
-        published = {}
-        controller.publishMainMqtt = lambda topic, value: published.__setitem__(
-            topic, value
-        )
-        controller.shouldIgnoreBatteryReservation = lambda: False
-        controller.reportPhaseMode = lambda: None
 
-        controller.overheadAvailableDbus.value = 3000
-        controller.reportBaseRequest()
-        self.assertEqual(
-            published["es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request"],
-            3680,
-        )
+        self.assertEqual(self._record_reported_request(controller), 4200)
+        controller.currentPhaseMode = 2
+        self.assertEqual(self._record_reported_request(controller), 11040)
 
-        controller.overheadAvailableDbus.value = 5000
-        controller.reportBaseRequest()
-        self.assertEqual(
-            published["es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request"],
-            11040,
-        )
+    def test_phase_up_probe_respects_phase_switch_cooldown(self):
+        controller = self._controller()
+        controller.minimumPhaseSwitchSeconds = 300
+        controller.lastPhaseSwitchTime = 100
+
+        with patch.object(self.fwp.time, "time", return_value=101):
+            self.assertEqual(controller.maximumRequestForDistributorW(), 3680)
+
+        with patch.object(self.fwp.time, "time", return_value=400):
+            self.assertEqual(controller.maximumRequestForDistributorW(), 4200)
+
+    def test_raw_overhead_uses_only_fresh_timestamped_mqtt(self):
+        controller = self._controller()
+        controller.mqttRawOverheadW = 5200
+        controller.mqttRawOverheadUpdatedAt = 100
+        controller.overheadAvailableDbus.value = 7000  # deliberately stale/untrusted
+
+        with patch.object(self.fwp.time, "time", return_value=115):
+            self.assertEqual(controller.rawPvOverheadW(), 5200)
+
+        with patch.object(self.fwp.time, "time", return_value=116):
+            self.assertIsNone(controller.rawPvOverheadW())
 
     def test_active_charge_waits_for_fresh_allowance_before_stop(self):
         controller = self._controller()
@@ -357,6 +411,208 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         )
 
         self.assertEqual(assigned["ev"], 1380)
+
+    # New phase and safety regressions ------------------------------------
+
+    def test_phase_up_switches_to_three_phases_with_real_pv_allowance(self):
+        controller = self._controller()
+        controller.allowance = 4200
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo3Phase)
+        self.assertEqual(controller.currentPhaseMode, 2)
+        self.assertEqual(controller.pendingPhaseSwitchMode, 2)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+        controller.wattpilot.set_power.assert_called_once_with(6)
+
+    def test_phase_up_is_blocked_during_the_300_second_cooldown(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.minimumPhaseSwitchSeconds = 300
+        controller.lastPhaseSwitchTime = 100
+
+        with patch.object(self.fwp.time, "time", return_value=200):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 1)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_called_once_with(16)
+
+    def test_raw_overhead_cannot_cause_a_false_phase_up(self):
+        controller = self._controller()
+        controller.allowance = 4199
+        controller.mqttRawOverheadW = 10000
+        controller.mqttRawOverheadUpdatedAt = 100
+
+        with patch.object(self.fwp.time, "time", return_value=101):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 1)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_called_once_with(16)
+
+    def test_three_to_one_fallback_uses_fresh_raw_pv_overhead(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.allowance = 0
+        controller.mqttRawOverheadW = 2000
+        controller.mqttRawOverheadUpdatedAt = 100
+
+        with patch.object(self.fwp.time, "time", return_value=110):
+            self.assertTrue(controller.shouldPhaseDownForPvDip())
+            status = controller.switchToOnePhaseForPvDip()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo1Phase)
+        self.assertEqual(controller.currentPhaseMode, 1)
+        self.assertEqual(controller.pendingPhaseSwitchMode, 1)
+        controller.wattpilot.set_phases.assert_called_once_with(1)
+        controller.wattpilot.set_power.assert_called_once_with(8)
+
+    def test_stale_raw_overhead_cannot_trigger_a_phase_down(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.allowance = 0
+        controller.mqttRawOverheadW = 2000
+        controller.mqttRawOverheadUpdatedAt = 100
+        controller.overheadAvailableDbus.value = 2000  # intentionally stale
+
+        with patch.object(self.fwp.time, "time", return_value=116):
+            self.assertIsNone(controller.rawPvOverheadW())
+            self.assertFalse(controller.shouldPhaseDownForPvDip())
+
+    def test_grid_import_guard_stops_with_positive_import_convention(self):
+        controller = self._controller()
+        controller.gridImportPositive = True
+        controller.gridL1Dbus.value = 200
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertFalse(controller.gridImportLimitExceeded())
+        with patch.object(self.fwp.time, "time", return_value=105):
+            self.assertTrue(controller.gridImportLimitExceeded())
+
+        controller.gridL1Dbus.value = -200
+        with patch.object(self.fwp.time, "time", return_value=106):
+            self.assertFalse(controller.gridImportLimitExceeded())
+
+    def test_grid_import_guard_stops_with_negative_import_convention(self):
+        controller = self._controller()
+        controller.gridImportPositive = False
+        controller.gridL1Dbus.value = -200
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertFalse(controller.gridImportLimitExceeded())
+        with patch.object(self.fwp.time, "time", return_value=105):
+            self.assertTrue(controller.gridImportLimitExceeded())
+
+        controller.gridL1Dbus.value = 200
+        with patch.object(self.fwp.time, "time", return_value=106):
+            self.assertFalse(controller.gridImportLimitExceeded())
+
+    def test_battery_assist_stops_exactly_at_the_300_second_limit(self):
+        controller = self._controller()
+        controller.wattpilot.power = 2.0
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.startOrContinueBatteryAssist(1000))
+        with patch.object(self.fwp.time, "time", return_value=399):
+            self.assertTrue(controller.startOrContinueBatteryAssist(1000))
+        with patch.object(self.fwp.time, "time", return_value=400):
+            self.assertFalse(controller.startOrContinueBatteryAssist(1000))
+
+        self.assertTrue(controller.batteryAssistLockedOut)
+        self.assertFalse(controller.batteryAssistActive)
+
+    def test_battery_assist_lockout_requires_full_pv_recovery_for_60_seconds(self):
+        controller = self._controller()
+        controller.batteryAssistLockedOut = True
+
+        with patch.object(self.fwp.time, "time", return_value=500):
+            controller.updateBatteryAssistLockoutRecovery(0)
+            self.assertTrue(controller.batteryAssistLockedOut)
+        with patch.object(self.fwp.time, "time", return_value=559):
+            controller.updateBatteryAssistLockoutRecovery(0)
+            self.assertTrue(controller.batteryAssistLockedOut)
+        with patch.object(self.fwp.time, "time", return_value=560):
+            controller.updateBatteryAssistLockoutRecovery(0)
+            self.assertFalse(controller.batteryAssistLockedOut)
+
+    def test_interrupted_battery_recovery_restarts_its_60_second_timer(self):
+        controller = self._controller()
+        controller.batteryAssistLockedOut = True
+
+        with patch.object(self.fwp.time, "time", return_value=500):
+            controller.updateBatteryAssistLockoutRecovery(0)
+        with patch.object(self.fwp.time, "time", return_value=550):
+            controller.updateBatteryAssistLockoutRecovery(100)
+            self.assertEqual(controller.batteryAssistRecoverySince, 0)
+        with patch.object(self.fwp.time, "time", return_value=551):
+            controller.updateBatteryAssistLockoutRecovery(0)
+        with patch.object(self.fwp.time, "time", return_value=610):
+            controller.updateBatteryAssistLockoutRecovery(0)
+            self.assertTrue(controller.batteryAssistLockedOut)
+        with patch.object(self.fwp.time, "time", return_value=611):
+            controller.updateBatteryAssistLockoutRecovery(0)
+            self.assertFalse(controller.batteryAssistLockedOut)
+
+    def test_unconfirmed_three_phase_switch_reverts_to_one_phase(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.minimumPhaseSwitchSeconds = 300
+        controller.pendingPhaseSwitchMode = 2
+        controller.pendingPhaseSwitchSince = 100
+        controller.allowance = 3600
+        controller.wattpilot.power = 3.6
+        controller.wattpilot.power1 = 3.6
+        controller.wattpilot.power2 = 0
+        controller.wattpilot.power3 = 0
+
+        with patch.object(self.fwp.time, "time", return_value=160):
+            status = controller.reconcilePendingPhaseSwitch()
+            request = controller.maximumRequestForDistributorW()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo1Phase)
+        self.assertEqual(controller.currentPhaseMode, 1)
+        self.assertEqual(controller.pendingPhaseSwitchMode, 0)
+        self.assertEqual(request, 3680)
+        controller.wattpilot.set_phases.assert_called_once_with(1)
+        controller.wattpilot.set_power.assert_called_once_with(15)
+
+    def test_confirmed_three_phase_switch_keeps_three_phase_state(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.pendingPhaseSwitchMode = 2
+        controller.pendingPhaseSwitchSince = 100
+        controller.wattpilot.power2 = 1.4
+        controller.wattpilot.power3 = 1.4
+
+        with patch.object(self.fwp.time, "time", return_value=101):
+            self.assertIsNone(controller.reconcilePendingPhaseSwitch())
+
+        self.assertEqual(controller.currentPhaseMode, 2)
+        self.assertEqual(controller.pendingPhaseSwitchMode, 0)
+        controller.wattpilot.set_phases.assert_not_called()
+
+    def test_unconfirmed_one_phase_fallback_stops_eco_charging_safely(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.pendingPhaseSwitchMode = 1
+        controller.pendingPhaseSwitchSince = 100
+        controller.wattpilot.power = 4.2
+        controller.wattpilot.power1 = 1.4
+        controller.wattpilot.power2 = 1.4
+        controller.wattpilot.power3 = 1.4
+        controller.wattpilot.startState = 1
+
+        with patch.object(self.fwp.time, "time", return_value=160):
+            status = controller.reconcilePendingPhaseSwitch()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+        self.assertEqual(controller.currentPhaseMode, 0)
+        controller.wattpilot.set_start_stop.assert_called_once_with(0)
 
 
 if __name__ == "__main__":

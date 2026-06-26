@@ -119,6 +119,13 @@ class FroniusWattpilot (esESSService):
             5, int(settings.get("CarDisconnectConfirmSeconds", 15))
         )
 
+        # Raw distributor overhead is used only to make a safe 3-to-1 phase
+        # fallback when the assigned 3-phase allowance is gated to 0 W. It
+        # must be fresh: an old high value must never influence live control.
+        self.rawOverheadFreshSeconds = max(
+            5, int(settings.get("RawOverheadFreshSeconds", 15))
+        )
+
         self.wattpilot = None
         self.allowance = 0
         self.allowanceUpdatedAt = 0
@@ -144,6 +151,14 @@ class FroniusWattpilot (esESSService):
         self.isIdleMode = False
         self.isHibernateEnabled = settings["HibernateMode"].lower() == "true"
         self.mqttAllowanceTopic = 'es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Allowance'
+        # SolarOverheadDistributor already publishes its raw, pre-allocation
+        # overhead on MQTT. Keep a local copy as a reliable fallback for the
+        # D-Bus subscription: both services may start in either order.
+        self.mqttRawOverheadTopic = (
+            'es-ESS/SolarOverheadDistributor/Calculations/OverheadAvailable'
+        )
+        self.mqttRawOverheadW = None
+        self.mqttRawOverheadUpdatedAt = 0
 
         self.batteryAssistSince = 0
         self.batteryAssistActive = False
@@ -169,6 +184,12 @@ class FroniusWattpilot (esESSService):
         self.powerTransitionExpectedW = 0
         self.powerTransitionReason = ""
         self.powerTransitionTelemetryReadyAt = 0
+
+        # A command to change phases is not proof that the Wattpilot or car
+        # actually changed phases. Keep a short confirmation window and fall
+        # back safely if phase telemetry never confirms the requested state.
+        self.pendingPhaseSwitchMode = 0
+        self.pendingPhaseSwitchSince = 0
 
         # Populated in initDbusSubscriptions().
         self.batterySocDbus = None
@@ -273,22 +294,35 @@ class FroniusWattpilot (esESSService):
         )
 
     def initMqttSubscriptions(self):
-        self.registerMqttSubscription(self.mqttAllowanceTopic, callback=self.onMqttMessage)
+        self.registerMqttSubscription(
+            self.mqttAllowanceTopic, callback=self.onMqttMessage
+        )
+        self.registerMqttSubscription(
+            self.mqttRawOverheadTopic, callback=self.onMqttMessage
+        )
 
     def onMqttMessage(self, client, userdata, msg):
-        """Receive the wattpilot allowance assigned by SolarOverheadDistributor."""
+        """Receive Wattpilot allowance and raw distributor-overhead updates."""
         try:
-            if msg.topic != self.mqttAllowanceTopic:
-                return
-
             payload = msg.payload
             if isinstance(payload, bytes):
                 payload = payload.decode("utf-8")
+            value = float(str(payload).strip())
 
-            self.allowance = float(str(payload).strip())
-            self.allowanceUpdatedAt = time.time()
+            if msg.topic == self.mqttAllowanceTopic:
+                self.allowance = value
+                self.allowanceUpdatedAt = time.time()
+                return
+
+            if msg.topic == self.mqttRawOverheadTopic:
+                self.mqttRawOverheadW = max(0.0, value)
+                self.mqttRawOverheadUpdatedAt = time.time()
         except Exception as ex:
-            c(self, "Exception while processing Wattpilot allowance message.", exc_info=ex)
+            c(
+                self,
+                "Exception while processing Wattpilot distributor message.",
+                exc_info=ex,
+            )
 
     def initWorkerThreads(self):
         self.registerWorkerThread(self._update, 5000)
@@ -529,6 +563,13 @@ class FroniusWattpilot (esESSService):
                 self.dumpEvChargerInfo()
                 return
 
+            pendingPhaseStatus = self.reconcilePendingPhaseSwitch()
+            if pendingPhaseStatus is not None:
+                self.reportVRMStatus(pendingPhaseStatus)
+                self.reportBaseRequest()
+                self.dumpEvChargerInfo()
+                return
+
             # Do not clear a live session on one false carConnected update. The
             # debounce is particularly important while Wattpilot is processing
             # a start command or a phase transition.
@@ -542,6 +583,7 @@ class FroniusWattpilot (esESSService):
                 self.clearBatteryAssistLockout("car disconnected")
                 self.clearChargeCompleteHold("car disconnected")
                 self.clearPowerTransitionGrace()
+                self.clearPendingPhaseSwitch()
 
             elif self.wattpilot.modelStatus.value in [3, 12, 15, 19, 20]:
                 self.handleChargingState()
@@ -898,13 +940,13 @@ class FroniusWattpilot (esESSService):
             and self.noChargeSince < self.chargeCompleteConfirmSeconds
             and self.canChargeAtMinimumCurrent()
         ):
-            # Do not advertise three-phase capacity while charging on one phase
-            # unless raw PV allows a phase-up now. Otherwise the distributor may
-            # reserve power that the charger cannot consume.
-            maxRequest = (
-                self.getEffectiveMaxCurrent()
-                * self.maxRequestVoltageForCurrentPhase()
-            )
+            # A one-phase session must ask the distributor for enough power to
+            # *decide* whether a three-phase change is possible. Previously it
+            # advertised only the 1-phase maximum (~3.7 kW at 16 A), so its
+            # assigned allowance could never reach the configured 3-phase
+            # threshold (4.2 kW). Use a small phase-up probe instead of
+            # advertising the full 3-phase maximum while still on one phase.
+            maxRequest = self.maximumRequestForDistributorW()
             self.publishMainMqtt(
                 "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request",
                 round(maxRequest)
@@ -1009,41 +1051,55 @@ class FroniusWattpilot (esESSService):
         return self.getEffectiveMaxCurrent() >= self.minCurrentPerPhase
 
 
-    def maxRequestVoltageForCurrentPhase(self):
-        """Return capacity that is actually usable in the next allocation cycle.
-
-        Three-phase capacity is only advertised when the charger is already on
-        three phases, or when both raw PV and phase-switch cooldown permit an
-        immediate phase-up. This prevents a one-phase charger from reserving
-        power that it cannot consume.
-        """
-        if self.currentPhaseMode == 2:
-            return self.threePhaseVoltage()
-
-        phaseUpThresholdW = max(
+    def phaseUpThresholdW(self):
+        """Return the PV allocation required before changing to three phases."""
+        return max(
             float(self.threePhasePvSurplusStartW),
             self.threePhaseMinimumPower(),
         )
-        rawOverhead = self.rawPvOverheadW()
 
-        if (
-            rawOverhead is not None
-            and rawOverhead >= phaseUpThresholdW
-            and self.getPhaseSwitchCooldownSeconds() <= 0
-        ):
-            return self.threePhaseVoltage()
+    def maximumRequestForDistributorW(self):
+        """Return the maximum allocation request for the current control state.
 
-        return self.onePhaseVoltage()
+        When 1-phase charging is active (or is about to start), advertise a
+        limited probe at the 3-phase threshold. This breaks the old feedback
+        loop where a 1-phase cap prevented the allowance from ever reaching
+        the threshold needed to select 3-phase. The probe is disabled during a
+        configured phase-switch cooldown, so a recent 3-to-1 transition does
+        not reserve unused power for five minutes.
+        """
+        maxCurrent = self.getEffectiveMaxCurrent()
+        if maxCurrent < self.minCurrentPerPhase:
+            return 0
+
+        onePhaseMaximum = maxCurrent * self.onePhaseVoltage()
+
+        if self.currentPhaseMode == 2:
+            return maxCurrent * self.threePhaseVoltage()
+
+        if self.getPhaseSwitchCooldownSeconds() > 0:
+            return onePhaseMaximum
+
+        return max(onePhaseMaximum, self.phaseUpThresholdW())
+
+    def maxRequestVoltageForCurrentPhase(self):
+        """Return the electrical voltage of the active phase mode.
+
+        Allocation uses maximumRequestForDistributorW() so a 1-phase phase-up
+        probe does not have to advertise the full 3-phase current capacity.
+        """
+        return (
+            self.threePhaseVoltage()
+            if self.currentPhaseMode == 2
+            else self.onePhaseVoltage()
+        )
 
 
     def desiredPhaseModeForPvAllowance(self):
         # Hysteresis: phase-up requires the configured higher threshold, while
         # phase-down happens below the configured lower threshold. Both are
         # clamped to the electrical three-phase 6 A minimum.
-        phaseStart = max(
-            float(self.threePhasePvSurplusStartW),
-            self.threePhaseMinimumPower()
-        )
+        phaseStart = self.phaseUpThresholdW()
         phaseStop = max(
             float(self.threePhasePvSurplusStopW),
             self.threePhaseMinimumPower()
@@ -1114,6 +1170,101 @@ class FroniusWattpilot (esESSService):
         self.powerTransitionExpectedW = 0
         self.powerTransitionReason = ""
         self.powerTransitionTelemetryReadyAt = 0
+
+    def beginPhaseSwitchConfirmation(self, phaseMode):
+        self.pendingPhaseSwitchMode = phaseMode
+        self.pendingPhaseSwitchSince = time.time()
+
+    def clearPendingPhaseSwitch(self):
+        self.pendingPhaseSwitchMode = 0
+        self.pendingPhaseSwitchSince = 0
+
+    def phasePowerW(self, phase):
+        value = getattr(self.wattpilot, "power{0}".format(phase), None)
+        if value is None:
+            return 0.0
+        try:
+            return max(0.0, float(value) * 1000.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def phaseTelemetryConfirmsMode(self, phaseMode):
+        # Wattpilot reports phase power in kW. 100 W deliberately sits far
+        # below the 6 A minimum, while avoiding noise around exactly zero.
+        activeThresholdW = 100.0
+        l2Active = self.phasePowerW(2) >= activeThresholdW
+        l3Active = self.phasePowerW(3) >= activeThresholdW
+        if phaseMode == 2:
+            return l2Active and l3Active
+        if phaseMode == 1:
+            return not l2Active and not l3Active
+        return False
+
+    def reconcilePendingPhaseSwitch(self):
+        """Confirm a requested phase switch or fail safely after grace expires.
+
+        A phase-command acknowledgement is not enough: vehicle and Wattpilot
+        telemetry must show the requested active phases. A failed 1-to-3
+        change falls back to one phase and starts the configured cooldown. A
+        failed 3-to-1 change stops Eco charging instead of leaving a live
+        three-phase load on inadequate PV.
+        """
+        pending = getattr(self, "pendingPhaseSwitchMode", 0)
+        if pending not in (1, 2):
+            return None
+
+        if self.phaseTelemetryConfirmsMode(pending):
+            self.publishServiceMessage(
+                self,
+                "Wattpilot phase telemetry confirmed {0}-phase charging.".format(
+                    3 if pending == 2 else 1
+                )
+            )
+            self.clearPendingPhaseSwitch()
+            return None
+
+        now = time.time()
+        pendingSince = getattr(self, "pendingPhaseSwitchSince", 0)
+        if pendingSince == 0:
+            self.pendingPhaseSwitchSince = now
+            pendingSince = now
+
+        if now - pendingSince < self.startupGraceSeconds:
+            return (
+                VrmEvChargerStatus.SwitchingTo3Phase
+                if pending == 2
+                else VrmEvChargerStatus.SwitchingTo1Phase
+            )
+
+        self.clearPowerTransitionGrace()
+
+        if pending == 2:
+            # Do not keep a false 3-phase controller state after the Wattpilot
+            # or vehicle failed to provide L2/L3 power. Revert to one phase and
+            # apply the assigned PV allowance only.
+            targetAmps = self.targetCurrentForPhase(1, self.allowance)
+            self.publishServiceMessage(
+                self,
+                "3-phase switch was not confirmed by Wattpilot telemetry. "
+                "Falling back to 1-phase."
+            )
+            self.currentPhaseMode = 1
+            self.lastPhaseSwitchTime = now
+            self.wattpilot.set_phases(1)
+            self.wattpilot.set_power(targetAmps)
+            self.clearPendingPhaseSwitch()
+            return VrmEvChargerStatus.SwitchingTo1Phase
+
+        # A 3-to-1 command that is not confirmed could leave a three-phase
+        # load on insufficient PV. Stop rather than risk battery/grid draw.
+        self.publishServiceMessage(
+            self,
+            "1-phase fallback was not confirmed by Wattpilot telemetry. "
+            "Stopping Eco charging for safety."
+        )
+        self.clearPendingPhaseSwitch()
+        self.forceStopForNoAllowance()
+        return VrmEvChargerStatus.StopCharging
 
     def powerTransitionGraceActive(self):
        if self.powerTransitionUntil == 0:
@@ -1325,17 +1476,24 @@ class FroniusWattpilot (esESSService):
         return self.dbusValue(self.batterySocDbus, None)
 
     def rawPvOverheadW(self):
-        """Return the distributor's raw PV overhead, before consumer min-power gates.
+        """Return a fresh raw PV-overhead value for 3-to-1 safety fallback.
 
-        A three-phase request receives 0 W when the raw overhead is below the
-        three-phase 6 A minimum. The value here lets an already-running EV
-        session step down to one phase instead of interpreting that temporary
-        0 W assignment as zero solar.
+        Raw overhead is deliberately accepted only from the timestamped MQTT
+        feed. A D-Bus subscription can retain an old high value after the
+        distributor or bus connection stops updating, and using that stale
+        value could cause a false phase transition. Starts and phase-up always
+        use the distributor's assigned allowance instead.
         """
-        value = self.dbusValue(self.overheadAvailableDbus, None)
-        if value is None:
-            return None
-        return max(0.0, value)
+        mqttValue = getattr(self, "mqttRawOverheadW", None)
+        mqttUpdatedAt = getattr(self, "mqttRawOverheadUpdatedAt", 0)
+        if (
+            mqttValue is not None
+            and mqttUpdatedAt > 0
+            and time.time() - mqttUpdatedAt <= self.rawOverheadFreshSeconds
+        ):
+            return max(0.0, float(mqttValue))
+
+        return None
 
     def phaseDownThresholdW(self):
         return max(
@@ -1412,6 +1570,7 @@ class FroniusWattpilot (esESSService):
             "Switching to 1-phase before applying battery-assist or stop logic."
         )
         self.lastPhaseSwitchTime = time.time()
+        self.beginPhaseSwitchConfirmation(1)
         self.beginPowerTransitionGrace(
             1, targetAmps, "3-to-1 phase switch"
         )
@@ -1701,6 +1860,7 @@ class FroniusWattpilot (esESSService):
         self.allowanceBelowMinimumSince = 0
         self.clearBatteryAssist()
         self.clearPowerTransitionGrace()
+        self.clearPendingPhaseSwitch()
 
         firstForcedOff = not self.noAllowanceForcedOff
         chargerStillActive = (
@@ -1762,6 +1922,7 @@ class FroniusWattpilot (esESSService):
                     self, "Switching to 3-phase from PV surplus."
                 )
                 self.lastPhaseSwitchTime = time.time()
+                self.beginPhaseSwitchConfirmation(2)
                 self.beginPowerTransitionGrace(2, targetAmps, "1-to-3 phase switch")
                 self.wattpilot.set_phases(2)
                 self.currentPhaseMode = 2
