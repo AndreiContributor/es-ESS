@@ -204,7 +204,7 @@ class SolarOverheadDistributor(esESSService):
          return
       
       try:
-         consumerKeyMo = re.search('es\-ESS/SolarOverheadDistributor/Requests/([^/]+)/', msg.topic)
+         consumerKeyMo = re.search(r'es-ESS/SolarOverheadDistributor/Requests/([^/]+)/', msg.topic)
          if (consumerKeyMo is not None):
             consumerKey = consumerKeyMo.group(1)
             if (not consumerKey in self._knownSolarOverheadConsumers):
@@ -300,6 +300,22 @@ class SolarOverheadDistributor(esESSService):
          for consumerKey in self._knownSolarOverheadConsumers:
             d(self, "pre-checks on consumer {0}".format(consumerKey))
             consumer = self._knownSolarOverheadConsumers[consumerKey]
+
+            d(
+               self,
+               "Allocation input for {0}: initialized={1}, automatic={2}, "
+               "request={3}W, minimum={4}W, step={5}W, consumption={6}W, "
+               "ignoreBatteryReservation={7}".format(
+                  consumerKey,
+                  consumer.isInitialized,
+                  consumer.isAutomatic,
+                  consumer.request,
+                  consumer.minimum,
+                  consumer.stepSize,
+                  consumer.consumption,
+                  consumer.ignoreBatReservation,
+               ),
+            )
             
             if (not consumer.isInitialized):
                consumer.checkFinalInit(self)
@@ -327,12 +343,18 @@ class SolarOverheadDistributor(esESSService):
 
          i(self, "L1/L2/L3/Bat/Soc/Feedin is " + str(l1Power) + "/" + str(l2Power) + "/" + str(l3Power) + "/" + str(batPower) + "/" + str(batSoc) + "/" + str(feedIn))
 
-         overheadDistribution = {}
+         # Initialise every known consumer before status checks. MQTT state can
+         # change while this cycle runs; keeping a zero entry for each consumer
+         # prevents a newly automatic consumer from missing the allocation map.
+         overheadDistribution = {
+            consumerKey: 0
+            for consumerKey in self._knownSolarOverheadConsumers
+         }
+
          for consumerKey in self._knownSolarOverheadConsumers:
             consumer = self._knownSolarOverheadConsumers[consumerKey]
 
             if (consumer.isInitialized and consumer.isAutomatic):
-               overheadDistribution[consumerKey] = 0 #initialize with 0
                d(self,"Already Assigned consumption on " + consumer.consumerKey + " (" + str(consumer.vrmInstanceID) +"): " + str(consumer.consumption))
                assignedConsumption += consumer.consumption
 
@@ -373,13 +395,24 @@ class SolarOverheadDistributor(esESSService):
          if overheadDistribution is None:
             overheadDistribution = {}
 
-         for consumerKey in self.consumers:
+         for consumerKey in self._knownSolarOverheadConsumers:
             overheadDistribution.setdefault(consumerKey, 0)
          
          for consumerKey in self._knownSolarOverheadConsumers:
             consumer = self._knownSolarOverheadConsumers[consumerKey]
             
             if (consumer.isInitialized and consumer.isAutomatic):
+               d(
+                  self,
+                  "Already Assigned consumption on "
+                  + consumer.consumerKey
+                  + " ("
+                  + str(consumer.vrmInstanceID)
+                  + "): "
+                  + str(consumer.consumption),
+               )
+               assignedConsumption += consumer.consumption
+
                if (Globals.esESS._sigTermInvoked == True):
                   return
                
@@ -413,13 +446,8 @@ class SolarOverheadDistributor(esESSService):
      try:
          overheadAssigned = 0
 
-         # Reservation-bypass consumers are processed first. They may consume
-         # real PV overhead that would otherwise charge the battery, but they
-         # must still meet their actual Minimum before a new load starts.
          for consumer in self._knownSolarOverheadConsumers.values():
             consumer.effectivePriority = consumer.priority
-            if consumer.ignoreBatReservation:
-               consumer.effectivePriority = 0
 
          while True:
             overheadBefore = overhead
@@ -482,7 +510,9 @@ class SolarOverheadDistributor(esESSService):
                         reason
                      )
                   )
-                  overheadDistribution[consumerKey] += increment
+                  # Use the prior safe lookup rather than assuming the key
+                  # exists; this also makes a mode-change race fail closed.
+                  overheadDistribution[consumerKey] = assigned + increment
                   if self._knownSolarOverheadConsumers[consumerKey].priorityShift > 0:
                      self._knownSolarOverheadConsumers[consumerKey].effectivePriority += (
                         self._knownSolarOverheadConsumers[consumerKey].priorityShift + 0.0001
@@ -503,7 +533,14 @@ class SolarOverheadDistributor(esESSService):
          return overheadDistribution
 
      except Exception as ex:
-       c(self, "Exception", exc_info=ex)
+        c(self, "Exception", exc_info=ex)
+
+        # Allocation failures must revoke requests rather than return None
+        # or leave a partially computed allowance active.
+        return {
+           consumerKey: 0
+           for consumerKey in self._knownSolarOverheadConsumers
+        }
 
    def _handlechangedvalue(self, path, value):
      logging.critical("Someone else updated %s to %s" % (path, value))

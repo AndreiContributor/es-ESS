@@ -320,10 +320,14 @@ class FroniusWattpilot (esESSService):
 
         if path == "/SetCurrent":
             requestedCurrent = int(value)
-            if requestedCurrent <= 0:
+            maxCurrent = self.getEffectiveMaxCurrent()
+
+            # Never round a device-reported cap below the configured minimum
+            # back up to the minimum. Doing so would command more current than
+            # the Wattpilot, vehicle, or installation allows.
+            if requestedCurrent <= 0 or not self.canChargeAtMinimumCurrent():
                 self.wattpilot.set_power(0)
             else:
-                maxCurrent = self.getEffectiveMaxCurrent()
                 if requestedCurrent > maxCurrent:
                     self.currentPhaseMode = 2
                     self.wattpilot.set_phases(2)
@@ -333,11 +337,12 @@ class FroniusWattpilot (esESSService):
                     self.wattpilot.set_phases(1)
                     ampPerPhase = requestedCurrent
 
-                ampPerPhase = max(
-                    self.minCurrentPerPhase,
-                    min(maxCurrent, ampPerPhase)
-                )
-                self.wattpilot.set_power(ampPerPhase)
+                ampPerPhase = min(maxCurrent, ampPerPhase)
+
+                if ampPerPhase < self.minCurrentPerPhase:
+                    self.wattpilot.set_power(0)
+                else:
+                    self.wattpilot.set_power(ampPerPhase)
 
         elif path == "/StartStop":
             state = VrmEvChargerStartStop(value)
@@ -384,10 +389,27 @@ class FroniusWattpilot (esESSService):
             self.switchMode(VrmEvChargerControlMode.Scheduled, fromMode)
          
     def wakeUpWattpilot(self):
-        self.publishServiceMessage(self, "Connecting to wattpilot to verify car status.")
-        self.wattpilot._auto_reconnect=True
-        self.wattpilot.connect()
-        self.isIdleMode=False
+       if self.wattpilot.connected:
+          self.isIdleMode = False
+          return
+
+       now = time.time()
+
+       if hasattr(self, "lastReconnectAttempt"):
+          if now - self.lastReconnectAttempt < 35:
+             d(self, "Reconnect already attempted recently; waiting.")
+             return
+
+       self.lastReconnectAttempt = now
+
+       self.publishServiceMessage(
+          self,
+          "Connecting to wattpilot to verify car status.",
+       )
+
+       self.wattpilot._auto_reconnect = True
+       self.wattpilot.connect()
+       self.isIdleMode = False
 
     def _update(self):
         try:
@@ -754,11 +776,18 @@ class FroniusWattpilot (esESSService):
 
     def reportBaseRequest(self):
         if self.wattpilot.voltage1 is not None:
-            minimumPower = (
-                self.threePhaseMinimumPower()
-                if self.currentPhaseMode == 2
-                else self.minimumChargePower()
-            )
+            if self.canChargeAtMinimumCurrent():
+                minimumPower = (
+                    self.threePhaseMinimumPower()
+                    if self.currentPhaseMode == 2
+                    else self.minimumChargePower()
+                )
+            else:
+                # A cap below the configured minimum makes this charger
+                # temporarily non-startable. Publish no minimum demand so the
+                # distributor does not reserve PV for an impossible command.
+                minimumPower = 0
+
             self.publishMainMqtt(
                 "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Minimum",
                 int(round(minimumPower))
@@ -805,8 +834,16 @@ class FroniusWattpilot (esESSService):
             and self.wattpilot.carConnected
             and not self.chargeCompleteHold
             and self.noChargeSince < self.chargeCompleteConfirmSeconds
+            and self.canChargeAtMinimumCurrent()
         ):
-            maxRequest = self.getEffectiveMaxCurrent() * self.threePhaseVoltage()
+            # Advertise capacity the charger can actually use now. While in
+            # one-phase mode, expose three-phase capacity only when raw PV
+            # overhead already makes a phase-up feasible; otherwise the
+            # distributor can reserve power that the charger cannot consume.
+            maxRequest = (
+                self.getEffectiveMaxCurrent()
+                * self.maxRequestVoltageForCurrentPhase()
+            )
             self.publishMainMqtt(
                 "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request",
                 round(maxRequest)
@@ -850,7 +887,10 @@ class FroniusWattpilot (esESSService):
         return self.threePhaseVoltage() * self.minCurrentPerPhase
 
     def hasMinimumAllowance(self):
-        return self.allowance >= self.minimumChargePower()
+        return (
+            self.canChargeAtMinimumCurrent()
+            and self.allowance >= self.minimumChargePower()
+        )
 
     def onePhaseVoltage(self):
         voltage = self.wattpilot.voltage1
@@ -872,6 +912,41 @@ class FroniusWattpilot (esESSService):
             return self.maxCurrentPerPhase
         return min(self.maxCurrentPerPhase, int(wattpilotLimit))
 
+    def canChargeAtMinimumCurrent(self):
+        """Return whether the reported/current configured limit can start EV charging."""
+        return self.getEffectiveMaxCurrent() >= self.minCurrentPerPhase
+
+    def rawPvOverheadW(self):
+        """Return distributor raw PV overhead, independent of EV allowance."""
+        subscription = getattr(self, "overheadAvailableDbus", None)
+        value = getattr(subscription, "value", None)
+
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def maxRequestVoltageForCurrentPhase(self):
+        """Return the voltage capacity that is presently usable or phase-up ready.
+
+        A one-phase session must not advertise a three-phase maximum merely
+        because the installation supports it. Three-phase demand is advertised
+        only while already on three phases or while raw PV overhead meets the
+        configured phase-up threshold.
+        """
+        if self.currentPhaseMode == 2:
+            return self.threePhaseVoltage()
+
+        phaseUpThresholdW = max(
+            float(self.threePhasePvSurplusStartW),
+            self.threePhaseMinimumPower(),
+        )
+
+        if self.rawPvOverheadW() >= phaseUpThresholdW:
+            return self.threePhaseVoltage()
+
+        return self.onePhaseVoltage()
+
     def desiredPhaseModeForPvAllowance(self):
         # Hysteresis: phase-up requires the configured higher threshold, while
         # phase-down happens below the configured lower threshold. Both are
@@ -891,12 +966,22 @@ class FroniusWattpilot (esESSService):
         return 2 if self.allowance >= phaseStart else 1
 
     def targetCurrentForPhase(self, phaseMode, allowance):
-        voltage = self.threePhaseVoltage() if phaseMode == 2 else self.onePhaseVoltage()
-        target = int(floor(max(0, allowance) / voltage))
-        return max(
-            self.minCurrentPerPhase,
-            min(self.getEffectiveMaxCurrent(), target)
+        maxCurrent = self.getEffectiveMaxCurrent()
+
+        if maxCurrent < self.minCurrentPerPhase:
+            return 0
+
+        voltage = (
+            self.threePhaseVoltage()
+            if phaseMode == 2
+            else self.onePhaseVoltage()
         )
+        target = int(floor(max(0, allowance) / voltage))
+
+        if target < self.minCurrentPerPhase:
+            return 0
+
+        return min(maxCurrent, target)
 
     def currentChargeDemandPower(self):
         actualPower = (
@@ -942,51 +1027,56 @@ class FroniusWattpilot (esESSService):
         self.powerTransitionTelemetryReadyAt = 0
 
     def powerTransitionGraceActive(self):
-        if self.powerTransitionUntil == 0:
-            return False
+       if self.powerTransitionUntil == 0:
+          return False
 
-        actualPower = self.actualMeasuredPowerW()
-        expectedPower = self.powerTransitionExpectedW
-        telemetryReady = (
-            expectedPower <= 0
-            or actualPower >= expectedPower * self.startupTelemetryRatio
-        )
+       now = time.time()
 
-        if telemetryReady:
-            # A controller tick can see real EV power before the distributor
-            # has received it and recomputed the allowance. Keep this grace
-            # active until at least one allowance message arrives after the
-            # telemetry first becomes valid.
-            if self.powerTransitionTelemetryReadyAt == 0:
-                self.powerTransitionTelemetryReadyAt = time.time()
-                d(
-                    self,
-                    "Wattpilot transition telemetry caught up: {0:.0f}W measured, {1:.0f}W expected. Waiting for refreshed allowance.".format(
-                        actualPower,
-                        expectedPower
-                    )
-                )
-                return True
+       # Expiry must be checked before the telemetry-ready branch.
+       # Otherwise, a valid telemetry reading without a fresh allowance
+       # can keep the grace state active forever.
+       if now >= self.powerTransitionUntil:
+          self.publishServiceMessage(
+             self,
+             "Wattpilot transition grace expired. Returning to normal PV control.",
+          )
+          self.clearPowerTransitionGrace()
+          return False
 
-            if self.allowanceUpdatedAt > self.powerTransitionTelemetryReadyAt:
-                d(
-                    self,
-                    "Wattpilot transition allowance refreshed after telemetry caught up."
-                )
-                self.clearPowerTransitionGrace()
-                return False
+       actualPower = self.actualMeasuredPowerW()
+       expectedPower = self.powerTransitionExpectedW
 
-            return True
+       telemetryReady = (
+          expectedPower <= 0
+          or actualPower >= expectedPower * self.startupTelemetryRatio
+       )
 
-        if time.time() >= self.powerTransitionUntil:
-            self.publishServiceMessage(
-                self,
-                "Wattpilot transition grace expired before telemetry caught up. Returning to normal PV control."
-            )
-            self.clearPowerTransitionGrace()
-            return False
+       if not telemetryReady:
+          return True
 
-        return True
+       # Wait for one allowance update after valid charger telemetry.
+       if self.powerTransitionTelemetryReadyAt == 0:
+          self.powerTransitionTelemetryReadyAt = now
+          d(
+             self,
+             "Wattpilot transition telemetry caught up: "
+             "{0:.0f}W measured, {1:.0f}W expected. "
+             "Waiting for refreshed allowance.".format(
+                actualPower,
+                expectedPower,
+            ),
+          )
+          return True
+
+       if self.allowanceUpdatedAt > self.powerTransitionTelemetryReadyAt:
+          d(
+             self,
+             "Wattpilot transition allowance refreshed after telemetry caught up.",
+          )
+          self.clearPowerTransitionGrace()
+          return False
+
+       return True
 
     def consumerPowerForDistributor(self):
         actualPower = self.actualMeasuredPowerW()
