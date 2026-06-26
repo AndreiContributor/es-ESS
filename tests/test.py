@@ -1,4 +1,4 @@
-"""Hardware-free regression coverage for PR #5 Wattpilot control fixes."""
+"""Hardware-free regression coverage for Wattpilot PV-control fixes."""
 
 import importlib.util
 import sys
@@ -49,6 +49,7 @@ def _install_runtime_stubs():
         e=lambda *args, **kwargs: None,
         t=lambda *args, **kwargs: None,
         dbusConnection=lambda: None,
+        waitTimeout=lambda *args, **kwargs: False,
     )
 
     class VrmEvChargerControlMode:
@@ -81,7 +82,7 @@ def _install_runtime_stubs():
     _module("esESSService", esESSService=type("esESSService", (), {}))
 
 
-class Pr5ReviewFixTests(unittest.TestCase):
+class WattpilotControlRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _install_runtime_stubs()
@@ -96,17 +97,38 @@ class Pr5ReviewFixTests(unittest.TestCase):
         controller.maxCurrentPerPhase = 16
         controller.threePhasePvSurplusStartW = 4200
         controller.threePhasePvSurplusStopW = 4140
+        controller.minimumPhaseSwitchSeconds = 0
+        controller.lastPhaseSwitchTime = 0
         controller.currentPhaseMode = 1
+        controller.allowance = 0
+        controller.allowanceUpdatedAt = 0
+        controller.allowanceBelowMinimumSince = 0
+        controller.surplusSince = 0
+        controller.surplusBelowMinimumSince = 0
+        controller.surplusDropGraceSeconds = 20
+        controller.allowanceDropGraceSeconds = 15
+        controller.carDisconnectConfirmSeconds = 15
+        controller.carDisconnectedSince = 0
+        controller.lastConfirmedCarConnected = False
+        controller.effectiveCarConnected = False
+        controller.powerTransitionUntil = 0
+        controller.powerTransitionExpectedW = 0
+        controller.powerTransitionTelemetryReadyAt = 0
+        controller.startupTelemetryRatio = 0.8
+        controller.minimumOnOffSeconds = 300
         controller.wattpilot = SimpleNamespace(
             ampLimit=None,
             voltage1=230,
             voltage2=230,
             voltage3=230,
             carConnected=True,
+            carStateReady=True,
             power=0,
             amp=0,
+            modelStatus=SimpleNamespace(value=4),
             set_power=Mock(),
             set_phases=Mock(),
+            set_start_stop=Mock(),
         )
         controller.overheadAvailableDbus = SimpleNamespace(value=0)
         controller.publishServiceMessage = lambda *args, **kwargs: None
@@ -117,9 +139,6 @@ class Pr5ReviewFixTests(unittest.TestCase):
         controller = self._controller()
         controller.powerTransitionUntil = 100
         controller.powerTransitionExpectedW = 1000
-        controller.powerTransitionTelemetryReadyAt = 0
-        controller.allowanceUpdatedAt = 0
-        controller.startupTelemetryRatio = 0.8
         controller.actualMeasuredPowerW = lambda: 1000
         controller.clearPowerTransitionGrace = (
             self.fwp.FroniusWattpilot.clearPowerTransitionGrace.__get__(controller)
@@ -154,6 +173,7 @@ class Pr5ReviewFixTests(unittest.TestCase):
         controller.chargeCompleteHold = False
         controller.noChargeSince = 0
         controller.chargeCompleteConfirmSeconds = 120
+        controller.effectiveCarConnected = True
         controller.config = {
             "FroniusWattpilot": {
                 "VRMInstanceID_OverheadRequest": "42",
@@ -186,10 +206,11 @@ class Pr5ReviewFixTests(unittest.TestCase):
 
     def test_reported_request_matches_current_or_reachable_phase_capacity(self):
         controller = self._controller()
-        controller.mode = 1  # VrmEvChargerControlMode.Auto
+        controller.mode = 1
         controller.chargeCompleteHold = False
         controller.noChargeSince = 0
         controller.chargeCompleteConfirmSeconds = 120
+        controller.effectiveCarConnected = True
         controller.config = {
             "FroniusWattpilot": {
                 "VRMInstanceID_OverheadRequest": "42",
@@ -216,6 +237,58 @@ class Pr5ReviewFixTests(unittest.TestCase):
             published["es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request"],
             11040,
         )
+
+    def test_active_charge_waits_for_fresh_allowance_before_stop(self):
+        controller = self._controller()
+        controller.wattpilot.power = 2.0
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
+        controller.allowance = 0
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.allowanceStopGraceActive())
+        with patch.object(self.fwp.time, "time", return_value=114):
+            self.assertTrue(controller.allowanceStopGraceActive())
+        with patch.object(self.fwp.time, "time", return_value=115):
+            self.assertFalse(controller.allowanceStopGraceActive())
+
+    def test_one_false_car_connection_does_not_drop_consumer_request(self):
+        controller = self._controller()
+        controller.lastConfirmedCarConnected = True
+        controller.wattpilot.carConnected = False
+        controller.wattpilot.modelStatus = SimpleNamespace(value=4)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.updateEffectiveCarConnection())
+        with patch.object(self.fwp.time, "time", return_value=110):
+            self.assertTrue(controller.updateEffectiveCarConnection())
+        with patch.object(self.fwp.time, "time", return_value=115):
+            self.assertFalse(controller.updateEffectiveCarConnection())
+
+    def test_charging_status_overrides_transient_false_connection(self):
+        controller = self._controller()
+        controller.lastConfirmedCarConnected = True
+        controller.wattpilot.carConnected = False
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.updateEffectiveCarConnection())
+        with patch.object(self.fwp.time, "time", return_value=200):
+            self.assertTrue(controller.updateEffectiveCarConnection())
+
+    def test_short_pv_dip_does_not_reset_start_timer(self):
+        controller = self._controller()
+        controller.allowance = 1380
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertEqual(controller.getContinuousSurplusSeconds(), 0)
+
+        controller.allowance = 0
+        with patch.object(self.fwp.time, "time", return_value=105):
+            self.assertEqual(controller.getContinuousSurplusSeconds(), 5)
+        with patch.object(self.fwp.time, "time", return_value=124):
+            self.assertEqual(controller.getContinuousSurplusSeconds(), 24)
+        with patch.object(self.fwp.time, "time", return_value=125):
+            self.assertEqual(controller.getContinuousSurplusSeconds(), 0)
 
     def test_battery_reservation_bypass_does_not_override_configured_priority(self):
         distributor = self.sod.SolarOverheadDistributor.__new__(
@@ -257,7 +330,6 @@ class Pr5ReviewFixTests(unittest.TestCase):
 
         self.assertEqual(assigned["regular"], 1500)
         self.assertEqual(assigned["ev"], 0)
-
 
     def test_do_assign_handles_missing_consumer_entry(self):
         distributor = self.sod.SolarOverheadDistributor.__new__(

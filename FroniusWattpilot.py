@@ -106,11 +106,33 @@ class FroniusWattpilot (esESSService):
         self.startupGraceSeconds = int(settings.get("StartupGraceSeconds", 60))
         self.startupTelemetryRatio = float(settings.get("StartupTelemetryRatio", 0.80))
 
+        # The distributor and Wattpilot are both updated on short polling
+        # intervals. A single stale 0 W allowance or transient car-state false
+        # must not immediately stop an otherwise active PV charge session.
+        self.allowanceDropGraceSeconds = max(
+            5, int(settings.get("AllowanceDropGraceSeconds", 15))
+        )
+        self.surplusDropGraceSeconds = max(
+            0, int(settings.get("SurplusDropGraceSeconds", 20))
+        )
+        self.carDisconnectConfirmSeconds = max(
+            5, int(settings.get("CarDisconnectConfirmSeconds", 15))
+        )
+
         self.wattpilot = None
         self.allowance = 0
         self.allowanceUpdatedAt = 0
+        self.allowanceBelowMinimumSince = 0
         self.surplusSince = 0
+        self.surplusBelowMinimumSince = 0
         self.noAllowanceForcedOff = False
+
+        # Keep the last confirmed connection through a short telemetry glitch.
+        # A physical false reading is only accepted as a disconnect after it
+        # has been stable for CarDisconnectConfirmSeconds.
+        self.carDisconnectedSince = 0
+        self.lastConfirmedCarConnected = False
+        self.effectiveCarConnected = False
         self.lastPhaseSwitchTime = 0
         self.lastOnOffTime = 0
         self.lastVarDump = 0
@@ -413,10 +435,13 @@ class FroniusWattpilot (esESSService):
 
     def _update(self):
         try:
+            effectiveCarConnected = self.updateEffectiveCarConnection()
+
             # In idle mode the charger is polled only every five minutes. While a
-            # car is connected we run every five seconds for PV and safety control.
+            # car is connected (or briefly disconnecting) we run every five
+            # seconds for PV and safety control.
             if not (
-                self.wattpilot.carConnected
+                effectiveCarConnected
                 or not self.isIdleMode
                 or self.lastVarDump < (time.time() - 300)
                 or not self.wattpilot.carStateReady
@@ -427,7 +452,7 @@ class FroniusWattpilot (esESSService):
             skipIdleCheck = False
 
             if self.wattpilot.carStateReady:
-                if not self.isIdleMode and not self.wattpilot.carConnected:
+                if not self.isIdleMode and not effectiveCarConnected:
                     self.publishServiceMessage(
                         self, "Car no longer connected. Switching to Idle-Mode."
                     )
@@ -439,7 +464,7 @@ class FroniusWattpilot (esESSService):
                         self.wattpilot.disconnect()
 
                 elif self.isIdleMode:
-                    if self.wattpilot.connected and self.wattpilot.carConnected:
+                    if self.wattpilot.connected and effectiveCarConnected:
                         self.publishServiceMessage(
                             self, "Car connected. Switching to Operation-Mode."
                         )
@@ -453,7 +478,7 @@ class FroniusWattpilot (esESSService):
                                 )
 
                 if not skipIdleCheck:
-                    self.isIdleMode = not self.wattpilot.carConnected
+                    self.isIdleMode = not effectiveCarConnected
             else:
                 d(self, "Car State not yet ready, not performing idle checks.")
 
@@ -500,14 +525,14 @@ class FroniusWattpilot (esESSService):
                 self.dumpEvChargerInfo()
                 return
 
-            if (
-                self.wattpilot.modelStatus
-                == WattpilotModelStatus.NotChargingBecauseNoChargeCtrlData
-                or self.wattpilot.carConnected is False
-            ):
+            # Do not clear a live session on one false carConnected update. The
+            # debounce is particularly important while Wattpilot is processing
+            # a start command or a phase transition.
+            if not effectiveCarConnected:
                 self.reportVRMStatus(VrmEvChargerStatus.Disconnected)
                 self.noChargeSince = 0
                 self.surplusSince = 0
+                self.surplusBelowMinimumSince = 0
                 self.noAllowanceForcedOff = False
                 self.clearBatteryAssist()
                 self.clearBatteryAssistLockout("car disconnected")
@@ -562,6 +587,7 @@ class FroniusWattpilot (esESSService):
 
         except Exception as ex:
             c(self, "Exception during duty-cycle.", exc_info=ex)
+
 
     def handleChargingState(self):
         measuredPowerW = self.actualMeasuredPowerW()
@@ -656,13 +682,29 @@ class FroniusWattpilot (esESSService):
             self.reportVRMStatus(VrmEvChargerStatus.Connected)
             return
 
+        # Keep a previously accumulated start timer through one short PV dip.
+        # A full reset only occurs after SurplusDropGraceSeconds of genuinely
+        # insufficient allowance.
+        stableSeconds = self.getContinuousSurplusSeconds()
+
         if not self.hasMinimumAllowance():
+            if self.surplusDipGraceActive():
+                self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+                d(
+                    self,
+                    "Brief PV allowance dip; preserving start timer for {0:.0f}s.".format(
+                        max(0, self.surplusDropGraceSeconds - (
+                            time.time() - self.surplusBelowMinimumSince
+                        ))
+                    )
+                )
+                return
+
             d(self, "Waiting for Sun in auto mode")
             self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
             self.forceStopForNoAllowance()
             return
 
-        stableSeconds = self.getContinuousSurplusSeconds()
         onOffCooldownSeconds = self.getOnOffCooldownSeconds()
 
         if (
@@ -687,11 +729,20 @@ class FroniusWattpilot (esESSService):
                     )
                 )
 
+
     def startFromPvAllowance(self):
         desiredPhaseMode = self.desiredPhaseModeForPvAllowance()
         targetAmps = self.targetCurrentForPhase(
             desiredPhaseMode, self.allowance
         )
+
+        if targetAmps < self.minCurrentPerPhase:
+            self.publishServiceMessage(
+                self,
+                "PV allowance cannot satisfy the effective Wattpilot current minimum. Not starting EV charging."
+            )
+            self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+            return
 
         self.reportVRMStatus(VrmEvChargerStatus.StartCharging)
         self.publishServiceMessage(
@@ -712,9 +763,12 @@ class FroniusWattpilot (esESSService):
         self.wattpilot.set_start_stop(WattpilotStartStop.On)
         self.lastOnOffTime = time.time()
         self.noAllowanceForcedOff = False
+        self.allowanceBelowMinimumSince = 0
         self.surplusSince = 0
+        self.surplusBelowMinimumSince = 0
         self.dbusService["/StartStop"] = VrmEvChargerStartStop.Start.value
         self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Start.name
+
 
     def controlAutomaticCharging(self):
         # Defensive guard: a completed EV session must not re-enter automatic
@@ -764,11 +818,19 @@ class FroniusWattpilot (esESSService):
         self.clearBatteryAssist()
 
         if self.hasMinimumAllowance():
+            self.allowanceBelowMinimumSince = 0
             return self.adjustChargeForPvAllowance()
 
-        i(self, "NO PV allowance available, stopping charging.")
+        # The control and distribution workers can run in either order. Hold a
+        # still-active session briefly when allowance first drops to 0 W so a
+        # fresh MQTT allowance can arrive before an irreversible Off command.
+        if self.allowanceStopGraceActive():
+            return VrmEvChargerStatus.Charging
+
+        i(self, "NO PV allowance available after debounce, stopping charging.")
         self.forceStopForNoAllowance()
         return VrmEvChargerStatus.StopCharging
+
 
     def reportVRMStatus(self, status:VrmEvChargerStatus):
         self.publish("/Status", status.value)
@@ -776,18 +838,11 @@ class FroniusWattpilot (esESSService):
 
     def reportBaseRequest(self):
         if self.wattpilot.voltage1 is not None:
-            if self.canChargeAtMinimumCurrent():
-                minimumPower = (
-                    self.threePhaseMinimumPower()
-                    if self.currentPhaseMode == 2
-                    else self.minimumChargePower()
-                )
-            else:
-                # A cap below the configured minimum makes this charger
-                # temporarily non-startable. Publish no minimum demand so the
-                # distributor does not reserve PV for an impossible command.
-                minimumPower = 0
-
+            minimumPower = (
+                self.threePhaseMinimumPower()
+                if self.currentPhaseMode == 2
+                else self.minimumChargePower()
+            )
             self.publishMainMqtt(
                 "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Minimum",
                 int(round(minimumPower))
@@ -829,17 +884,19 @@ class FroniusWattpilot (esESSService):
             int(round(stepSize))
         )
 
+        effectiveCarConnected = getattr(
+            self, "effectiveCarConnected", self.wattpilot.carConnected
+        )
         if (
             self.mode == VrmEvChargerControlMode.Auto
-            and self.wattpilot.carConnected
+            and effectiveCarConnected
             and not self.chargeCompleteHold
             and self.noChargeSince < self.chargeCompleteConfirmSeconds
             and self.canChargeAtMinimumCurrent()
         ):
-            # Advertise capacity the charger can actually use now. While in
-            # one-phase mode, expose three-phase capacity only when raw PV
-            # overhead already makes a phase-up feasible; otherwise the
-            # distributor can reserve power that the charger cannot consume.
+            # Do not advertise three-phase capacity while charging on one phase
+            # unless raw PV allows a phase-up now. Otherwise the distributor may
+            # reserve power that the charger cannot consume.
             maxRequest = (
                 self.getEffectiveMaxCurrent()
                 * self.maxRequestVoltageForCurrentPhase()
@@ -860,6 +917,7 @@ class FroniusWattpilot (esESSService):
         )
 
         self.reportPhaseMode()
+
 
     def reportConsumption(self):
         self.publishMainMqtt(
@@ -916,23 +974,14 @@ class FroniusWattpilot (esESSService):
         """Return whether the reported/current configured limit can start EV charging."""
         return self.getEffectiveMaxCurrent() >= self.minCurrentPerPhase
 
-    def rawPvOverheadW(self):
-        """Return distributor raw PV overhead, independent of EV allowance."""
-        subscription = getattr(self, "overheadAvailableDbus", None)
-        value = getattr(subscription, "value", None)
-
-        try:
-            return max(0.0, float(value))
-        except (TypeError, ValueError):
-            return 0.0
 
     def maxRequestVoltageForCurrentPhase(self):
-        """Return the voltage capacity that is presently usable or phase-up ready.
+        """Return capacity that is actually usable in the next allocation cycle.
 
-        A one-phase session must not advertise a three-phase maximum merely
-        because the installation supports it. Three-phase demand is advertised
-        only while already on three phases or while raw PV overhead meets the
-        configured phase-up threshold.
+        Three-phase capacity is only advertised when the charger is already on
+        three phases, or when both raw PV and phase-switch cooldown permit an
+        immediate phase-up. This prevents a one-phase charger from reserving
+        power that it cannot consume.
         """
         if self.currentPhaseMode == 2:
             return self.threePhaseVoltage()
@@ -941,11 +990,17 @@ class FroniusWattpilot (esESSService):
             float(self.threePhasePvSurplusStartW),
             self.threePhaseMinimumPower(),
         )
+        rawOverhead = self.rawPvOverheadW()
 
-        if self.rawPvOverheadW() >= phaseUpThresholdW:
+        if (
+            rawOverhead is not None
+            and rawOverhead >= phaseUpThresholdW
+            and self.getPhaseSwitchCooldownSeconds() <= 0
+        ):
             return self.threePhaseVoltage()
 
         return self.onePhaseVoltage()
+
 
     def desiredPhaseModeForPvAllowance(self):
         # Hysteresis: phase-up requires the configured higher threshold, while
@@ -1085,20 +1140,145 @@ class FroniusWattpilot (esESSService):
         return actualPower
 
     def getContinuousSurplusSeconds(self):
-        if not self.hasMinimumAllowance():
-            self.surplusSince = 0
+        now = time.time()
+
+        if self.hasMinimumAllowance():
+            self.surplusBelowMinimumSince = 0
+            if self.surplusSince == 0:
+                self.surplusSince = now
+                self.publishServiceMessage(
+                    self,
+                    "PV allowance is sufficient. Waiting {0}s before starting charge.".format(
+                        self.minimumOnOffSeconds
+                    )
+                )
+            return now - self.surplusSince
+
+        # Preserve an already-running start timer through a short dip. The
+        # original code reset the full MinOnOffSeconds delay on every single
+        # five-second low sample, which made charging fail to restart in
+        # changeable sunshine.
+        if self.surplusSince == 0:
+            self.surplusBelowMinimumSince = 0
             return 0
 
-        if self.surplusSince == 0:
-            self.surplusSince = time.time()
+        if self.surplusBelowMinimumSince == 0:
+            self.surplusBelowMinimumSince = now
             self.publishServiceMessage(
                 self,
-                "PV allowance is sufficient. Waiting {0}s before starting charge.".format(
-                    self.minimumOnOffSeconds
+                "PV allowance dipped below the one-phase minimum. Holding the "
+                "start timer for up to {0}s.".format(
+                    self.surplusDropGraceSeconds
                 )
             )
 
-        return time.time() - self.surplusSince
+        if now - self.surplusBelowMinimumSince < self.surplusDropGraceSeconds:
+            return now - self.surplusSince
+
+        self.publishServiceMessage(
+            self,
+            "PV allowance stayed below the one-phase minimum for {0}s. "
+            "Resetting the start timer.".format(self.surplusDropGraceSeconds)
+        )
+        self.surplusSince = 0
+        self.surplusBelowMinimumSince = 0
+        return 0
+
+
+    def surplusDipGraceActive(self):
+        if self.surplusSince == 0 or self.surplusBelowMinimumSince == 0:
+            return False
+        return (
+            time.time() - self.surplusBelowMinimumSince
+            < self.surplusDropGraceSeconds
+        )
+
+    def wattpilotReportsActiveCharge(self):
+        status = getattr(self.wattpilot, "modelStatus", None)
+        statusValue = getattr(status, "value", None)
+        return (
+            statusValue in [3, 12, 15, 19, 20]
+            or self.powerTransitionUntil > time.time()
+        )
+
+    def updateEffectiveCarConnection(self):
+        """Debounce short false carConnected telemetry while preserving safety.
+
+        The Wattpilot can emit one false car-connected update while it is still
+        reporting a charging or transition state. Treat that as a telemetry
+        glitch, not an unplug, so the distributor request is not reset to 0 W.
+        """
+        if bool(self.wattpilot.carConnected):
+            if self.carDisconnectedSince != 0:
+                self.publishServiceMessage(
+                    self, "Wattpilot car connection telemetry recovered."
+                )
+            self.carDisconnectedSince = 0
+            self.lastConfirmedCarConnected = True
+            self.effectiveCarConnected = True
+            return True
+
+        if not self.lastConfirmedCarConnected:
+            self.effectiveCarConnected = False
+            return False
+
+        if self.wattpilotReportsActiveCharge():
+            d(
+                self,
+                "Ignoring transient carConnected=false while Wattpilot reports an active charge or transition."
+            )
+            self.effectiveCarConnected = True
+            return True
+
+        if self.carDisconnectedSince == 0:
+            self.carDisconnectedSince = time.time()
+            self.publishServiceMessage(
+                self,
+                "Wattpilot reports car disconnected. Confirming for {0}s.".format(
+                    self.carDisconnectConfirmSeconds
+                )
+            )
+
+        if (
+            time.time() - self.carDisconnectedSince
+            < self.carDisconnectConfirmSeconds
+        ):
+            self.effectiveCarConnected = True
+            return True
+
+        self.effectiveCarConnected = False
+        return False
+
+    def allowanceStopGraceActive(self):
+        """Hold an active session briefly while awaiting a fresh allowance.
+
+        The grid-import guard remains immediate. This helper only avoids an
+        unnecessary stop when the distributor and Wattpilot workers execute in
+        the opposite order for one or two cycles.
+        """
+        if self.hasMinimumAllowance() or not self.canChargeAtMinimumCurrent():
+            self.allowanceBelowMinimumSince = 0
+            return False
+
+        if not self.wattpilotReportsActiveCharge():
+            self.allowanceBelowMinimumSince = 0
+            return False
+
+        now = time.time()
+        if self.allowanceBelowMinimumSince == 0:
+            self.allowanceBelowMinimumSince = now
+            self.publishServiceMessage(
+                self,
+                "EV allowance fell below the one-phase minimum. Waiting up to "
+                "{0}s for a refreshed distributor allowance before stopping.".format(
+                    self.allowanceDropGraceSeconds
+                )
+            )
+
+        return (
+            now - self.allowanceBelowMinimumSince
+            < self.allowanceDropGraceSeconds
+        )
 
     def dbusValue(self, subscription, default=None):
         try:
@@ -1266,7 +1446,9 @@ class FroniusWattpilot (esESSService):
         return (
             self.evPriorityOverBatteryCharge
             and self.mode == VrmEvChargerControlMode.Auto
-            and bool(self.wattpilot.carConnected)
+            and bool(
+                getattr(self, "effectiveCarConnected", self.wattpilot.carConnected)
+            )
             and soc is not None
             and soc >= self.evPriorityMinSoc
         )
@@ -1477,9 +1659,12 @@ class FroniusWattpilot (esESSService):
         return False
 
     def forceStopForNoAllowance(self):
-        # Strict policy: stop immediately and retain ForceStateOff. Do not issue
-        # Neutral, because native Wattpilot ECO could then restart independently.
+        # Strict policy after the allowance debounce expires: stop and retain
+        # ForceStateOff. Do not issue Neutral, because native Wattpilot ECO
+        # could then restart independently.
         self.surplusSince = 0
+        self.surplusBelowMinimumSince = 0
+        self.allowanceBelowMinimumSince = 0
         self.clearBatteryAssist()
         self.clearPowerTransitionGrace()
 
@@ -1507,6 +1692,7 @@ class FroniusWattpilot (esESSService):
             if firstForcedOff:
                 self.currentPhaseMode = 0
                 self.wattpilot.set_phases(0)
+
 
     def getOnOffCooldownSeconds(self):
         return max(0, self.lastOnOffTime + self.minimumOnOffSeconds - time.time())
