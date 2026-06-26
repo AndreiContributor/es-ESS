@@ -229,7 +229,11 @@ class FroniusWattpilot (esESSService):
 
         #Additional Stuff, not required by definition
         self.dbusService.add_path('/CarState', None)
-        self.dbusService.add_path('/PhaseMode', None)
+        # PhaseMode uses the human-facing phase count: 0 = unknown/transition,
+        # 1 = one phase and 3 = three phases. The internal controller uses 2
+        # as its three-phase state, so do not expose that internal value here.
+        self.dbusService.add_path('/PhaseMode', 0)
+        self.dbusService.add_path('/PhaseModeLiteral', 'Unknown')
         self.dbusService.add_path('/ModeLiteral', VrmEvChargerControlMode(0).name)
         self.dbusService.add_path('/StatusLiteral', VrmEvChargerStatus(0).name)
         self.dbusService.add_path('/StartStopLiteral', VrmEvChargerStartStop(0).name)
@@ -930,13 +934,43 @@ class FroniusWattpilot (esESSService):
         self.publish("/StartStopLiteral", v.name)
 
     def reportPhaseMode(self):
-        #pvoverhead request
-        if (self.wattpilot.power > 0 and self.currentPhaseMode == 1):
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/CustomName", "Fronius Wattpilot (1)")
-        elif (self.wattpilot.power > 0 and self.currentPhaseMode == 2):
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/CustomName", "Fronius Wattpilot (3)")
+        """Publish a human-readable charging-phase state for GX/VRM and MQTT.
+
+        currentPhaseMode is an internal controller representation: 1 means
+        one-phase and 2 means three-phase. Expose 1 or 3 to user interfaces
+        instead, so the displayed phase count is never misleading.
+        """
+        charging = self.actualMeasuredPowerW() > 0
+
+        if self.currentPhaseMode == 1:
+            phaseCount = 1
+            phaseLiteral = "1 phase"
+        elif self.currentPhaseMode == 2:
+            phaseCount = 3
+            phaseLiteral = "3 phase"
         else:
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/CustomName", "Fronius Wattpilot")
+            phaseCount = 0
+            phaseLiteral = "Phase switching" if self.wattpilot.carConnected else "No vehicle"
+
+        if charging:
+            customName = "Fronius Wattpilot - Charging {0}".format(phaseLiteral)
+        elif self.wattpilot.carConnected:
+            customName = "Fronius Wattpilot - Ready ({0})".format(phaseLiteral)
+        else:
+            customName = "Fronius Wattpilot - No vehicle"
+
+        # /CustomName is the only standard text field likely to be shown in the
+        # standard GX/VRM EV charger view. /PhaseMode and /PhaseModeLiteral are
+        # also published for MQTT, DBus inspection and custom dashboards.
+        self.publish("/PhaseMode", phaseCount)
+        self.publish("/PhaseModeLiteral", phaseLiteral)
+        self.publish("/CustomName", customName)
+
+        # Keep the SolarOverheadDistributor's consumer name in sync as well.
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/CustomName",
+            customName
+        )
 
     def minimumChargePower(self):
         return self.onePhaseVoltage() * self.minCurrentPerPhase
@@ -1884,7 +1918,7 @@ class FroniusWattpilot (esESSService):
         self.publish("/AutoStart", self.autostart)
         self.publish("/ChargingTime", self.chargingTime)
         self.publish("/CarState", self.wattpilot.carConnected)
-        self.publish("/PhaseMode", self.currentPhaseMode)
+        self.reportPhaseMode()
 
         amp = self.wattpilot.amp or 0
         if self.currentPhaseMode == 2:
