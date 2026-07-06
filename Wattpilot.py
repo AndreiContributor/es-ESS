@@ -626,6 +626,7 @@ class Wattpilot(object):
 
     def __on_AuthSuccess(self,message):
         self._connected = True
+        self.request_full_status()
         self.__call_event_handler(Event.WP_AUTH_SUCCESS, message)
         i(self, "Authentication successful")
 

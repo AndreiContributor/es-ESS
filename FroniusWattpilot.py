@@ -1,7 +1,7 @@
 
 from builtins import int
 from enum import Enum
-from math import floor
+from math import ceil, floor
 import os
 import platform
 import sys
@@ -1079,6 +1079,11 @@ class FroniusWattpilot (esESSService):
 
         if self.getPhaseSwitchCooldownSeconds() > 0:
             return onePhaseMaximum
+        
+        allocationStep = max(1.0, self.onePhaseVoltage())
+        phaseUpProbe = ceil(
+            self.phaseUpThresholdW() / allocationStep
+        ) * allocationStep
 
         return max(onePhaseMaximum, self.phaseUpThresholdW())
 
