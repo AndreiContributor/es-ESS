@@ -546,17 +546,34 @@ class FroniusWattpilot (esESSService):
 
             self.publishSafetyTelemetry()
 
-            # Backstop: Auto mode may never deliberately continue a charge
-            # session while the site is importing meaningful grid power.
+            # Backstop: Auto mode must not sustain meaningful grid import.
+            # When PV is no longer enough for 3-phase but is still enough for
+            # 1-phase, downshift first instead of stopping the session.
             if (
                 self.mode == VrmEvChargerControlMode.Auto
                 and not self.allowGridCharging
                 and self.gridImportLimitExceeded()
             ):
+                if (
+                    self.currentPhaseMode == 2
+                    and self.shouldPhaseDownForPvDip()
+                ):
+                
+                    self.publishServiceMessage(
+                        self,
+                        "Grid import guard triggered, but PV supports 1-phase. "
+                        "Switching to 1-phase before stopping."
+                    )
+                    self.reportVRMStatus(self.switchToOnePhaseForPvDip())
+                    self.reportBaseRequest()
+                    self.dumpEvChargerInfo()
+                    return
+
                 self.publishServiceMessage(
                     self,
                     "Grid import guard triggered. Stopping EV charging."
                 )
+
                 self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
                 self.forceStopForNoAllowance()
                 self.reportBaseRequest()
