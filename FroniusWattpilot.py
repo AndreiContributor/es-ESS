@@ -565,7 +565,6 @@ class FroniusWattpilot (esESSService):
 
             pendingPhaseStatus = self.reconcilePendingPhaseSwitch()
             if pendingPhaseStatus is not None:
-            if pendingPhaseStatus is not None:
                 self.reportVRMStatus(pendingPhaseStatus)
                 self.reportBaseRequest()
                 self.dumpEvChargerInfo()
