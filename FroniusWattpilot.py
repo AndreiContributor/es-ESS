@@ -565,6 +565,7 @@ class FroniusWattpilot (esESSService):
 
             pendingPhaseStatus = self.reconcilePendingPhaseSwitch()
             if pendingPhaseStatus is not None:
+            if pendingPhaseStatus is not None:
                 self.reportVRMStatus(pendingPhaseStatus)
                 self.reportBaseRequest()
                 self.dumpEvChargerInfo()
@@ -1085,7 +1086,7 @@ class FroniusWattpilot (esESSService):
             self.phaseUpThresholdW() / allocationStep
         ) * allocationStep
 
-        return max(onePhaseMaximum, self.phaseUpThresholdW())
+        return max(onePhaseMaximum, phaseUpProbe)
 
     def maxRequestVoltageForCurrentPhase(self):
         """Return the electrical voltage of the active phase mode.
