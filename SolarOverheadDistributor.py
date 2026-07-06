@@ -204,7 +204,7 @@ class SolarOverheadDistributor(esESSService):
          return
       
       try:
-         consumerKeyMo = re.search('es\-ESS/SolarOverheadDistributor/Requests/([^/]+)/', msg.topic)
+         consumerKeyMo = re.search(r'es-ESS/SolarOverheadDistributor/Requests/([^/]+)/', msg.topic)
          if (consumerKeyMo is not None):
             consumerKey = consumerKeyMo.group(1)
             if (not consumerKey in self._knownSolarOverheadConsumers):
@@ -300,6 +300,22 @@ class SolarOverheadDistributor(esESSService):
          for consumerKey in self._knownSolarOverheadConsumers:
             d(self, "pre-checks on consumer {0}".format(consumerKey))
             consumer = self._knownSolarOverheadConsumers[consumerKey]
+
+            d(
+               self,
+               "Allocation input for {0}: initialized={1}, automatic={2}, "
+               "request={3}W, minimum={4}W, step={5}W, consumption={6}W, "
+               "ignoreBatteryReservation={7}".format(
+                  consumerKey,
+                  consumer.isInitialized,
+                  consumer.isAutomatic,
+                  consumer.request,
+                  consumer.minimum,
+                  consumer.stepSize,
+                  consumer.consumption,
+                  consumer.ignoreBatReservation,
+               ),
+            )
             
             if (not consumer.isInitialized):
                consumer.checkFinalInit(self)
@@ -327,12 +343,18 @@ class SolarOverheadDistributor(esESSService):
 
          i(self, "L1/L2/L3/Bat/Soc/Feedin is " + str(l1Power) + "/" + str(l2Power) + "/" + str(l3Power) + "/" + str(batPower) + "/" + str(batSoc) + "/" + str(feedIn))
 
-         overheadDistribution = {}
+         # Initialise every known consumer before status checks. MQTT state can
+         # change while this cycle runs; keeping a zero entry for each consumer
+         # prevents a newly automatic consumer from missing the allocation map.
+         overheadDistribution = {
+            consumerKey: 0
+            for consumerKey in self._knownSolarOverheadConsumers
+         }
+
          for consumerKey in self._knownSolarOverheadConsumers:
             consumer = self._knownSolarOverheadConsumers[consumerKey]
 
             if (consumer.isInitialized and consumer.isAutomatic):
-               overheadDistribution[consumerKey] = 0 #initialize with 0
                d(self,"Already Assigned consumption on " + consumer.consumerKey + " (" + str(consumer.vrmInstanceID) +"): " + str(consumer.consumption))
                assignedConsumption += consumer.consumption
 
@@ -369,16 +391,32 @@ class SolarOverheadDistributor(esESSService):
          #Either all consumers then are running at maximum, or the remaining overhead doesn't satisfy the
          #need of additional consumers. In that case, the remaining overhead will be consumed by the house battery.
          overheadDistribution = self.doAssign(overhead, overheadDistribution, minBatCharge) 
-         
 
+         if overheadDistribution is None:
+            overheadDistribution = {}
+
+         for consumerKey in self._knownSolarOverheadConsumers:
+            overheadDistribution.setdefault(consumerKey, 0)
+         
          for consumerKey in self._knownSolarOverheadConsumers:
             consumer = self._knownSolarOverheadConsumers[consumerKey]
             
             if (consumer.isInitialized and consumer.isAutomatic):
+               d(
+                  self,
+                  "Already Assigned consumption on "
+                  + consumer.consumerKey
+                  + " ("
+                  + str(consumer.vrmInstanceID)
+                  + "): "
+                  + str(consumer.consumption),
+               )
+               assignedConsumption += consumer.consumption
+
                if (Globals.esESS._sigTermInvoked == True):
                   return
                
-               consumer.updateAllowance(overheadDistribution[consumerKey], self)
+               consumer.updateAllowance(overheadDistribution.get(consumerKey, 0), self)
                overheadAssigned += consumer.allowance
                overhead -= consumer.allowance
                self.publishServiceMessage(self, "Assigned {0}W to {1} ({2}, {3})".format(consumer.allowance, consumer.customName, consumer.priority, consumerKey))
@@ -408,83 +446,101 @@ class SolarOverheadDistributor(esESSService):
      try:
          overheadAssigned = 0
 
-         #build effective prios to start with. 
          for consumer in self._knownSolarOverheadConsumers.values():
             consumer.effectivePriority = consumer.priority
 
-            if (consumer.ignoreBatReservation):
-               consumer.effectivePriority = 0
-
-         while (True):
+         while True:
             overheadBefore = overhead
 
-            for consumerDupe in sorted(self._knownSolarOverheadConsumers.values(), key=operator.attrgetter('effectivePriority')):   
-               if (overheadBefore != overhead):
-                  continue #skip this iteration fast, assignment already done.
-               
-               consumerKey = consumerDupe.consumerKey        
+            for consumerDupe in sorted(
+               self._knownSolarOverheadConsumers.values(),
+               key=operator.attrgetter('effectivePriority')
+            ):
+               if overheadBefore != overhead:
+                  continue
+
+               consumerKey = consumerDupe.consumerKey
                consumer = self._knownSolarOverheadConsumers[consumerKey]
 
-               #check, if this consumer is currently allowed to consume. 
-               canConsume = 0
-               canConsumeReason = "None"
+               if not (consumer.isInitialized and consumer.isAutomatic):
+                  continue
 
-               if (consumer.isInitialized):
-                  if (consumer.isAutomatic):
-                     if (overheadDistribution[consumerKey] > 0 or consumer.minimum == 0):
-                        #already consuming minimum or has no minimum.
-                        if (consumer.stepSize < (overhead - minBatCharge) and overheadDistribution[consumerKey] < consumer.request):
-                           #fits into available overhead
-                           canConsume = consumer.stepSize
-                           canConsumeReason = "Overhead greater than Stepsize and obey BatChargeReservation"
-                        elif (overheadDistribution[consumerKey] >= consumer.request):
-                           #cannot consume!
-                           canConsume = 0
-                           canConsumeReason = "Maximum request assigned."
-                        elif (consumer.ignoreBatReservation and overhead > consumer.stepSize and overheadDistribution[consumerKey] < consumer.request):
-                           #fits into available overhead
-                           canConsume = consumer.stepSize
-                           canConsumeReason = "Overhead greater than Stepsize and ignore BatChargeReservation"
-                        else:
-                           #cannot consume!
-                           canConsume = 0
-                           canConsumeReason = "Stepsize greater than Overhead."
-                     else:
-                        #consumer requires minimum and is not yet consuming.
-                        if (consumer.minimum < (overhead - minBatCharge) and overheadDistribution[consumerKey] < consumer.request):
-                           #fits into available overhead
-                           canConsume = consumer.minimum
-                           canConsumeReason = "Overhead greater than Minimum and obey BatChargeReservation"
-                        elif (overheadDistribution[consumerKey] >= consumer.request):
-                           #cannot consume!
-                           canConsume = 0
-                           canConsumeReason = "Maximum request assigned."
-                        elif (consumer.ignoreBatReservation and overhead > consumer.stepSize and overheadDistribution[consumerKey] < consumer.request):
-                           #fits into available overhead
-                           canConsume = consumer.minimum
-                           canConsumeReason = "Overhead greater than Minimum and ignore BatChargeReservation"
-                        else:
-                           #cannot consume!
-                           canConsume = 0
-                           canConsumeReason = "Minimum greater than Overhead."
+               assigned = overheadDistribution.get(consumerKey, 0)
+               if assigned >= consumer.request:
+                  continue
 
-                     if (canConsume > 0):
-                        d("SolarOverheadDistributor", "Assigning " + str(canConsume) + "W to " + consumerKey + " (Pr: " + str(consumer.effectivePriority) + ", Min: " + str(consumer.minimum) +") because: " + canConsumeReason) 
-                        overheadDistribution[consumerKey] += canConsume
-                        if (self._knownSolarOverheadConsumers[consumerKey].priorityShift > 0):
-                           self._knownSolarOverheadConsumers[consumerKey].effectivePriority += self._knownSolarOverheadConsumers[consumerKey].priorityShift + 0.0001
+               # An existing consumer grows in StepSize increments. A consumer
+               # that is currently off must first receive its full Minimum.
+               isNewStart = assigned == 0 and consumer.minimum > 0
+               increment = consumer.minimum if isNewStart else consumer.stepSize
 
-                        overhead -= canConsume
-                        overheadAssigned += canConsume
+               if increment <= 0:
+                  continue
 
-            if (overheadBefore == overhead):
-               d("SolarOverheadDistributor", "OverheadBefore: {0}, OverheadAfter: {1} - we are done.".format(overheadBefore, overhead)) 
+               # Normal consumers keep the configured battery-charge
+               # reservation. IgnoreBatReservation consumers may use raw
+               # overhead, but never more than the actual raw overhead.
+               availableForConsumer = (
+                  overhead
+                  if consumer.ignoreBatReservation
+                  else overhead - minBatCharge
+               )
+
+               if availableForConsumer >= increment and assigned + increment <= consumer.request:
+                  if consumer.ignoreBatReservation:
+                     reason = (
+                        "raw overhead meets minimum"
+                        if isNewStart
+                        else "raw overhead meets step size"
+                     )
+                  else:
+                     reason = (
+                        "overhead after battery reservation meets minimum"
+                        if isNewStart
+                        else "overhead after battery reservation meets step size"
+                     )
+
+                  d(
+                     "SolarOverheadDistributor",
+                     "Assigning {0}W to {1} (Pr: {2}, Min: {3}) because: {4}".format(
+                        increment,
+                        consumerKey,
+                        consumer.effectivePriority,
+                        consumer.minimum,
+                        reason
+                     )
+                  )
+                  # Use the prior safe lookup rather than assuming the key
+                  # exists; this also makes a mode-change race fail closed.
+                  overheadDistribution[consumerKey] = assigned + increment
+                  if self._knownSolarOverheadConsumers[consumerKey].priorityShift > 0:
+                     self._knownSolarOverheadConsumers[consumerKey].effectivePriority += (
+                        self._knownSolarOverheadConsumers[consumerKey].priorityShift + 0.0001
+                     )
+
+                  overhead -= increment
+                  overheadAssigned += increment
+
+            if overheadBefore == overhead:
+               d(
+                  "SolarOverheadDistributor",
+                  "OverheadBefore: {0}, OverheadAfter: {1} - we are done.".format(
+                     overheadBefore, overhead
+                  )
+               )
                break
 
          return overheadDistribution
-      
+
      except Exception as ex:
-       c(self, "Exception", exc_info=ex)
+        c(self, "Exception", exc_info=ex)
+
+        # Allocation failures must revoke requests rather than return None
+        # or leave a partially computed allowance active.
+        return {
+           consumerKey: 0
+           for consumerKey in self._knownSolarOverheadConsumers
+        }
 
    def _handlechangedvalue(self, path, value):
      logging.critical("Someone else updated %s to %s" % (path, value))
@@ -513,7 +569,10 @@ class SolarOverheadConsumer:
   def __init__(self, consumerKey):
      self.runtimeData = configparser.ConfigParser()
      self.runtimeData.optionxform = str
-     self.runtimeData.read("{0}/runtimeData/energy_{1}.ini".format(os.path.dirname(os.path.realpath(__file__)), consumerKey))
+     self.runtimeDataDirectory = os.path.join(os.path.dirname(os.path.realpath(__file__)), "runtimeData")
+     os.makedirs(self.runtimeDataDirectory, exist_ok=True)
+     self.runtimeDataPath = os.path.join(self.runtimeDataDirectory, "energy_{0}.ini".format(consumerKey))
+     self.runtimeData.read(self.runtimeDataPath)
      self.energyToday = self._initEnergyTracking("energyToday", 0)
      self.energyYesterday = self._initEnergyTracking("energyYesterday", 0)
      self.energyTotal = self._initEnergyTracking("energyTotal", 0)
@@ -927,8 +986,9 @@ class SolarOverheadConsumer:
       self.runtimeData.set("Energy","runtimeYesterday",str(self.runtimeYesterday))
       self.runtimeData.set("Energy","runtimeTotal",str(self.runtimeTotal))
 
-      with open("{0}/runtimeData/energy_{1}.ini".format(os.path.dirname(os.path.realpath(__file__)), self.consumerKey), 'w+') as cfile:
-         t(self, "File open for w+: {0}/runtimeData/energy_{1}.ini".format(os.path.dirname(os.path.realpath(__file__)), self.consumerKey))
+      os.makedirs(self.runtimeDataDirectory, exist_ok=True)
+      with open(self.runtimeDataPath, 'w+') as cfile:
+         t(self, "File open for w+: {0}".format(self.runtimeDataPath))
          self.runtimeData.write(cfile)
          cfile.flush()
 

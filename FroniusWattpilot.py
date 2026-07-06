@@ -28,21 +28,179 @@ class FroniusWattpilot (esESSService):
         self.vrmInstanceID = self.config['FroniusWattpilot']['VRMInstanceID']
         self.serviceType = "com.victronenergy.evcharger"
         self.serviceName = self.serviceType + "." + Globals.esEssTagService + "_FroniusWattpilot"
-        self.minimumOnOffSeconds = int(self.config["FroniusWattpilot"]["MinOnOffSeconds"])
-        self.minimumPhaseSwitchSeconds = int(self.config["FroniusWattpilot"]["MinPhaseSwitchSeconds"])
+
+        settings = self.config["FroniusWattpilot"]
+        self.minimumOnOffSeconds = int(settings["MinOnOffSeconds"])
+        self.minimumPhaseSwitchSeconds = int(settings["MinPhaseSwitchSeconds"])
+
+        # Explicit EV limits. Wattpilot's AMA value can be higher than the
+        # vehicle or installation limit, therefore it is only an upper bound.
+        self.minCurrentPerPhase = max(6, int(settings.get("MinCurrentPerPhase", 6)))
+        self.maxCurrentPerPhase = max(
+            self.minCurrentPerPhase, int(settings.get("MaxCurrentPerPhase", 16))
+        )
+
+        # Phase thresholds are PV-only allowance thresholds. Battery assist does
+        # not count as PV surplus and can never cause a phase-up.
+        self.threePhasePvSurplusStartW = int(settings.get("ThreePhasePvSurplusStartW", 4200))
+        self.threePhasePvSurplusStopW = int(settings.get("ThreePhasePvSurplusStopW", 4140))
+
+        # PV priority over battery charging. This bypasses only the distributor's
+        # battery-charge reservation; it does not authorise battery-to-EV energy.
+        self.evPriorityOverBatteryCharge = settings.get(
+            "EvPriorityOverBatteryCharge", "false"
+        ).lower() == "true"
+        self.evPriorityMinSoc = float(settings.get("EvPriorityMinSoc", 0))
+
+        # Temporary battery bridge for an already-running charge session.
+        self.batteryAssistEnabled = settings.get(
+            "BatteryAssistEnabled", "false"
+        ).lower() == "true"
+        self.batteryAssistSocMin = float(settings.get("BatteryAssistSocMin", 60))
+        self.batteryAssistMaxSeconds = int(settings.get("BatteryAssistMaxSeconds", 300))
+        self.batteryAssistMaxShortfallW = float(
+            settings.get("BatteryAssistMaxShortfallW", 3000)
+        )
+        # After the maximum bridge time is reached, require a sustained period
+        # where PV fully covers the active EV demand before battery assist may
+        # be used again. This prevents repeated 300-second assist windows
+        # during one long cloud event.
+        self.batteryAssistRecoverySeconds = max(
+            0, int(settings.get("BatteryAssistRecoverySeconds", 60))
+        )
+
+        # A vehicle near its requested SOC can remain connected while drawing
+        # only a small balancing or keep-alive load. In Auto mode, hold that
+        # completed session instead of repeatedly re-entering PV control.
+        self.chargeCompletePowerThresholdW = max(
+            0.0, float(settings.get("ChargeCompletePowerThresholdW", 100))
+        )
+        self.chargeCompleteConfirmSeconds = max(
+            5, int(settings.get("ChargeCompleteConfirmSeconds", 120))
+        )
+        self.chargeCompleteResumePowerW = max(
+            self.chargeCompletePowerThresholdW,
+            float(settings.get("ChargeCompleteResumePowerW", 300))
+        )
+        self.chargeCompleteResumeSeconds = max(
+            5, int(settings.get("ChargeCompleteResumeSeconds", 30))
+        )
+
+        # Grid import is an emergency stop guard. Configure the sign convention
+        # per site: true means positive grid power is import; false reverses it.
+        self.allowGridCharging = settings.get(
+            "AllowGridCharging", "false"
+        ).lower() == "true"
+        self.gridImportPositive = settings.get(
+            "GridImportPositive", "true"
+        ).lower() == "true"
+        self.gridImportStopW = float(settings.get("GridImportStopW", 150))
+        self.gridImportStopSeconds = int(settings.get("GridImportStopSeconds", 5))
+
+        # The Wattpilot reports 0 W for several seconds while a new charge
+        # session or a phase switch is being negotiated. During that interval
+        # the distributor would otherwise see the battery charge disappear
+        # before the EV power telemetry arrives, revoke the allowance, and
+        # cause an immediate false stop. Keep reporting the commanded EV
+        # demand until real Wattpilot telemetry has caught up.
+        self.startupGraceSeconds = int(settings.get("StartupGraceSeconds", 60))
+        self.startupTelemetryRatio = float(settings.get("StartupTelemetryRatio", 0.80))
+
+        # The distributor and Wattpilot are both updated on short polling
+        # intervals. A single stale 0 W allowance or transient car-state false
+        # must not immediately stop an otherwise active PV charge session.
+        self.allowanceDropGraceSeconds = max(
+            5, int(settings.get("AllowanceDropGraceSeconds", 15))
+        )
+        self.surplusDropGraceSeconds = max(
+            0, int(settings.get("SurplusDropGraceSeconds", 20))
+        )
+        self.carDisconnectConfirmSeconds = max(
+            5, int(settings.get("CarDisconnectConfirmSeconds", 15))
+        )
+
+        # Raw distributor overhead is used only to make a safe 3-to-1 phase
+        # fallback when the assigned 3-phase allowance is gated to 0 W. It
+        # must be fresh: an old high value must never influence live control.
+        self.rawOverheadFreshSeconds = max(
+            5, int(settings.get("RawOverheadFreshSeconds", 15))
+        )
+
         self.wattpilot = None
         self.allowance = 0
+        self.allowanceUpdatedAt = 0
+        self.allowanceBelowMinimumSince = 0
+        self.surplusSince = 0
+        self.surplusBelowMinimumSince = 0
+        self.noAllowanceForcedOff = False
+
+        # Keep the last confirmed connection through a short telemetry glitch.
+        # A physical false reading is only accepted as a disconnect after it
+        # has been stable for CarDisconnectConfirmSeconds.
+        self.carDisconnectedSince = 0
+        self.lastConfirmedCarConnected = False
+        self.effectiveCarConnected = False
         self.lastPhaseSwitchTime = 0
         self.lastOnOffTime = 0
         self.lastVarDump = 0
         self.chargingTime = 0
-        self.currentPhaseMode = 1 # will be detected later
-        self.mode:VrmEvChargerControlMode = VrmEvChargerControlMode.Manual # will be detected later
+        self.currentPhaseMode = 1  # 1 = one phase, 2 = Wattpilot three-phase code
+        self.mode: VrmEvChargerControlMode = VrmEvChargerControlMode.Manual
         self.autostart = 0
-        self.noChargeSince = 0 #flag to detect, when car is fully charged.
+        self.noChargeSince = 0
         self.isIdleMode = False
-        self.isHibernateEnabled = self.config["FroniusWattpilot"]["HibernateMode"].lower() == "true"
+        self.isHibernateEnabled = settings["HibernateMode"].lower() == "true"
         self.mqttAllowanceTopic = 'es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Allowance'
+        # SolarOverheadDistributor already publishes its raw, pre-allocation
+        # overhead on MQTT. Keep a local copy as a reliable fallback for the
+        # D-Bus subscription: both services may start in either order.
+        self.mqttRawOverheadTopic = (
+            'es-ESS/SolarOverheadDistributor/Calculations/OverheadAvailable'
+        )
+        self.mqttRawOverheadW = None
+        self.mqttRawOverheadUpdatedAt = 0
+
+        self.batteryAssistSince = 0
+        self.batteryAssistActive = False
+        self.batteryAssistShortfallW = 0
+        # A timeout lockout persists after the active assist timer is cleared.
+        # It is released only after verified PV recovery or a real disconnect.
+        self.batteryAssistLockedOut = False
+        self.batteryAssistLockoutSince = 0
+        self.batteryAssistRecoverySince = 0
+
+        # Charge-complete hold persists for the current plugged-in session.
+        # It is not a stop command: the Wattpilot remains in its present state.
+        self.chargeCompleteHold = False
+        self.chargeCompleteSince = 0
+        self.chargeCompleteResumeSince = 0
+
+        self.gridImportSince = 0
+
+        # Startup / phase-transition telemetry bridge. This is not a battery
+        # assist: it only prevents a false 0 W allowance while the Wattpilot
+        # has accepted a valid PV command but has not yet reported real power.
+        self.powerTransitionUntil = 0
+        self.powerTransitionExpectedW = 0
+        self.powerTransitionReason = ""
+        self.powerTransitionTelemetryReadyAt = 0
+
+        # A command to change phases is not proof that the Wattpilot or car
+        # actually changed phases. Keep a short confirmation window and fall
+        # back safely if phase telemetry never confirms the requested state.
+        self.pendingPhaseSwitchMode = 0
+        self.pendingPhaseSwitchSince = 0
+
+        # Populated in initDbusSubscriptions().
+        self.batterySocDbus = None
+        self.batteryPowerDbus = None
+        self.gridL1Dbus = None
+        self.gridL2Dbus = None
+        self.gridL3Dbus = None
+        # Raw PV overhead calculated by SolarOverheadDistributor. This remains
+        # meaningful even when a three-phase Wattpilot request is assigned 0 W
+        # because the three-phase 6 A minimum cannot be met.
+        self.overheadAvailableDbus = None
 
     def initDbusService(self):
         self.dbusService = VeDbusService(self.serviceName, bus=dbusConnection(), register=False)
@@ -92,19 +250,79 @@ class FroniusWattpilot (esESSService):
 
         #Additional Stuff, not required by definition
         self.dbusService.add_path('/CarState', None)
-        self.dbusService.add_path('/PhaseMode', None)
+        # PhaseMode uses the human-facing phase count: 0 = unknown/transition,
+        # 1 = one phase and 3 = three phases. The internal controller uses 2
+        # as its three-phase state, so do not expose that internal value here.
+        self.dbusService.add_path('/PhaseMode', 0)
+        self.dbusService.add_path('/PhaseModeLiteral', 'Unknown')
         self.dbusService.add_path('/ModeLiteral', VrmEvChargerControlMode(0).name)
         self.dbusService.add_path('/StatusLiteral', VrmEvChargerStatus(0).name)
         self.dbusService.add_path('/StartStopLiteral', VrmEvChargerStartStop(0).name)
         self.dbusService.add_path('/LastChargeModeLiteral', None)
+        self.dbusService.add_path('/PvAllowance', 0)
+        self.dbusService.add_path('/BatteryAssist/Active', 0)
+        self.dbusService.add_path('/BatteryAssist/Elapsed', 0)
+        self.dbusService.add_path('/BatteryAssist/Shortfall', 0)
+        self.dbusService.add_path('/BatteryAssist/LockedOut', 0)
+        self.dbusService.add_path('/BatteryAssist/RecoveryElapsed', 0)
+        self.dbusService.add_path('/ChargeComplete/Hold', 0)
+        self.dbusService.add_path('/ChargeComplete/Elapsed', 0)
+        self.dbusService.add_path('/ChargeComplete/ResumeElapsed', 0)
+        self.dbusService.add_path('/GridImport', 0)
 
         self.dbusService.register()
 
     def initDbusSubscriptions(self):
-        pass
+        self.batterySocDbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Dc/Battery/Soc"
+        )
+        self.batteryPowerDbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Dc/Battery/Power"
+        )
+        self.gridL1Dbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Ac/Grid/L1/Power"
+        )
+        self.gridL2Dbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Ac/Grid/L2/Power"
+        )
+        self.gridL3Dbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Ac/Grid/L3/Power"
+        )
+        self.overheadAvailableDbus = self.registerDbusSubscription(
+            "com.victronenergy.settings.esESS_SolarOverheadDistributor",
+            "/Calculations/OverheadAvailable"
+        )
 
     def initMqttSubscriptions(self):
-        self.registerMqttSubscription(self.mqttAllowanceTopic, callback=self.onMqttMessage)
+        self.registerMqttSubscription(
+            self.mqttAllowanceTopic, callback=self.onMqttMessage
+        )
+        self.registerMqttSubscription(
+            self.mqttRawOverheadTopic, callback=self.onMqttMessage
+        )
+
+    def onMqttMessage(self, client, userdata, msg):
+        """Receive Wattpilot allowance and raw distributor-overhead updates."""
+        try:
+            payload = msg.payload
+            if isinstance(payload, bytes):
+                payload = payload.decode("utf-8")
+            value = float(str(payload).strip())
+
+            if msg.topic == self.mqttAllowanceTopic:
+                self.allowance = value
+                self.allowanceUpdatedAt = time.time()
+                return
+
+            if msg.topic == self.mqttRawOverheadTopic:
+                self.mqttRawOverheadW = max(0.0, value)
+                self.mqttRawOverheadUpdatedAt = time.time()
+        except Exception as ex:
+            c(
+                self,
+                "Exception while processing Wattpilot distributor message.",
+                exc_info=ex,
+            )
 
     def initWorkerThreads(self):
         self.registerWorkerThread(self._update, 5000)
@@ -120,12 +338,15 @@ class FroniusWattpilot (esESSService):
         self.wattpilot.connect()
         
         #Wait for some information to arrive. 
-        Helper.waitTimeout(lambda: self.wattpilot.connected, 30) or e(self, "Unable to connect to wattpilot wthin 30 seconds... Wattpilot offline or credentials wrong?")
-        Helper.waitTimeout(lambda: self.wattpilot.power1 is not None, 30) 
-        Helper.waitTimeout(lambda: self.wattpilot.power2 is not None, 30) 
-        Helper.waitTimeout(lambda: self.wattpilot.power3 is not None, 30) 
-        Helper.waitTimeout(lambda: self.wattpilot.carConnected is not None, 30) 
-        Helper.waitTimeout(lambda: self.wattpilot.mode is not None, 30) 
+        Helper.waitTimeout(lambda: self.wattpilot.connected, 30) or e(self, "Unable to connect to wattpilot within 30 seconds...")
+        Helper.waitTimeout(lambda: self.wattpilot.power1 is not None, 30)
+        Helper.waitTimeout(lambda: self.wattpilot.power2 is not None, 30)
+        Helper.waitTimeout(lambda: self.wattpilot.power3 is not None, 30)
+
+        if not Helper.waitTimeout(lambda: self.wattpilot.carStateReady, 30):
+           e(self, "Wattpilot car state not available after 30 seconds")
+
+        Helper.waitTimeout(lambda: self.wattpilot.mode is not None, 30)
 
         #determine current modes.
         if (self.wattpilot.mode == WattpilotControlMode.ECO):
@@ -157,20 +378,33 @@ class FroniusWattpilot (esESSService):
     def _froniusHandleChangedValue(self, path, value):
         i(self, "User/cerbo/vrm updated " + str(path) + " to " + str(value))
 
-        if (path == "/SetCurrent"):
-            #Value coming in needs to be cut in third, due to missing 3 phases option on vrm!
-            #except value is smaller than single phase maximum! 
-            ampPerPhase = int(round(value/3.0)) if value > self.wattpilot.ampLimit else value
+        if path == "/SetCurrent":
+            requestedCurrent = int(value)
+            maxCurrent = self.getEffectiveMaxCurrent()
 
-            if (value > self.wattpilot.ampLimit):
-                self.wattpilot.set_phases(2)
-                self.currentPhaseMode = 2
+            # Never round a device-reported cap below the configured minimum
+            # back up to the minimum. Doing so would command more current than
+            # the Wattpilot, vehicle, or installation allows.
+            if requestedCurrent <= 0 or not self.canChargeAtMinimumCurrent():
+                self.wattpilot.set_power(0)
             else:
-                self.wattpilot.set_phases(1)
-                self.currentPhaseMode = 1
+                if requestedCurrent > maxCurrent:
+                    self.currentPhaseMode = 2
+                    self.wattpilot.set_phases(2)
+                    ampPerPhase = int(round(requestedCurrent / 3.0))
+                else:
+                    self.currentPhaseMode = 1
+                    self.wattpilot.set_phases(1)
+                    ampPerPhase = requestedCurrent
 
-            self.wattpilot.set_power(ampPerPhase)
-        elif (path == "/StartStop"):
+                ampPerPhase = min(maxCurrent, ampPerPhase)
+
+                if ampPerPhase < self.minCurrentPerPhase:
+                    self.wattpilot.set_power(0)
+                else:
+                    self.wattpilot.set_power(ampPerPhase)
+
+        elif path == "/StartStop":
             state = VrmEvChargerStartStop(value)
             self.dbusService["/StartStopLiteral"] = state.name
 
@@ -178,19 +412,15 @@ class FroniusWattpilot (esESSService):
                 self.wattpilot.set_start_stop(WattpilotStartStop.On)
             elif state == VrmEvChargerStartStop.Stop:
                 self.wattpilot.set_start_stop(WattpilotStartStop.Off)
-                
-        elif (path == "/Mode"):
+
+        elif path == "/Mode":
             priorMode = self.mode
             newMode = VrmEvChargerControlMode(value)
             self.switchMode(priorMode, newMode)
-       
+
         self.dumpEvChargerInfo()
         return True
 
-   # When Mode is switched, different settings needs to be enabled/disabled. 
-   # 0 = Manual => User control, only forward commands from VRM to wattpilot and read wattpilotstats.
-   # 1 = Automatic => Overhead Mode, disable VRM Control, register pv overhead consumer as auto.
-   # 2 = Scheduled => only used to trigger wattpilot from sleepmode.
     def switchMode(self, fromMode:VrmEvChargerControlMode, toMode:VrmEvChargerControlMode):
         # TODO: When we are in hibernate mode, and attempting to switch mode, it fails, because of 
         #       Hibernate. Maybe needs resolution? WakeUp + KeepAlive? -> Would need a generally different
@@ -210,6 +440,7 @@ class FroniusWattpilot (esESSService):
 
             elif (fromMode == VrmEvChargerControlMode.Auto and toMode == VrmEvChargerControlMode.Manual):
                 self.autostart = 0
+                self.clearChargeCompleteHold("manual mode selected")
                 self.wattpilot.set_mode(WattpilotControlMode.Default)
 
         elif (toMode == VrmEvChargerControlMode.Scheduled):
@@ -218,402 +449,1645 @@ class FroniusWattpilot (esESSService):
             self.switchMode(VrmEvChargerControlMode.Scheduled, fromMode)
          
     def wakeUpWattpilot(self):
-        self.publishServiceMessage(self, "Connecting to wattpilot to verify car status.")
-        self.wattpilot._auto_reconnect=True
-        self.wattpilot.connect()
-        self.isIdleMode=False
+       if self.wattpilot.connected:
+          self.isIdleMode = False
+          return
+
+       now = time.time()
+
+       if hasattr(self, "lastReconnectAttempt"):
+          if now - self.lastReconnectAttempt < 35:
+             d(self, "Reconnect already attempted recently; waiting.")
+             return
+
+       self.lastReconnectAttempt = now
+
+       self.publishServiceMessage(
+          self,
+          "Connecting to wattpilot to verify car status.",
+       )
+
+       self.wattpilot._auto_reconnect = True
+       self.wattpilot.connect()
+       self.isIdleMode = False
 
     def _update(self):
         try:
-            #if the car is not connected, we can greatly reduce system load.
-            #just dump values every 5 minutes then. If car is connected, we need
-            #to perform updates every tick.
-            if (self.wattpilot.carConnected or not self.isIdleMode or (self.lastVarDump < (time.time() - 300)) or not self.wattpilot.carStateReady):
-                # loop, if
-                # - Wattpilot reports car conencted
-                # - in idle mode every 5 minutes
-                # - wattpilot is uncertain about car state.
-                self.lastVarDump = time.time()
+            effectiveCarConnected = self.updateEffectiveCarConnection()
 
-                #switch idle mode to reduce load, when not required.
-                skipIdleCheck = False
-                if (self.wattpilot.carStateReady):
-                    if (not self.isIdleMode and not self.wattpilot.carConnected):
-                        self.publishServiceMessage(self, "Car no longer connected. Switching to Idle-Mode.")
-                        if (self.isHibernateEnabled):
-                            self.publishServiceMessage(self, "Hibernate is enabled. Disconnecting from wattpilot.")
-                            self.wattpilot._auto_reconnect=False
-                            self.wattpilot.disconnect()
+            # In idle mode the charger is polled only every five minutes. While a
+            # car is connected (or briefly disconnecting) we run every five
+            # seconds for PV and safety control.
+            if not (
+                effectiveCarConnected
+                or not self.isIdleMode
+                or self.lastVarDump < (time.time() - 300)
+                or not self.wattpilot.carStateReady
+            ):
+                return
 
-                    elif (self.isIdleMode):
-                        if (self.wattpilot.connected and self.wattpilot.carConnected):
-                            self.publishServiceMessage(self, "Car connected. Switching to Operation-Mode.")
-                        elif (not self.wattpilot.connected):
-                            self.wakeUpWattpilot()
-                            skipIdleCheck=True
+            self.lastVarDump = time.time()
+            skipIdleCheck = False
 
-                            if (Helper.waitTimeout(lambda: self.wattpilot.carStateReady, 30)):
-                                if (self.wattpilot.carConnected):
-                                    self.publishServiceMessage(self, "Car connected. Entering operation mode.")
+            if self.wattpilot.carStateReady:
+                if not self.isIdleMode and not effectiveCarConnected:
+                    self.publishServiceMessage(
+                        self, "Car no longer connected. Switching to Idle-Mode."
+                    )
+                    if self.isHibernateEnabled:
+                        self.publishServiceMessage(
+                            self, "Hibernate is enabled. Disconnecting from wattpilot."
+                        )
+                        self.wattpilot._auto_reconnect = False
+                        self.wattpilot.disconnect()
 
-                        
-                    if (not skipIdleCheck):                    
-                        self.isIdleMode = not self.wattpilot.carConnected
-                else:
-                    d(self, "Car State not yet ready, not performing idle checks.")
+                elif self.isIdleMode:
+                    if self.wattpilot.connected and effectiveCarConnected:
+                        self.publishServiceMessage(
+                            self, "Car connected. Switching to Operation-Mode."
+                        )
+                    elif not self.wattpilot.connected:
+                        self.wakeUpWattpilot()
+                        skipIdleCheck = True
+                        if Helper.waitTimeout(lambda: self.wattpilot.carStateReady, 30):
+                            if self.wattpilot.carConnected:
+                                self.publishServiceMessage(
+                                    self, "Car connected. Entering operation mode."
+                                )
 
-                # driving factor for any decission has to be wattpilots modelstatus. Based on the current status, 
-                # we need to determine "what to do" and take proper steps to make it happen. 
-                # Not every status is important and can be reflected in VRM, so they can be ignored. (else)
-                # Modelstatus can be: 
-                #   id | Wattpilot Status Text                          VRM id | VRM Status Text
-                #   0  | NotChargingBecauseNoChargeCtrlData=0,               0 | Disconnected
-                #   1  | NotChargingBecauseOvertemperature=1,           
-                #   2  | NotChargingBecauseAccessControlWait=2, 
-                #   3  | ChargingBecauseForceStateOn=3,                       2 | Charging (usually we are here in automatic control)
-                #                                                                 When attempting to start/stop, report 21/24 start/stop charging.
-                #   4  | NotChargingBecauseForceStateOff=4,                   1,4 | if in auto mode, we report 4 (waiting for sun), in manual mode, that's just a 1 (connected)
-                #   5  | NotChargingBecauseScheduler=5, 
-                #   6  | NotChargingBecauseEnergyLimit=6,
-                #   7  | ChargingBecauseAwattarPriceLow=7,                    2 | Charging (no control required here, using low-price feature)
-                #   8  | ChargingBecauseAutomaticStopTestLadung=8,            2 | Charging
-                #   9  | ChargingBecauseAutomaticStopNotEnoughTime=9,         2 | Charging 
-                #   10 | ChargingBecauseAutomaticStop=10,                     2 | Charging 
-                #   11 | ChargingBecauseAutomaticStopNoClock=11,              2 | Charging
-                #   12 | ChargingBecausePvSurplus=12,                         2 | Charging
-                #   13 | ChargingBecauseFallbackGoEDefault=13,                2 | Charging
-                #   14 | ChargingBecauseFallbackGoEScheduler=14,              2 | Charging
-                #   15 | ChargingBecauseFallbackDefault=15,                   2 | Charging
-                #   16 | NotChargingBecauseFallbackGoEAwattar=16, 
-                #   17 | NotChargingBecauseFallbackAwattar=17, 
-                #   18 | NotChargingBecauseFallbackAutomaticStop=18, 
-                #   19 | ChargingBecauseCarCompatibilityKeepAlive=19,         2 | Charging
-                #   20 | ChargingBecauseChargePauseNotAllowed=20,             2 | Charging
-                #   22 | NotChargingBecauseSimulateUnplugging=22, 
-                #   23 | NotChargingBecausePhaseSwitch=23,                    22,23 | Report proper phaseswitch direction, 22=to-3-phase, 23 to-1-phase
-                #   24 | NotChargingBecauseMinPauseDuration=24)
-                #   
-                d(self, "Wattpilot Modelstatus: {model}".format(model=self.wattpilot.modelStatus))
+                if not skipIdleCheck:
+                    self.isIdleMode = not effectiveCarConnected
+            else:
+                d(self, "Car State not yet ready, not performing idle checks.")
 
-                #user may switch mode on wattpilot. verify current mode we are supposed to be in. 
-                #determine current modes.
-                if (self.wattpilot.mode == WattpilotControlMode.ECO):
-                    self.autostart = 1
-                    self.mode = VrmEvChargerControlMode.Auto
-                else:
-                    self.autostart = 0
-                    self.mode = VrmEvChargerControlMode.Manual
+            d(
+                self,
+                "Wattpilot Modelstatus: {0}".format(self.wattpilot.modelStatus)
+            )
 
-                #keep the Start-Stop State in line anytime, no matter if auto or manual mode.
-                self.reportStartStopValue(VrmEvChargerStartStop.Start if self.wattpilot.power != 0 else VrmEvChargerStartStop.Stop)
+            # Reflect the mode selected in the Wattpilot.
+            if self.wattpilot.mode == WattpilotControlMode.ECO:
+                self.autostart = 1
+                self.mode = VrmEvChargerControlMode.Auto
+            else:
+                self.autostart = 0
+                self.mode = VrmEvChargerControlMode.Manual
+                self.clearChargeCompleteHold("manual mode selected")
 
-                if (self.wattpilot.modelStatus == WattpilotModelStatus.NotChargingBecauseNoChargeCtrlData or not self.wattpilot.carConnected):
-                    #Disconnected wins over any state reported by wattpilot.
-                    #EV Disconnected. Nothing to do here, but report data and a 0 watt request and none-automatic mode. 
-                    self.reportVRMStatus(VrmEvChargerStatus.Disconnected) #disconnected
+            self.reportStartStopValue(
+                VrmEvChargerStartStop.Start
+                if self.wattpilot.power != 0
+                else VrmEvChargerStartStop.Stop
+            )
 
-                    #when disconnected, reset the noChargeSinceFlag, so charging will start upon next connection.
-                    self.noChargeSince = 0
+            if not self.wattpilot.carStateReady:
+                d(self, "Car state not ready yet.")
+                return
 
-                elif (self.wattpilot.modelStatus == WattpilotModelStatus.ChargingBecauseForceStateOn or self.wattpilot.modelStatus == WattpilotModelStatus.ChargingBecauseFallbackDefault):
-                    #Wattpilot is charging, because forced on. So, we are either in manual control + on, or running in automatic mode. 
-                    #in manual mode - nothing to do, but report consumption. In Auto Mode, we have to take control.
-                    #Wattpilot eco means "auto control."
+            self.publishSafetyTelemetry()
 
-                    if (self.wattpilot.power <= 0):
-                        self.noChargeSince += 5
-                    else:
-                        self.noChargeSince = 0
-
-                    if (self.noChargeSince >= 120):
-                        #we are officially charging, but no charge happened since 2 minutes. 
-                        #so, we assume, car is fully charged. 
-                        d(self, "No charge since 2 minutes... Assuming car is fully charged.")
-                        self.reportVRMStatus(VrmEvChargerStatus.Charged)
-                    else:
-                        self.chargingTime += 5
-                        self.publishRetained("/LastChargeModeLiteral", "SolarOverhead")
-                        if (self.wattpilot.mode == WattpilotControlMode.ECO):
-                            #Mode auto + charging reported. => We are in duty of contorl!
-                            if self.allowance >= self.wattpilot.voltage1 * 6:
-                                targetAmps = int(round(max(self.allowance / self.wattpilot.voltage1, 6))) 
-                                targetAmps = min(self.wattpilot.ampLimit * 3, targetAmps) #obey limits.
-
-                                self.publishServiceMessage(self, "Current allowance is {0}W, that's {1}A".format(self.allowance, targetAmps))
-
-                                #Adjust charging rate. Method over there will handle phase-switching if required and return the proper state
-                                self.reportVRMStatus(self.adjustChargeCurrent(targetAmps))
-                                
-                            else:
-                                #No allowance or low price ended., but still charging. Let's try to stop. 
-                                i(self, "NO Allowance or end of low price phase, stopping charging.")
-                                self.reportVRMStatus(VrmEvChargerStatus.StopCharging) #Stop charging
-
-                                onOffCooldownSeconds = self.getOnOffCooldownSeconds()
-                                if (onOffCooldownSeconds <= 0):
-                                    #stop charging
-                                    i(self, "STOP send!")
-                                    self.wattpilot.set_start_stop(WattpilotStartStop.Off)
-                                    self.lastOnOffTime = time.time()
-                                    self.dbusService["/StartStop"] = VrmEvChargerStartStop.Stop.value   
-                                    self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Stop.name
-
-                                    #set phases to auto, in case the user takes manual control in the mean time, 
-                                    #or low-price-charging kicks in.
-                                    self.currentPhaseMode = 0
-                                    self.wattpilot.set_phases(0)
-                                else:
-                                    self.publishServiceMessage(self, "Stop-Charge delayed due to on/off cooldown: {0}s. Using 6A to reduce impact.".format(onOffCooldownSeconds))
-                                    self.wattpilot.set_power(6) #go for minimum amps, as long as we can't stop. 
-                        else:
-                            #charging, but not in auto mode - so, charging is all that's left to say. 
-                            d(self, "Charging in manual mode.")
-                            self.reportVRMStatus(VrmEvChargerStatus.Charging) #charging
-                        
-                    #in either mode, report consumption and current phasemode.
-                    self.reportConsumption()
-
-                elif (self.wattpilot.modelStatus.value in [4,5,6,16,17,18,22,24]):
-                    #NotChargingBecauseWhatever - this is most likely our operational state in automatic mode. 
-                    if (self.wattpilot.mode == WattpilotControlMode.ECO):
-                        #auto
-                        #check allowance
-                        if (self.allowance >= self.wattpilot.voltage1 * 6):
-                            onOffCooldownSeconds = self.getOnOffCooldownSeconds()
-
-                            self.reportVRMStatus(VrmEvChargerStatus.StartCharging) #start charging
-
-                            if (onOffCooldownSeconds <= 0):
-                                self.publishServiceMessage(self, "Starting to charge.")
-
-                                #check, if we need to start in 1 or 3 phase mode, based on targetAmps. 
-                                targetAmps = int(round(max(self.allowance / self.wattpilot.voltage1, 6))) 
-                                targetAmps = min(self.wattpilot.ampLimit * 3, targetAmps) #obey limits.
-
-                                if (targetAmps > self.wattpilot.ampLimit):
-                                    self.currentPhaseMode=2
-                                    self.wattpilot.set_phases(2)
-                                else:
-                                    self.currentPhaseMode=1
-                                    self.wattpilot.set_phases(1)
-                                
-                                self.wattpilot.set_power(targetAmps)
-                                self.wattpilot.set_start_stop(WattpilotStartStop.On)
-                                self.lastOnOffTime = time.time()
-                                self.dbusService["/StartStop"] = VrmEvChargerStartStop.Start.value
-                                self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Start.name
-                                
-                            else:
-                                self.publishServiceMessage(self, "Start-Charge delayed due to on/off cooldown: {0}s".format(onOffCooldownSeconds))
-                        else:
-                            d(self, "Waiting for Sun in auto mode")
-                            self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun) #waiting for sun.
-
-                            #ensure, we are in neutral state, so cheap price charging can kick in. 
-                            if self.wattpilot.startState != WattpilotStartStop.Neutral:
-                                d(self, "Returning charge control to neutral state.")
-                                self.wattpilot.set_start_stop(WattpilotStartStop.Neutral)
-                                
-                    else:
-                        #not charging, but not in auto mode - so, connected is all that's left to say. 
-                        self.reportVRMStatus(VrmEvChargerStatus.Connected) #connected 
-
-                elif (self.wattpilot.modelStatus in[WattpilotModelStatus.ChargingBecauseAwattarPriceLow]) :
-                    if (self.wattpilot.power <= 0):
-                        self.noChargeSince += 5
-                    else:
-                        self.noChargeSince = 0
-
-                    if (self.noChargeSince >= 120):
-                        #we are officially charging, but no charge happened since 2 minutes. 
-                        #so, we assume, car is fully charged. 
-                        d(self, "No charge since 2 minutes... Assuming car is fully charged.")
-                        self.reportVRMStatus(VrmEvChargerStatus.Charged)
-                    else:
-                        self.chargingTime += 5
-                        self.reportVRMStatus(VrmEvChargerStatus.Charging) 
-                        self.reportConsumption()
-                        self.publishRetained("/LastChargeModeLiteral", "LowPrice")
-                    
-                elif (self.wattpilot.modelStatus == WattpilotModelStatus.NotChargingBecausePhaseSwitch):
-                    self.chargingTime += 5
-                    #Phaseswitch, report properly. 
-                    #when we set the phasemode and wattpilot starts to switch,
-                    #our status is "ahead". So, if we are in phase mode 1 and wattpilot starts to report "phaseswitching", we are actually switching from 3 to 1.
-                    #22 = Switching to 3-phase
-                    #23 = Switching to 1-phase
-                    if (self.currentPhaseMode == 1):
-                        self.reportVRMStatus(VrmEvChargerStatus.SwitchingTo1Phase)
-                    elif (self.currentPhaseMode == 2):
-                        self.reportVRMStatus(VrmEvChargerStatus.SwitchingTo3Phase)
-
-                else:
-                    w(self, "Unknown Modelstatus reported: {0} - doing nothing.".format(self.wattpilot.modelStatus))
-
-                #update current values that are independent of model status and dump infos.
+            # Backstop: Auto mode may never deliberately continue a charge
+            # session while the site is importing meaningful grid power.
+            if (
+                self.mode == VrmEvChargerControlMode.Auto
+                and not self.allowGridCharging
+                and self.gridImportLimitExceeded()
+            ):
+                self.publishServiceMessage(
+                    self,
+                    "Grid import guard triggered. Stopping EV charging."
+                )
+                self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
+                self.forceStopForNoAllowance()
                 self.reportBaseRequest()
                 self.dumpEvChargerInfo()
+                return
+
+            pendingPhaseStatus = self.reconcilePendingPhaseSwitch()
+            if pendingPhaseStatus is not None:
+                self.reportVRMStatus(pendingPhaseStatus)
+                self.reportBaseRequest()
+                self.dumpEvChargerInfo()
+                return
+
+            # Do not clear a live session on one false carConnected update. The
+            # debounce is particularly important while Wattpilot is processing
+            # a start command or a phase transition.
+            if not effectiveCarConnected:
+                self.reportVRMStatus(VrmEvChargerStatus.Disconnected)
+                self.noChargeSince = 0
+                self.surplusSince = 0
+                self.surplusBelowMinimumSince = 0
+                self.noAllowanceForcedOff = False
+                self.clearBatteryAssist()
+                self.clearBatteryAssistLockout("car disconnected")
+                self.clearChargeCompleteHold("car disconnected")
+                self.clearPowerTransitionGrace()
+                self.clearPendingPhaseSwitch()
+
+            elif self.wattpilot.modelStatus.value in [3, 12, 15, 19, 20]:
+                self.handleChargingState()
+
+            elif self.wattpilot.modelStatus.value in [4, 5, 6, 16, 17, 18, 22, 24]:
+                self.handleNotChargingState()
+
+            elif (
+                self.wattpilot.modelStatus
+                == WattpilotModelStatus.ChargingBecauseAwattarPriceLow
+            ):
+                # In automatic mode this project is configured for no grid
+                # charging. Manual mode remains under the user's direct control.
+                if (
+                    self.mode == VrmEvChargerControlMode.Auto
+                    and not self.allowGridCharging
+                ):
+                    self.publishServiceMessage(
+                        self,
+                        "Grid-price charging is disabled in Auto mode. Stopping EV charging."
+                    )
+                    self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
+                    self.forceStopForNoAllowance()
+                else:
+                    self.handleExternalChargingState("LowPrice")
+
+            elif (
+                self.wattpilot.modelStatus
+                == WattpilotModelStatus.NotChargingBecausePhaseSwitch
+            ):
+                self.chargingTime += 5
+                if self.currentPhaseMode == 1:
+                    self.reportVRMStatus(VrmEvChargerStatus.SwitchingTo1Phase)
+                elif self.currentPhaseMode == 2:
+                    self.reportVRMStatus(VrmEvChargerStatus.SwitchingTo3Phase)
+
+            else:
+                w(
+                    self,
+                    "Unknown Modelstatus reported: {0} - doing nothing.".format(
+                        self.wattpilot.modelStatus
+                    )
+                )
+
+            self.reportBaseRequest()
+            self.dumpEvChargerInfo()
+
         except Exception as ex:
             c(self, "Exception during duty-cycle.", exc_info=ex)
+
+
+    def handleChargingState(self):
+        measuredPowerW = self.actualMeasuredPowerW()
+
+        # Near a vehicle's target SOC, it can report a Charging model state
+        # while drawing only a small balancing or keep-alive load. Use a
+        # configurable threshold rather than requiring an exact 0 W reading.
+        if measuredPowerW <= self.chargeCompletePowerThresholdW:
+            self.noChargeSince += 5
+        else:
+            self.noChargeSince = 0
+
+        if self.mode == VrmEvChargerControlMode.Auto:
+            if self.chargeCompleteHold:
+                if not self.updateChargeCompleteHoldResume(measuredPowerW):
+                    self.clearBatteryAssist()
+                    self.clearPowerTransitionGrace()
+                    self.publishRetained(
+                        "/LastChargeModeLiteral", "ChargeCompleteHold"
+                    )
+                    self.reportVRMStatus(VrmEvChargerStatus.Charged)
+                    self.reportConsumption()
+                    return
+
+                # A genuine sustained resume was detected. Continue with the
+                # normal Auto path in this same cycle.
+                self.noChargeSince = 0
+
+            if self.noChargeSince >= self.chargeCompleteConfirmSeconds:
+                self.enterChargeCompleteHold()
+                self.clearBatteryAssist()
+                self.clearPowerTransitionGrace()
+                self.publishRetained(
+                    "/LastChargeModeLiteral", "ChargeCompleteHold"
+                )
+                self.reportVRMStatus(VrmEvChargerStatus.Charged)
+                self.reportConsumption()
+                return
+
+        self.chargingTime += 5
+        self.publishRetained("/LastChargeModeLiteral", "SolarOverhead")
+
+        if self.mode == VrmEvChargerControlMode.Auto:
+            self.reportVRMStatus(self.controlAutomaticCharging())
+        else:
+            d(self, "Charging in manual mode.")
+            self.reportVRMStatus(VrmEvChargerStatus.Charging)
+
+        self.reportConsumption()
+
+    def handleExternalChargingState(self, chargeMode):
+        if self.wattpilot.power is None or self.wattpilot.power <= 0:
+            self.noChargeSince += 5
+        else:
+            self.noChargeSince = 0
+
+        if self.noChargeSince >= 120:
+            self.reportVRMStatus(VrmEvChargerStatus.Charged)
+            return
+
+        self.chargingTime += 5
+        self.reportVRMStatus(VrmEvChargerStatus.Charging)
+        self.reportConsumption()
+        self.publishRetained("/LastChargeModeLiteral", chargeMode)
+
+    def handleNotChargingState(self):
+        # Wattpilot uses NotChargingBecauseSimulateUnplugging while it applies
+        # a newly commanded start or phase change. Do not reset the five-minute
+        # PV timer or issue another Off command during this short transition.
+        if self.powerTransitionGraceActive():
+            self.reportVRMStatus(VrmEvChargerStatus.StartCharging)
+            d(
+                self,
+                "Waiting for Wattpilot transition telemetry: {0:.0f}W expected for {1:.0f}s.".format(
+                    self.powerTransitionExpectedW,
+                    max(0, self.powerTransitionUntil - time.time())
+                )
+            )
+            return
+
+        self.clearBatteryAssist()
+
+        # Do not restart, phase switch, or force the charger off after a car
+        # has completed charging. The hold is cleared by a real unplug event,
+        # Manual mode, or a sustained meaningful charging resume.
+        if self.chargeCompleteHold:
+            self.publishRetained("/LastChargeModeLiteral", "ChargeCompleteHold")
+            self.reportVRMStatus(VrmEvChargerStatus.Charged)
+            return
+
+        if self.mode != VrmEvChargerControlMode.Auto:
+            self.reportVRMStatus(VrmEvChargerStatus.Connected)
+            return
+
+        # Keep a previously accumulated start timer through one short PV dip.
+        # A full reset only occurs after SurplusDropGraceSeconds of genuinely
+        # insufficient allowance.
+        stableSeconds = self.getContinuousSurplusSeconds()
+
+        if not self.hasMinimumAllowance():
+            if self.surplusDipGraceActive():
+                self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+                d(
+                    self,
+                    "Brief PV allowance dip; preserving start timer for {0:.0f}s.".format(
+                        max(0, self.surplusDropGraceSeconds - (
+                            time.time() - self.surplusBelowMinimumSince
+                        ))
+                    )
+                )
+                return
+
+            d(self, "Waiting for Sun in auto mode")
+            self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+            self.forceStopForNoAllowance()
+            return
+
+        onOffCooldownSeconds = self.getOnOffCooldownSeconds()
+
+        if (
+            stableSeconds >= self.minimumOnOffSeconds
+            and onOffCooldownSeconds <= 0
+        ):
+            self.startFromPvAllowance()
+        else:
+            self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+            if stableSeconds < self.minimumOnOffSeconds:
+                d(
+                    self,
+                    "Waiting for stable PV allowance: {0:.0f}/{1}s".format(
+                        stableSeconds, self.minimumOnOffSeconds
+                    )
+                )
+            else:
+                d(
+                    self,
+                    "Waiting for start cooldown: {0:.0f}s".format(
+                        onOffCooldownSeconds
+                    )
+                )
+
+
+    def startFromPvAllowance(self):
+        desiredPhaseMode = self.desiredPhaseModeForPvAllowance()
+        targetAmps = self.targetCurrentForPhase(
+            desiredPhaseMode, self.allowance
+        )
+
+        if targetAmps < self.minCurrentPerPhase:
+            self.publishServiceMessage(
+                self,
+                "PV allowance cannot satisfy the effective Wattpilot current minimum. Not starting EV charging."
+            )
+            self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+            return
+
+        self.reportVRMStatus(VrmEvChargerStatus.StartCharging)
+        self.publishServiceMessage(
+            self,
+            "Starting to charge after {0:.0f}s of continuous PV allowance.".format(
+                self.getContinuousSurplusSeconds()
+            )
+        )
+
+        self.currentPhaseMode = desiredPhaseMode
+        self.beginPowerTransitionGrace(
+            desiredPhaseMode,
+            targetAmps,
+            "EV start"
+        )
+        self.wattpilot.set_phases(desiredPhaseMode)
+        self.wattpilot.set_power(targetAmps)
+        self.wattpilot.set_start_stop(WattpilotStartStop.On)
+        self.lastOnOffTime = time.time()
+        self.noAllowanceForcedOff = False
+        self.allowanceBelowMinimumSince = 0
+        self.surplusSince = 0
+        self.surplusBelowMinimumSince = 0
+        self.dbusService["/StartStop"] = VrmEvChargerStartStop.Start.value
+        self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Start.name
+
+
+    def controlAutomaticCharging(self):
+        # Defensive guard: a completed EV session must not re-enter automatic
+        # PV, phase-switch, battery-assist, or stop logic while it remains
+        # plugged in.
+        if self.chargeCompleteHold:
+            self.clearBatteryAssist()
+            return VrmEvChargerStatus.Charged
+
+        # The Wattpilot may report a temporary 0 W allowance while it is still
+        # bringing a valid new charge command online. Keep the session alive
+        # until one distributor cycle has seen the real EV power telemetry.
+        if self.powerTransitionGraceActive():
+            d(
+                self,
+                "Holding EV charge during Wattpilot transition telemetry grace."
+            )
+            return VrmEvChargerStatus.Charging
+
+        # The distributor correctly assigns 0 W to a three-phase consumer when
+        # available PV falls below the three-phase 6 A minimum. That does not
+        # mean PV is gone: it may still be enough for one-phase charging. Step
+        # down before evaluating battery assist or issuing a strict stop.
+        if self.shouldPhaseDownForPvDip():
+            return self.switchToOnePhaseForPvDip()
+
+        pvAllowance = max(0, self.allowance)
+        activeDemandW = self.currentChargeDemandPower()
+        shortfallW = max(0, activeDemandW - pvAllowance)
+
+        # A completed assist window stays locked out until PV has continuously
+        # covered the current EV demand for the configured recovery period.
+        self.updateBatteryAssistLockoutRecovery(shortfallW)
+
+        # A battery bridge is allowed only for a currently-running charge. It
+        # holds the existing phase/current and never affects fresh starts or
+        # phase-up decisions.
+        if self.startOrContinueBatteryAssist(shortfallW):
+            self.publishServiceMessage(
+                self,
+                "Battery assist active: {0:.0f}W shortfall for {1:.0f}s.".format(
+                    shortfallW, self.getBatteryAssistSeconds()
+                )
+            )
+            return VrmEvChargerStatus.Charging
+
+        self.clearBatteryAssist()
+
+        if self.hasMinimumAllowance():
+            self.allowanceBelowMinimumSince = 0
+            return self.adjustChargeForPvAllowance()
+
+        # The control and distribution workers can run in either order. Hold a
+        # still-active session briefly when allowance first drops to 0 W so a
+        # fresh MQTT allowance can arrive before an irreversible Off command.
+        if self.allowanceStopGraceActive():
+            return VrmEvChargerStatus.Charging
+
+        i(self, "NO PV allowance available after debounce, stopping charging.")
+        self.forceStopForNoAllowance()
+        return VrmEvChargerStatus.StopCharging
+
 
     def reportVRMStatus(self, status:VrmEvChargerStatus):
         self.publish("/Status", status.value)
         self.publish("/StatusLiteral", status.name)
 
     def reportBaseRequest(self):
-        #if voltage is unknown, we cannot request a proper minimum. leave it unset, or at currenet state, happens rarely. :( 
-        if (self.wattpilot.voltage1 is not None):
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Minimum", int(round(self.wattpilot.voltage1 * 6)))
-           
+        if self.wattpilot.voltage1 is not None:
+            minimumPower = (
+                self.threePhaseMinimumPower()
+                if self.currentPhaseMode == 2
+                else self.minimumChargePower()
+            )
+            self.publishMainMqtt(
+                "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Minimum",
+                int(round(minimumPower))
+            )
 
-        self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/IgnoreBatReservation", "false")
-        self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/VRMInstanceID", self.config["FroniusWattpilot"]["VRMInstanceID_OverheadRequest"])
-        self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/IsScriptedConsumer", "true")
-        self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/PriorityShift", 1)
-        self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Priority", self.config["FroniusWattpilot"]["OverheadPriority"])
-        
-        #StepSize depends on Current Phasemode. 
-        if (self.currentPhaseMode == 2):
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/StepSize", int(round(self.wattpilot.voltage1 + self.wattpilot.voltage2 + self.wattpilot.voltage3)))
-        else:
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/StepSize", int(round(self.wattpilot.voltage1)))
+        # When a car is connected in Auto mode, allow real solar that would
+        # otherwise charge the battery to be redirected to the EV. This does
+        # not allow a battery-assisted start because FroniusWattpilot still
+        # requires actual distributor allowance before a fresh start.
+        ignoreReservation = self.shouldIgnoreBatteryReservation()
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/IgnoreBatReservation",
+            "true" if ignoreReservation else "false"
+        )
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/VRMInstanceID",
+            self.config["FroniusWattpilot"]["VRMInstanceID_OverheadRequest"]
+        )
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/IsScriptedConsumer",
+            "true"
+        )
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/PriorityShift",
+            1
+        )
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Priority",
+            self.config["FroniusWattpilot"]["OverheadPriority"]
+        )
 
-        #request overall depends on wheter car is connected and operation mode.
-        if (self.mode == VrmEvChargerControlMode.Auto and self.wattpilot.carConnected and self.noChargeSince <= 120):
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request", 
-                round(self.wattpilot.ampLimit * (self.wattpilot.voltage1 + self.wattpilot.voltage2 + self.wattpilot.voltage3))) 
+        if self.currentPhaseMode == 2:
+            stepSize = self.threePhaseVoltage()
         else:
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request", 0) 
-            
-        #auto or manual?
-        if (self.mode == VrmEvChargerControlMode.Auto):
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/IsAutomatic", "true")
-        else:
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/IsAutomatic", "false")
+            stepSize = self.onePhaseVoltage()
 
-        #report phasemode, always.
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/StepSize",
+            int(round(stepSize))
+        )
+
+        effectiveCarConnected = getattr(
+            self, "effectiveCarConnected", self.wattpilot.carConnected
+        )
+        if (
+            self.mode == VrmEvChargerControlMode.Auto
+            and effectiveCarConnected
+            and not self.chargeCompleteHold
+            and self.noChargeSince < self.chargeCompleteConfirmSeconds
+            and self.canChargeAtMinimumCurrent()
+        ):
+            # A one-phase session must ask the distributor for enough power to
+            # *decide* whether a three-phase change is possible. Previously it
+            # advertised only the 1-phase maximum (~3.7 kW at 16 A), so its
+            # assigned allowance could never reach the configured 3-phase
+            # threshold (4.2 kW). Use a small phase-up probe instead of
+            # advertising the full 3-phase maximum while still on one phase.
+            maxRequest = self.maximumRequestForDistributorW()
+            self.publishMainMqtt(
+                "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request",
+                round(maxRequest)
+            )
+        else:
+            self.publishMainMqtt(
+                "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request",
+                0
+            )
+
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/IsAutomatic",
+            "true" if self.mode == VrmEvChargerControlMode.Auto else "false"
+        )
+
         self.reportPhaseMode()
 
+
     def reportConsumption(self):
-        self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Consumption", self.wattpilot.power * 1000)
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Consumption",
+            self.consumerPowerForDistributor()
+        )
 
     def reportStartStopValue(self, v:VrmEvChargerStartStop):
         self.publish("/StartStop", v.value)
         self.publish("/StartStopLiteral", v.name)
 
     def reportPhaseMode(self):
-        #pvoverhead request
-        if (self.wattpilot.power > 0 and self.currentPhaseMode == 1):
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/CustomName", "Fronius Wattpilot (1)")
-        elif (self.wattpilot.power > 0 and self.currentPhaseMode == 2):
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/CustomName", "Fronius Wattpilot (3)")
+        """Publish a human-readable charging-phase state for GX/VRM and MQTT.
+
+        currentPhaseMode is an internal controller representation: 1 means
+        one-phase and 2 means three-phase. Expose 1 or 3 to user interfaces
+        instead, so the displayed phase count is never misleading.
+        """
+        charging = self.actualMeasuredPowerW() > 0
+
+        if self.currentPhaseMode == 1:
+            phaseCount = 1
+            phaseLiteral = "1 phase"
+        elif self.currentPhaseMode == 2:
+            phaseCount = 3
+            phaseLiteral = "3 phase"
         else:
-            self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/CustomName", "Fronius Wattpilot")
+            phaseCount = 0
+            phaseLiteral = "Phase switching" if self.wattpilot.carConnected else "No vehicle"
 
-    def onMqttMessage(self, client, userdata, msg):
-      try:
-         message = str(msg.payload)[2:-1]
+        if charging:
+            customName = "Fronius Wattpilot - Charging {0}".format(phaseLiteral)
+        elif self.wattpilot.carConnected:
+            customName = "Fronius Wattpilot - Ready ({0})".format(phaseLiteral)
+        else:
+            customName = "Fronius Wattpilot - No vehicle"
 
-         if (msg.topic == self.mqttAllowanceTopic):
-             self.allowance = float(message)
+        # /CustomName is the only standard text field likely to be shown in the
+        # standard GX/VRM EV charger view. /PhaseMode and /PhaseModeLiteral are
+        # also published for MQTT, DBus inspection and custom dashboards.
+        self.publish("/PhaseMode", phaseCount)
+        self.publish("/PhaseModeLiteral", phaseLiteral)
+        self.publish("/CustomName", customName)
 
-      except Exception as e:
-         c(self, "Exception", exc_info=e)
+        # Keep the SolarOverheadDistributor's consumer name in sync as well.
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/CustomName",
+            customName
+        )
 
-    def getOnOffCooldownSeconds(self):
-        return max(0, self.lastOnOffTime + self.minimumOnOffSeconds- time.time())
-    
-    def getPhaseSwitchCooldownSeconds(self):
-        return max(0, self.lastPhaseSwitchTime + self.minimumPhaseSwitchSeconds- time.time())
+    def minimumChargePower(self):
+        return self.onePhaseVoltage() * self.minCurrentPerPhase
 
-    def adjustChargeCurrent(self, targetAmps):
-        desiredPhaseMode = 2 if targetAmps > self.wattpilot.ampLimit else 1
-        enteringPhaseMode = self.currentPhaseMode
+    def threePhaseMinimumPower(self):
+        return self.threePhaseVoltage() * self.minCurrentPerPhase
 
-        d(self, "Current PhaseMode vs desired Phasemode: {0}/{1}".format(enteringPhaseMode, desiredPhaseMode))
-        
-        if (self.currentPhaseMode == desiredPhaseMode):
-            divider = 1 if self.currentPhaseMode == 1 else 3
-            targetAmps = int(round(targetAmps / divider))
-            #Just adjust, no phasemode change required. 
-            i(self, "Adjusting charge current to: {0}A".format(targetAmps))
+    def hasMinimumAllowance(self):
+        return (
+            self.canChargeAtMinimumCurrent()
+            and self.allowance >= self.minimumChargePower()
+        )
+
+    def onePhaseVoltage(self):
+        voltage = self.wattpilot.voltage1
+        return float(voltage) if voltage is not None and voltage > 0 else 230.0
+
+    def threePhaseVoltage(self):
+        voltages = [
+            self.wattpilot.voltage1,
+            self.wattpilot.voltage2,
+            self.wattpilot.voltage3,
+        ]
+        if all(voltage is not None and voltage > 0 for voltage in voltages):
+            return float(sum(voltages))
+        return self.onePhaseVoltage() * 3.0
+
+    def getEffectiveMaxCurrent(self):
+        wattpilotLimit = self.wattpilot.ampLimit
+        if wattpilotLimit is None or wattpilotLimit <= 0:
+            return self.maxCurrentPerPhase
+        return min(self.maxCurrentPerPhase, int(wattpilotLimit))
+
+    def canChargeAtMinimumCurrent(self):
+        """Return whether the reported/current configured limit can start EV charging."""
+        return self.getEffectiveMaxCurrent() >= self.minCurrentPerPhase
+
+
+    def phaseUpThresholdW(self):
+        """Return the PV allocation required before changing to three phases."""
+        return max(
+            float(self.threePhasePvSurplusStartW),
+            self.threePhaseMinimumPower(),
+        )
+
+    def maximumRequestForDistributorW(self):
+        """Return the maximum allocation request for the current control state.
+
+        When 1-phase charging is active (or is about to start), advertise a
+        limited probe at the 3-phase threshold. This breaks the old feedback
+        loop where a 1-phase cap prevented the allowance from ever reaching
+        the threshold needed to select 3-phase. The probe is disabled during a
+        configured phase-switch cooldown, so a recent 3-to-1 transition does
+        not reserve unused power for five minutes.
+        """
+        maxCurrent = self.getEffectiveMaxCurrent()
+        if maxCurrent < self.minCurrentPerPhase:
+            return 0
+
+        onePhaseMaximum = maxCurrent * self.onePhaseVoltage()
+
+        if self.currentPhaseMode == 2:
+            return maxCurrent * self.threePhaseVoltage()
+
+        if self.getPhaseSwitchCooldownSeconds() > 0:
+            return onePhaseMaximum
+
+        return max(onePhaseMaximum, self.phaseUpThresholdW())
+
+    def maxRequestVoltageForCurrentPhase(self):
+        """Return the electrical voltage of the active phase mode.
+
+        Allocation uses maximumRequestForDistributorW() so a 1-phase phase-up
+        probe does not have to advertise the full 3-phase current capacity.
+        """
+        return (
+            self.threePhaseVoltage()
+            if self.currentPhaseMode == 2
+            else self.onePhaseVoltage()
+        )
+
+
+    def desiredPhaseModeForPvAllowance(self):
+        # Hysteresis: phase-up requires the configured higher threshold, while
+        # phase-down happens below the configured lower threshold. Both are
+        # clamped to the electrical three-phase 6 A minimum.
+        phaseStart = self.phaseUpThresholdW()
+        phaseStop = max(
+            float(self.threePhasePvSurplusStopW),
+            self.threePhaseMinimumPower()
+        )
+
+        if self.currentPhaseMode == 2:
+            return 2 if self.allowance >= phaseStop else 1
+
+        return 2 if self.allowance >= phaseStart else 1
+
+    def targetCurrentForPhase(self, phaseMode, allowance):
+        maxCurrent = self.getEffectiveMaxCurrent()
+
+        if maxCurrent < self.minCurrentPerPhase:
+            return 0
+
+        voltage = (
+            self.threePhaseVoltage()
+            if phaseMode == 2
+            else self.onePhaseVoltage()
+        )
+        target = int(floor(max(0, allowance) / voltage))
+
+        if target < self.minCurrentPerPhase:
+            return 0
+
+        return min(maxCurrent, target)
+
+    def currentChargeDemandPower(self):
+        actualPower = (
+            float(self.wattpilot.power) * 1000
+            if self.wattpilot.power is not None
+            else 0
+        )
+        amp = self.wattpilot.amp
+        if amp is None or amp <= 0:
+            return actualPower
+
+        voltage = (
+            self.threePhaseVoltage()
+            if self.currentPhaseMode == 2
+            else self.onePhaseVoltage()
+        )
+        configuredDemand = float(amp) * voltage
+        return max(actualPower, configuredDemand)
+
+    def actualMeasuredPowerW(self):
+        if self.wattpilot.power is None:
+            return 0.0
+        return max(0.0, float(self.wattpilot.power) * 1000.0)
+
+    def beginPowerTransitionGrace(self, phaseMode, currentA, reason):
+        voltage = self.threePhaseVoltage() if phaseMode == 2 else self.onePhaseVoltage()
+        self.powerTransitionExpectedW = max(0.0, float(currentA) * voltage)
+        self.powerTransitionUntil = time.time() + self.startupGraceSeconds
+        self.powerTransitionReason = reason
+        self.powerTransitionTelemetryReadyAt = 0
+        self.publishServiceMessage(
+            self,
+            "{0} transition grace started: reporting {1:.0f}W until Wattpilot telemetry catches up.".format(
+                reason,
+                self.powerTransitionExpectedW
+            )
+        )
+
+    def clearPowerTransitionGrace(self):
+        self.powerTransitionUntil = 0
+        self.powerTransitionExpectedW = 0
+        self.powerTransitionReason = ""
+        self.powerTransitionTelemetryReadyAt = 0
+
+    def beginPhaseSwitchConfirmation(self, phaseMode):
+        self.pendingPhaseSwitchMode = phaseMode
+        self.pendingPhaseSwitchSince = time.time()
+
+    def clearPendingPhaseSwitch(self):
+        self.pendingPhaseSwitchMode = 0
+        self.pendingPhaseSwitchSince = 0
+
+    def phasePowerW(self, phase):
+        value = getattr(self.wattpilot, "power{0}".format(phase), None)
+        if value is None:
+            return 0.0
+        try:
+            return max(0.0, float(value) * 1000.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def phaseTelemetryConfirmsMode(self, phaseMode):
+        # Wattpilot reports phase power in kW. 100 W deliberately sits far
+        # below the 6 A minimum, while avoiding noise around exactly zero.
+        activeThresholdW = 100.0
+        l2Active = self.phasePowerW(2) >= activeThresholdW
+        l3Active = self.phasePowerW(3) >= activeThresholdW
+        if phaseMode == 2:
+            return l2Active and l3Active
+        if phaseMode == 1:
+            return not l2Active and not l3Active
+        return False
+
+    def reconcilePendingPhaseSwitch(self):
+        """Confirm a requested phase switch or fail safely after grace expires.
+
+        A phase-command acknowledgement is not enough: vehicle and Wattpilot
+        telemetry must show the requested active phases. A failed 1-to-3
+        change falls back to one phase and starts the configured cooldown. A
+        failed 3-to-1 change stops Eco charging instead of leaving a live
+        three-phase load on inadequate PV.
+        """
+        pending = getattr(self, "pendingPhaseSwitchMode", 0)
+        if pending not in (1, 2):
+            return None
+
+        if self.phaseTelemetryConfirmsMode(pending):
+            self.publishServiceMessage(
+                self,
+                "Wattpilot phase telemetry confirmed {0}-phase charging.".format(
+                    3 if pending == 2 else 1
+                )
+            )
+            self.clearPendingPhaseSwitch()
+            return None
+
+        now = time.time()
+        pendingSince = getattr(self, "pendingPhaseSwitchSince", 0)
+        if pendingSince == 0:
+            self.pendingPhaseSwitchSince = now
+            pendingSince = now
+
+        if now - pendingSince < self.startupGraceSeconds:
+            return (
+                VrmEvChargerStatus.SwitchingTo3Phase
+                if pending == 2
+                else VrmEvChargerStatus.SwitchingTo1Phase
+            )
+
+        self.clearPowerTransitionGrace()
+
+        if pending == 2:
+            # Do not keep a false 3-phase controller state after the Wattpilot
+            # or vehicle failed to provide L2/L3 power. Revert to one phase and
+            # apply the assigned PV allowance only.
+            targetAmps = self.targetCurrentForPhase(1, self.allowance)
+            self.publishServiceMessage(
+                self,
+                "3-phase switch was not confirmed by Wattpilot telemetry. "
+                "Falling back to 1-phase."
+            )
+            self.currentPhaseMode = 1
+            self.lastPhaseSwitchTime = now
+            self.wattpilot.set_phases(1)
             self.wattpilot.set_power(targetAmps)
-
-        elif (self.currentPhaseMode != desiredPhaseMode):
-            i(self, "Total amps required is: {0}. Hence switching from phasemode {1} to {2}".format(targetAmps, self.currentPhaseMode, desiredPhaseMode))
-            targetAmps = int(round(targetAmps / desiredPhaseMode))
-            i(self, "That'll be {0}A on PhaseMode {1}".format(targetAmps, desiredPhaseMode))
-
-            phaseSwitchCooldownSeconds = self.getPhaseSwitchCooldownSeconds()
-            if (phaseSwitchCooldownSeconds <= 0):
-                i(self, "Switching to Phase-Mode: {0}. Send.".format(desiredPhaseMode))
-                self.publishServiceMessage(self, "Switching to Phase-Mode: {0}. Send.".format(desiredPhaseMode))
-                self.lastPhaseSwitchTime = time.time()
-                self.wattpilot.set_phases(desiredPhaseMode)
-                self.currentPhaseMode = desiredPhaseMode
-                self.wattpilot.set_power(targetAmps)
-            else:
-                if (self.currentPhaseMode == 1):
-                    self.publishServiceMessage(self, "Attempted to switch to Phase-Mode {0}, but cooldown is active! Using {1}A on Phase-Mode {2} until cooldown is over in {3}s".format(desiredPhaseMode, self.wattpilot.ampLimit, self.currentPhaseMode, phaseSwitchCooldownSeconds))
-                    self.wattpilot.set_power(self.wattpilot.ampLimit)
-                elif (self.currentPhaseMode == 2):
-                    self.publishServiceMessage(self, "Attempted to switch to Phase-Mode {0}, but cooldown is active! Using 6A on Phase-Mode {1} until cooldown is over in {2}s".format(desiredPhaseMode, self.currentPhaseMode, phaseSwitchCooldownSeconds))
-                    self.wattpilot.set_power(6)       
-        
-        if (desiredPhaseMode == enteringPhaseMode):
-            return VrmEvChargerStatus.Charging
-        elif(desiredPhaseMode == 2):
-            return VrmEvChargerStatus.SwitchingTo3Phase
-        elif (desiredPhaseMode == 1):
+            self.clearPendingPhaseSwitch()
             return VrmEvChargerStatus.SwitchingTo1Phase
 
+        # A 3-to-1 command that is not confirmed could leave a three-phase
+        # load on insufficient PV. Stop rather than risk battery/grid draw.
+        self.publishServiceMessage(
+            self,
+            "1-phase fallback was not confirmed by Wattpilot telemetry. "
+            "Stopping Eco charging for safety."
+        )
+        self.clearPendingPhaseSwitch()
+        self.forceStopForNoAllowance()
+        return VrmEvChargerStatus.StopCharging
+
+    def powerTransitionGraceActive(self):
+       if self.powerTransitionUntil == 0:
+          return False
+
+       now = time.time()
+
+       # Expiry must be checked before the telemetry-ready branch.
+       # Otherwise, a valid telemetry reading without a fresh allowance
+       # can keep the grace state active forever.
+       if now >= self.powerTransitionUntil:
+          self.publishServiceMessage(
+             self,
+             "Wattpilot transition grace expired. Returning to normal PV control.",
+          )
+          self.clearPowerTransitionGrace()
+          return False
+
+       actualPower = self.actualMeasuredPowerW()
+       expectedPower = self.powerTransitionExpectedW
+
+       telemetryReady = (
+          expectedPower <= 0
+          or actualPower >= expectedPower * self.startupTelemetryRatio
+       )
+
+       if not telemetryReady:
+          return True
+
+       # Wait for one allowance update after valid charger telemetry.
+       if self.powerTransitionTelemetryReadyAt == 0:
+          self.powerTransitionTelemetryReadyAt = now
+          d(
+             self,
+             "Wattpilot transition telemetry caught up: "
+             "{0:.0f}W measured, {1:.0f}W expected. "
+             "Waiting for refreshed allowance.".format(
+                actualPower,
+                expectedPower,
+            ),
+          )
+          return True
+
+       if self.allowanceUpdatedAt > self.powerTransitionTelemetryReadyAt:
+          d(
+             self,
+             "Wattpilot transition allowance refreshed after telemetry caught up.",
+          )
+          self.clearPowerTransitionGrace()
+          return False
+
+       return True
+
+    def consumerPowerForDistributor(self):
+        actualPower = self.actualMeasuredPowerW()
+        if self.powerTransitionGraceActive():
+            return max(actualPower, self.powerTransitionExpectedW)
+        return actualPower
+
+    def getContinuousSurplusSeconds(self):
+        now = time.time()
+
+        if self.hasMinimumAllowance():
+            self.surplusBelowMinimumSince = 0
+            if self.surplusSince == 0:
+                self.surplusSince = now
+                self.publishServiceMessage(
+                    self,
+                    "PV allowance is sufficient. Waiting {0}s before starting charge.".format(
+                        self.minimumOnOffSeconds
+                    )
+                )
+            return now - self.surplusSince
+
+        # Preserve an already-running start timer through a short dip. The
+        # original code reset the full MinOnOffSeconds delay on every single
+        # five-second low sample, which made charging fail to restart in
+        # changeable sunshine.
+        if self.surplusSince == 0:
+            self.surplusBelowMinimumSince = 0
+            return 0
+
+        if self.surplusBelowMinimumSince == 0:
+            self.surplusBelowMinimumSince = now
+            self.publishServiceMessage(
+                self,
+                "PV allowance dipped below the one-phase minimum. Holding the "
+                "start timer for up to {0}s.".format(
+                    self.surplusDropGraceSeconds
+                )
+            )
+
+        if now - self.surplusBelowMinimumSince < self.surplusDropGraceSeconds:
+            return now - self.surplusSince
+
+        self.publishServiceMessage(
+            self,
+            "PV allowance stayed below the one-phase minimum for {0}s. "
+            "Resetting the start timer.".format(self.surplusDropGraceSeconds)
+        )
+        self.surplusSince = 0
+        self.surplusBelowMinimumSince = 0
+        return 0
+
+
+    def surplusDipGraceActive(self):
+        if self.surplusSince == 0 or self.surplusBelowMinimumSince == 0:
+            return False
+        return (
+            time.time() - self.surplusBelowMinimumSince
+            < self.surplusDropGraceSeconds
+        )
+
+    def wattpilotReportsActiveCharge(self):
+        status = getattr(self.wattpilot, "modelStatus", None)
+        statusValue = getattr(status, "value", None)
+        return (
+            statusValue in [3, 12, 15, 19, 20]
+            or self.powerTransitionUntil > time.time()
+        )
+
+    def updateEffectiveCarConnection(self):
+        """Debounce short false carConnected telemetry while preserving safety.
+
+        The Wattpilot can emit one false car-connected update while it is still
+        reporting a charging or transition state. Treat that as a telemetry
+        glitch, not an unplug, so the distributor request is not reset to 0 W.
+        """
+        if bool(self.wattpilot.carConnected):
+            if self.carDisconnectedSince != 0:
+                self.publishServiceMessage(
+                    self, "Wattpilot car connection telemetry recovered."
+                )
+            self.carDisconnectedSince = 0
+            self.lastConfirmedCarConnected = True
+            self.effectiveCarConnected = True
+            return True
+
+        if not self.lastConfirmedCarConnected:
+            self.effectiveCarConnected = False
+            return False
+
+        if self.wattpilotReportsActiveCharge():
+            d(
+                self,
+                "Ignoring transient carConnected=false while Wattpilot reports an active charge or transition."
+            )
+            self.effectiveCarConnected = True
+            return True
+
+        if self.carDisconnectedSince == 0:
+            self.carDisconnectedSince = time.time()
+            self.publishServiceMessage(
+                self,
+                "Wattpilot reports car disconnected. Confirming for {0}s.".format(
+                    self.carDisconnectConfirmSeconds
+                )
+            )
+
+        if (
+            time.time() - self.carDisconnectedSince
+            < self.carDisconnectConfirmSeconds
+        ):
+            self.effectiveCarConnected = True
+            return True
+
+        self.effectiveCarConnected = False
+        return False
+
+    def allowanceStopGraceActive(self):
+        """Hold an active session briefly while awaiting a fresh allowance.
+
+        The grid-import guard remains immediate. This helper only avoids an
+        unnecessary stop when the distributor and Wattpilot workers execute in
+        the opposite order for one or two cycles.
+        """
+        if self.hasMinimumAllowance() or not self.canChargeAtMinimumCurrent():
+            self.allowanceBelowMinimumSince = 0
+            return False
+
+        if not self.wattpilotReportsActiveCharge():
+            self.allowanceBelowMinimumSince = 0
+            return False
+
+        now = time.time()
+        if self.allowanceBelowMinimumSince == 0:
+            self.allowanceBelowMinimumSince = now
+            self.publishServiceMessage(
+                self,
+                "EV allowance fell below the one-phase minimum. Waiting up to "
+                "{0}s for a refreshed distributor allowance before stopping.".format(
+                    self.allowanceDropGraceSeconds
+                )
+            )
+
+        return (
+            now - self.allowanceBelowMinimumSince
+            < self.allowanceDropGraceSeconds
+        )
+
+    def dbusValue(self, subscription, default=None):
+        try:
+            value = subscription.value
+            return float(value) if value is not None else default
+        except Exception:
+            return default
+
+    def batterySoc(self):
+        return self.dbusValue(self.batterySocDbus, None)
+
+    def rawPvOverheadW(self):
+        """Return a fresh raw PV-overhead value for 3-to-1 safety fallback.
+
+        Raw overhead is deliberately accepted only from the timestamped MQTT
+        feed. A D-Bus subscription can retain an old high value after the
+        distributor or bus connection stops updating, and using that stale
+        value could cause a false phase transition. Starts and phase-up always
+        use the distributor's assigned allowance instead.
+        """
+        mqttValue = getattr(self, "mqttRawOverheadW", None)
+        mqttUpdatedAt = getattr(self, "mqttRawOverheadUpdatedAt", 0)
+        if (
+            mqttValue is not None
+            and mqttUpdatedAt > 0
+            and time.time() - mqttUpdatedAt <= self.rawOverheadFreshSeconds
+        ):
+            return max(0.0, float(mqttValue))
+
+        return None
+
+    def phaseDownThresholdW(self):
+        return max(
+            float(self.threePhasePvSurplusStopW),
+            self.threePhaseMinimumPower()
+        )
+
+    def shouldPhaseDownForPvDip(self):
+        """Return True only for a confirmed, usable 3φ-to-1φ PV dip.
+
+        The distributor publishes an assigned allowance. That value is the
+        authoritative signal while it is already high enough for three-phase
+        charging. The raw-overhead D-Bus subscription can briefly be stale
+        after service startup, and must never override a valid multi-kW
+        assignment with a false phase-down decision.
+
+        For a genuine three-phase minimum gate, the assigned allowance becomes
+        0 W while raw overhead can still be enough for one-phase charging. In
+        that case, switch down only when raw overhead is both available and
+        sufficient for the one-phase 6 A minimum.
+        """
+        if self.currentPhaseMode != 2:
+            return False
+
+        assignedAllowance = max(0.0, float(self.allowance))
+        threePhaseThreshold = self.phaseDownThresholdW()
+
+        # A valid 3φ-sized allocation always wins over a possibly stale raw
+        # overhead subscription.
+        if assignedAllowance >= threePhaseThreshold:
+            d(
+                self,
+                "Keeping 3-phase: assigned allowance {0:.0f}W is above "
+                "the 3-phase threshold {1:.0f}W.".format(
+                    assignedAllowance, threePhaseThreshold
+                )
+            )
+            return False
+
+        rawOverhead = self.rawPvOverheadW()
+        if rawOverhead is None:
+            d(
+                self,
+                "Raw PV overhead is unavailable; not phase-down switching "
+                "from a low allowance alone."
+            )
+            return False
+
+        onePhaseMinimum = self.minimumChargePower()
+        if rawOverhead < onePhaseMinimum:
+            d(
+                self,
+                "Raw PV overhead {0:.0f}W is below the one-phase minimum "
+                "{1:.0f}W; not phase-down switching.".format(
+                    rawOverhead, onePhaseMinimum
+                )
+            )
+            return False
+
+        return rawOverhead < threePhaseThreshold
+
+    def switchToOnePhaseForPvDip(self):
+        rawOverhead = self.rawPvOverheadW()
+        usablePv = (
+            rawOverhead
+            if rawOverhead is not None
+            else max(0.0, float(self.allowance))
+        )
+        targetAmps = self.targetCurrentForPhase(1, usablePv)
+
+        self.publishServiceMessage(
+            self,
+            "PV allowance dropped below the three-phase threshold. "
+            "Switching to 1-phase before applying battery-assist or stop logic."
+        )
+        self.lastPhaseSwitchTime = time.time()
+        self.beginPhaseSwitchConfirmation(1)
+        self.beginPowerTransitionGrace(
+            1, targetAmps, "3-to-1 phase switch"
+        )
+        self.wattpilot.set_phases(1)
+        self.currentPhaseMode = 1
+        self.wattpilot.set_power(targetAmps)
+        return VrmEvChargerStatus.SwitchingTo1Phase
+
+    def gridImportPower(self):
+        # GridImportPositive=true: positive values are import.
+        # GridImportPositive=false: negative values are import.
+        sign = 1 if self.gridImportPositive else -1
+        phases = [
+            self.dbusValue(self.gridL1Dbus, 0),
+            self.dbusValue(self.gridL2Dbus, 0),
+            self.dbusValue(self.gridL3Dbus, 0),
+        ]
+        return sum(max(0, sign * phase) for phase in phases)
+
+    def publishSafetyTelemetry(self):
+        self.dbusService["/PvAllowance"] = int(round(max(0, self.allowance)))
+        self.dbusService["/GridImport"] = int(round(self.gridImportPower()))
+        self.dbusService["/BatteryAssist/Active"] = int(self.batteryAssistActive)
+        self.dbusService["/BatteryAssist/Elapsed"] = int(
+            round(self.getBatteryAssistSeconds())
+        )
+        self.dbusService["/BatteryAssist/Shortfall"] = int(
+            round(self.batteryAssistShortfallW)
+        )
+        self.dbusService["/BatteryAssist/LockedOut"] = int(
+            self.batteryAssistLockedOut
+        )
+        self.dbusService["/BatteryAssist/RecoveryElapsed"] = int(
+            round(self.getBatteryAssistRecoverySeconds())
+        )
+        self.dbusService["/ChargeComplete/Hold"] = int(self.chargeCompleteHold)
+        self.dbusService["/ChargeComplete/Elapsed"] = int(
+            round(self.getChargeCompleteSeconds())
+        )
+        self.dbusService["/ChargeComplete/ResumeElapsed"] = int(
+            round(self.getChargeCompleteResumeSeconds())
+        )
+
+    def gridImportLimitExceeded(self):
+        if self.allowGridCharging:
+            self.gridImportSince = 0
+            return False
+
+        gridImport = self.gridImportPower()
+        if gridImport > self.gridImportStopW:
+            if self.gridImportSince == 0:
+                self.gridImportSince = time.time()
+                d(
+                    self,
+                    "Grid import guard started at {0:.0f}W.".format(gridImport)
+                )
+            elif time.time() - self.gridImportSince >= self.gridImportStopSeconds:
+                return True
+        else:
+            self.gridImportSince = 0
+
+        return False
+
+    def shouldIgnoreBatteryReservation(self):
+        soc = self.batterySoc()
+        return (
+            self.evPriorityOverBatteryCharge
+            and self.mode == VrmEvChargerControlMode.Auto
+            and bool(
+                getattr(self, "effectiveCarConnected", self.wattpilot.carConnected)
+            )
+            and soc is not None
+            and soc >= self.evPriorityMinSoc
+        )
+
+    def getBatteryAssistSeconds(self):
+        if self.batteryAssistSince == 0:
+            return 0
+        return time.time() - self.batteryAssistSince
+
+    def getBatteryAssistRecoverySeconds(self):
+        if self.batteryAssistRecoverySince == 0:
+            return 0
+        return time.time() - self.batteryAssistRecoverySince
+
+    def clearBatteryAssist(self):
+        # Intentionally do not clear the timeout lockout here. The active
+        # timer must be cleared when a bridge ends, while the lockout has to
+        # survive subsequent control cycles during the same low-PV event.
+        self.batteryAssistSince = 0
+        self.batteryAssistActive = False
+        self.batteryAssistShortfallW = 0
+
+    def lockBatteryAssist(self):
+        self.clearBatteryAssist()
+        self.batteryAssistLockedOut = True
+        self.batteryAssistLockoutSince = time.time()
+        self.batteryAssistRecoverySince = 0
+
+    def clearBatteryAssistLockout(self, reason):
+        wasLockedOut = self.batteryAssistLockedOut
+        self.batteryAssistLockedOut = False
+        self.batteryAssistLockoutSince = 0
+        self.batteryAssistRecoverySince = 0
+
+        if wasLockedOut:
+            self.publishServiceMessage(
+                self,
+                "Battery assist lockout cleared: {0}.".format(reason)
+            )
+
+    def updateBatteryAssistLockoutRecovery(self, shortfallW):
+        # A lockout means the bridge has used its full allowed time during the
+        # current low-PV event. Do not open another window until PV has fully
+        # covered the live EV demand for the configured recovery duration.
+        if not self.batteryAssistLockedOut:
+            return
+
+        if shortfallW > 0:
+            if self.batteryAssistRecoverySince != 0:
+                d(
+                    self,
+                    "PV recovery interrupted before battery-assist lockout "
+                    "could clear."
+                )
+            self.batteryAssistRecoverySince = 0
+            return
+
+        if self.batteryAssistRecoverySince == 0:
+            self.batteryAssistRecoverySince = time.time()
+            self.publishServiceMessage(
+                self,
+                "PV fully covers EV demand. Waiting {0}s before allowing "
+                "battery assist again.".format(
+                    self.batteryAssistRecoverySeconds
+                )
+            )
+
+        if self.getBatteryAssistRecoverySeconds() >= self.batteryAssistRecoverySeconds:
+            self.clearBatteryAssistLockout(
+                "PV covered EV demand continuously for {0}s".format(
+                    self.batteryAssistRecoverySeconds
+                )
+            )
+
+    def startOrContinueBatteryAssist(self, shortfallW):
+        # No shortfall means PV covers the present EV load. End any bridge.
+        if shortfallW <= 0:
+            self.clearBatteryAssist()
+            return False
+
+        # Once the configured bridge time has been consumed, preserve the
+        # lockout through all later 5-second control cycles. It is cleared
+        # only by updateBatteryAssistLockoutRecovery() or car disconnect.
+        if self.batteryAssistLockedOut:
+            self.clearBatteryAssist()
+            return False
+
+        soc = self.batterySoc()
+        canAssist = (
+            self.batteryAssistEnabled
+            and self.wattpilot.power is not None
+            and self.wattpilot.power > 0
+            and soc is not None
+            and soc >= self.batteryAssistSocMin
+            and shortfallW <= self.batteryAssistMaxShortfallW
+            and self.gridImportPower() <= self.gridImportStopW
+        )
+
+        if not canAssist:
+            self.clearBatteryAssist()
+            return False
+
+        if self.batteryAssistSince == 0:
+            self.batteryAssistSince = time.time()
+            self.publishServiceMessage(
+                self,
+                "PV dip detected. Starting battery assist at {0:.0f}% SOC.".format(soc)
+            )
+
+        self.batteryAssistActive = True
+        self.batteryAssistShortfallW = shortfallW
+
+        if self.getBatteryAssistSeconds() >= self.batteryAssistMaxSeconds:
+            self.publishServiceMessage(
+                self,
+                "Battery assist time limit reached. Locking out further "
+                "battery assist until PV recovery or car disconnect."
+            )
+            self.lockBatteryAssist()
+            return False
+
+        return True
+
+    def getChargeCompleteSeconds(self):
+        if self.chargeCompleteSince == 0:
+            return 0
+        return time.time() - self.chargeCompleteSince
+
+    def getChargeCompleteResumeSeconds(self):
+        if self.chargeCompleteResumeSince == 0:
+            return 0
+        return time.time() - self.chargeCompleteResumeSince
+
+    def enterChargeCompleteHold(self):
+        if self.chargeCompleteHold:
+            return
+
+        self.chargeCompleteHold = True
+        self.chargeCompleteSince = time.time()
+        self.chargeCompleteResumeSince = 0
+        self.surplusSince = 0
+        self.publishServiceMessage(
+            self,
+            "EV appears fully charged: power stayed at or below {0:.0f}W "
+            "for {1}s. Holding the connected session without a stop command.".format(
+                self.chargeCompletePowerThresholdW,
+                self.chargeCompleteConfirmSeconds
+            )
+        )
+
+    def clearChargeCompleteHold(self, reason):
+        if not self.chargeCompleteHold:
+            self.chargeCompleteSince = 0
+            self.chargeCompleteResumeSince = 0
+            return
+
+        self.chargeCompleteHold = False
+        self.chargeCompleteSince = 0
+        self.chargeCompleteResumeSince = 0
+        self.publishServiceMessage(
+            self,
+            "Charge-complete hold cleared: {0}.".format(reason)
+        )
+
+    def updateChargeCompleteHoldResume(self, measuredPowerW):
+        """Return True after a completed EV session has genuinely resumed.
+
+        Tiny balancing / keep-alive draws must not leave the hold. A sustained
+        significant draw is treated as a new charging phase without requiring
+        an unplug/replug.
+        """
+        if not self.chargeCompleteHold:
+            return False
+
+        if measuredPowerW < self.chargeCompleteResumePowerW:
+            if self.chargeCompleteResumeSince != 0:
+                d(
+                    self,
+                    "Charge-complete resume was interrupted before confirmation."
+                )
+            self.chargeCompleteResumeSince = 0
+            return False
+
+        if self.chargeCompleteResumeSince == 0:
+            self.chargeCompleteResumeSince = time.time()
+            self.publishServiceMessage(
+                self,
+                "EV power rose to {0:.0f}W. Waiting {1}s before leaving "
+                "charge-complete hold.".format(
+                    measuredPowerW,
+                    self.chargeCompleteResumeSeconds
+                )
+            )
+            return False
+
+        if (
+            self.getChargeCompleteResumeSeconds()
+            >= self.chargeCompleteResumeSeconds
+        ):
+            self.clearChargeCompleteHold(
+                "EV resumed at least {0:.0f}W for {1}s".format(
+                    self.chargeCompleteResumePowerW,
+                    self.chargeCompleteResumeSeconds
+                )
+            )
+            return True
+
+        return False
+
+    def forceStopForNoAllowance(self):
+        # Strict policy after the allowance debounce expires: stop and retain
+        # ForceStateOff. Do not issue Neutral, because native Wattpilot ECO
+        # could then restart independently.
+        self.surplusSince = 0
+        self.surplusBelowMinimumSince = 0
+        self.allowanceBelowMinimumSince = 0
+        self.clearBatteryAssist()
+        self.clearPowerTransitionGrace()
+        self.clearPendingPhaseSwitch()
+
+        firstForcedOff = not self.noAllowanceForcedOff
+        chargerStillActive = (
+            self.wattpilot.power is not None and self.wattpilot.power > 0
+        )
+        needsOffCommand = (
+            firstForcedOff
+            or self.wattpilot.startState != WattpilotStartStop.Off
+            or chargerStillActive
+        )
+
+        if needsOffCommand:
+            i(self, "STOP send!")
+            self.wattpilot.set_start_stop(WattpilotStartStop.Off)
+
+            if firstForcedOff:
+                self.lastOnOffTime = time.time()
+
+            self.noAllowanceForcedOff = True
+            self.dbusService["/StartStop"] = VrmEvChargerStartStop.Stop.value
+            self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Stop.name
+
+            if firstForcedOff:
+                self.currentPhaseMode = 0
+                self.wattpilot.set_phases(0)
+
+
+    def getOnOffCooldownSeconds(self):
+        return max(0, self.lastOnOffTime + self.minimumOnOffSeconds - time.time())
+
+    def getPhaseSwitchCooldownSeconds(self):
+        return max(
+            0,
+            self.lastPhaseSwitchTime
+            + self.minimumPhaseSwitchSeconds
+            - time.time()
+        )
+
+    def adjustChargeForPvAllowance(self):
+        desiredPhaseMode = self.desiredPhaseModeForPvAllowance()
+        enteringPhaseMode = self.currentPhaseMode
+
+        if enteringPhaseMode == 0:
+            enteringPhaseMode = 1
+
+        # A phase-down is safety-critical when PV-only allowance can no longer
+        # sustain three-phase 6 A. It is therefore never delayed by cooldown.
+        if desiredPhaseMode == 1 and enteringPhaseMode == 2:
+            return self.switchToOnePhaseForPvDip()
+
+        # Phase-up is allowed only by real PV surplus and respects the phase
+        # switch cooldown. While waiting, one-phase charging is capped at 16 A.
+        if desiredPhaseMode == 2 and enteringPhaseMode != 2:
+            cooldown = self.getPhaseSwitchCooldownSeconds()
+            if cooldown <= 0:
+                targetAmps = self.targetCurrentForPhase(2, self.allowance)
+                i(self, "PV surplus supports 3-phase charging. Switching to 3-phase.")
+                self.publishServiceMessage(
+                    self, "Switching to 3-phase from PV surplus."
+                )
+                self.lastPhaseSwitchTime = time.time()
+                self.beginPhaseSwitchConfirmation(2)
+                self.beginPowerTransitionGrace(2, targetAmps, "1-to-3 phase switch")
+                self.wattpilot.set_phases(2)
+                self.currentPhaseMode = 2
+                self.wattpilot.set_power(targetAmps)
+                return VrmEvChargerStatus.SwitchingTo3Phase
+
+            targetAmps = self.targetCurrentForPhase(1, self.allowance)
+            self.currentPhaseMode = 1
+            self.wattpilot.set_power(targetAmps)
+            d(
+                self,
+                "3-phase PV threshold reached; phase-up cooldown active for {0:.0f}s.".format(
+                    cooldown
+                )
+            )
+            return VrmEvChargerStatus.Charging
+
+        # No phase change; adjust current from PV allowance only.
+        self.currentPhaseMode = desiredPhaseMode
+        targetAmps = self.targetCurrentForPhase(desiredPhaseMode, self.allowance)
+        i(
+            self,
+            "Adjusting charge current to {0}A on {1}-phase.".format(
+                targetAmps, 3 if desiredPhaseMode == 2 else 1
+            )
+        )
+        self.wattpilot.set_power(targetAmps)
+        return VrmEvChargerStatus.Charging
+
     def dumpEvChargerInfo(self):
-        #method is called, whenever new information arrive through mqtt. 
-        #just dump the information we have.
-        self.publish("/Ac/L1/Power", self.wattpilot.power1 * 1000 if (self.wattpilot.power1 is not None) else 0)
-        self.publish("/Ac/L2/Power", self.wattpilot.power2 * 1000 if (self.wattpilot.power2 is not None) else 0)
-        self.publish("/Ac/L3/Power", self.wattpilot.power3 * 1000 if (self.wattpilot.power3 is not None) else 0)
-        self.publish("/Ac/L1/Voltage", self.wattpilot.voltage1  if (self.wattpilot.voltage1 is not None) else 0)
-        self.publish("/Ac/L2/Voltage", self.wattpilot.voltage2  if (self.wattpilot.voltage2 is not None) else 0)
-        self.publish("/Ac/L3/Voltage", self.wattpilot.voltage3  if (self.wattpilot.voltage3 is not None) else 0)
-        self.publish("/Ac/L1/Current", self.wattpilot.amps1  if (self.wattpilot.amps1 is not None and self.wattpilot.power>0) else 0)
-        self.publish("/Ac/L2/Current", self.wattpilot.amps2  if (self.wattpilot.amps2 is not None and self.wattpilot.power>0) else 0)
-        self.publish("/Ac/L3/Current", self.wattpilot.amps3  if (self.wattpilot.amps3 is not None and self.wattpilot.power>0) else 0)
-        self.publish("/Ac/L1/PowerFactor", self.wattpilot.powerFactor1  if (self.wattpilot.powerFactor1 is not None and self.wattpilot.power>0) else 0)
-        self.publish("/Ac/L2/PowerFactor", self.wattpilot.powerFactor2  if (self.wattpilot.powerFactor2 is not None and self.wattpilot.power>0) else 0)
-        self.publish("/Ac/L3/PowerFactor", self.wattpilot.powerFactor3  if (self.wattpilot.powerFactor3 is not None and self.wattpilot.power>0) else 0)
-        self.publish("/Ac/Power", self.wattpilot.power * 1000 if (self.wattpilot.power is not None) else 0)
-        self.publish("/Ac/PowerPercent", (self.wattpilot.power * 1000) / (3 * self.wattpilot.ampLimit * self.wattpilot.voltage1) * 100.0 if (self.wattpilot.power is not None) else 0)
-        self.publish("/Ac/PowerMax", (3 * self.wattpilot.ampLimit * self.wattpilot.voltage1))
-        self.publish("/Current", (self.wattpilot.amps1 + self.wattpilot.amps2 + self.wattpilot.amps3) if (self.wattpilot.amp is not None and self.wattpilot.power>0) else 0)
+        self.publish(
+            "/Ac/L1/Power",
+            self.wattpilot.power1 * 1000
+            if self.wattpilot.power1 is not None
+            else 0
+        )
+        self.publish(
+            "/Ac/L2/Power",
+            self.wattpilot.power2 * 1000
+            if self.wattpilot.power2 is not None
+            else 0
+        )
+        self.publish(
+            "/Ac/L3/Power",
+            self.wattpilot.power3 * 1000
+            if self.wattpilot.power3 is not None
+            else 0
+        )
+        self.publish(
+            "/Ac/L1/Voltage",
+            self.wattpilot.voltage1 if self.wattpilot.voltage1 is not None else 0
+        )
+        self.publish(
+            "/Ac/L2/Voltage",
+            self.wattpilot.voltage2 if self.wattpilot.voltage2 is not None else 0
+        )
+        self.publish(
+            "/Ac/L3/Voltage",
+            self.wattpilot.voltage3 if self.wattpilot.voltage3 is not None else 0
+        )
+        self.publish(
+            "/Ac/L1/Current",
+            self.wattpilot.amps1
+            if self.wattpilot.amps1 is not None and self.wattpilot.power > 0
+            else 0
+        )
+        self.publish(
+            "/Ac/L2/Current",
+            self.wattpilot.amps2
+            if self.wattpilot.amps2 is not None and self.wattpilot.power > 0
+            else 0
+        )
+        self.publish(
+            "/Ac/L3/Current",
+            self.wattpilot.amps3
+            if self.wattpilot.amps3 is not None and self.wattpilot.power > 0
+            else 0
+        )
+        self.publish(
+            "/Ac/L1/PowerFactor",
+            self.wattpilot.powerFactor1
+            if self.wattpilot.powerFactor1 is not None and self.wattpilot.power > 0
+            else 0
+        )
+        self.publish(
+            "/Ac/L2/PowerFactor",
+            self.wattpilot.powerFactor2
+            if self.wattpilot.powerFactor2 is not None and self.wattpilot.power > 0
+            else 0
+        )
+        self.publish(
+            "/Ac/L3/PowerFactor",
+            self.wattpilot.powerFactor3
+            if self.wattpilot.powerFactor3 is not None and self.wattpilot.power > 0
+            else 0
+        )
+        self.publish(
+            "/Ac/Power",
+            self.wattpilot.power * 1000
+            if self.wattpilot.power is not None
+            else 0
+        )
+
+        maxPower = 3 * self.getEffectiveMaxCurrent() * self.onePhaseVoltage()
+        self.publish(
+            "/Ac/PowerPercent",
+            (self.wattpilot.power * 1000) / maxPower * 100.0
+            if self.wattpilot.power is not None and maxPower > 0
+            else 0
+        )
+        self.publish("/Ac/PowerMax", maxPower)
+
+        totalCurrent = (
+            (self.wattpilot.amps1 or 0)
+            + (self.wattpilot.amps2 or 0)
+            + (self.wattpilot.amps3 or 0)
+        )
+        self.publish(
+            "/Current",
+            totalCurrent
+            if self.wattpilot.power is not None and self.wattpilot.power > 0
+            else 0
+        )
         self.publish("/Mode", self.mode.value)
         self.publish("/ModeLiteral", self.mode.name)
 
-        #Also write total power back to SolarOverheadDistributor 
-        self.publishMainMqtt("es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Consumption", self.wattpilot.power * 1000)
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Consumption",
+            self.consumerPowerForDistributor()
+        )
 
-        if (self.wattpilot.energyCounterSinceStart is not None and self.wattpilot.carConnected):
-            self.publish("/Ac/Energy/Forward", self.wattpilot.energyCounterSinceStart / 1000)
-        
-        elif (self.wattpilot.energyCounterSinceStart is not None and not self.wattpilot.carConnected and self.config["FroniusWattpilot"]["ResetChargedEnergyCounter"].lower() == "onconnect"):
-            self.publish("/Ac/Energy/Forward", self.wattpilot.energyCounterSinceStart / 1000)
-
+        if (
+            self.wattpilot.energyCounterSinceStart is not None
+            and self.wattpilot.carConnected
+        ):
+            self.publish(
+                "/Ac/Energy/Forward",
+                self.wattpilot.energyCounterSinceStart / 1000
+            )
+        elif (
+            self.wattpilot.energyCounterSinceStart is not None
+            and not self.wattpilot.carConnected
+            and self.config["FroniusWattpilot"]["ResetChargedEnergyCounter"].lower()
+            == "onconnect"
+        ):
+            self.publish(
+                "/Ac/Energy/Forward",
+                self.wattpilot.energyCounterSinceStart / 1000
+            )
         else:
             self.publish("/Ac/Energy/Forward", 0.0)
             self.chargingTime = 0
-        
-        self.publish("/AutoStart", self.autostart)
 
+        self.publish("/AutoStart", self.autostart)
         self.publish("/ChargingTime", self.chargingTime)
         self.publish("/CarState", self.wattpilot.carConnected)
+        self.reportPhaseMode()
 
-        self.publish("/PhaseMode", self.currentPhaseMode)
-        if (self.currentPhaseMode == 2):
-            self.publish("/SetCurrent", self.wattpilot.amp * 3)
-            self.publish("/MaxCurrent", self.wattpilot.ampLimit * 3)
+        amp = self.wattpilot.amp or 0
+        if self.currentPhaseMode == 2:
+            self.publish("/SetCurrent", amp * 3)
+            self.publish("/MaxCurrent", self.getEffectiveMaxCurrent() * 3)
         else:
-            self.publish("/SetCurrent", self.wattpilot.amp)
-            self.publish("/MaxCurrent", self.wattpilot.ampLimit )
+            self.publish("/SetCurrent", amp)
+            self.publish("/MaxCurrent", self.getEffectiveMaxCurrent())
 
     def publish(self, path, value):
         self.dbusService[path] = value
