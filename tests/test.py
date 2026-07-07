@@ -115,7 +115,9 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.lastOnOffTime = 0
         controller.currentPhaseMode = 1
         controller.allowance = 0
-        controller.allowanceUpdatedAt = 0
+        controller.allowanceValid = True
+        controller.allowanceFreshSeconds = 15
+        controller.allowanceUpdatedAt = self.fwp.time.time()
         controller.allowanceBelowMinimumSince = 0
         controller.surplusSince = 0
         controller.surplusBelowMinimumSince = 0
@@ -134,9 +136,19 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.pendingPhaseSwitchMode = 0
         controller.pendingPhaseSwitchSince = 0
         controller.rawOverheadFreshSeconds = 15
+        controller.mqttAllowanceTopic = (
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Allowance"
+        )
+        controller.mqttRawOverheadTopic = (
+            "es-ESS/SolarOverheadDistributor/Calculations/OverheadAvailable"
+        )
         controller.mqttRawOverheadW = None
         controller.mqttRawOverheadUpdatedAt = 0
         controller.mode = 1
+        controller.isIdleMode = False
+        controller.isHibernateEnabled = False
+        controller.lastVarDump = 0
+        controller.chargingTime = 0
         controller.autostart = 1
         controller.noChargeSince = 0
         controller.noAllowanceForcedOff = False
@@ -162,6 +174,7 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.gridImportPositive = True
         controller.gridImportStopW = 150
         controller.gridImportStopSeconds = 5
+        controller.gridTelemetryFreshSeconds = 15
         controller.gridImportSince = 0
         controller.evPriorityOverBatteryCharge = True
         controller.evPriorityMinSoc = 0
@@ -197,6 +210,13 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.gridL1Dbus = SimpleNamespace(value=0)
         controller.gridL2Dbus = SimpleNamespace(value=0)
         controller.gridL3Dbus = SimpleNamespace(value=0)
+        controller.gridL1Valid = True
+        controller.gridL2Valid = True
+        controller.gridL3Valid = True
+        freshGridTime = self.fwp.time.time()
+        controller.gridL1UpdatedAt = freshGridTime
+        controller.gridL2UpdatedAt = freshGridTime
+        controller.gridL3UpdatedAt = freshGridTime
         controller.overheadAvailableDbus = SimpleNamespace(value=0)
         controller.dbusService = {"/StartStop": 0, "/StartStopLiteral": "Stop"}
         controller.publishServiceMessage = lambda *args, **kwargs: None
@@ -205,6 +225,7 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.publish = lambda *args, **kwargs: None
         controller.reportPhaseMode = lambda: None
         controller.reportConsumption = lambda: None
+        controller.reportVRMStatus = lambda *args, **kwargs: None
         controller.dumpEvChargerInfo = lambda: None
         return controller
 
@@ -265,7 +286,7 @@ class WattpilotControlRegressionTests(unittest.TestCase):
     def test_reported_request_uses_a_limited_three_phase_probe(self):
         controller = self._controller()
 
-        self.assertEqual(self._record_reported_request(controller), 4200)
+        self.assertEqual(self._record_reported_request(controller), 4370)
         controller.currentPhaseMode = 2
         self.assertEqual(self._record_reported_request(controller), 11040)
 
@@ -278,7 +299,7 @@ class WattpilotControlRegressionTests(unittest.TestCase):
             self.assertEqual(controller.maximumRequestForDistributorW(), 3680)
 
         with patch.object(self.fwp.time, "time", return_value=400):
-            self.assertEqual(controller.maximumRequestForDistributorW(), 4200)
+            self.assertEqual(controller.maximumRequestForDistributorW(), 4370)
 
     def test_raw_overhead_uses_only_fresh_timestamped_mqtt(self):
         controller = self._controller()
@@ -613,6 +634,208 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
         self.assertEqual(controller.currentPhaseMode, 0)
         controller.wattpilot.set_start_stop.assert_called_once_with(0)
+
+
+    # Telemetry freshness fail-safe regressions ---------------------------
+
+    def _set_grid_telemetry_time(self, controller, timestamp):
+        controller.gridL1Valid = True
+        controller.gridL2Valid = True
+        controller.gridL3Valid = True
+        controller.gridL1UpdatedAt = timestamp
+        controller.gridL2UpdatedAt = timestamp
+        controller.gridL3UpdatedAt = timestamp
+
+    def test_stale_allowance_blocks_a_new_auto_start(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.allowanceUpdatedAt = 80
+        controller.minimumOnOffSeconds = 0
+        controller.startFromPvAllowance = Mock()
+        self._set_grid_telemetry_time(controller, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.handleNotChargingState()
+
+        controller.startFromPvAllowance.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+
+    def test_missing_allowance_blocks_a_new_auto_start(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.allowanceValid = False
+        controller.allowanceUpdatedAt = 0
+        controller.minimumOnOffSeconds = 0
+        controller.startFromPvAllowance = Mock()
+        self._set_grid_telemetry_time(controller, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.handleNotChargingState()
+
+        controller.startFromPvAllowance.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+
+    def test_stale_allowance_stops_active_charge_after_grace(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.allowanceUpdatedAt = 80
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.power = 1.4
+        controller.wattpilot.startState = self.fwp.WattpilotStartStop.On
+        self._set_grid_telemetry_time(controller, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertEqual(
+                controller.controlAutomaticCharging(),
+                self.fwp.VrmEvChargerStatus.Charging,
+            )
+        with patch.object(self.fwp.time, "time", return_value=115):
+            self.assertEqual(
+                controller.controlAutomaticCharging(),
+                self.fwp.VrmEvChargerStatus.StopCharging,
+            )
+
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+
+    def test_missing_grid_telemetry_blocks_a_new_auto_start(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.minimumOnOffSeconds = 0
+        controller.gridL2Valid = False
+        controller.startFromPvAllowance = Mock()
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.handleNotChargingState()
+
+        controller.startFromPvAllowance.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+
+    def test_stale_grid_telemetry_blocks_a_new_auto_start(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.minimumOnOffSeconds = 0
+        controller.startFromPvAllowance = Mock()
+        self._set_grid_telemetry_time(controller, 80)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.handleNotChargingState()
+
+        controller.startFromPvAllowance.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+
+    def test_stale_grid_telemetry_stops_active_auto_charge_immediately(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.power = 1.4
+        controller.wattpilot.startState = self.fwp.WattpilotStartStop.On
+        self._set_grid_telemetry_time(controller, 80)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+
+    def test_missing_grid_telemetry_stops_active_auto_charge_immediately(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.power = 1.4
+        controller.wattpilot.startState = self.fwp.WattpilotStartStop.On
+        controller.gridL1Valid = False
+
+        status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+
+    def test_grid_telemetry_callbacks_track_validity_and_update_time(self):
+        controller = self._controller()
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.onGridL1Telemetry(SimpleNamespace(value="12.5"))
+            controller.onGridL2Telemetry(SimpleNamespace(value="nan"))
+            controller.onGridL3Telemetry(SimpleNamespace(value=None))
+
+        self.assertTrue(controller.gridL1Valid)
+        self.assertFalse(controller.gridL2Valid)
+        self.assertFalse(controller.gridL3Valid)
+        self.assertEqual(controller.gridL1UpdatedAt, 100)
+        self.assertEqual(controller.gridL2UpdatedAt, 100)
+        self.assertEqual(controller.gridL3UpdatedAt, 100)
+
+    def test_invalid_allowance_message_invalidates_previous_allowance(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.allowanceValid = True
+        message = SimpleNamespace(
+            topic=controller.mqttAllowanceTopic,
+            payload=b"not-a-number",
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.onMqttMessage(None, None, message)
+
+        self.assertFalse(controller.allowanceValid)
+        self.assertEqual(controller.allowance, 0)
+        self.assertEqual(controller.allowanceUpdatedAt, 100)
+
+    def test_raw_overhead_does_not_replace_stale_allowance(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.allowance = 0
+        controller.allowanceUpdatedAt = 80
+        controller.mqttRawOverheadW = 2000
+        controller.mqttRawOverheadUpdatedAt = 100
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertFalse(controller.shouldPhaseDownForPvDip())
+
+    def test_unexpected_auto_controller_exception_sends_safe_stop(self):
+        controller = self._controller()
+        controller.mode = self.fwp.VrmEvChargerControlMode.Auto
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.ECO
+        controller.updateEffectiveCarConnection = Mock(
+            side_effect=RuntimeError("simulated controller failure")
+        )
+        messages = []
+        controller.publishServiceMessage = lambda _service, message: messages.append(message)
+
+        controller._update()
+
+        controller.wattpilot.set_power.assert_called_once_with(0)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+        self.assertTrue(any("controller fault" in message.lower() for message in messages))
+
+    def test_manual_mode_is_unaffected_by_missing_control_telemetry(self):
+        controller = self._controller()
+        controller.mode = self.fwp.VrmEvChargerControlMode.Manual
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.power = 1.4
+        controller.allowanceValid = False
+        controller.gridL1Valid = False
+
+        controller._update()
+
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
 
 
 if __name__ == "__main__":

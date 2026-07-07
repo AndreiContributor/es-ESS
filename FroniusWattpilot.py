@@ -1,7 +1,7 @@
 
 from builtins import int
 from enum import Enum
-from math import ceil, floor
+from math import ceil, floor, isfinite
 import os
 import platform
 import sys
@@ -96,6 +96,9 @@ class FroniusWattpilot (esESSService):
         ).lower() == "true"
         self.gridImportStopW = float(settings.get("GridImportStopW", 150))
         self.gridImportStopSeconds = int(settings.get("GridImportStopSeconds", 5))
+        self.gridTelemetryFreshSeconds = max(
+            1, int(settings.get("GridTelemetryFreshSeconds", 15))
+        )
 
         # The Wattpilot reports 0 W for several seconds while a new charge
         # session or a phase switch is being negotiated. During that interval
@@ -111,6 +114,9 @@ class FroniusWattpilot (esESSService):
         # must not immediately stop an otherwise active PV charge session.
         self.allowanceDropGraceSeconds = max(
             5, int(settings.get("AllowanceDropGraceSeconds", 15))
+        )
+        self.allowanceFreshSeconds = max(
+            1, int(settings.get("AllowanceFreshSeconds", 15))
         )
         self.surplusDropGraceSeconds = max(
             0, int(settings.get("SurplusDropGraceSeconds", 20))
@@ -128,6 +134,7 @@ class FroniusWattpilot (esESSService):
 
         self.wattpilot = None
         self.allowance = 0
+        self.allowanceValid = False
         self.allowanceUpdatedAt = 0
         self.allowanceBelowMinimumSince = 0
         self.surplusSince = 0
@@ -197,6 +204,12 @@ class FroniusWattpilot (esESSService):
         self.gridL1Dbus = None
         self.gridL2Dbus = None
         self.gridL3Dbus = None
+        self.gridL1Valid = False
+        self.gridL2Valid = False
+        self.gridL3Valid = False
+        self.gridL1UpdatedAt = 0
+        self.gridL2UpdatedAt = 0
+        self.gridL3UpdatedAt = 0
         # Raw PV overhead calculated by SolarOverheadDistributor. This remains
         # meaningful even when a three-phase Wattpilot request is assigned 0 W
         # because the three-phase 6 A minimum cannot be met.
@@ -280,13 +293,16 @@ class FroniusWattpilot (esESSService):
             "com.victronenergy.system", "/Dc/Battery/Power"
         )
         self.gridL1Dbus = self.registerDbusSubscription(
-            "com.victronenergy.system", "/Ac/Grid/L1/Power"
+            "com.victronenergy.system", "/Ac/Grid/L1/Power",
+            callback=self.onGridL1Telemetry
         )
         self.gridL2Dbus = self.registerDbusSubscription(
-            "com.victronenergy.system", "/Ac/Grid/L2/Power"
+            "com.victronenergy.system", "/Ac/Grid/L2/Power",
+            callback=self.onGridL2Telemetry
         )
         self.gridL3Dbus = self.registerDbusSubscription(
-            "com.victronenergy.system", "/Ac/Grid/L3/Power"
+            "com.victronenergy.system", "/Ac/Grid/L3/Power",
+            callback=self.onGridL3Telemetry
         )
         self.overheadAvailableDbus = self.registerDbusSubscription(
             "com.victronenergy.settings.esESS_SolarOverheadDistributor",
@@ -301,23 +317,53 @@ class FroniusWattpilot (esESSService):
             self.mqttRawOverheadTopic, callback=self.onMqttMessage
         )
 
+    def onGridL1Telemetry(self, subscription):
+        self.recordGridTelemetry("L1", subscription.value)
+
+    def onGridL2Telemetry(self, subscription):
+        self.recordGridTelemetry("L2", subscription.value)
+
+    def onGridL3Telemetry(self, subscription):
+        self.recordGridTelemetry("L3", subscription.value)
+
+    def recordGridTelemetry(self, phase, value):
+        """Record validity and receive time for one required grid-power phase."""
+        valid = False
+        try:
+            valid = isfinite(float(value))
+        except (TypeError, ValueError):
+            valid = False
+
+        setattr(self, "grid{0}Valid".format(phase), valid)
+        setattr(self, "grid{0}UpdatedAt".format(phase), time.time())
+
     def onMqttMessage(self, client, userdata, msg):
         """Receive Wattpilot allowance and raw distributor-overhead updates."""
+        topic = getattr(msg, "topic", None)
         try:
             payload = msg.payload
             if isinstance(payload, bytes):
                 payload = payload.decode("utf-8")
             value = float(str(payload).strip())
+            if not isfinite(value):
+                raise ValueError("MQTT value must be finite")
 
-            if msg.topic == self.mqttAllowanceTopic:
+            if topic == self.mqttAllowanceTopic:
                 self.allowance = value
+                self.allowanceValid = True
                 self.allowanceUpdatedAt = time.time()
                 return
 
-            if msg.topic == self.mqttRawOverheadTopic:
+            if topic == self.mqttRawOverheadTopic:
                 self.mqttRawOverheadW = max(0.0, value)
                 self.mqttRawOverheadUpdatedAt = time.time()
         except Exception as ex:
+            if topic == self.mqttAllowanceTopic:
+                # A malformed message must invalidate any previously assigned
+                # allowance. Raw overhead is not a substitute for it.
+                self.allowance = 0
+                self.allowanceValid = False
+                self.allowanceUpdatedAt = time.time()
             c(
                 self,
                 "Exception while processing Wattpilot distributor message.",
@@ -546,6 +592,30 @@ class FroniusWattpilot (esESSService):
 
             self.publishSafetyTelemetry()
 
+            # No-grid Auto/Eco control cannot safely decide whether a charge
+            # may continue without all three grid-power values. This is an
+            # immediate stop, unlike the allowance debounce, because unknown
+            # import must never keep an active EV command alive.
+            if (
+                self.mode == VrmEvChargerControlMode.Auto
+                and not self.allowGridCharging
+                and not self.gridTelemetryIsFresh()
+            ):
+                self.publishServiceMessage(
+                    self,
+                    "Grid telemetry is missing, invalid, or stale. "
+                    "Stopping Auto/Eco charging for safety."
+                )
+                if self.wattpilotReportsActiveCharge():
+                    self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
+                    self.forceStopForNoAllowance()
+                else:
+                    self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+                    self.forceStopForNoAllowance()
+                self.reportBaseRequest()
+                self.dumpEvChargerInfo()
+                return
+
             # Backstop: Auto mode must not sustain meaningful grid import.
             # When PV is no longer enough for 3-phase but is still enough for
             # 1-phase, downshift first instead of stopping the session.
@@ -650,6 +720,8 @@ class FroniusWattpilot (esESSService):
 
         except Exception as ex:
             c(self, "Exception during duty-cycle.", exc_info=ex)
+            if self.autoControlActive():
+                self.failSafeStopForAutoControlFault()
 
 
     def handleChargingState(self):
@@ -745,6 +817,16 @@ class FroniusWattpilot (esESSService):
             self.reportVRMStatus(VrmEvChargerStatus.Connected)
             return
 
+        if not self.allowGridCharging and not self.gridTelemetryIsFresh():
+            self.publishServiceMessage(
+                self,
+                "Grid telemetry is missing, invalid, or stale. "
+                "Blocking Auto/Eco charging until telemetry recovers."
+            )
+            self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+            self.forceStopForNoAllowance()
+            return
+
         # Keep a previously accumulated start timer through one short PV dip.
         # A full reset only occurs after SurplusDropGraceSeconds of genuinely
         # insufficient allowance.
@@ -794,6 +876,26 @@ class FroniusWattpilot (esESSService):
 
 
     def startFromPvAllowance(self):
+        # Defend the command boundary as well as the caller. A start must not
+        # race a missing/stale allowance or no-grid telemetry outage.
+        if not self.allowanceIsFresh():
+            self.publishServiceMessage(
+                self,
+                "Wattpilot PV allowance is missing, invalid, or stale. "
+                "Not starting Auto/Eco charging."
+            )
+            self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+            return
+
+        if not self.allowGridCharging and not self.gridTelemetryIsFresh():
+            self.publishServiceMessage(
+                self,
+                "Grid telemetry is missing, invalid, or stale. "
+                "Not starting Auto/Eco charging."
+            )
+            self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+            return
+
         desiredPhaseMode = self.desiredPhaseModeForPvAllowance()
         targetAmps = self.targetCurrentForPhase(
             desiredPhaseMode, self.allowance
@@ -834,6 +936,33 @@ class FroniusWattpilot (esESSService):
 
 
     def controlAutomaticCharging(self):
+        # No-grid operation requires current, valid L1/L2/L3 telemetry. Do not
+        # wait for the allowance grace because unknown grid import is unsafe.
+        if not self.allowGridCharging and not self.gridTelemetryIsFresh():
+            self.clearBatteryAssist()
+            self.publishServiceMessage(
+                self,
+                "Grid telemetry is missing, invalid, or stale. "
+                "Stopping Auto/Eco charging for safety."
+            )
+            self.forceStopForNoAllowance()
+            return VrmEvChargerStatus.StopCharging
+
+        # Missing, invalid, and stale allowance are all insufficient. The
+        # existing allowance-drop grace applies only to an already-running
+        # session, never to a new start or a raw-overhead fallback.
+        if not self.allowanceIsFresh():
+            self.clearBatteryAssist()
+            if self.allowanceStopGraceActive():
+                return VrmEvChargerStatus.Charging
+            self.publishServiceMessage(
+                self,
+                "Wattpilot PV allowance is missing, invalid, or stale. "
+                "Stopping Auto/Eco charging for safety."
+            )
+            self.forceStopForNoAllowance()
+            return VrmEvChargerStatus.StopCharging
+
         # Defensive guard: a completed EV session must not re-enter automatic
         # PV, phase-switch, battery-assist, or stop logic while it remains
         # plugged in.
@@ -1037,9 +1166,18 @@ class FroniusWattpilot (esESSService):
     def threePhaseMinimumPower(self):
         return self.threePhaseVoltage() * self.minCurrentPerPhase
 
+    def allowanceIsFresh(self):
+        updatedAt = getattr(self, "allowanceUpdatedAt", 0)
+        return (
+            bool(getattr(self, "allowanceValid", False))
+            and updatedAt > 0
+            and time.time() - updatedAt <= self.allowanceFreshSeconds
+        )
+
     def hasMinimumAllowance(self):
         return (
-            self.canChargeAtMinimumCurrent()
+            self.allowanceIsFresh()
+            and self.canChargeAtMinimumCurrent()
             and self.allowance >= self.minimumChargePower()
         )
 
@@ -1490,9 +1628,21 @@ class FroniusWattpilot (esESSService):
     def dbusValue(self, subscription, default=None):
         try:
             value = subscription.value
-            return float(value) if value is not None else default
+            numeric = float(value) if value is not None else None
+            return numeric if numeric is not None and isfinite(numeric) else default
         except Exception:
             return default
+
+    def gridTelemetryIsFresh(self):
+        """Return whether all required grid-power inputs are valid and current."""
+        now = time.time()
+        for phase in ("L1", "L2", "L3"):
+            if not getattr(self, "grid{0}Valid".format(phase), False):
+                return False
+            updatedAt = getattr(self, "grid{0}UpdatedAt".format(phase), 0)
+            if updatedAt <= 0 or now - updatedAt > self.gridTelemetryFreshSeconds:
+                return False
+        return True
 
     def batterySoc(self):
         return self.dbusValue(self.batterySocDbus, None)
@@ -1540,6 +1690,11 @@ class FroniusWattpilot (esESSService):
         if self.currentPhaseMode != 2:
             return False
 
+        # Raw overhead is only a phase-down aid for a fresh, authoritative
+        # allowance. It must never replace missing, invalid, or stale allowance.
+        if not self.allowanceIsFresh():
+            return False
+
         assignedAllowance = max(0.0, float(self.allowance))
         threePhaseThreshold = self.phaseDownThresholdW()
 
@@ -1578,6 +1733,12 @@ class FroniusWattpilot (esESSService):
         return rawOverhead < threePhaseThreshold
 
     def switchToOnePhaseForPvDip(self):
+        if not self.allowanceIsFresh():
+            if self.allowanceStopGraceActive():
+                return VrmEvChargerStatus.Charging
+            self.forceStopForNoAllowance()
+            return VrmEvChargerStatus.StopCharging
+
         rawOverhead = self.rawPvOverheadW()
         usablePv = (
             rawOverhead
@@ -1613,8 +1774,10 @@ class FroniusWattpilot (esESSService):
         return sum(max(0, sign * phase) for phase in phases)
 
     def publishSafetyTelemetry(self):
-        self.dbusService["/PvAllowance"] = int(round(max(0, self.allowance)))
-        self.dbusService["/GridImport"] = int(round(self.gridImportPower()))
+        allowance = self.allowance if self.allowanceIsFresh() else 0
+        gridImport = self.gridImportPower() if self.gridTelemetryIsFresh() else 0
+        self.dbusService["/PvAllowance"] = int(round(max(0, allowance)))
+        self.dbusService["/GridImport"] = int(round(gridImport))
         self.dbusService["/BatteryAssist/Active"] = int(self.batteryAssistActive)
         self.dbusService["/BatteryAssist/Elapsed"] = int(
             round(self.getBatteryAssistSeconds())
@@ -1872,6 +2035,56 @@ class FroniusWattpilot (esESSService):
             return True
 
         return False
+
+    def autoControlActive(self):
+        """Return whether the Wattpilot is in the Auto/Eco control path."""
+        try:
+            wattpilotMode = getattr(self.wattpilot, "mode", None)
+            if wattpilotMode is not None:
+                return wattpilotMode == WattpilotControlMode.ECO
+        except Exception:
+            pass
+        return (
+            getattr(self, "mode", VrmEvChargerControlMode.Manual)
+            == VrmEvChargerControlMode.Auto
+        )
+
+    def failSafeStopForAutoControlFault(self):
+        """Best-effort stop after an unexpected Auto/Eco control exception."""
+        try:
+            self.publishServiceMessage(
+                self,
+                "Auto/Eco controller fault. EV charging was stopped for safety."
+            )
+        except Exception:
+            pass
+
+        try:
+            self.clearBatteryAssist()
+            self.clearPowerTransitionGrace()
+            self.clearPendingPhaseSwitch()
+        except Exception:
+            pass
+
+        # A stop command alone may leave the previous current command visible
+        # to a reconnecting Wattpilot. Zero the command first, then force Off.
+        try:
+            self.wattpilot.set_power(0)
+        except Exception:
+            pass
+        try:
+            self.wattpilot.set_start_stop(WattpilotStartStop.Off)
+        except Exception:
+            pass
+
+        self.noAllowanceForcedOff = True
+        try:
+            self.currentPhaseMode = 0
+            self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
+            self.dbusService["/StartStop"] = VrmEvChargerStartStop.Stop.value
+            self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Stop.name
+        except Exception:
+            pass
 
     def forceStopForNoAllowance(self):
         # Strict policy after the allowance debounce expires: stop and retain
