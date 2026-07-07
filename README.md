@@ -889,4 +889,67 @@ es-ESS also publishes Operational-Messages as well as Errors, Warnings and Criti
 
 See also the service-specific F.A.Q. at the end of each service-description.
 
+# FroniusWattpilot runtime-status contract
+
+FroniusWattpilot publishes an authoritative runtime-status contract for
+Cerbo extensions, dashboards, MQTT consumers, and diagnostics. The contract
+is separate from the normal Victron EV-charger status path.
+
+The standard `/Status` path remains VRM-compatible and is not changed to
+force a custom Charging label. `/CustomName` is optional presentation metadata
+only; it is not used as a source of phase or runtime state.
+
+The following D-Bus values are published on the existing
+`com.victronenergy.evcharger.*_FroniusWattpilot` service:
+
+| D-Bus path | Type | Meaning |
+| --- | --- | --- |
+| `/ControlState` | Integer | Stable numeric runtime state, as defined below. |
+| `/ControlStateLiteral` | String | Exact human-readable runtime-state literal. |
+| `/PhaseMode` | Integer | `0` for unknown/transition, `1` for one phase, `3` for three phases. |
+| `/PhaseModeLiteral` | String | `Unknown`, `Transition`, `1 phase`, or `3 phases`. |
+| `/BatteryAssistActive` | Integer | `1` only during the optional, time-limited battery bridge; otherwise `0`. |
+| `/GridImportGuardActive` | Integer | `1` while the Auto/Eco grid-import guard is active; otherwise `0`. |
+| `/TelemetryHealthy` | Integer | `1` when the telemetry needed for the current control mode is healthy; otherwise `0`. |
+
+`/ControlState` and `/ControlStateLiteral` always represent the same state:
+
+| Value | Literal |
+| ---: | --- |
+| 0 | `Stopped` |
+| 1 | `Waiting for PV` |
+| 2 | `Waiting for stable PV` |
+| 3 | `Charging 1 phase` |
+| 4 | `Charging 3 phases` |
+| 5 | `Switching to 1 phase` |
+| 6 | `Switching to 3 phases` |
+| 7 | `Battery assist` |
+| 8 | `Stopped for grid import` |
+| 9 | `Stopped for stale telemetry` |
+| 10 | `Fault` |
+
+The same seven values are mirrored to retained main-MQTT topics:
+
+```text
+es-ESS/FroniusWattpilot/RuntimeStatus/ControlState
+es-ESS/FroniusWattpilot/RuntimeStatus/ControlStateLiteral
+es-ESS/FroniusWattpilot/RuntimeStatus/PhaseMode
+es-ESS/FroniusWattpilot/RuntimeStatus/PhaseModeLiteral
+es-ESS/FroniusWattpilot/RuntimeStatus/BatteryAssistActive
+es-ESS/FroniusWattpilot/RuntimeStatus/GridImportGuardActive
+es-ESS/FroniusWattpilot/RuntimeStatus/TelemetryHealthy
+```
+
+All runtime-status MQTT topics are retained. The status is republished
+immediately when a charge starts or stops, a phase change starts or finishes,
+the grid-import guard changes, required telemetry becomes stale or healthy,
+battery assist changes, the Wattpilot disconnects or reconnects, or the
+controller enters a fault state.
+
+No extra configuration setting is required for the runtime-status contract.
+Normal Wattpilot Manual mode remains unchanged. In Auto/Eco mode, the runtime
+contract only reports the existing PV-only control decisions; it does not
+authorise grid power. Battery assist remains an optional, time-limited bridge
+for an already-running charge and never starts a session or triggers a
+phase-up. The contract adds no shared 16 A cable/current-limiting logic.
 

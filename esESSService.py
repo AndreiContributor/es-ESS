@@ -4,13 +4,18 @@ import Globals
 from Helper import i, c, d, w, e
 from abc import ABC, abstractmethod
 from Globals import MqttSubscriptionType
+from WattpilotRuntimeStatus import attach_runtime_status_reporter
 
 #ServiceBase for all Service-Classes.
 #Used to orchestrate initialization, dbus and mqtt handling in a central place.
-#all relevant service-calls will be triggered by esESS during initialization. 
+#all relevant service-calls will be triggered by esESS during initialization.
 class esESSService(ABC):
     def __init__(self):
         self.config = Globals.getConfig()
+        # FroniusWattpilot owns the control loop. Attach an observer that
+        # publishes the dedicated runtime-status contract without changing
+        # controller commands or the VRM-compatible /Status path.
+        attach_runtime_status_reporter(self)
 
     @abstractmethod
     def initDbusService(self):
@@ -34,9 +39,8 @@ class esESSService(ABC):
             sub = MqttSubscription(self, topic, qos, type, callback)
             Globals.esESS.registerMqttSubscription(sub)
             return sub
-        
         return None
-    
+
     @abstractmethod
     def initWorkerThreads(self):
         pass
@@ -45,7 +49,7 @@ class esESSService(ABC):
         wt = WorkerThread(self, thread, interval, False)
         Globals.esESS.registerWorkerThread(wt)
         return wt
-    
+
     def registerSingleThread(self, thread, interval):
         wt = WorkerThread(self, thread, interval, True)
         Globals.esESS.registerWorkerThread(wt)
@@ -65,7 +69,7 @@ class esESSService(ABC):
 
     def publishMainMqtt(self, topic, payload, qos=0, retain=False):
         Globals.esESS.publishMainMqtt(topic, payload, qos, retain)
-    
+
     def publishLocalMqtt(self, topic, payload, qos=0, retain=False):
         Globals.esESS.publishLocalMqtt(topic, payload, qos, retain)
 
@@ -74,7 +78,7 @@ class esESSService(ABC):
 
     def registerGridSetPointRequest(self, request:float):
         Globals.esESS.registerGridSetPointRequest(self, request)
-    
+
     def revokeGridSetPointRequest(self):
         Globals.esESS.registerGridSetPointRequest(self, None)
 
@@ -89,7 +93,7 @@ class WorkerThread:
 class DbusSubscription:
     def buildValueKey(serviceName, dbusPath):
         return "{0}{1}".format(".".join(serviceName.split('.')[:3]), dbusPath)
-    
+
     def __init__(self, requestingService, serviceName, dbusPath, callback=None):
         self.commonServiceName = ".".join(serviceName.split('.')[:3])
         self.serviceName = serviceName
@@ -105,7 +109,7 @@ class DbusSubscription:
 class MqttSubscription:
     def buildValueKey(type, topic):
         return "{0}{1}".format(type, topic)
-    
+
     def __init__(self, requestingService, topic, qos=0, type=MqttSubscriptionType.Main, callback=None):
         self.topic = topic
         self.qos = qos
@@ -113,12 +117,7 @@ class MqttSubscription:
         self.callback = callback
         self.value = None
         self.requestingService = requestingService
-    
+
     @property
     def valueKey(self):
         return MqttSubscription.buildValueKey(self.type, self.topic)
-    
-
-    
-
-    
