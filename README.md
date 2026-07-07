@@ -946,10 +946,51 @@ the grid-import guard changes, required telemetry becomes stale or healthy,
 battery assist changes, the Wattpilot disconnects or reconnects, or the
 controller enters a fault state.
 
+For an active charge, `/PhaseMode` and the phase-qualified charging state use
+the Wattpilot's live L1/L2/L3 power telemetry. This keeps Manual mode accurate
+when the Auto/Eco controller's remembered phase command is unavailable or
+stale. A pending Auto/Eco phase transition remains `Transition` until the
+controller confirms the result; the controller's phase command is used only as
+a fallback while live phase telemetry is unavailable.
+
 No extra configuration setting is required for the runtime-status contract.
 Normal Wattpilot Manual mode remains unchanged. In Auto/Eco mode, the runtime
 contract only reports the existing PV-only control decisions; it does not
 authorise grid power. Battery assist remains an optional, time-limited bridge
 for an already-running charge and never starts a session or triggers a
 phase-up. The contract adds no shared 16 A cable/current-limiting logic.
+
+### Startup, reconnect, and stale-transport behavior
+
+A Wattpilot that is unavailable when es-ESS or the GX starts no longer makes
+Wattpilot initialization wait through consecutive 30-second field checks. The
+existing Wattpilot client is started with its automatic reconnect behavior, but
+the runtime contract remains in a safe neutral state until a usable controller
+cycle is available:
+
+```text
+/ControlState = 0
+/ControlStateLiteral = Stopped
+/TelemetryHealthy = 0
+```
+
+This is an unavailable-startup state, not `Stopped for stale telemetry`.
+When the Wattpilot reconnects and the normal Auto/Eco telemetry baseline is
+healthy, the contract recovers automatically to the actual state, for example
+`Waiting for PV` and `TelemetryHealthy = 1`.
+
+For a live connection, the reporter observes raw Wattpilot WebSocket traffic.
+After at least one healthy message has been received, more than 60 seconds with
+no further message while the client still appears connected is treated as stale
+transport. In Auto/Eco the contract publishes `Stopped for stale telemetry` and
+`TelemetryHealthy = 0`; it does not alter the existing controller command path.
+The first later Wattpilot message restores transport health on the next normal
+controller update. In Manual mode the same condition reports
+`TelemetryHealthy = 0` but does not impose an Auto/Eco stop or otherwise change
+Manual charging behavior.
+
+A normal WebSocket close or Wattpilot power loss reports `Stopped` and
+`TelemetryHealthy = 0`. The status is republished on the next normal controller
+update, which runs on the existing five-second Wattpilot control cadence; raw
+WebSocket callback threads do not publish D-Bus or MQTT values directly.
 

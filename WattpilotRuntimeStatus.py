@@ -1,17 +1,19 @@
-"""Authoritative, retained runtime status for the Fronius Wattpilot service.
+"""Authoritative runtime status for the Fronius Wattpilot service.
 
-The Wattpilot's standard Victron ``/Status`` path deliberately remains owned by
-VRM compatibility code.  This module publishes a separate, explicit contract
-for dashboards, Cerbo extensions, MQTT consumers, and diagnostics.
+The standard Victron EV-charger ``/Status`` path remains owned by the existing
+controller for VRM compatibility. This module publishes a separate contract for
+dashboards, Cerbo extensions, MQTT consumers, and diagnostics.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import wraps
+import logging
 import math
+import threading
 import time
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 
 CONTROL_STATE_STOPPED = 0
@@ -42,6 +44,15 @@ CONTROL_STATE_LITERALS = {
 
 RUNTIME_STATUS_MQTT_PREFIX = "es-ESS/FroniusWattpilot/RuntimeStatus"
 
+# Wattpilot reports per-phase power in kW. This is observation-only and is not
+# a charging, cable, or current-limiting setting.
+LIVE_PHASE_POWER_THRESHOLD_KW = 0.05
+
+# The Wattpilot normally emits raw WebSocket messages about once per second.
+# This bounded timeout is considered only after a healthy transport baseline
+# has been seen and only from the normal controller update path.
+WATTPILOT_TELEMETRY_FRESH_SECONDS = 60.0
+
 RUNTIME_STATUS_DBUS_DEFAULTS = {
     "/ControlState": CONTROL_STATE_STOPPED,
     "/ControlStateLiteral": CONTROL_STATE_LITERALS[CONTROL_STATE_STOPPED],
@@ -62,10 +73,12 @@ RUNTIME_STATUS_TOPIC_SUFFIXES = {
     "/TelemetryHealthy": "TelemetryHealthy",
 }
 
+_LOG = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class RuntimeStatusSnapshot:
-    """The complete runtime-status contract at one point in time."""
+    """The complete public runtime-status contract at one point in time."""
 
     control_state: int
     control_state_literal: str
@@ -88,12 +101,11 @@ class RuntimeStatusSnapshot:
 
 
 class WattpilotRuntimeStatusReporter:
-    """Derives and publishes the public runtime-status contract.
+    """Observe and publish the Wattpilot runtime-status contract.
 
-    The existing FroniusWattpilot controller owns charging decisions.  The
-    reporter only observes its stable controller fields and method outcomes;
-    it never issues Wattpilot commands and therefore cannot change Manual mode
-    or authorise grid/battery use.
+    The existing controller remains solely responsible for charging decisions.
+    This reporter does not issue commands. It publishes only from controller
+    paths; raw WebSocket callbacks record timestamps only.
     """
 
     _TRANSITION_METHODS = (
@@ -111,7 +123,6 @@ class WattpilotRuntimeStatusReporter:
         "onMqttMessage",
         "reconcilePendingPhaseSwitch",
         "wakeUpWattpilot",
-        "initFinalize",
         "handleSigterm",
     )
 
@@ -122,11 +133,27 @@ class WattpilotRuntimeStatusReporter:
         self.fault_active = False
         self._fault_generation = 0
         self._dbus_paths_registered = False
+
+        # Startup is neutral until the original controller has enough Wattpilot
+        # state for one normal update. This prevents a reboot while the
+        # Wattpilot is unavailable from being labelled as stale telemetry.
+        self.runtime_state_ready = False
+        self.telemetry_baseline_established = False
+        self._init_finalize_completed = False
+        self._update_in_progress = False
+
+        # Transport observations are updated only by raw event callbacks and
+        # consumed only in the normal controller update path.
         self._wattpilot_events_attached = False
+        self._transport_lock = threading.Lock()
+        self._last_wattpilot_message_at: Optional[float] = None
+        self._last_wattpilot_close_at: Optional[float] = None
+        self._transport_has_healthy_baseline = False
 
     def install(self) -> "WattpilotRuntimeStatusReporter":
-        """Install non-invasive instance wrappers around controller outcomes."""
+        """Install instance wrappers without changing control commands."""
         self._wrap_init_dbus_service()
+        self._wrap_init_finalize_nonblocking()
         for method_name in self._TRANSITION_METHODS:
             self._wrap_method(method_name)
         self._wrap_method("failSafeStopForAutoControlFault", mark_fault=True)
@@ -150,13 +177,69 @@ class WattpilotRuntimeStatusReporter:
                 self.mark_fault()
                 self.publish()
                 raise
-            if method_name == "initFinalize":
-                self.attach_wattpilot_events()
+            if method_name == "reportVRMStatus" and not self._update_in_progress:
+                self.runtime_state_ready = True
             self.publish()
             return result
 
         wrapped._runtime_status_wrapped = True  # type: ignore[attr-defined]
         setattr(self.controller, method_name, wrapped)
+
+    def _wrap_init_finalize_nonblocking(self) -> None:
+        """Run the legacy Wattpilot bootstrap without its serial waits.
+
+        The existing implementation starts the Wattpilot client's own automatic
+        reconnect loop and then waits for several fields in sequence. A GX
+        restart while the wallbox is offline can therefore stall service startup
+        for minutes. For this one invocation, replace only its wait helper with
+        an immediate predicate check. The original method still creates the
+        client and enables its existing bounded reconnect behavior.
+        """
+        original = getattr(self.controller, "initFinalize", None)
+        if not callable(original) or getattr(original, "_runtime_status_wrapped", False):
+            return
+
+        @wraps(original)
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            method_globals = getattr(getattr(original, "__func__", original), "__globals__", None)
+            helper_module = method_globals.get("Helper") if isinstance(method_globals, dict) else None
+            original_wait = getattr(helper_module, "waitTimeout", None)
+            wait_replaced = callable(original_wait)
+
+            def immediate_wait(predicate: Callable[[], Any], _timeout: Any) -> bool:
+                try:
+                    return bool(predicate())
+                except Exception:
+                    return False
+
+            if wait_replaced:
+                try:
+                    helper_module.waitTimeout = immediate_wait
+                except Exception:
+                    wait_replaced = False
+
+            try:
+                result = original(*args, **kwargs)
+            except Exception as ex:
+                # A partly-initialized offline Wattpilot is an expected startup
+                # condition, not a control fault. The normal update path and the
+                # client's reconnect loop will recover when data arrives.
+                _LOG.warning("Wattpilot startup deferred until the client reconnects: %s", ex)
+                result = None
+            finally:
+                if wait_replaced:
+                    try:
+                        helper_module.waitTimeout = original_wait
+                    except Exception:
+                        pass
+
+            self._init_finalize_completed = True
+            self.attach_wattpilot_events()
+            self.publish(force=True)
+            return result
+
+        wrapped._runtime_status_wrapped = True  # type: ignore[attr-defined]
+        setattr(self.controller, "initFinalize", wrapped)
 
     def _wrap_update_method(self) -> None:
         original = getattr(self.controller, "_update", None)
@@ -165,17 +248,29 @@ class WattpilotRuntimeStatusReporter:
 
         @wraps(original)
         def wrapped(*args: Any, **kwargs: Any) -> Any:
+            self.attach_wattpilot_events()
             generation_before_update = self._fault_generation
+
+            # Do not call the legacy controller before the client has the basic
+            # fields it dereferences. This is what makes an offline startup safe
+            # and keeps its D-Bus contract responsive rather than blocking.
+            if not self._controller_ready_for_update():
+                return self.publish()
+
+            completed = False
+            self._update_in_progress = True
             try:
-                return original(*args, **kwargs)
+                result = original(*args, **kwargs)
+                completed = True
+                return result
             except BaseException:
                 self.mark_fault()
                 self.publish()
                 raise
             finally:
-                # A subsequent successful controller cycle clears a previous
-                # controller fault. A fault raised during this same cycle stays
-                # visible until the next clean cycle.
+                self._update_in_progress = False
+                if completed:
+                    self.runtime_state_ready = True
                 if self._fault_generation == generation_before_update:
                     self.fault_active = False
                 self.publish()
@@ -183,8 +278,16 @@ class WattpilotRuntimeStatusReporter:
         wrapped._runtime_status_wrapped = True  # type: ignore[attr-defined]
         setattr(self.controller, "_update", wrapped)
 
+    def _controller_ready_for_update(self) -> bool:
+        wattpilot = getattr(self.controller, "wattpilot", None)
+        if wattpilot is None or not bool(getattr(wattpilot, "connected", False)):
+            return False
+        if getattr(wattpilot, "mode", None) is None:
+            return False
+        return bool(getattr(wattpilot, "carStateReady", False))
+
     def _wrap_init_dbus_service(self) -> None:
-        """Ensure contract paths are installed before VeDbusService.register()."""
+        """Ensure contract paths exist before VeDbusService.register()."""
         original = getattr(self.controller, "initDbusService", None)
         if not callable(original) or getattr(original, "_runtime_status_wrapped", False):
             return
@@ -213,9 +316,6 @@ class WattpilotRuntimeStatusReporter:
                         try:
                             service.register = register_with_runtime_status
                         except Exception:
-                            # Some VeDbusService implementations expose a
-                            # read-only method. The post-initialisation
-                            # fallback below still publishes the contract.
                             pass
                     return service
 
@@ -232,8 +332,6 @@ class WattpilotRuntimeStatusReporter:
                 if factory_replaced and isinstance(method_globals, dict):
                     method_globals["VeDbusService"] = original_factory
 
-            # The fallback also supports test doubles and implementations that
-            # do not expose a VeDbusService global.
             self.publish(force=True)
             return result
 
@@ -241,105 +339,84 @@ class WattpilotRuntimeStatusReporter:
         setattr(self.controller, "initDbusService", wrapped)
 
     def attach_wattpilot_events(self) -> None:
-        """Publish promptly for Wattpilot connection and property events.
-
-        The Wattpilot implementation exposes event callbacks on GX.  Wrapping
-        ``connect`` and ``disconnect`` as a small fallback also keeps the
-        contract timely for compatible Wattpilot implementations that do not
-        expose the event API.  Neither wrapper changes a command or a result.
-        """
+        """Record raw transport evidence without publishing from callbacks."""
         if self._wattpilot_events_attached:
             return
-
         wattpilot = getattr(self.controller, "wattpilot", None)
         if wattpilot is None:
             return
-
-        attached = self._wrap_wattpilot_connection_methods(wattpilot)
         add_handler = getattr(wattpilot, "add_event_handler", None)
-        if callable(add_handler):
+        if not callable(add_handler):
+            return
+        try:
+            from Wattpilot import Event
+        except Exception:
+            return
+
+        attached = False
+        for event_name in ("WS_MESSAGE", "WS_CLOSE"):
+            event = getattr(Event, event_name, None)
+            if event is None:
+                continue
+
+            def event_callback(*_args: Any, _event_name: str = event_name, **_kwargs: Any) -> None:
+                self._record_transport_event(_event_name)
+
             try:
-                from Wattpilot import Event  # Imported only on the GX runtime.
+                add_handler(event, event_callback)
+                attached = True
             except Exception:
-                Event = None
-
-            if Event is not None:
-                def event_callback(*_args: Any, **_kwargs: Any) -> None:
-                    self.publish()
-
-                for event_name in (
-                    "WP_CONNECT",
-                    "WP_DISCONNECT",
-                    "WS_CLOSE",
-                    "WP_AUTH_SUCCESS",
-                    "WP_FULL_STATUS_FINISHED",
-                    "WP_PROPERTY",
-                ):
-                    event = getattr(Event, event_name, None)
-                    if event is None:
-                        continue
-                    try:
-                        add_handler(event, event_callback)
-                        attached = True
-                    except Exception:
-                        continue
-
+                continue
         self._wattpilot_events_attached = attached
 
-    def _wrap_wattpilot_connection_methods(self, wattpilot: Any) -> bool:
-        """Observe direct connect/disconnect calls without changing them."""
-        wrapped_any = False
-        for method_name in ("connect", "disconnect"):
-            original = getattr(wattpilot, method_name, None)
-            if not callable(original) or getattr(original, "_runtime_status_wrapped", False):
-                continue
+    def _record_transport_event(self, event_name: str) -> None:
+        """Record an event cheaply; do not touch D-Bus, MQTT, or control here."""
+        now = time.monotonic()
+        with self._transport_lock:
+            if event_name == "WS_MESSAGE":
+                self._last_wattpilot_message_at = now
+                self._transport_has_healthy_baseline = True
+            elif event_name == "WS_CLOSE":
+                self._last_wattpilot_close_at = now
+                self._last_wattpilot_message_at = None
 
-            def make_wrapper(callable_method: Callable[..., Any]) -> Callable[..., Any]:
-                @wraps(callable_method)
-                def wrapped(*args: Any, **kwargs: Any) -> Any:
-                    try:
-                        return callable_method(*args, **kwargs)
-                    finally:
-                        self.publish()
-
-                wrapped._runtime_status_wrapped = True  # type: ignore[attr-defined]
-                return wrapped
-
-            try:
-                setattr(wattpilot, method_name, make_wrapper(original))
-                wrapped_any = True
-            except Exception:
-                # Some implementations intentionally keep methods read-only;
-                # their event callbacks still provide the immediate update.
-                continue
-        return wrapped_any
+    def _transport_is_stale(self) -> bool:
+        """Return true only for a silent loss after a known-good baseline."""
+        if not self._wattpilot_connected() or not self.runtime_state_ready:
+            return False
+        if not self._wattpilot_events_attached:
+            return False
+        with self._transport_lock:
+            if not self._transport_has_healthy_baseline:
+                return False
+            last = self._last_wattpilot_message_at
+        if last is None:
+            return False
+        age = time.monotonic() - last
+        return age >= WATTPILOT_TELEMETRY_FRESH_SECONDS
 
     def register_dbus_paths(self) -> None:
         service = getattr(self.controller, "dbusService", None)
         if service is None:
             return
-        paths_registered = True
+        registered = True
         for path, default in RUNTIME_STATUS_DBUS_DEFAULTS.items():
             try:
                 _ensure_dbus_path(service, path, default)
             except Exception:
-                # Runtime reporting must never interfere with the controller
-                # if D-Bus is starting, restarting, or temporarily unhealthy.
-                paths_registered = False
-        self._dbus_paths_registered = paths_registered
+                registered = False
+        self._dbus_paths_registered = registered
 
     def mark_fault(self) -> None:
         self.fault_active = True
         self._fault_generation += 1
 
     def publish(self, force: bool = False) -> RuntimeStatusSnapshot:
-        """Publish a best-effort snapshot without affecting charge control."""
+        """Best-effort publication that cannot interrupt Wattpilot control."""
         try:
             self.register_dbus_paths()
             snapshot = self.snapshot()
         except Exception:
-            # A reporting-side failure must not propagate into an EV-control
-            # callback. Keep the last coherent snapshot when possible.
             return self.last_snapshot or self._safe_default_snapshot()
 
         values = snapshot.as_dbus_values()
@@ -370,12 +447,10 @@ class WattpilotRuntimeStatusReporter:
         publish = getattr(self.controller, "publishMainMqtt", None)
         if not callable(publish):
             return
-        suffix = RUNTIME_STATUS_TOPIC_SUFFIXES[dbus_path]
-        topic = "{0}/{1}".format(RUNTIME_STATUS_MQTT_PREFIX, suffix)
+        topic = "{0}/{1}".format(RUNTIME_STATUS_MQTT_PREFIX, RUNTIME_STATUS_TOPIC_SUFFIXES[dbus_path])
         try:
             publish(topic, value, retain=True)
         except TypeError:
-            # Small stubs and older wrappers can expose a two-argument method.
             try:
                 publish(topic, value)
             except Exception:
@@ -394,6 +469,20 @@ class WattpilotRuntimeStatusReporter:
             grid_guard=bool(grid_guard),
             battery_assist=bool(battery_assist),
         )
+
+        # The public charging-state and phase-mode fields are one contract.
+        # A manual Wattpilot start can report the standard VRM "Charging"
+        # status before its individual phase-power attributes are populated.
+        # In that short (or client-version-specific) gap, _control_state()
+        # already classifies the active charge as one phase. Publish the matching
+        # phase mode instead of the contradictory "Charging 1 phase" plus
+        # "Unknown" pair. Pending switches return above as transition states,
+        # so this cannot mask a requested phase change.
+        if control_state == CONTROL_STATE_CHARGING_1_PHASE and phase_mode != 1:
+            phase_mode, phase_literal = 1, "1 phase"
+        elif control_state == CONTROL_STATE_CHARGING_3_PHASE and phase_mode != 3:
+            phase_mode, phase_literal = 3, "3 phases"
+
         return RuntimeStatusSnapshot(
             control_state=control_state,
             control_state_literal=CONTROL_STATE_LITERALS[control_state],
@@ -413,24 +502,23 @@ class WattpilotRuntimeStatusReporter:
     ) -> int:
         if self.fault_active:
             return CONTROL_STATE_FAULT
-
-        auto_mode = self._is_auto_mode()
-        connected = self._wattpilot_connected()
-        pending_phase = getattr(self.controller, "pendingPhaseSwitchMode", 0)
-        status_name = self.last_vrm_status_name or ""
-
-        # A physical disconnect is not a telemetry-fault diagnosis. It is a
-        # normal stopped state and lets dashboards distinguish it from stale
-        # grid/allowance data.
-        if not connected:
+        if not self.runtime_state_ready:
             return CONTROL_STATE_STOPPED
 
+        auto_mode = self._is_auto_mode()
+        if not self._wattpilot_connected():
+            return CONTROL_STATE_STOPPED
+
+        pending_phase = getattr(self.controller, "pendingPhaseSwitchMode", 0)
+        status_name = self.last_vrm_status_name or ""
         if pending_phase == 1 or status_name == "SwitchingTo1Phase":
             return CONTROL_STATE_SWITCHING_TO_1_PHASE
         if pending_phase == 2 or status_name == "SwitchingTo3Phase":
             return CONTROL_STATE_SWITCHING_TO_3_PHASE
 
         if auto_mode:
+            if not self.telemetry_baseline_established:
+                return CONTROL_STATE_STOPPED
             if not telemetry_healthy:
                 return CONTROL_STATE_STOPPED_FOR_STALE_TELEMETRY
             if grid_guard:
@@ -439,35 +527,49 @@ class WattpilotRuntimeStatusReporter:
                 return CONTROL_STATE_BATTERY_ASSIST
 
         if self._charge_is_active(status_name):
-            return (
-                CONTROL_STATE_CHARGING_3_PHASE
-                if phase_mode == 3
-                else CONTROL_STATE_CHARGING_1_PHASE
-            )
+            return CONTROL_STATE_CHARGING_3_PHASE if phase_mode == 3 else CONTROL_STATE_CHARGING_1_PHASE
 
         if not auto_mode:
             return CONTROL_STATE_STOPPED
 
-        # A deliberate Auto/Eco stop must remain visible until a subsequent
-        # positive charging or waiting state replaces it. This is important for
-        # a failed phase switch, where calling it a fault would be misleading.
         if status_name in ("StopCharging", "Disconnected", "Charged"):
             return CONTROL_STATE_STOPPED
-
-        if self._has_minimum_allowance():
-            return CONTROL_STATE_WAITING_FOR_STABLE_PV
-        return CONTROL_STATE_WAITING_FOR_PV
+        return CONTROL_STATE_WAITING_FOR_STABLE_PV if self._has_minimum_allowance() else CONTROL_STATE_WAITING_FOR_PV
 
     def _phase_mode(self) -> Tuple[int, str]:
         pending = getattr(self.controller, "pendingPhaseSwitchMode", 0)
         if pending in (1, 2):
             return 0, "Transition"
+
+        measured = self._measured_phase_mode()
+        if measured == 1:
+            return 1, "1 phase"
+        if measured == 3:
+            return 3, "3 phases"
+
         phase = getattr(self.controller, "currentPhaseMode", 0)
         if phase == 1:
             return 1, "1 phase"
-        if phase == 2 or phase == 3:
+        if phase in (2, 3):
             return 3, "3 phases"
         return 0, "Unknown"
+
+    def _measured_phase_mode(self) -> Optional[int]:
+        wattpilot = getattr(self.controller, "wattpilot", None)
+        if wattpilot is None:
+            return None
+        powers = tuple(
+            _finite_number_or_none(getattr(wattpilot, name, None))
+            for name in ("power1", "power2", "power3")
+        )
+        if any(power is None for power in powers):
+            return None
+        l1, l2, l3 = (power > LIVE_PHASE_POWER_THRESHOLD_KW for power in powers)
+        if l1 and l2 and l3:
+            return 3
+        if l1 and not l2 and not l3:
+            return 1
+        return None
 
     def _is_auto_mode(self) -> bool:
         mode = getattr(self.controller, "mode", None)
@@ -485,27 +587,29 @@ class WattpilotRuntimeStatusReporter:
 
     def _wattpilot_connected(self) -> bool:
         wattpilot = getattr(self.controller, "wattpilot", None)
-        if wattpilot is None:
-            return False
-        connected = getattr(wattpilot, "connected", None)
-        return bool(connected)
+        return bool(wattpilot is not None and getattr(wattpilot, "connected", False))
 
     def _telemetry_healthy(self) -> bool:
-        if not self._wattpilot_connected():
+        if not self.runtime_state_ready or not self._wattpilot_connected():
             return False
-        if not self._is_auto_mode():
+        if self._transport_is_stale():
+            return False
+        if not self._is_auto_mode() or bool(getattr(self.controller, "allowGridCharging", False)):
             return True
-        if bool(getattr(self.controller, "allowGridCharging", False)):
-            return True
+
         grid_fresh = self._call_bool("gridTelemetryIsFresh")
         if grid_fresh is None:
             grid_fresh = self._fallback_grid_freshness()
-        if not grid_fresh:
-            return False
         allowance_fresh = self._call_bool("allowanceIsFresh")
         if allowance_fresh is None:
             allowance_fresh = self._fallback_allowance_freshness()
-        return bool(allowance_fresh)
+
+        if not self.telemetry_baseline_established:
+            if grid_fresh and allowance_fresh:
+                self.telemetry_baseline_established = True
+            else:
+                return False
+        return bool(grid_fresh and allowance_fresh)
 
     def _fallback_grid_freshness(self) -> bool:
         fresh_seconds = max(1, _number(getattr(self.controller, "gridTelemetryFreshSeconds", 15), 15))
@@ -539,12 +643,10 @@ class WattpilotRuntimeStatusReporter:
         if status_name in ("Charging", "StartCharging"):
             return True
         wattpilot = getattr(self.controller, "wattpilot", None)
-        power_w = _number(getattr(wattpilot, "power", 0), 0) * 1000.0
-        if power_w > 50.0:
+        if _number(getattr(wattpilot, "power", 0), 0) * 1000.0 > 50.0:
             return True
         model_status = getattr(wattpilot, "modelStatus", None)
-        model_value = getattr(model_status, "value", model_status)
-        return model_value in (3, 12, 15, 19, 20)
+        return getattr(model_status, "value", model_status) in (3, 12, 15, 19, 20)
 
     def _has_minimum_allowance(self) -> bool:
         result = self._call_bool("hasMinimumAllowance")
@@ -570,7 +672,7 @@ class WattpilotRuntimeStatusReporter:
 
 
 def attach_runtime_status_reporter(controller: Any) -> Optional[WattpilotRuntimeStatusReporter]:
-    """Attach a reporter only to the FroniusWattpilot controller instance."""
+    """Attach one reporter only to the FroniusWattpilot controller."""
     if controller.__class__.__name__ != "FroniusWattpilot":
         return None
     reporter = getattr(controller, "_runtime_status_reporter", None)
@@ -582,7 +684,6 @@ def attach_runtime_status_reporter(controller: Any) -> Optional[WattpilotRuntime
 
 
 def _ensure_dbus_path(service: Any, path: str, default: Any) -> None:
-    """Add a D-Bus path once, including on simple mapping-based test doubles."""
     try:
         service[path]
         return
@@ -594,8 +695,6 @@ def _ensure_dbus_path(service: Any, path: str, default: Any) -> None:
             add_path(path, default)
             return
         except Exception:
-            # A D-Bus service can reject an already-registered path. In that
-            # case it is safe to continue because the path is already owned.
             try:
                 service[path]
                 return
@@ -608,8 +707,6 @@ def _set_dbus_value(service: Any, path: str, value: Any) -> None:
     try:
         service[path] = value
     except Exception:
-        # Do not make status observability capable of breaking charge control.
-        # A later publication attempt will retry after the D-Bus service heals.
         return
 
 
@@ -617,14 +714,17 @@ def _enum_name(value: Any) -> str:
     name = getattr(value, "name", None)
     if isinstance(name, str):
         return name
-    if isinstance(value, str):
-        return value
-    return ""
+    return value if isinstance(value, str) else ""
+
+
+def _finite_number_or_none(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _number(value: Any, default: float) -> float:
-    try:
-        number = float(value)
-        return number if math.isfinite(number) else default
-    except (TypeError, ValueError):
-        return default
+    number = _finite_number_or_none(value)
+    return default if number is None else number
