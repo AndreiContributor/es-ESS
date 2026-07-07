@@ -403,6 +403,17 @@ FroniusWattpilot requires a few variables to be set in `/data/es-ESS/config.ini`
 | [FroniusWattpilot] | AllowanceFreshSeconds | Maximum age of the assigned SolarOverheadDistributor Wattpilot allowance. Missing, malformed, or stale allowance is treated as insufficient. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | GridTelemetryFreshSeconds | Maximum age of each required grid-power value (L1, L2, and L3) while no-grid Auto/Eco control is enabled. | Integer (seconds) | 15 |
 
+### Eco/PV policy
+
+In `Auto` / Wattpilot `ECO` mode, es-ESS follows this PV-only policy:
+
+- A new charge starts only after a fresh, distributor-assigned **real PV allowance** has continuously met the one-phase minimum for `MinOnOffSeconds`. It starts on one phase when that minimum is available.
+- A one-to-three-phase change requires a fresh real PV allowance at or above `ThreePhasePvSurplusStartW` (and the electrical three-phase minimum). Battery assist and raw-overhead data never start a charge and never cause a phase-up.
+- Battery assist is optional and may only bridge a short cloud for an **already-running** charge. It is limited by its configured SOC, shortfall-power, duration, and PV-recovery settings; it cannot create a new charging session.
+- Auto/Eco stops when sustained grid import exceeds `GridImportStopW` for `GridImportStopSeconds`. With `AllowGridCharging=false`, Auto/Eco therefore does not intentionally use grid power.
+- `MinOnOffSeconds` applies to starts and stops, and `MinPhaseSwitchSeconds` applies to one-to-three-phase changes. A safety three-to-one-phase reduction is allowed immediately when PV no longer supports three phases but still supports one phase.
+- Normal Wattpilot `Manual` mode remains under the user's control and is not changed by this Auto/Eco policy.
+
 ### Auto/Eco telemetry fail-safe
 
 When `AllowGridCharging=false` (the recommended no-grid configuration), Auto/Eco charging requires valid, fresh grid-power telemetry for all three grid phases. If any L1, L2, or L3 value is missing, invalid, or older than `GridTelemetryFreshSeconds`, es-ESS will not start a new Auto/Eco session and will stop an active Auto/Eco session immediately. This means a grid-meter or D-Bus telemetry outage can stop charging until fresh values recover.
