@@ -400,6 +400,14 @@ FroniusWattpilot requires a few variables to be set in `/data/es-ESS/config.ini`
 | [FroniusWattpilot]  | Username | Username of Wattpilot | String  | User |
 | [FroniusWattpilot]  | Password | Password of Wattpilot | String  | Secret123! |
 | [FroniusWattpilot]  | HibernateMode | When the car is disconnected, es-ESS will switch into idle mode, stop doing heavy lifting. Connection to wattpilot remains established and VRM control enabled. <br /><br />With hibernate enabled, wattpilot will also be disconnected, and connected every 5 minutes for a car-state-check. This greatly reduces the number of incoming socket messages from wattpilot by about 95% per day, but causes an delay of upto 5 minutes when the car is connected.<br /><br />You can force a wakeup by switching to *Scheduled charging* in VRM at any time. | Boolean  | true |
+| [FroniusWattpilot] | AllowanceFreshSeconds | Maximum age of the assigned SolarOverheadDistributor Wattpilot allowance. Missing, malformed, or stale allowance is treated as insufficient. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | GridTelemetryFreshSeconds | Maximum age of each required grid-power value (L1, L2, and L3) while no-grid Auto/Eco control is enabled. | Integer (seconds) | 15 |
+
+### Auto/Eco telemetry fail-safe
+
+When `AllowGridCharging=false` (the recommended no-grid configuration), Auto/Eco charging requires valid, fresh grid-power telemetry for all three grid phases. If any L1, L2, or L3 value is missing, invalid, or older than `GridTelemetryFreshSeconds`, es-ESS will not start a new Auto/Eco session and will stop an active Auto/Eco session immediately. This means a grid-meter or D-Bus telemetry outage can stop charging until fresh values recover.
+
+Auto/Eco also requires a valid Wattpilot allowance received within `AllowanceFreshSeconds`. Missing, malformed, or stale allowance is never replaced with raw-overhead data. A running Auto/Eco session uses the existing `AllowanceDropGraceSeconds` debounce before stopping for insufficient or stale allowance. Manual Wattpilot mode remains under the Wattpilot user's control and is not changed by these Auto/Eco freshness guards.
 
 ### Low Price Charging. 
 Wattpilot supports the function to charge due to cheap grid prices, you can use the builtin feature as you are used to. es-ESS will then detect,
