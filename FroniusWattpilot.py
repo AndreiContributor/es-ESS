@@ -793,6 +793,13 @@ class FroniusWattpilot (esESSService):
         # a newly commanded start or phase change. Do not reset the five-minute
         # PV timer or issue another Off command during this short transition.
         if self.powerTransitionGraceActive():
+            allowanceStatus = self.transitionAllowanceSafetyStatus(
+                VrmEvChargerStatus.StartCharging
+            )
+            if allowanceStatus is not None:
+                self.reportVRMStatus(allowanceStatus)
+                return
+
             self.reportVRMStatus(VrmEvChargerStatus.StartCharging)
             d(
                 self,
@@ -858,21 +865,24 @@ class FroniusWattpilot (esESSService):
         ):
             self.startFromPvAllowance()
         else:
-            self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
             if stableSeconds < self.minimumOnOffSeconds:
-                d(
-                    self,
-                    "Waiting for stable PV allowance: {0:.0f}/{1}s".format(
+                statusLiteral = (
+                    "Waiting for stable PV allowance ({0:.0f}/{1}s)".format(
                         stableSeconds, self.minimumOnOffSeconds
                     )
                 )
-            else:
-                d(
-                    self,
-                    "Waiting for start cooldown: {0:.0f}s".format(
-                        onOffCooldownSeconds
-                    )
+                self.reportVRMStatus(
+                    VrmEvChargerStatus.WaitingForSun, statusLiteral
                 )
+                d(self, statusLiteral)
+            else:
+                statusLiteral = "Waiting for start cooldown ({0:.0f}s)".format(
+                    onOffCooldownSeconds
+                )
+                self.reportVRMStatus(
+                    VrmEvChargerStatus.WaitingForSun, statusLiteral
+                )
+                d(self, statusLiteral)
 
 
     def startFromPvAllowance(self):
@@ -1024,9 +1034,9 @@ class FroniusWattpilot (esESSService):
         return VrmEvChargerStatus.StopCharging
 
 
-    def reportVRMStatus(self, status:VrmEvChargerStatus):
+    def reportVRMStatus(self, status:VrmEvChargerStatus, statusLiteral=None):
         self.publish("/Status", status.value)
-        self.publish("/StatusLiteral", status.name)
+        self.publish("/StatusLiteral", statusLiteral or status.name)
 
     def reportBaseRequest(self):
         if self.wattpilot.voltage1 is not None:
@@ -1373,6 +1383,12 @@ class FroniusWattpilot (esESSService):
         if pending not in (1, 2):
             return None
 
+        transitionStatus = (
+            VrmEvChargerStatus.SwitchingTo3Phase
+            if pending == 2
+            else VrmEvChargerStatus.SwitchingTo1Phase
+        )
+
         if self.phaseTelemetryConfirmsMode(pending):
             self.publishServiceMessage(
                 self,
@@ -1383,6 +1399,10 @@ class FroniusWattpilot (esESSService):
             self.clearPendingPhaseSwitch()
             return None
 
+        allowanceStatus = self.transitionAllowanceSafetyStatus(transitionStatus)
+        if allowanceStatus is not None:
+            return allowanceStatus
+
         now = time.time()
         pendingSince = getattr(self, "pendingPhaseSwitchSince", 0)
         if pendingSince == 0:
@@ -1390,11 +1410,7 @@ class FroniusWattpilot (esESSService):
             pendingSince = now
 
         if now - pendingSince < self.startupGraceSeconds:
-            return (
-                VrmEvChargerStatus.SwitchingTo3Phase
-                if pending == 2
-                else VrmEvChargerStatus.SwitchingTo1Phase
-            )
+            return transitionStatus
 
         self.clearPowerTransitionGrace()
 
@@ -1624,6 +1640,34 @@ class FroniusWattpilot (esESSService):
             now - self.allowanceBelowMinimumSince
             < self.allowanceDropGraceSeconds
         )
+
+    def transitionAllowanceSafetyStatus(self, transitionStatus):
+        """Apply the normal allowance-stop grace during Auto/Eco transitions.
+
+        Startup and phase-switch grace prevent a false zero-Wattpilot reading
+        from revoking a valid command before charger telemetry catches up.
+        They must not allow stale, missing, or insufficient distributor
+        allowance to bypass the normal Auto/Eco stop policy. Manual mode is
+        intentionally outside this guard.
+        """
+        if self.mode != VrmEvChargerControlMode.Auto:
+            return None
+
+        if self.hasMinimumAllowance():
+            return None
+
+        self.clearBatteryAssist()
+        if self.allowanceStopGraceActive():
+            return transitionStatus
+
+        self.publishServiceMessage(
+            self,
+            "Wattpilot PV allowance is missing, invalid, stale, or insufficient "
+            "during a start or phase transition. Stopping Auto/Eco charging "
+            "for safety."
+        )
+        self.forceStopForNoAllowance()
+        return VrmEvChargerStatus.StopCharging
 
     def dbusValue(self, subscription, default=None):
         try:
