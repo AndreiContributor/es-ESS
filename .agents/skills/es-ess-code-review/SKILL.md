@@ -8,9 +8,9 @@ description: Review es-ESS and update BACKLOG.md with safety-focused, architectu
 Review es-ESS as a Python service bundle for Victron Venus OS / GX devices.
 
 Start by inspecting `README.md`, `BACKLOG.md`,
-`docs/wattpilot-architecture.md`, top-level service modules,
-`config.sample.ini`, `tests/`, and service scripts such as `install.sh`,
-`restart.sh`, `kill_me.sh`, `uninstall.sh`, and `service/run`.
+`docs/wattpilot-architecture.md`, `docs/service-inventory.md`, top-level
+service modules, `config.sample.ini`, `tests/`, and service scripts such as
+`install.sh`, `restart.sh`, `kill_me.sh`, `uninstall.sh`, and `service/run`.
 
 Summarize the architecture before listing findings: runtime entry points, major
 services, external integrations, test strategy, and unclear deployment details.
@@ -23,6 +23,12 @@ When a review or implementation task touches Wattpilot behavior, check
 `docs/wattpilot-architecture.md` before making findings. Update it when module
 responsibilities, command boundaries, safety invariants, or the public
 D-Bus/MQTT runtime-status contract need to change.
+
+When a review or implementation task touches service initialization, service
+config sections, non-Wattpilot D-Bus/MQTT contracts, external device
+dependencies, grid-setpoint ownership, or active/dormant service status, check
+`docs/service-inventory.md` before making findings. Update it when those
+boundaries change.
 
 Before editing `BACKLOG.md`, ask concise questions only when missing information
 materially affects correctness or priority. Otherwise continue with stated

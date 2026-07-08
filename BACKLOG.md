@@ -146,6 +146,21 @@ Completion note:
 - Kept the change documentation-only; no production code, config defaults,
   D-Bus paths, MQTT topics, or tests were changed.
 
+### Completed 2026-07-08 - Document App-Wide Service Inventory And Integration Boundaries
+
+Completion note:
+
+- Added `docs/service-inventory.md` with active initialized services, dormant
+  and config-only entries, shared integration patterns, and follow-up gaps.
+- Documented D-Bus publishers/readers, MQTT boundaries, HTTP/device polling,
+  SolarOverheadDistributor consumers, and grid-setpoint ownership.
+- Added `docs/service-inventory.md` to `AGENTS.md` inspection and maintenance
+  guidance.
+- Added the service inventory to the es-ESS code-review skill inspection list
+  and update rules.
+- Kept the change documentation-only; no production code, config defaults,
+  D-Bus paths, MQTT topics, or tests were changed.
+
 ## Backlog
 
 ### P0 - Guard Manual Wattpilot Mode From D-Bus/VRM Control Writes
@@ -715,109 +730,6 @@ Done criteria:
 - No command fails solely because no matching process exists.
 - Uninstall behavior around production config is explicit and documented.
 
-### P2 - Document App-Wide Service Inventory And Integration Boundaries
-
-Goal:
-
-Make the non-Wattpilot services understandable before broad documentation,
-config cleanup, or cross-service refactoring.
-
-Problem:
-
-The backlog is intentionally Wattpilot-heavy because EV charging control is the
-highest-risk area, but es-ESS contains several other independent services.
-Those services have their own D-Bus, MQTT, HTTP, configuration, and worker
-boundaries. Without a concise service inventory, future README/config cleanup
-or service refactors can miss inactive services, config-only entries, or
-cross-service dependencies.
-
-Evidence:
-
-- `es-ESS.py` initializes enabled services from `[Services]`, including
-  `SolarOverheadDistributor`, `TimeToGoCalculator`, `FroniusSmartmeterJSON`,
-  `MqttExporter`, `FroniusWattpilot`, `MqttTemperature`, `NoBatToEV`,
-  `Shelly3EMGrid`, `ShellyPMInverter`, and `MqttPVInverter`.
-- `es-ESS.py` also contains disabled/commented service hooks for `Grid2Bat`,
-  `MqttDC`, `ChargeCurrentReducer`, and `FroniusSmartmeterRS485`.
-- `config.sample.ini` includes `Grid2Bat=false` but this checkout does not
-  contain an active `Grid2Bat.py` service module or active initializer call.
-- Service modules use different integration styles: D-Bus monitors,
-  VeDbusService publishing, main/local MQTT subscriptions, HTTP polling of
-  Shelly/Fronius endpoints, and SolarOverheadDistributor consumer requests.
-- README lists many services, but the backlog currently lacks a single
-  developer-facing map of non-Wattpilot service ownership and integration
-  boundaries.
-
-Implementation:
-
-- Add a small developer note, such as `docs/service-inventory.md`, that maps
-  each service to its module, config section, enabled/disabled state, primary
-  D-Bus paths or service type, MQTT topics, external dependencies, and runtime
-  worker/subscription model.
-- Separate active initialized services from dormant/commented/config-only
-  entries.
-- Include the relationship between `SolarOverheadDistributor`,
-  `FroniusWattpilot`, scripted consumers, MQTT consumers, and HTTP consumers.
-- Include service ownership boundaries for sensor ingestion, D-Bus device
-  publishing, MQTT export, grid-setpoint requests, and HTTP device polling.
-- Note documentation/config gaps discovered during the inventory as follow-up
-  backlog items instead of fixing them in the same PR.
-- Keep this task documentation-only.
-
-Files to change:
-
-- A small developer-facing markdown file
-
-Files to add:
-
-- Possibly `docs/service-inventory.md`
-
-Tests:
-
-- No runtime tests expected for documentation-only work.
-- Run markdown/link review manually.
-
-Expected coverage:
-
-- Contributors can see which services exist, which ones are active, which ones
-  are dormant or config-only, and where each service's integration boundary
-  belongs before editing app-wide docs or shared runtime code.
-
-Manual validation:
-
-- Maintainer review only.
-
-Manual test steps:
-
-1. Read the new service-inventory note.
-2. Confirm the active service list matches `es-ESS.py` initialization behavior.
-3. Confirm dormant/config-only services are labelled clearly and not presented
-   as active supported features.
-4. Confirm each service summary matches the current module and
-   `config.sample.ini`.
-
-Risks and dependencies:
-
-- Keep this PR documentation-only so it is safe to do early.
-- Avoid turning the inventory into a README rewrite or config cleanup PR.
-- Some modules may be present but intentionally disabled; do not infer product
-  intent without maintainer confirmation.
-
-Open questions:
-
-- Should dormant services such as `MqttDC`, `ChargeCurrentReducer`, and
-  `FroniusSmartmeterRS485` be documented as legacy/internal, or as future
-  supported services?
-- Should `Grid2Bat` remain in `config.sample.ini` if there is no active service
-  module in this checkout?
-
-Done criteria:
-
-- The non-Wattpilot service inventory is documented.
-- Active, dormant, and config-only entries are clearly distinguished.
-- No production behavior, config defaults, D-Bus paths, or MQTT topics are
-  changed.
-
 ### P2 - Add Wattpilot Decision Characterization Tests Before Refactoring
 
 Goal:
@@ -1284,21 +1196,19 @@ Wattpilot behavior.
 3. P1 CI, because it should run the config contract and existing behavior tests.
 4. P2 lifecycle script hardening, because it reduces deployment risk but should
    avoid mixing with Wattpilot behavior changes.
-5. P2 app-wide service inventory, because it is documentation-only and makes
-   the non-Wattpilot scope explicit before broader README/config cleanup.
-6. P2 Wattpilot decision characterization tests, because it strengthens the
+5. P2 Wattpilot decision characterization tests, because it strengthens the
    safety net before production code moves.
-7. P1 Wattpilot reconnect loop, because recovery reliability affects live
+6. P1 Wattpilot reconnect loop, because recovery reliability affects live
    safety/status behavior but should be isolated to the client lifecycle.
-8. P0 Manual command-boundary hardening, because it protects the most important
+7. P0 Manual command-boundary hardening, because it protects the most important
    product invariant once the test base is stronger.
-9. P2 telemetry and allowance helper extraction, because it is the first
+8. P2 telemetry and allowance helper extraction, because it is the first
     low-side-effect Wattpilot control extraction.
-10. P2 grid-guard and battery-assist helper extraction, because it is more
+9. P2 grid-guard and battery-assist helper extraction, because it is more
     safety-sensitive and should follow characterization coverage.
-11. P2 phase-switching helper extraction, because phase switching is
+10. P2 phase-switching helper extraction, because phase switching is
     user-visible and high-impact.
-12. P3 state-machine refactor, because it needs the previous behavior, config,
+11. P3 state-machine refactor, because it needs the previous behavior, config,
     docs, and helper boundaries in place before touching overall control flow.
 
 ## Verification Plan
