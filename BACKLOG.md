@@ -127,6 +127,25 @@ Completion note:
   upgraded to v8, preserved custom values, added missing defaults, and started
   without the duplicate-section crash.
 
+### Completed 2026-07-08 - Document Wattpilot Architecture Boundaries
+
+Completion note:
+
+- Added `docs/wattpilot-architecture.md` with current Wattpilot module
+  boundaries and safety invariants.
+- Documented `Wattpilot.py` as the transport/client boundary, not a PV/no-grid
+  policy module.
+- Documented `FroniusWattpilot.py` as the current controller and command
+  side-effect boundary until smaller decision helpers are extracted.
+- Documented `WattpilotRuntimeStatus.py` as an observer/status publisher that
+  must not issue charger commands.
+- Linked the architecture note from `README.md` and added it to `AGENTS.md`
+  implementation guidance.
+- Added the architecture note to the es-ESS code-review skill inspection list
+  and update rules.
+- Kept the change documentation-only; no production code, config defaults,
+  D-Bus paths, MQTT topics, or tests were changed.
+
 ## Backlog
 
 ### P0 - Guard Manual Wattpilot Mode From D-Bus/VRM Control Writes
@@ -696,50 +715,62 @@ Done criteria:
 - No command fails solely because no matching process exists.
 - Uninstall behavior around production config is explicit and documented.
 
-### P2 - Document Wattpilot Architecture Boundaries
+### P2 - Document App-Wide Service Inventory And Integration Boundaries
 
 Goal:
 
-Make the intended module responsibilities explicit before moving behavior.
+Make the non-Wattpilot services understandable before broad documentation,
+config cleanup, or cross-service refactoring.
 
 Problem:
 
-The current architecture is understandable, but the safety-sensitive Wattpilot
-module has grown large enough that future contributors need a clear boundary
-map before refactoring. Without that map, small PRs can accidentally mix
-transport, policy decisions, D-Bus publishing, and command handling.
+The backlog is intentionally Wattpilot-heavy because EV charging control is the
+highest-risk area, but es-ESS contains several other independent services.
+Those services have their own D-Bus, MQTT, HTTP, configuration, and worker
+boundaries. Without a concise service inventory, future README/config cleanup
+or service refactors can miss inactive services, config-only entries, or
+cross-service dependencies.
 
 Evidence:
 
-- `FroniusWattpilot.py` currently owns control policy, mode reflection,
-  telemetry freshness, grid guards, battery assist, phase switching, D-Bus
-  paths, MQTT distributor requests, and shutdown behavior.
-- `Wattpilot.py` is the Wattpilot WebSocket client and should remain focused on
-  transport, authentication, reconnect lifecycle, state updates, and events.
-- `WattpilotRuntimeStatus.py` already shows a useful direction: runtime status
-  reporting is separate from the raw client.
+- `es-ESS.py` initializes enabled services from `[Services]`, including
+  `SolarOverheadDistributor`, `TimeToGoCalculator`, `FroniusSmartmeterJSON`,
+  `MqttExporter`, `FroniusWattpilot`, `MqttTemperature`, `NoBatToEV`,
+  `Shelly3EMGrid`, `ShellyPMInverter`, and `MqttPVInverter`.
+- `es-ESS.py` also contains disabled/commented service hooks for `Grid2Bat`,
+  `MqttDC`, `ChargeCurrentReducer`, and `FroniusSmartmeterRS485`.
+- `config.sample.ini` includes `Grid2Bat=false` but this checkout does not
+  contain an active `Grid2Bat.py` service module or active initializer call.
+- Service modules use different integration styles: D-Bus monitors,
+  VeDbusService publishing, main/local MQTT subscriptions, HTTP polling of
+  Shelly/Fronius endpoints, and SolarOverheadDistributor consumer requests.
+- README lists many services, but the backlog currently lacks a single
+  developer-facing map of non-Wattpilot service ownership and integration
+  boundaries.
 
 Implementation:
 
-- Add a short architecture section to `README.md` or a small developer note
-  describing intended Wattpilot module boundaries.
-- State that `Wattpilot.py` is transport-only and must not contain PV/no-grid
-  control policy.
-- State that `FroniusWattpilot.py` remains the integration/controller boundary
-  until smaller decision helpers are extracted.
-- State that `WattpilotRuntimeStatus.py` owns the runtime-status contract and
-  should not issue charger commands.
-- Link the architecture note from `BACKLOG.md` or README where future PRs will
-  find it.
+- Add a small developer note, such as `docs/service-inventory.md`, that maps
+  each service to its module, config section, enabled/disabled state, primary
+  D-Bus paths or service type, MQTT topics, external dependencies, and runtime
+  worker/subscription model.
+- Separate active initialized services from dormant/commented/config-only
+  entries.
+- Include the relationship between `SolarOverheadDistributor`,
+  `FroniusWattpilot`, scripted consumers, MQTT consumers, and HTTP consumers.
+- Include service ownership boundaries for sensor ingestion, D-Bus device
+  publishing, MQTT export, grid-setpoint requests, and HTTP device polling.
+- Note documentation/config gaps discovered during the inventory as follow-up
+  backlog items instead of fixing them in the same PR.
+- Keep this task documentation-only.
 
 Files to change:
 
-- `README.md` or a small developer-facing markdown file
-- Possibly `BACKLOG.md` when marking the item complete
+- A small developer-facing markdown file
 
 Files to add:
 
-- Possibly `docs/architecture.md` if keeping README shorter is preferred.
+- Possibly `docs/service-inventory.md`
 
 Tests:
 
@@ -748,8 +779,9 @@ Tests:
 
 Expected coverage:
 
-- Contributors can see where transport, control policy, status publishing, and
-  D-Bus/MQTT boundaries belong before editing code.
+- Contributors can see which services exist, which ones are active, which ones
+  are dormant or config-only, and where each service's integration boundary
+  belongs before editing app-wide docs or shared runtime code.
 
 Manual validation:
 
@@ -757,25 +789,34 @@ Manual validation:
 
 Manual test steps:
 
-1. Read the new architecture note.
-2. Confirm it matches the current code and does not promise a refactor that has
-   not happened yet.
-3. Confirm it preserves Manual mode and Auto/Eco safety language.
+1. Read the new service-inventory note.
+2. Confirm the active service list matches `es-ESS.py` initialization behavior.
+3. Confirm dormant/config-only services are labelled clearly and not presented
+   as active supported features.
+4. Confirm each service summary matches the current module and
+   `config.sample.ini`.
 
 Risks and dependencies:
 
 - Keep this PR documentation-only so it is safe to do early.
-- Avoid over-specifying a final architecture before the code has been migrated.
+- Avoid turning the inventory into a README rewrite or config cleanup PR.
+- Some modules may be present but intentionally disabled; do not infer product
+  intent without maintainer confirmation.
 
 Open questions:
 
-- Should architecture notes live in README or in a dedicated `docs/` folder?
+- Should dormant services such as `MqttDC`, `ChargeCurrentReducer`, and
+  `FroniusSmartmeterRS485` be documented as legacy/internal, or as future
+  supported services?
+- Should `Grid2Bat` remain in `config.sample.ini` if there is no active service
+  module in this checkout?
 
 Done criteria:
 
-- Wattpilot module boundaries are documented.
-- The note explicitly keeps `Wattpilot.py` transport-only.
-- No production behavior changes are included.
+- The non-Wattpilot service inventory is documented.
+- Active, dormant, and config-only entries are clearly distinguished.
+- No production behavior, config defaults, D-Bus paths, or MQTT topics are
+  changed.
 
 ### P2 - Add Wattpilot Decision Characterization Tests Before Refactoring
 
@@ -1243,8 +1284,8 @@ Wattpilot behavior.
 3. P1 CI, because it should run the config contract and existing behavior tests.
 4. P2 lifecycle script hardening, because it reduces deployment risk but should
    avoid mixing with Wattpilot behavior changes.
-5. P2 Wattpilot architecture boundary documentation, because it is
-   documentation-only and prepares later refactors.
+5. P2 app-wide service inventory, because it is documentation-only and makes
+   the non-Wattpilot scope explicit before broader README/config cleanup.
 6. P2 Wattpilot decision characterization tests, because it strengthens the
    safety net before production code moves.
 7. P1 Wattpilot reconnect loop, because recovery reliability affects live

@@ -50,6 +50,8 @@ Key areas to inspect before changing behavior:
 - Runtime entry points: `es-ESS.py` and `esESSService.py`.
 - Wattpilot control and reporting: `FroniusWattpilot.py`, `Wattpilot.py`, and
   `WattpilotRuntimeStatus.py`.
+- Wattpilot architecture boundaries and safety invariants:
+  `docs/wattpilot-architecture.md`.
 - Configuration documentation: `config.sample.ini` and `README.md`.
 - Hardware and external integrations: Victron Venus OS, Cerbo GX, D-Bus, MQTT,
   Fronius Wattpilot, Fronius meters, Shelly devices, PV inverter data, and
@@ -65,6 +67,8 @@ safety-sensitive.
 ## Global Rules For Every PR
 
 - Implement only the task described in that PR.
+- Before implementing or reviewing Wattpilot behavior, read
+  `docs/wattpilot-architecture.md`.
 - Keep normal Wattpilot Manual mode unchanged. Reporting status is allowed;
   controlling Manual charging is not.
 - In Auto/Eco mode, do not intentionally use grid power.
@@ -74,6 +78,9 @@ safety-sensitive.
 - Run syntax checks and the full test suite before opening the PR.
 - Update README/config documentation when a new setting or behavior is
   introduced.
+- Update `docs/wattpilot-architecture.md` whenever a task changes Wattpilot
+  module responsibilities, command boundaries, safety invariants, or the public
+  D-Bus/MQTT runtime-status contract.
 - Do not add shared 16 A cable/current-limiting logic.
 
 ## Backlog And Review Workflow
@@ -103,6 +110,8 @@ safety-sensitive.
 - Update `README.md` and `config.sample.ini` whenever
   user-facing behavior, configuration, defaults, units, or supported ranges
   change.
+- Update `docs/wattpilot-architecture.md` whenever Wattpilot architecture,
+  command ownership, safety invariants, or runtime-status contracts change.
 - If any of those files are changed, provide complete updated versions in the
   delivery package.
 - At the end of each task, check whether this file needs an update. If agent
