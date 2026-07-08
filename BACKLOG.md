@@ -49,6 +49,9 @@ Current Wattpilot state:
   only. Treat `Username` as a dead setting unless the client is changed.
 - README still contains upstream `realdognose/es-ESS` install/source links in
   the setup section and config comments.
+- Configuration migration currently performs unconditional section creation for
+  some legacy upgrades, which can break older user configs that already contain
+  those sections.
 - There is no `.github/workflows` CI configuration in this checkout.
 - Tests cover many Wattpilot control decisions, but there is no config contract
   test that fails on undocumented or unknown Wattpilot config keys.
@@ -61,8 +64,8 @@ Current test strategy:
   stale telemetry, battery assist, charge-complete hold, and several Manual
   mode safety cases.
 - Remaining gaps are around config-contract coverage, writable D-Bus command
-  boundaries, WebSocket reconnect lifecycle behavior, and lifecycle shell
-  scripts.
+  boundaries, WebSocket reconnect lifecycle behavior, configuration migration
+  compatibility, and lifecycle shell scripts.
 
 Unclear deployment details:
 
@@ -304,6 +307,101 @@ Done criteria:
 - Existing Wattpilot runtime-status tests pass.
 - Manual outage/recovery validation succeeds without duplicate worker threads.
 
+### P1 - Make Configuration Upgrades Idempotent And Section-Safe
+
+Problem:
+
+Configuration upgrades are supposed to let users skip versions safely. Some
+upgrade steps currently create sections unconditionally, so a user config that
+already contains those sections can fail during startup instead of being
+upgraded in place.
+
+Evidence:
+
+- `es-ESS.py` `_validateConfiguration()` says users may skip versions and each
+  change should be applied incrementally.
+- Version 7 calls `self.config.add_section("NoBatToEV")` without first checking
+  whether the section already exists.
+- Version 8 calls `self.config.add_section("MqttPvInverter")` without first
+  checking whether the section already exists.
+- `config.sample.ini` already contains `[NoBatToEV]` and `[MqttPvInverter]`,
+  so hand-maintained production configs may reasonably contain either section
+  before their `ConfigVersion` is bumped.
+- There are no tests around `_validateConfiguration()` migration behavior.
+
+Implementation:
+
+- Add a small helper for idempotent migration writes, for example
+  `ensureConfigSection(section)` and `setdefault`-style option assignment.
+- Update each migration step to add missing sections/options only when absent
+  and to preserve user-provided values when already present.
+- Keep backups and final write behavior unchanged.
+- Add tests that load representative older config text with pre-existing
+  `NoBatToEV` and `MqttPvInverter` sections and verify migration reaches the
+  current `ConfigVersion` without raising.
+- Include a regression test proving existing user values are preserved across
+  migration.
+
+Files to change:
+
+- `es-ESS.py`
+- Tests under `tests/`
+
+Files to add:
+
+- Possibly `tests/test_config_migration.py`.
+
+Tests:
+
+- Add config-migration tests for version 6 and version 7 configs that already
+  contain later sections.
+- Add a test for a minimal old config that lacks the new sections, proving
+  defaults are still added.
+- Add a preservation test for existing `NoBatToEV.UseRelay` and
+  `MqttPvInverter` option values.
+- Run `python -m py_compile es-ESS.py`.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- Users can skip config versions without a duplicate-section startup failure.
+- Migration remains additive and does not overwrite deliberate user settings.
+- Future migration changes have a clear test pattern.
+
+Manual validation:
+
+- Required on a copy of a production `/data/es-ESS/config.ini` before live
+  deployment.
+
+Manual test steps:
+
+1. Back up the production config.
+2. Create a staging config with an older `ConfigVersion` and existing
+   `[NoBatToEV]` and `[MqttPvInverter]` sections.
+3. Start es-ESS against the staging config.
+4. Confirm startup does not fail with a duplicate-section error.
+5. Confirm the config is upgraded to the current version.
+6. Confirm existing user values are preserved.
+
+Risks and dependencies:
+
+- Migration behavior touches startup for every service bundle user, so tests
+  should use temporary config files and avoid real `/data` paths.
+- Preserve the existing backup behavior so users can recover if a migration
+  still fails for an unrelated reason.
+
+Open questions:
+
+- Should future config migrations be centralized into a data-driven migration
+  table, or kept as explicit version blocks for readability?
+
+Done criteria:
+
+- Duplicate-section migration tests pass.
+- Existing migration behavior still writes missing defaults.
+- Existing user-provided values are preserved.
+- Full unittest suite passes.
+
 ### P1 - Rebuild Wattpilot Configuration Around `config.sample.ini`
 
 Goal:
@@ -328,6 +426,8 @@ Evidence:
   not in `config.sample.ini`.
 - README still documents `ConfigVersion=1`, while the sample config uses
   `ConfigVersion=8`.
+- `config.sample.ini` uses `BatteryMaxChargeInWh`, while README documents
+  `BatteryMaxChargeInW`.
 - `Username` appears in sample/README but is not used by the Wattpilot client.
 
 Implementation:
@@ -353,6 +453,9 @@ Implementation:
   Wattpilot key.
 - Update README to state that `config.sample.ini` is the single maintained
   config artifact and production config is expected to match it.
+- Reconcile global config key names between README, runtime code, and
+  `config.sample.ini`, including `BatteryMaxChargeInW` versus
+  `BatteryMaxChargeInWh`.
 
 Files to change:
 
@@ -377,6 +480,8 @@ Expected coverage:
 - A user can configure Wattpilot behavior without reading source code.
 - The sample config remains valid after future refactors.
 - Config tests catch unknown sample keys and undocumented supported keys.
+- Global config names documented in README match the maintained sample config
+  and runtime usage.
 
 Manual validation:
 
@@ -673,7 +778,436 @@ Done criteria:
 - No command fails solely because no matching process exists.
 - Uninstall behavior around production config is explicit and documented.
 
-### P2 - Refactor Wattpilot Control Into An Explicit State Machine
+### P2 - Document Wattpilot Architecture Boundaries
+
+Goal:
+
+Make the intended module responsibilities explicit before moving behavior.
+
+Problem:
+
+The current architecture is understandable, but the safety-sensitive Wattpilot
+module has grown large enough that future contributors need a clear boundary
+map before refactoring. Without that map, small PRs can accidentally mix
+transport, policy decisions, D-Bus publishing, and command handling.
+
+Evidence:
+
+- `FroniusWattpilot.py` currently owns control policy, mode reflection,
+  telemetry freshness, grid guards, battery assist, phase switching, D-Bus
+  paths, MQTT distributor requests, and shutdown behavior.
+- `Wattpilot.py` is the Wattpilot WebSocket client and should remain focused on
+  transport, authentication, reconnect lifecycle, state updates, and events.
+- `WattpilotRuntimeStatus.py` already shows a useful direction: runtime status
+  reporting is separate from the raw client.
+
+Implementation:
+
+- Add a short architecture section to `README.md` or a small developer note
+  describing intended Wattpilot module boundaries.
+- State that `Wattpilot.py` is transport-only and must not contain PV/no-grid
+  control policy.
+- State that `FroniusWattpilot.py` remains the integration/controller boundary
+  until smaller decision helpers are extracted.
+- State that `WattpilotRuntimeStatus.py` owns the runtime-status contract and
+  should not issue charger commands.
+- Link the architecture note from `BACKLOG.md` or README where future PRs will
+  find it.
+
+Files to change:
+
+- `README.md` or a small developer-facing markdown file
+- Possibly `BACKLOG.md` when marking the item complete
+
+Files to add:
+
+- Possibly `docs/architecture.md` if keeping README shorter is preferred.
+
+Tests:
+
+- No runtime tests expected for documentation-only work.
+- Run markdown/link review manually.
+
+Expected coverage:
+
+- Contributors can see where transport, control policy, status publishing, and
+  D-Bus/MQTT boundaries belong before editing code.
+
+Manual validation:
+
+- Maintainer review only.
+
+Manual test steps:
+
+1. Read the new architecture note.
+2. Confirm it matches the current code and does not promise a refactor that has
+   not happened yet.
+3. Confirm it preserves Manual mode and Auto/Eco safety language.
+
+Risks and dependencies:
+
+- Keep this PR documentation-only so it is safe to do early.
+- Avoid over-specifying a final architecture before the code has been migrated.
+
+Open questions:
+
+- Should architecture notes live in README or in a dedicated `docs/` folder?
+
+Done criteria:
+
+- Wattpilot module boundaries are documented.
+- The note explicitly keeps `Wattpilot.py` transport-only.
+- No production behavior changes are included.
+
+### P2 - Add Wattpilot Decision Characterization Tests Before Refactoring
+
+Goal:
+
+Make the next refactor PRs safer by locking down current behavior first.
+
+Problem:
+
+Existing tests cover many Wattpilot decisions, but the controller still has
+large branches where telemetry freshness, allowance, battery assist, phase
+switching, and grid guards interact. Before extracting helpers, add focused
+characterization tests for the seams that will be moved.
+
+Evidence:
+
+- `FroniusWattpilot.py` contains multiple decision helpers and side effects in
+  one controller.
+- Existing tests under `tests/` already use hardware-free stubs and mocks, so
+  more characterization coverage can be added without live D-Bus, MQTT, Venus
+  OS, or Wattpilot hardware.
+- The planned architecture refactor should preserve behavior, not change
+  charging policy.
+
+Implementation:
+
+- Add focused tests around current telemetry freshness behavior.
+- Add focused tests around allowance evaluation and raw-overhead fallback
+  boundaries.
+- Add focused tests around grid-import guard stop/start behavior.
+- Add focused tests around battery-assist eligibility, lockout, and recovery.
+- Add focused tests around one-to-three and three-to-one phase decisions.
+- Prefer tests against existing public/internal methods before moving code.
+
+Files to change:
+
+- Tests under `tests/`
+
+Files to add:
+
+- Possibly a focused test module such as
+  `tests/test_wattpilot_decision_characterization.py`.
+
+Tests:
+
+- Run the new focused tests.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- Existing behavior is captured before helper extraction.
+- Refactor PRs can be reviewed as moves plus tests instead of behavior changes.
+
+Manual validation:
+
+- None required for tests-only work.
+
+Manual test steps:
+
+1. Review the new test names and fixtures.
+2. Confirm they describe existing behavior, not desired future behavior.
+3. Run the full test suite on the development machine.
+
+Risks and dependencies:
+
+- Tests that overfit private implementation can make later refactors noisy.
+  Prefer observable controller outcomes where practical.
+
+Open questions:
+
+- Should duplicated Wattpilot test fixtures be consolidated before adding more
+  tests, or left alone until after the characterization PR?
+
+Done criteria:
+
+- Characterization tests pass.
+- No production code changes are included unless a tiny test seam is required.
+- The tests document current behavior for the next extraction PRs.
+
+### P2 - Extract Wattpilot Telemetry And Allowance Evaluation Helpers
+
+Depends on:
+
+- Wattpilot decision characterization tests.
+
+Goal:
+
+Reduce `FroniusWattpilot.py` complexity without changing charging behavior.
+
+Problem:
+
+Telemetry freshness and SolarOverheadDistributor allowance checks are core
+inputs to Auto/Eco control, but they are mixed into the large controller with
+command side effects. This makes later safety review harder than it needs to
+be.
+
+Evidence:
+
+- `FroniusWattpilot.py` tracks grid telemetry timestamps, Wattpilot allowance,
+  raw overhead, startup grace, allowance drop grace, and related status flags.
+- Tests already exercise stale allowance, missing allowance, raw-overhead
+  freshness, and telemetry fail-safe behavior.
+
+Implementation:
+
+- Extract pure or mostly pure helper functions/classes for telemetry freshness
+  and allowance status.
+- Keep D-Bus, MQTT, and Wattpilot command side effects in `FroniusWattpilot.py`
+  for this PR.
+- Preserve existing config keys, defaults, D-Bus paths, MQTT topics, and public
+  runtime-status behavior.
+- Move tests or add focused tests for the extracted helpers.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- Tests under `tests/`
+
+Files to add:
+
+- Possibly a small helper module such as `WattpilotDecisionInputs.py`.
+
+Tests:
+
+- Run telemetry and allowance characterization tests.
+- Run existing Wattpilot control tests.
+- Run the full unittest suite.
+- Run `python -m py_compile` for changed Python files.
+
+Expected coverage:
+
+- Stale telemetry behavior is unchanged.
+- Missing, malformed, stale, and fresh allowance behavior is unchanged.
+- Raw-overhead data still cannot start charging or authorize a phase-up.
+
+Manual validation:
+
+- Not required if the PR is a pure extraction and tests show unchanged behavior.
+  Optional live observation is useful before deploying broadly.
+
+Manual test steps:
+
+1. Start es-ESS with Wattpilot enabled on a staging system.
+2. Confirm runtime status and Auto/Eco waiting state still publish normally.
+3. Temporarily interrupt allowance or grid telemetry.
+4. Confirm fail-safe status matches pre-refactor behavior.
+
+Risks and dependencies:
+
+- This code is safety-sensitive. Keep the PR limited to extraction and tests.
+- Do not change timing defaults, control commands, or Manual mode behavior.
+
+Open questions:
+
+- Should helper code stay in the same file first, then move to a new module in a
+  later PR?
+
+Done criteria:
+
+- Extracted helper behavior matches existing tests.
+- No command behavior changes are introduced.
+- Full unittest suite passes.
+
+### P2 - Extract Wattpilot Grid-Guard And Battery-Assist Decisions
+
+Depends on:
+
+- Wattpilot decision characterization tests.
+- Telemetry and allowance helper extraction.
+
+Goal:
+
+Separate two safety-sensitive Auto/Eco decisions into reviewable helpers while
+preserving behavior.
+
+Problem:
+
+Grid-import stopping and battery assist are intentionally conservative but are
+currently embedded in the large controller. Keeping the decision logic separate
+from command side effects will make future changes easier to reason about.
+
+Evidence:
+
+- `FroniusWattpilot.py` contains `AllowGridCharging`, `GridImportStopW`,
+  `GridImportStopSeconds`, `GridTelemetryFreshSeconds`,
+  `BatteryAssistEnabled`, `BatteryAssistSocMin`,
+  `BatteryAssistMaxSeconds`, `BatteryAssistMaxShortfallW`, and
+  `BatteryAssistRecoverySeconds` handling.
+- Existing tests cover several no-grid and battery-assist cases, but the code
+  path is still intertwined with controller state and status publishing.
+
+Implementation:
+
+- Extract grid-import guard decision logic into a small helper with explicit
+  inputs and result reasons.
+- Extract battery-assist eligibility, lockout, and recovery decisions into a
+  small helper with explicit inputs and result reasons.
+- Keep actual `set_power()`, `set_start_stop()`, D-Bus, MQTT, and service
+  message side effects in `FroniusWattpilot.py`.
+- Preserve current battery-assist invariant: it may only bridge an
+  already-running charge and must never start a session or trigger phase-up.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- Tests under `tests/`
+
+Files to add:
+
+- Possibly helper modules for grid guard and battery assist decisions.
+
+Tests:
+
+- Run grid telemetry fail-safe tests.
+- Run battery-assist tests.
+- Run existing Wattpilot control tests.
+- Run the full unittest suite.
+- Run `python -m py_compile` for changed Python files.
+
+Expected coverage:
+
+- Auto/Eco still stops on sustained grid import when grid charging is disabled.
+- Battery assist still respects SOC, shortfall, duration, and recovery limits.
+- Battery assist still cannot start a charge or cause phase-up.
+- Manual mode remains unaffected by Auto/Eco guards.
+
+Manual validation:
+
+- Recommended on a staging GX/Wattpilot system because this touches
+  safety-sensitive decisions, even if intended as extraction-only.
+
+Manual test steps:
+
+1. Validate Manual mode reporting and non-control behavior.
+2. Validate Auto/Eco start from PV allowance.
+3. Validate sustained grid import stop.
+4. Validate a short PV dip during active charging with battery assist enabled.
+5. Validate battery assist lockout and recovery.
+
+Risks and dependencies:
+
+- High safety sensitivity. Keep side effects in the existing controller until
+  helper behavior is proven.
+- Do not combine with config/default changes.
+
+Open questions:
+
+- Should helper results expose machine-readable reason codes for future runtime
+  status, or stay internal for now?
+
+Done criteria:
+
+- Extracted helpers are covered by focused tests.
+- Existing behavior tests pass unchanged.
+- Manual live validation confirms no unintended grid use.
+
+### P2 - Extract Wattpilot Phase-Switching Decisions
+
+Depends on:
+
+- Wattpilot decision characterization tests.
+- Telemetry and allowance helper extraction.
+
+Goal:
+
+Make phase-switching decisions reviewable without introducing a full state
+machine yet.
+
+Problem:
+
+One-phase and three-phase switching is a high-impact EV-control behavior. The
+current implementation works through controller flags, pending confirmations,
+timing guards, current limits, and live phase telemetry inside the large
+controller.
+
+Evidence:
+
+- `FroniusWattpilot.py` contains `MinPhaseSwitchSeconds`,
+  `PhaseSwitchDelaySeconds`, `ThreePhasePvSurplusStartW`,
+  `ThreePhasePvSurplusStopW`, `pendingPhaseSwitchMode`,
+  `phaseSwitchCandidateMode`, and phase telemetry confirmation logic.
+- Tests cover several phase-switching and fallback behaviors, but the logic is
+  still mixed with command issuing and runtime status reporting.
+
+Implementation:
+
+- Extract phase-mode eligibility and target-current decisions into pure helpers
+  first.
+- Keep actual `set_phases()` and `set_power()` calls in `FroniusWattpilot.py`
+  for this PR.
+- Preserve current one-phase start behavior, three-phase phase-up threshold,
+  three-to-one safety reduction, pending-confirmation behavior, and cooldowns.
+- Preserve current D-Bus `/PhaseMode` and runtime-status semantics.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- Tests under `tests/`
+
+Files to add:
+
+- Possibly a small phase-decision helper module.
+
+Tests:
+
+- Run phase-switching tests.
+- Add focused helper tests for one-phase, three-phase, cooldown, and fallback
+  decisions.
+- Run existing Wattpilot control tests.
+- Run the full unittest suite.
+- Run `python -m py_compile` for changed Python files.
+
+Expected coverage:
+
+- One-phase and three-phase decisions remain unchanged.
+- Current is still bounded by configured min/max and Wattpilot effective limit.
+- Phase-up still requires real fresh PV allowance and timing guards.
+- Battery assist and raw overhead still cannot trigger phase-up.
+
+Manual validation:
+
+- Required before production deployment because phase switching affects live EV
+  charging.
+
+Manual test steps:
+
+1. Validate one-phase Auto/Eco start from fresh allowance.
+2. Validate one-to-three phase-up after the configured stable PV delay.
+3. Validate three-to-one fallback when PV drops below the three-phase stop
+   threshold.
+4. Validate pending phase confirmation and runtime status.
+5. Validate no phase changes occur in Manual mode.
+
+Risks and dependencies:
+
+- Phase switching is safety-sensitive and user-visible.
+- Avoid combining this with grid guard, battery assist, or reconnect changes.
+
+Open questions:
+
+- Should phase-switch helper results include explicit reason strings for logs
+  and runtime status?
+
+Done criteria:
+
+- Phase decision helpers are tested.
+- Existing phase behavior is preserved.
+- Manual staging validation confirms expected phase switching.
+
+### P3 - Refactor Wattpilot Control Into An Explicit State Machine
 
 Depends on:
 
@@ -681,6 +1215,10 @@ Depends on:
 - Config/sample contract.
 - README behavior rewrite.
 - CI checks.
+- Wattpilot architecture boundary documentation.
+- Wattpilot decision characterization tests.
+- Telemetry, allowance, grid guard, battery assist, and phase decision helper
+  extraction.
 
 Goal:
 
@@ -775,19 +1313,36 @@ Done criteria:
 
 ## Suggested Implementation Order
 
-1. P0 Manual command-boundary hardening, because it protects the most important
-   product invariant: Manual mode remains user-controlled.
-2. P1 Wattpilot reconnect loop, because recovery reliability affects live
-   safety/status behavior.
-3. P1 config/sample cleanup, because it creates the config contract and removes
+This order is intentionally low-risk-first. The P0/P1 labels still show safety
+and production impact, but the first PRs avoid live charging-control changes so
+the project can build tests, docs, and confidence before touching sensitive
+Wattpilot behavior.
+
+1. P1 config migration hardening, because it is small, high-impact, and protects
+   existing deployments without changing charger control.
+2. P1 config/sample cleanup, because it creates the config contract and removes
    duplicate config maintenance.
-4. P1 README rewrite, because user-facing behavior should match the completed
+3. P1 README rewrite, because user-facing behavior should match the completed
    sample config.
-5. P1 CI, because it should run the config contract and existing behavior tests.
-6. P2 lifecycle script hardening, because it reduces deployment risk but should
+4. P1 CI, because it should run the config contract and existing behavior tests.
+5. P2 lifecycle script hardening, because it reduces deployment risk but should
    avoid mixing with Wattpilot behavior changes.
-7. P2 state-machine refactor, because it needs the previous behavior and config
-   contracts in place before touching control flow.
+6. P2 Wattpilot architecture boundary documentation, because it is
+   documentation-only and prepares later refactors.
+7. P2 Wattpilot decision characterization tests, because it strengthens the
+   safety net before production code moves.
+8. P1 Wattpilot reconnect loop, because recovery reliability affects live
+   safety/status behavior but should be isolated to the client lifecycle.
+9. P0 Manual command-boundary hardening, because it protects the most important
+   product invariant once the test base is stronger.
+10. P2 telemetry and allowance helper extraction, because it is the first
+    low-side-effect Wattpilot control extraction.
+11. P2 grid-guard and battery-assist helper extraction, because it is more
+    safety-sensitive and should follow characterization coverage.
+12. P2 phase-switching helper extraction, because phase switching is
+    user-visible and high-impact.
+13. P3 state-machine refactor, because it needs the previous behavior, config,
+    docs, and helper boundaries in place before touching overall control flow.
 
 ## Verification Plan
 
@@ -801,6 +1356,7 @@ For implementation PRs:
 - Run `python -m py_compile` on changed Python files.
 - Run the full unittest suite.
 - Run focused Wattpilot tests for any Wattpilot behavior change.
+- Run config migration tests for any `_validateConfiguration()` change.
 - Run config contract tests for any config/sample/README change.
 - Run shell syntax checks for lifecycle script changes where available.
 - Document any checks that cannot run without GX/Venus OS, MQTT, D-Bus, or
