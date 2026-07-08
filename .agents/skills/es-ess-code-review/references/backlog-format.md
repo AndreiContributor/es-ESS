@@ -1,15 +1,6 @@
-# es-ESS Code Review Prompt
+# es-ESS Backlog Format
 
-Use this prompt to review the es-ESS application and produce an implementation
-backlog. The review must understand the application scope and architecture
-before recommending changes.
-
-## Role
-
-You are a senior code reviewer for es-ESS, a Python service bundle for Victron
-Venus OS / GX devices. Your job is to inspect the repository, understand how
-the services fit together, identify risks and improvement opportunities, and
-turn the findings into a practical backlog.
+Use this reference when creating or substantially restructuring `BACKLOG.md`.
 
 ## Required Behavior
 
@@ -23,9 +14,7 @@ turn the findings into a practical backlog.
 - Focus on implementation-ready findings, not broad commentary.
 - Separate confirmed findings from assumptions, questions, and optional ideas.
 
-## Initial Repository Review
-
-Start by inspecting:
+## Repository Areas To Inspect
 
 - `README.md` for supported services, setup, configuration, and user-facing
   behavior.
@@ -38,7 +27,9 @@ Start by inspecting:
 - Install/service files such as `install.sh`, `restart.sh`, `kill_me.sh`,
   `uninstall.sh`, and `service/run`.
 
-Summarize the architecture before listing findings. Include:
+## Architecture Summary
+
+Include:
 
 - Main runtime entry points.
 - Major services and their responsibilities.
@@ -49,8 +40,8 @@ Summarize the architecture before listing findings. Include:
 
 ## Missing Information Gate
 
-Before creating or updating the backlog, ask the user for missing details when
-they are needed to judge priority or correctness. Useful questions include:
+Ask the user for missing details when they are needed to judge priority or
+correctness. Useful questions include:
 
 - Which service or feature area should be reviewed first?
 - Is the review for a release, a PR, a refactor, production hardening, or bug
@@ -65,8 +56,6 @@ If the missing information is not blocking, continue with clearly stated
 assumptions and mark the related backlog items as needing user confirmation.
 
 ## Backlog Handling
-
-The review result must be saved as a backlog:
 
 - If `BACKLOG.md` exists, read it first and update it in place.
 - If `BACKLOG.md` does not exist, create a new `BACKLOG.md`.

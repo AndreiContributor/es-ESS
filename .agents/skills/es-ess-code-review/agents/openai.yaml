@@ -1,0 +1,7 @@
+interface:
+  display_name: "es-ESS Code Review"
+  short_description: "Review es-ESS and maintain backlog"
+  default_prompt: "Use $es-ess-code-review to review es-ESS and update BACKLOG.md."
+
+policy:
+  allow_implicit_invocation: true
