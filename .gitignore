@@ -55,7 +55,6 @@ config_dk.ini
 config.test.ini
 
 # Local planning / scratch notes
-BACKLOG.md
 *.local.md
 
 # Python packaging
