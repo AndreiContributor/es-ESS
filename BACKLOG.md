@@ -40,21 +40,18 @@ Current Wattpilot state:
   still need an explicit command-boundary review so Manual Wattpilot mode cannot
   be controlled accidentally through VRM/D-Bus writes.
 - `config.sample.ini` and the production config are intended to match. The
-  project uses `config.sample.ini` as the single configuration artifact.
-- `ChargeCompletePowerThresholdW`, `ChargeCompleteConfirmSeconds`,
-  `ChargeCompleteResumePowerW`, and `ChargeCompleteResumeSeconds` are supported
-  in `FroniusWattpilot.py`, but are not listed in the sample config.
-- `Username` appears in config and README, but `FroniusWattpilot.py` constructs
-  `Wattpilot(host, password)`, and `Wattpilot.py` authenticates with password
-  only. Treat `Username` as a dead setting unless the client is changed.
+  project uses `config.sample.ini` as the single configuration artifact, and
+  the Wattpilot sample keys are covered by a config contract test.
+- The unused Wattpilot `Username` setting has been removed from the maintained
+  sample and README; `Wattpilot.py` authenticates with password only.
 - README still contains upstream `realdognose/es-ESS` install/source links in
   the setup section and config comments.
 - Configuration migration currently performs unconditional section creation for
   some legacy upgrades, which can break older user configs that already contain
   those sections.
 - There is no `.github/workflows` CI configuration in this checkout.
-- Tests cover many Wattpilot control decisions, but there is no config contract
-  test that fails on undocumented or unknown Wattpilot config keys.
+- Tests cover many Wattpilot control decisions and now include a config
+  contract test for undocumented or unknown Wattpilot config keys.
 
 Current test strategy:
 
@@ -63,9 +60,9 @@ Current test strategy:
   Wattpilot PV-control policy, runtime status, grid guards, phase switching,
   stale telemetry, battery assist, charge-complete hold, and several Manual
   mode safety cases.
-- Remaining gaps are around config-contract coverage, writable D-Bus command
-  boundaries, WebSocket reconnect lifecycle behavior, configuration migration
-  compatibility, and lifecycle shell scripts.
+- Remaining gaps are around writable D-Bus command boundaries, WebSocket
+  reconnect lifecycle behavior, broader configuration migration compatibility,
+  CI, and lifecycle shell scripts.
 
 Unclear deployment details:
 
@@ -111,6 +108,25 @@ Open questions:
   before removing the deployed directory?
 
 ## Completed
+
+### Completed 2026-07-08 - Rebuild Wattpilot Configuration Around `config.sample.ini`
+
+Completion note:
+
+- Added the missing charge-complete hold settings to `[FroniusWattpilot]` in
+  `config.sample.ini`.
+- Removed the unused Wattpilot `Username` sample/README entry because the
+  Wattpilot client authenticates with password only.
+- Updated README to name `config.sample.ini` as the maintained reference,
+  corrected `BatteryMaxChargeInWh`, and documented every active Wattpilot
+  setting from the sample.
+- Added `tests/test_config_contract.py`, which parses
+  `FroniusWattpilot.py` and fails if active Wattpilot keys are missing from
+  `config.sample.ini` or if the sample contains unknown Wattpilot keys.
+- Verified with `py_compile`, the config contract test, and the full unittest
+  suite.
+- Kept the change config/docs/tests-only; no production control behavior,
+  D-Bus paths, MQTT topics, or architecture boundaries were changed.
 
 ### Completed 2026-07-08 - Make Configuration Upgrades Idempotent And Section-Safe
 
@@ -264,6 +280,125 @@ Done criteria:
 - No new control commands are sent in Manual mode except any explicitly
   approved mode-selection behavior.
 
+### P1 - Clean Up Wattpilot Startup Deferred State And Logs
+
+Problem:
+
+Wattpilot startup can recover successfully, but the current logs make a normal
+deferred startup look like a hard failure. Runtime status intentionally avoids
+blocking service startup while the Wattpilot WebSocket finishes connecting, but
+`FroniusWattpilot.initFinalize()` still emits legacy messages saying the
+connection or car state was unavailable "within 30 seconds." A production log
+also showed a deferred startup caused by a missing `_energyCounterSinceStart`
+attribute before the first full Wattpilot status populated it.
+
+Evidence:
+
+- A production startup log showed:
+  `Unable to connect to wattpilot within 30 seconds...`,
+  `Wattpilot car state not available after 30 seconds`, and
+  `Wattpilot startup deferred until the client reconnects:
+  'Wattpilot' object has no attribute '_energyCounterSinceStart'`.
+- The same log later showed successful recovery:
+  `Connected to WattPilot Serial 32719055`, `Authentication successful`,
+  `Full Status Update Completed`, and
+  `Initialization of consumer Wattpilot completed`.
+- `WattpilotRuntimeStatus.py` wraps `FroniusWattpilot.initFinalize()` and
+  temporarily replaces `Helper.waitTimeout()` with an immediate predicate check
+  so startup is non-blocking.
+- `Wattpilot.py` initializes many telemetry fields in `__init__()`, but
+  `_energyCounterSinceStart` is only assigned after a `car` status update.
+- `Wattpilot.connect()` logs `Wattpilot connected` immediately after starting
+  the WebSocket thread, before WebSocket open, hello, authentication, or full
+  status are complete.
+
+Implementation:
+
+- Initialize `_energyCounterSinceStart` in `Wattpilot.__init__()` to a safe
+  neutral value such as `0` or `None`, matching existing property semantics.
+- Make startup-deferred log messages reflect the non-blocking startup path:
+  avoid saying "within 30 seconds" when runtime status has intentionally
+  replaced the wait with an immediate check.
+- Downgrade expected deferred-start messages from `ERROR` to warning/debug
+  where they are not control faults and recovery is expected.
+- Rename or reword `Wattpilot connected` so it means "connection worker
+  started" unless the actual WebSocket open/authentication has completed.
+- Preserve the existing runtime-status behavior: unavailable startup should
+  remain non-blocking and recover when Wattpilot telemetry arrives.
+- Do not change Manual mode, Auto/Eco control decisions, reconnect-loop
+  ownership, D-Bus paths, MQTT topics, or configuration defaults in this task.
+
+Files to change:
+
+- `Wattpilot.py`
+- `FroniusWattpilot.py`
+- `WattpilotRuntimeStatus.py`
+- Tests under `tests/`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add or update hardware-free runtime-status startup tests proving a missing
+  early Wattpilot telemetry field does not raise during deferred startup.
+- Add a test proving unavailable startup remains non-blocking and later
+  WebSocket events can recover runtime status.
+- Add a focused test, if practical with existing logging helpers, proving
+  deferred startup does not emit hard-failure wording for expected unavailable
+  telemetry.
+- Run existing Wattpilot runtime-status tests.
+- Run the full unittest suite.
+- Run `python -m py_compile` for changed Python files.
+
+Expected coverage:
+
+- Startup logs distinguish between "not ready yet" and a real control fault.
+- A partly initialized Wattpilot object has all fields needed by runtime
+  status before the first full status update.
+- Successful delayed WebSocket hello/auth/full-status recovery remains
+  unchanged.
+
+Manual validation:
+
+- Required on GX/Wattpilot hardware or with a representative Wattpilot network
+  outage/recovery test.
+
+Manual test steps:
+
+1. Start es-ESS with Wattpilot reachable and confirm no misleading
+   startup-deferred `ERROR` lines appear before normal hello/auth/full status.
+2. Start es-ESS while Wattpilot is unreachable or slow to respond.
+3. Confirm es-ESS remains running, publishes neutral runtime status, and does
+   not throw `_energyCounterSinceStart` attribute errors.
+4. Restore Wattpilot network/power.
+5. Confirm the log shows WebSocket hello, authentication, full status, and
+   SolarOverhead consumer initialization without duplicate worker threads.
+6. Confirm Manual reporting and Auto/Eco waiting state still behave normally.
+
+Risks and dependencies:
+
+- This is mostly observability and initialization hygiene, but it touches
+  Wattpilot startup. Keep it separate from reconnect-loop restructuring and
+  charging-policy changes.
+- Avoid hiding real failures. Unexpected exceptions should still be visible as
+  faults; only expected deferred telemetry should use softer wording.
+
+Open questions:
+
+- Should deferred startup messages be logged once per startup or repeated until
+  recovery if the Wattpilot remains unavailable?
+
+Done criteria:
+
+- `_energyCounterSinceStart` no longer raises during startup-deferred runtime
+  status publication.
+- Expected slow/unavailable Wattpilot startup is logged as deferred/not-ready,
+  not as a misleading 30-second hard failure.
+- Existing runtime-status reconnect behavior remains unchanged.
+- Full unittest suite passes.
+
 ### P1 - Replace Wattpilot Recursive Reconnect With A Bounded Connection Loop
 
 Problem:
@@ -357,116 +492,6 @@ Done criteria:
 - Reconnect loop tests pass.
 - Existing Wattpilot runtime-status tests pass.
 - Manual outage/recovery validation succeeds without duplicate worker threads.
-
-### P1 - Rebuild Wattpilot Configuration Around `config.sample.ini`
-
-Goal:
-
-Make every active Wattpilot parameter discoverable, grouped by feature, and
-unambiguous while using only `config.sample.ini` as the checked-in config
-artifact.
-
-Problem:
-
-Wattpilot has active settings in code that are missing from the sample config,
-README defaults are stale in places, and maintaining multiple config examples
-risks drift. The user has confirmed that production config should match the
-sample.
-
-Evidence:
-
-- The project should use one checked-in config example so sample and production
-  structure stay aligned.
-- `FroniusWattpilot.py` reads many Wattpilot settings through
-  `settings.get(...)` defaults, including charge-complete hold keys that are
-  not in `config.sample.ini`.
-- `config.sample.ini` uses `BatteryMaxChargeInWh`, while README documents
-  `BatteryMaxChargeInW`.
-- `Username` appears in sample/README but is not used by the Wattpilot client.
-
-Implementation:
-
-- Treat `config.sample.ini` as the complete sample for active settings.
-- Group `[FroniusWattpilot]` settings by feature:
-  connection and identity, VRM/D-Bus identifiers, electrical current limits,
-  PV start/stop behavior, phase switching, battery-charge reservation priority,
-  battery assist for clouds, no-grid protection, telemetry freshness and grace
-  periods, charge-complete hold, and display/status.
-- Decide whether to remove `Username` or implement username support in
-  `Wattpilot.py`.
-- Add missing charge-complete hold keys to `config.sample.ini` if they remain
-  supported configuration.
-- Ensure `BatteryAssistRecoverySeconds`, `RawOverheadFreshSeconds`,
-  `AllowanceFreshSeconds`, `AllowanceDropGraceSeconds`,
-  `CarDisconnectConfirmSeconds`, `SurplusDropGraceSeconds`,
-  `GridTelemetryFreshSeconds`, `StartupGraceSeconds`, and
-  `StartupTelemetryRatio` are documented in `config.sample.ini`.
-- Keep credentials as placeholders only.
-- Add a config contract test that fails when a supported Wattpilot config key is
-  undocumented in `config.sample.ini` or when the sample includes an unknown
-  Wattpilot key.
-- Update README to state that `config.sample.ini` is the single maintained
-  config artifact and production config is expected to match it.
-- Reconcile global config key names between README, runtime code, and
-  `config.sample.ini`, including `BatteryMaxChargeInW` versus
-  `BatteryMaxChargeInWh`.
-
-Files to change:
-
-- `config.sample.ini`
-- `README.md`
-- Tests under `tests/`
-
-Files to add:
-
-- Possibly `tests/test_config_contract.py`.
-
-Tests:
-
-- Add a config contract test comparing active Wattpilot keys in
-  `FroniusWattpilot.py` with documented keys in `config.sample.ini`.
-- Add a test proving only `config.sample.ini` is required by runtime or tests.
-- Run `python -m py_compile` for changed Python files.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- A user can configure Wattpilot behavior without reading source code.
-- The sample config remains valid after future refactors.
-- Config tests catch unknown sample keys and undocumented supported keys.
-- Global config names documented in README match the maintained sample config
-  and runtime usage.
-
-Manual validation:
-
-- Required on a deployed system after config-file changes.
-
-Manual test steps:
-
-1. Compare production `/data/es-ESS/config.ini` with the updated
-   `config.sample.ini` structure.
-2. Confirm no required production setting exists outside `config.sample.ini`.
-3. Restart es-ESS with Wattpilot enabled.
-4. Confirm config loads without migration or missing-key errors.
-5. Confirm Auto/Eco and Manual reporting still work.
-
-Risks and dependencies:
-
-- Removing the duplicate config artifact may break scripts, docs, or user
-  workflows if anything references it indirectly. Search before deletion.
-- If production configs rely on omitted code defaults, making the sample
-  complete may reveal settings users have never consciously chosen.
-
-Open questions:
-
-- Should `ConfigVersion` be bumped for sample-only documentation changes, or
-  only for runtime migration changes?
-
-Done criteria:
-
-- `config.sample.ini` is the complete source for supported settings.
-- README no longer points users at duplicate config documentation.
-- Config contract tests pass.
 
 ### P1 - Rewrite Wattpilot README And Correct Installation Source
 
@@ -1189,25 +1214,25 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P1 config/sample cleanup, because it creates the config contract and removes
-   duplicate config maintenance.
-2. P1 README rewrite, because user-facing behavior should match the completed
+1. P1 README rewrite, because user-facing behavior should match the completed
    sample config.
-3. P1 CI, because it should run the config contract and existing behavior tests.
-4. P2 lifecycle script hardening, because it reduces deployment risk but should
+2. P1 CI, because it should run the config contract and existing behavior tests.
+3. P2 lifecycle script hardening, because it reduces deployment risk but should
    avoid mixing with Wattpilot behavior changes.
-5. P2 Wattpilot decision characterization tests, because it strengthens the
+4. P2 Wattpilot decision characterization tests, because it strengthens the
    safety net before production code moves.
+5. P1 Wattpilot startup deferred-state/logging cleanup, because it reduces
+   confusing production diagnostics without changing charge policy.
 6. P1 Wattpilot reconnect loop, because recovery reliability affects live
    safety/status behavior but should be isolated to the client lifecycle.
 7. P0 Manual command-boundary hardening, because it protects the most important
    product invariant once the test base is stronger.
 8. P2 telemetry and allowance helper extraction, because it is the first
-    low-side-effect Wattpilot control extraction.
+   low-side-effect Wattpilot control extraction.
 9. P2 grid-guard and battery-assist helper extraction, because it is more
-    safety-sensitive and should follow characterization coverage.
+   safety-sensitive and should follow characterization coverage.
 10. P2 phase-switching helper extraction, because phase switching is
-    user-visible and high-impact.
+   user-visible and high-impact.
 11. P3 state-machine refactor, because it needs the previous behavior, config,
     docs, and helper boundaries in place before touching overall control flow.
 

@@ -92,9 +92,12 @@ tail -f -n 20 /data/log/es-ESS/current.log
 ```
 
 #### Global Configuration
-Configuration of es-ESS is performed through the file `/data/es-ESS/config.ini`. Not all of the Global / Common Values are required, it depends on the combination 
-of services that should be active. However, it easiest to setup the common values for every usecase, so you don't have to mind adding / remove values as you enable
-or disable certain services. 
+Configuration of es-ESS is performed through the file `/data/es-ESS/config.ini`.
+The maintained reference configuration is `config.sample.ini`; new installs copy
+that file to `/data/es-ESS/config.ini`. Not all of the Global / Common Values
+are required, it depends on the combination of services that should be active.
+However, it easiest to setup the common values for every usecase, so you don't
+have to mind adding / remove values as you enable or disable certain services. 
 
 | Section                  | Value name           |  Descripion                                                                                            | Type          | Example Value                |
 | ------------------------ | ---------------------|------------------------------------------------------------------------------------------------------- | ------------- |------------------------------|
@@ -104,7 +107,7 @@ or disable certain services.
 | [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 8                            |
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
-| [Common]                 | BatteryMaxChargeInW  | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
+| [Common]                 | BatteryMaxChargeInWh | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
 | [Common]                 | DefaultPowerSetPoint | Default Power Setpoint (W), when using features that manipulte the set point programmatically.         | Integer       | -10                          |
 | [Mqtt]                   | Host                 | Hostname / IP of your main-mqtt to work with.                                                          | String        | mqtt.ad.equinox-solutions.de |
 | [Mqtt]                   | User                 | Username to connect to your main-mqtt.                                                                 | String        | user                         |
@@ -394,7 +397,8 @@ VRM Controls have no option to explicit select 1 or 3 phase charging, therefore 
 
 > :warning: **Dependency**:<br /> If you want to enable Solar-Overhead Charging, you need to enable the [SolarOverheadDistributor](#solaroverheaddistributor) as well. (It will be responsible for giving a clearence to Wattpilots charge request)
 
-FroniusWattpilot requires a few variables to be set in `/data/es-ESS/config.ini`: 
+FroniusWattpilot requires variables to be set in `/data/es-ESS/config.ini`.
+`config.sample.ini` is the maintained reference for supported Wattpilot keys.
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
@@ -404,14 +408,39 @@ FroniusWattpilot requires a few variables to be set in `/data/es-ESS/config.ini`
 | [FroniusWattpilot]  | MinPhaseSwitchSeconds  | Minimum seconds between es-ESS phase-switching commands. Use `600` to match a 10 minute Wattpilot phase switch interval.  | Integer| 600 |
 | [FroniusWattpilot]  | PhaseSwitchDelaySeconds  | Seconds the 3-phase PV threshold must remain continuously available before es-ESS switches from 1 phase to 3 phases. Use `120` to match a 2 minute Wattpilot phase switch delay.  | Integer| 120 |
 | [FroniusWattpilot]  | MinOnOffSeconds | Seconds between starting/stopping charging | Integer | 600 |
+| [FroniusWattpilot]  | OverheadPriority | SolarOverheadDistributor priority used for Wattpilot allowance requests. | Integer | 35 |
 | [FroniusWattpilot]  | ResetChargedEnergyCounter |  Define when the counters *Charge Time* and *Charged Energy* in VRM should reset. Options: OnDisconnect, OnConnect| String  | OnDisconnect |
 | [FroniusWattpilot]  | Position | Position, where the Wattpilot is connected to. Options: 0:=ac-out, 1:=ac-in | Integer  | 0 |
 | [FroniusWattpilot]  | Host | hostname / ip of Wattpilot | String  | wallbox.ad.equinox-solutions.de |
-| [FroniusWattpilot]  | Username | Username of Wattpilot | String  | User |
 | [FroniusWattpilot]  | Password | Password of Wattpilot | String  | Secret123! |
 | [FroniusWattpilot]  | HibernateMode | When the car is disconnected, es-ESS will switch into idle mode, stop doing heavy lifting. Connection to wattpilot remains established and VRM control enabled. <br /><br />With hibernate enabled, wattpilot will also be disconnected, and connected every 5 minutes for a car-state-check. This greatly reduces the number of incoming socket messages from wattpilot by about 95% per day, but causes an delay of upto 5 minutes when the car is connected.<br /><br />You can force a wakeup by switching to *Scheduled charging* in VRM at any time. | Boolean  | true |
+| [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. The controller enforces at least 6 A. | Integer (A) | 6 |
+| [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. The controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
+| [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. | Integer (W) | 4700 |
+| [FroniusWattpilot] | ThreePhasePvSurplusStopW | PV threshold below which Auto/Eco falls back from 3 phases to 1 phase when one-phase charging is still supportable. | Integer (W) | 4300 |
+| [FroniusWattpilot] | EvPriorityOverBatteryCharge | Lets Wattpilot use real PV that would otherwise charge the battery while the car is connected in Auto mode. This does not allow battery-to-EV charging from a stopped state. | Boolean | true |
+| [FroniusWattpilot] | EvPriorityMinSoc | Minimum battery SOC required before EV priority over battery charging is allowed. | Number (%) | 60 |
+| [FroniusWattpilot] | BatteryAssistEnabled | Enables the optional short battery bridge for an already-running Auto/Eco charge. | Boolean | true |
+| [FroniusWattpilot] | BatteryAssistSocMin | Minimum battery SOC required before battery assist can be used. | Number (%) | 60 |
+| [FroniusWattpilot] | BatteryAssistMaxSeconds | Maximum duration for one battery-assist window. | Integer (seconds) | 300 |
+| [FroniusWattpilot] | BatteryAssistMaxShortfallW | Maximum PV shortfall that battery assist may bridge for an already-running charge. | Number (W) | 3000 |
+| [FroniusWattpilot] | BatteryAssistRecoverySeconds | Sustained PV-recovery time required before battery assist can be used again after lockout. | Integer (seconds) | 60 |
+| [FroniusWattpilot] | AllowGridCharging | Allows Auto/Eco to continue despite grid import. Recommended no-grid mode is `false`. | Boolean | false |
+| [FroniusWattpilot] | GridImportPositive | Site grid-power sign convention. `true` means positive grid power is import. | Boolean | true |
+| [FroniusWattpilot] | GridImportStopW | Sustained grid-import power threshold that stops Auto/Eco when grid charging is disabled. | Number (W) | 300 |
+| [FroniusWattpilot] | GridImportStopSeconds | Duration grid import must exceed `GridImportStopW` before Auto/Eco is stopped. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | AllowanceFreshSeconds | Maximum age of the assigned SolarOverheadDistributor Wattpilot allowance. Missing, malformed, or stale allowance is treated as insufficient. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | GridTelemetryFreshSeconds | Maximum age of each required grid-power value (L1, L2, and L3) while no-grid Auto/Eco control is enabled. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | AllowanceDropGraceSeconds | Grace period before an already-running Auto/Eco session is stopped for insufficient or stale allowance. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | CarDisconnectConfirmSeconds | Time a disconnected car-state reading must remain stable before es-ESS accepts it as a disconnect. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | SurplusDropGraceSeconds | Grace period before continuous low surplus resets the Auto/Eco surplus confirmation timer. | Integer (seconds) | 20 |
+| [FroniusWattpilot] | StartupGraceSeconds | Time after a start or phase switch where commanded EV demand may be reported while Wattpilot telemetry catches up. | Integer (seconds) | 60 |
+| [FroniusWattpilot] | StartupTelemetryRatio | Fraction of commanded demand that Wattpilot telemetry must reach before startup grace is considered satisfied. | Number | 0.80 |
+| [FroniusWattpilot] | RawOverheadFreshSeconds | Maximum age of raw distributor overhead used only for safe 3-to-1 fallback decisions. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | ChargeCompletePowerThresholdW | Sustained low EV power treated as charge-complete hold instead of restarting Auto/Eco PV control. | Number (W) | 100 |
+| [FroniusWattpilot] | ChargeCompleteConfirmSeconds | Time low EV power must remain below `ChargeCompletePowerThresholdW` before charge-complete hold starts. | Integer (seconds) | 120 |
+| [FroniusWattpilot] | ChargeCompleteResumePowerW | EV power above this value starts the confirmation for leaving charge-complete hold. | Number (W) | 300 |
+| [FroniusWattpilot] | ChargeCompleteResumeSeconds | Time EV power must remain above `ChargeCompleteResumePowerW` before charge-complete hold clears. | Integer (seconds) | 30 |
 
 ### Eco/PV policy
 
