@@ -219,6 +219,20 @@ Completion note:
   code, config defaults, D-Bus paths, MQTT topics, or Wattpilot control
   behavior were changed.
 
+### Completed 2026-07-09 - Add Wattpilot Decision Characterization Tests Before Refactoring
+
+Completion note:
+
+- Added hardware-free characterization tests for current Wattpilot allowance
+  freshness, raw-overhead phase-down boundaries, grid-import debounce reset,
+  battery-assist grid-import rejection, and pending one-phase confirmation
+  safety behavior.
+- Reused the existing `tests/test_eco_pv_policy.py` controller fixture so the
+  tests describe observable controller decisions and Wattpilot command calls.
+- Kept the change tests/backlog-only; no production code, configuration
+  defaults, D-Bus paths, MQTT topics, architecture boundaries, or charging
+  behavior were changed.
+
 ## Backlog
 
 ### P0 - Guard Manual Wattpilot Mode From D-Bus/VRM Control Writes
@@ -610,89 +624,11 @@ Done criteria:
 - GitHub Actions workflow is present and passing.
 - CI validates `config.sample.ini` as the single config artifact.
 
-### P2 - Add Wattpilot Decision Characterization Tests Before Refactoring
-
-Goal:
-
-Make the next refactor PRs safer by locking down current behavior first.
-
-Problem:
-
-Existing tests cover many Wattpilot decisions, but the controller still has
-large branches where telemetry freshness, allowance, battery assist, phase
-switching, and grid guards interact. Before extracting helpers, add focused
-characterization tests for the seams that will be moved.
-
-Evidence:
-
-- `FroniusWattpilot.py` contains multiple decision helpers and side effects in
-  one controller.
-- Existing tests under `tests/` already use hardware-free stubs and mocks, so
-  more characterization coverage can be added without live D-Bus, MQTT, Venus
-  OS, or Wattpilot hardware.
-- The planned architecture refactor should preserve behavior, not change
-  charging policy.
-
-Implementation:
-
-- Add focused tests around current telemetry freshness behavior.
-- Add focused tests around allowance evaluation and raw-overhead fallback
-  boundaries.
-- Add focused tests around grid-import guard stop/start behavior.
-- Add focused tests around battery-assist eligibility, lockout, and recovery.
-- Add focused tests around one-to-three and three-to-one phase decisions.
-- Prefer tests against existing public/internal methods before moving code.
-
-Files to change:
-
-- Tests under `tests/`
-
-Files to add:
-
-- Possibly a focused test module such as
-  `tests/test_wattpilot_decision_characterization.py`.
-
-Tests:
-
-- Run the new focused tests.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- Existing behavior is captured before helper extraction.
-- Refactor PRs can be reviewed as moves plus tests instead of behavior changes.
-
-Manual validation:
-
-- None required for tests-only work.
-
-Manual test steps:
-
-1. Review the new test names and fixtures.
-2. Confirm they describe existing behavior, not desired future behavior.
-3. Run the full test suite on the development machine.
-
-Risks and dependencies:
-
-- Tests that overfit private implementation can make later refactors noisy.
-  Prefer observable controller outcomes where practical.
-
-Open questions:
-
-- Should duplicated Wattpilot test fixtures be consolidated before adding more
-  tests, or left alone until after the characterization PR?
-
-Done criteria:
-
-- Characterization tests pass.
-- No production code changes are included unless a tiny test seam is required.
-- The tests document current behavior for the next extraction PRs.
-
 ### P2 - Extract Wattpilot Telemetry And Allowance Evaluation Helpers
 
 Depends on:
 
-- Wattpilot decision characterization tests.
+- Completed Wattpilot decision characterization tests.
 
 Goal:
 
@@ -1070,21 +1006,19 @@ the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
 1. P1 CI, because it should run the config contract and existing behavior tests.
-2. P2 Wattpilot decision characterization tests, because it strengthens the
-   safety net before production code moves.
-3. P1 Wattpilot startup deferred-state/logging cleanup, because it reduces
+2. P1 Wattpilot startup deferred-state/logging cleanup, because it reduces
    confusing production diagnostics without changing charge policy.
-4. P1 Wattpilot reconnect loop, because recovery reliability affects live
+3. P1 Wattpilot reconnect loop, because recovery reliability affects live
    safety/status behavior but should be isolated to the client lifecycle.
-5. P0 Manual command-boundary hardening, because it protects the most important
+4. P0 Manual command-boundary hardening, because it protects the most important
    product invariant once the test base is stronger.
-6. P2 telemetry and allowance helper extraction, because it is the first
+5. P2 telemetry and allowance helper extraction, because it is the first
    low-side-effect Wattpilot control extraction.
-7. P2 grid-guard and battery-assist helper extraction, because it is more
+6. P2 grid-guard and battery-assist helper extraction, because it is more
    safety-sensitive and should follow characterization coverage.
-8. P2 phase-switching helper extraction, because phase switching is
+7. P2 phase-switching helper extraction, because phase switching is
    user-visible and high-impact.
-9. P3 state-machine refactor, because it needs the previous behavior, config,
+8. P3 state-machine refactor, because it needs the previous behavior, config,
     docs, and helper boundaries in place before touching overall control flow.
 
 ## Verification Plan

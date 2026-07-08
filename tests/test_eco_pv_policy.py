@@ -339,6 +339,49 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.set_power.assert_not_called()
         controller.wattpilot.set_start_stop.assert_not_called()
 
+    def test_allowance_freshness_requires_valid_recent_assigned_allowance(self):
+        controller = self._controller()
+        self._set_allowance(controller, 1380, 85)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.allowanceIsFresh())
+            self.assertTrue(controller.hasMinimumAllowance())
+
+        with patch.object(self.fwp.time, "time", return_value=101):
+            self.assertFalse(controller.allowanceIsFresh())
+            self.assertFalse(controller.hasMinimumAllowance())
+
+        controller.allowanceValid = False
+        self._fresh_grid(controller, 102)
+        with patch.object(self.fwp.time, "time", return_value=102):
+            self.assertFalse(controller.allowanceIsFresh())
+            self.assertFalse(controller.hasMinimumAllowance())
+
+    def test_raw_overhead_phase_down_requires_fresh_allowance_and_one_phase_minimum(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.mqttRawOverheadW = 1380
+        controller.mqttRawOverheadUpdatedAt = 100
+
+        controller.allowance = 0
+        controller.allowanceValid = False
+        controller.allowanceUpdatedAt = 100
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertFalse(controller.shouldPhaseDownForPvDip())
+
+        self._set_allowance(controller, 0, 100)
+        controller.mqttRawOverheadW = 1379
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertFalse(controller.shouldPhaseDownForPvDip())
+
+        controller.mqttRawOverheadW = 1380
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.shouldPhaseDownForPvDip())
+
+        self._set_allowance(controller, 4140, 100)
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertFalse(controller.shouldPhaseDownForPvDip())
+
     def test_one_to_three_phase_switch_requires_real_pv_allowance(self):
         controller = self._controller()
         self._set_allowance(controller, 4200, 100)
@@ -468,6 +511,22 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertFalse(controller.batteryAssistActive)
         self.assertTrue(controller.batteryAssistLockedOut)
 
+    def test_battery_assist_rejects_grid_import_above_stop_threshold(self):
+        controller = self._controller()
+        controller.wattpilot.power = 2.3
+        controller.gridL1Dbus.value = 151
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertFalse(controller.startOrContinueBatteryAssist(1000))
+
+        self.assertFalse(controller.batteryAssistActive)
+
+        controller.gridL1Dbus.value = 150
+        with patch.object(self.fwp.time, "time", return_value=101):
+            self.assertTrue(controller.startOrContinueBatteryAssist(1000))
+
+        self.assertTrue(controller.batteryAssistActive)
+
     def test_battery_assist_lockout_requires_configured_pv_recovery(self):
         controller = self._controller()
         controller.batteryAssistLockedOut = True
@@ -481,6 +540,25 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             controller.updateBatteryAssistLockoutRecovery(0)
 
         self.assertFalse(controller.batteryAssistLockedOut)
+
+    def test_grid_import_guard_timer_resets_when_import_drops_below_threshold(self):
+        controller = self._controller()
+        controller.gridL1Dbus.value = 200
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertFalse(controller.gridImportLimitExceeded())
+        self.assertEqual(controller.gridImportSince, 100)
+
+        controller.gridL1Dbus.value = 0
+        with patch.object(self.fwp.time, "time", return_value=104):
+            self.assertFalse(controller.gridImportLimitExceeded())
+        self.assertEqual(controller.gridImportSince, 0)
+
+        controller.gridL1Dbus.value = 200
+        with patch.object(self.fwp.time, "time", return_value=105):
+            self.assertFalse(controller.gridImportLimitExceeded())
+        with patch.object(self.fwp.time, "time", return_value=110):
+            self.assertTrue(controller.gridImportLimitExceeded())
 
     def test_grid_import_above_threshold_stops_auto_eco_charging(self):
         controller = self._controller()
@@ -581,6 +659,27 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(controller.pendingPhaseSwitchMode, 0)
         controller.wattpilot.set_phases.assert_called_once_with(1)
         controller.wattpilot.set_power.assert_called_once_with(15)
+
+    def test_pending_one_phase_confirmation_stops_if_three_phase_power_remains(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.pendingPhaseSwitchMode = 1
+        controller.pendingPhaseSwitchSince = 100
+        controller.wattpilot.power = 4.2
+        controller.wattpilot.power1 = 1.4
+        controller.wattpilot.power2 = 1.4
+        controller.wattpilot.power3 = 1.4
+        controller.wattpilot.startState = self.fwp.WattpilotStartStop.On
+
+        with patch.object(self.fwp.time, "time", return_value=160):
+            status = controller.reconcilePendingPhaseSwitch()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+        self.assertEqual(controller.currentPhaseMode, 0)
+        self.assertEqual(controller.pendingPhaseSwitchMode, 0)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
 
 
 if __name__ == "__main__":
