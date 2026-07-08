@@ -109,6 +109,9 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.maxCurrentPerPhase = 16
         controller.threePhasePvSurplusStartW = 4200
         controller.threePhasePvSurplusStopW = 4140
+        controller.phaseSwitchDelaySeconds = 0
+        controller.phaseSwitchCandidateMode = 0
+        controller.phaseSwitchCandidateSince = 0
         controller.minimumPhaseSwitchSeconds = 0
         controller.minimumOnOffSeconds = 300
         controller.lastPhaseSwitchTime = 0
@@ -474,6 +477,38 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         self.assertEqual(controller.currentPhaseMode, 1)
         controller.wattpilot.set_phases.assert_not_called()
         controller.wattpilot.set_power.assert_called_once_with(16)
+
+    def test_phase_up_waits_for_stable_phase_switch_delay(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.phaseSwitchDelaySeconds = 120
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 1)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 2)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_called_once_with(16)
+
+        controller.wattpilot.set_power.reset_mock()
+        with patch.object(self.fwp.time, "time", return_value=219):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_called_once_with(16)
+
+        controller.wattpilot.set_power.reset_mock()
+        with patch.object(self.fwp.time, "time", return_value=220):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo3Phase)
+        self.assertEqual(controller.currentPhaseMode, 2)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 0)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+        controller.wattpilot.set_power.assert_called_once_with(7)
 
     def test_raw_overhead_cannot_cause_a_false_phase_up(self):
         controller = self._controller()
