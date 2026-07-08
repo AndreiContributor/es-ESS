@@ -44,8 +44,9 @@ Current Wattpilot state:
   the Wattpilot sample keys are covered by a config contract test.
 - The unused Wattpilot `Username` setting has been removed from the maintained
   sample and README; `Wattpilot.py` authenticates with password only.
-- README still contains upstream `realdognose/es-ESS` install/source links in
-  the setup section and config comments.
+- README now points setup and config-comment source links at the maintained
+  repository and documents the current Wattpilot Auto/Eco policy, examples, and
+  runtime-status contract.
 - Configuration migration currently performs unconditional section creation for
   some legacy upgrades, which can break older user configs that already contain
   those sections.
@@ -196,6 +197,27 @@ Completion note:
 - Verified shell syntax with Git Bash `bash -n` and ran the full hardware-free
   unittest suite with `uv --cache-dir .uv-cache run --no-project python -m
   unittest discover -s tests`.
+
+### Completed 2026-07-09 - Rewrite Wattpilot README And Correct Installation Source
+
+Completion note:
+
+- Updated README setup commands to download from
+  `AndreiContributor/es-ESS`.
+- Clarified that `config.sample.ini` is the complete maintained sample and that
+  production config should keep the same supported keys.
+- Rewrote the Wattpilot overview/configuration guidance around current
+  Auto/Eco PV control, Manual-mode ownership, no-grid guard behavior,
+  telemetry freshness, one-phase starts, three-phase switching, timer
+  differences, battery-assist limits, and runtime-status D-Bus/MQTT values.
+- Added PV-only, 300-second cloud-bridge, and conservative timer example
+  snippets.
+- Added deployment verification commands for syntax checks, the hardware-free
+  unittest suite, service restart, and log monitoring.
+- Updated the stale README link comment in `config.sample.ini`.
+- Kept the change documentation/config-comment/backlog-only; no production
+  code, config defaults, D-Bus paths, MQTT topics, or Wattpilot control
+  behavior were changed.
 
 ## Backlog
 
@@ -512,105 +534,6 @@ Done criteria:
 - Reconnect loop tests pass.
 - Existing Wattpilot runtime-status tests pass.
 - Manual outage/recovery validation succeeds without duplicate worker threads.
-
-### P1 - Rewrite Wattpilot README And Correct Installation Source
-
-Goal:
-
-Make installation and expected Wattpilot behavior clear for a non-developer.
-
-Problem:
-
-README contains stale setup/source references, incomplete Wattpilot config
-coverage, and behavior descriptions that need to align with the current
-Auto/Eco safety policy and the single-sample-config decision.
-
-Evidence:
-
-- README contains upstream `realdognose/es-ESS` links in setup/source areas.
-- README includes Wattpilot behavior sections, but the current config table does
-  not fully match active code settings.
-- Runtime-status behavior is documented later in README and should remain
-  consistent with Wattpilot code and MQTT/D-Bus paths.
-
-Implementation:
-
-- Replace setup commands that download `realdognose/es-ESS` with
-  `AndreiContributor/es-ESS` or a tagged release.
-- State that `config.sample.ini` is the complete maintained configuration
-  sample and that production config is expected to match it.
-- Remove stale duplicate config-file guidance.
-- Add a complete Wattpilot configuration table matching `config.sample.ini`.
-- Explain that Wattpilot must be in ECO mode for es-ESS Auto/Eco PV control.
-- Explain that the native Wattpilot PV-start threshold should be set high so
-  es-ESS controls PV charging.
-- Explain one-phase start behavior.
-- Explain three-phase switch behavior.
-- Explain `MinOnOffSeconds` versus `MinPhaseSwitchSeconds` versus
-  `PhaseSwitchDelaySeconds`.
-- Explain battery-assist limits and recovery.
-- Explain no-grid guard behavior and transient-import limitations.
-- Explain telemetry fail-safe behavior.
-- Document phase/status values available through D-Bus and MQTT.
-- Explain the standard VRM EVCS tile limitation and the custom Cerbo UI
-  requirement.
-- Add example configuration for PV-only, no battery assist.
-- Add example configuration for PV plus a 300-second cloud bridge.
-- Add example configuration for conservative five-minute start/phase timers.
-- Add deployment verification commands for `py_compile`, `unittest`, service
-  restart, and log monitoring.
-
-Files to change:
-
-- `README.md`
-- `config.sample.ini` if wording or settings need to stay in sync
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Run README/config contract tests from the config item.
-- Run syntax checks and the full unittest suite if any code changes accompany
-  the documentation update.
-
-Expected coverage:
-
-- README and sample config agree exactly with the code.
-- A non-developer can install, configure, verify, and reason about Wattpilot
-  behavior from README alone.
-
-Manual validation:
-
-- Required for installation instructions and live-device verification commands.
-
-Manual test steps:
-
-1. Follow the updated install/setup commands on a test GX or staging path.
-2. Copy/update production config from `config.sample.ini`.
-3. Restart the service.
-4. Monitor logs and MQTT/D-Bus status paths described in README.
-5. Confirm Manual mode remains user-controlled and Auto/Eco follows PV/no-grid
-   policy.
-
-Risks and dependencies:
-
-- README examples must not imply that battery assist can start a charge or
-  authorize grid use.
-- Installation source changes should ideally point to a stable tag when release
-  packaging is ready.
-
-Open questions:
-
-- Should README examples use the exact production values or conservative
-  recommended values where they differ from production?
-
-Done criteria:
-
-- README no longer references duplicate config-file guidance.
-- README config table matches `config.sample.ini`.
-- README install commands point to the intended repository/release source.
 
 ### P1 - Add Automated Checks With GitHub Actions
 
@@ -1146,26 +1069,22 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P1 README rewrite, because user-facing behavior should match the completed
-   sample config.
-2. P1 CI, because it should run the config contract and existing behavior tests.
-3. P2 lifecycle script hardening, because it reduces deployment risk but should
-   avoid mixing with Wattpilot behavior changes.
-4. P2 Wattpilot decision characterization tests, because it strengthens the
+1. P1 CI, because it should run the config contract and existing behavior tests.
+2. P2 Wattpilot decision characterization tests, because it strengthens the
    safety net before production code moves.
-5. P1 Wattpilot startup deferred-state/logging cleanup, because it reduces
+3. P1 Wattpilot startup deferred-state/logging cleanup, because it reduces
    confusing production diagnostics without changing charge policy.
-6. P1 Wattpilot reconnect loop, because recovery reliability affects live
+4. P1 Wattpilot reconnect loop, because recovery reliability affects live
    safety/status behavior but should be isolated to the client lifecycle.
-7. P0 Manual command-boundary hardening, because it protects the most important
+5. P0 Manual command-boundary hardening, because it protects the most important
    product invariant once the test base is stronger.
-8. P2 telemetry and allowance helper extraction, because it is the first
+6. P2 telemetry and allowance helper extraction, because it is the first
    low-side-effect Wattpilot control extraction.
-9. P2 grid-guard and battery-assist helper extraction, because it is more
+7. P2 grid-guard and battery-assist helper extraction, because it is more
    safety-sensitive and should follow characterization coverage.
-10. P2 phase-switching helper extraction, because phase switching is
+8. P2 phase-switching helper extraction, because phase switching is
    user-visible and high-impact.
-11. P3 state-machine refactor, because it needs the previous behavior, config,
+9. P3 state-machine refactor, because it needs the previous behavior, config,
     docs, and helper boundaries in place before touching overall control flow.
 
 ## Verification Plan
