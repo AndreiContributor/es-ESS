@@ -24,6 +24,7 @@ system for at least 10ish years, there will be plenty of updates and/or bugfixes
 
 # Table of Contents
 - [Setup](#setup) - General setup process and requirements for es-ESS.
+- [Developer Notes](#developer-notes) - Contributor guidance and Wattpilot architecture boundaries.
 - [TimeToGoCalculator](#timetogocalculator) - Tiny helper filling out the `Time to Go` field in VRM, when BMS do not report this value.
 - [MqttTemperatures](#mqtttemperatures) - Display various temperature sensors you have on mqtt in VRM.
 - [MqttExporter](#mqttexporter) - Export selected values form dbus to your MQTT-Server.
@@ -38,6 +39,14 @@ system for at least 10ish years, there will be plenty of updates and/or bugfixes
 - [ChargeCurrentReducer](#chargecurrentreducer) - Reduce the battery charge current to your *feel-well-value* without the need to disable DC-Feedin.
 - [This and that](#this-and-that) - Various information that doesn't fit elsewhere.
 - [F.A.Q](#faq) - Frequently Asked Questions
+
+# Developer Notes
+
+Wattpilot control is safety-sensitive. Before changing or reviewing Wattpilot
+behavior, read [docs/wattpilot-architecture.md](docs/wattpilot-architecture.md).
+That note documents the current module boundaries, command side-effect
+ownership, runtime-status contract, and safety invariants that future
+implementation tasks must preserve and update when they change.
 
 # Setup
 Your system needs to match the following requirements in order to use es-ESS:
