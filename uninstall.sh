@@ -1,9 +1,44 @@
 #!/bin/bash
+set -eu
 
-chmod a-x /data/es-ESS/service/run
-kill -s 9 $(pgrep -f 'python /data/es-ESS/es-ESS.py')
-rm -r /data/es-ESS
+ES_ESS_DIR=/data/es-ESS
+SERVICE_LINK=/service/es-ESS
+RC_LOCAL=/data/rc.local
+CONFIG_TARGET="$ES_ESS_DIR/config.ini"
+BACKUP_DIR=/data/es-ESS-backups
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
-grep -v "/data/es-ESS/install.sh" /data/rc.local >> /data/temp.local
-mv /data/temp.local /data/rc.local
-chmod 755 /data/rc.local
+if [ -f "$ES_ESS_DIR/service/run" ]; then
+    chmod a-x "$ES_ESS_DIR/service/run" || true
+fi
+
+PIDS=$(pgrep -f '^python[[:space:]]+/data/es-ESS/es-ESS.py$' || true)
+if [ -n "$PIDS" ]; then
+    kill -s 15 $PIDS || true
+    sleep 2
+    PIDS=$(pgrep -f '^python[[:space:]]+/data/es-ESS/es-ESS.py$' || true)
+    if [ -n "$PIDS" ]; then
+        kill -s 9 $PIDS || true
+    fi
+fi
+
+if [ -f "$CONFIG_TARGET" ]; then
+    mkdir -p "$BACKUP_DIR"
+    cp "$CONFIG_TARGET" "$BACKUP_DIR/config.ini.$TIMESTAMP"
+    echo "Backed up config.ini to $BACKUP_DIR/config.ini.$TIMESTAMP"
+fi
+
+if [ -L "$SERVICE_LINK" ]; then
+    rm -f "$SERVICE_LINK"
+fi
+
+if [ -d "$ES_ESS_DIR" ]; then
+    rm -r "$ES_ESS_DIR"
+fi
+
+if [ -f "$RC_LOCAL" ]; then
+    TEMP_LOCAL="${RC_LOCAL}.$$"
+    grep -vxF '/data/es-ESS/install.sh' "$RC_LOCAL" > "$TEMP_LOCAL" || true
+    mv "$TEMP_LOCAL" "$RC_LOCAL"
+    chmod 755 "$RC_LOCAL"
+fi

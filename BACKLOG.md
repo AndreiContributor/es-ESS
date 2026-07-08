@@ -177,6 +177,26 @@ Completion note:
 - Kept the change documentation-only; no production code, config defaults,
   D-Bus paths, MQTT topics, or tests were changed.
 
+### Completed 2026-07-08 - Harden Service Lifecycle Scripts
+
+Completion note:
+
+- Made `install.sh` strict and idempotent for script permissions, service
+  symlink creation/repair, `rc.local` registration, and first-install config
+  creation.
+- Made `restart.sh` and `kill_me.sh` tolerate an already-stopped service
+  without passing an empty PID list to `kill`.
+- Narrowed process matching for lifecycle scripts to the expected
+  `/data/es-ESS/es-ESS.py` command.
+- Updated `uninstall.sh` to stop gracefully before SIGKILL fallback, remove the
+  service symlink, preserve `config.ini` under `/data/es-ESS-backups/`, remove
+  `/data/es-ESS`, and rewrite `rc.local` through a temp file.
+- Updated README lifecycle-command text to document emergency-stop and uninstall
+  config-backup behavior.
+- Verified shell syntax with Git Bash `bash -n` and ran the full hardware-free
+  unittest suite with `uv --cache-dir .uv-cache run --no-project python -m
+  unittest discover -s tests`.
+
 ## Backlog
 
 ### P0 - Guard Manual Wattpilot Mode From D-Bus/VRM Control Writes
@@ -666,94 +686,6 @@ Done criteria:
 
 - GitHub Actions workflow is present and passing.
 - CI validates `config.sample.ini` as the single config artifact.
-
-### P2 - Harden Service Lifecycle Scripts
-
-Problem:
-
-Lifecycle scripts use broad process matching, non-idempotent install commands,
-and destructive uninstall behavior. On a production GX device these scripts can
-fail noisily, kill unintended matching processes, or remove deployed config
-without a backup.
-
-Evidence:
-
-- `restart.sh` uses `kill -s 15 $(pgrep -f 'python /data/es-ESS/es-ESS.py')`.
-- `kill_me.sh` uses `kill -s 9 $(pgrep -f 'python /data/es-ESS/es-ESS.py')`.
-- `uninstall.sh` uses the same broad kill pattern and then `rm -r /data/es-ESS`.
-- `install.sh` uses `ln -s /data/es-ESS/service /service/es-ESS` without
-  checking whether the symlink already exists.
-- `uninstall.sh` rewrites `/data/rc.local` via a temp file without shell safety
-  options or cleanup handling.
-
-Implementation:
-
-- Add `set -eu` where compatible with Venus OS shell behavior.
-- Make install idempotent: create or repair `/service/es-ESS` only when needed.
-- Make restart/kill scripts handle no matching process without passing an empty
-  PID list to `kill`.
-- Narrow process matching where practical.
-- Prefer graceful stop in restart, and reserve SIGKILL for explicit emergency
-  behavior.
-- Preserve or back up `/data/es-ESS/config.ini` before uninstall removes the
-  deployed directory, unless the user explicitly wants full deletion.
-- Rewrite `rc.local` removal with a safe temp file and move.
-
-Files to change:
-
-- `install.sh`
-- `restart.sh`
-- `kill_me.sh`
-- `uninstall.sh`
-- Possibly `README.md` for updated lifecycle commands
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add shellcheck-style review if tooling is available.
-- Add lightweight script tests only if a portable pattern already exists or can
-  be added without overengineering.
-- Run syntax checks with `bash -n install.sh restart.sh kill_me.sh uninstall.sh`
-  where Bash is available.
-
-Expected coverage:
-
-- Scripts are idempotent and safe when the service is already installed,
-  stopped, missing, or partially removed.
-- Uninstall behavior does not accidentally erase production config without an
-  intentional path.
-
-Manual validation:
-
-- Required on a non-production GX or staging directory before production use.
-
-Manual test steps:
-
-1. Run install twice and confirm the service symlink and `rc.local` entry are
-   stable.
-2. Run restart when the service is running and when it is stopped.
-3. Run emergency kill only on a test instance.
-4. Run uninstall on a staging copy and confirm config backup/retention behavior.
-5. Reinstall and confirm service starts.
-
-Risks and dependencies:
-
-- Venus OS shell utilities may be BusyBox variants; keep commands portable.
-- Changing uninstall semantics may surprise users who expect full deletion.
-
-Open questions:
-
-- Should uninstall preserve `config.ini` by default or only after prompting in
-  documentation?
-
-Done criteria:
-
-- Lifecycle scripts are idempotent for common repeated operations.
-- No command fails solely because no matching process exists.
-- Uninstall behavior around production config is explicit and documented.
 
 ### P2 - Add Wattpilot Decision Characterization Tests Before Refactoring
 
