@@ -79,7 +79,7 @@ safety-sensitive.
 
 ## Backlog And Review Workflow
 
-- Use `.agents/es-ess-code-review.md` for architecture-aware code reviews.
+- Use `.agents/skills/es-ess-code-review/` for architecture-aware code reviews.
 - Keep the implementation backlog in root `BACKLOG.md`.
 - If `BACKLOG.md` exists, update it in place. If it does not exist, create it.
 - Do not create duplicate backlog files unless explicitly requested.
@@ -119,5 +119,3 @@ safety-sensitive.
 - Include complete updated tests whenever production code changes.
 - Include complete updated `config.sample.ini`, `config.reference.ini`, and
   `README.md` files whenever those files are changed.
-- Package all complete replacement files in one archive as well as linking each
-  file separately.
