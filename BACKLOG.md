@@ -110,6 +110,23 @@ Open questions:
 - Should uninstall behavior keep a dated backup of `/data/es-ESS/config.ini`
   before removing the deployed directory?
 
+## Completed
+
+### Completed 2026-07-08 - Make Configuration Upgrades Idempotent And Section-Safe
+
+Completion note:
+
+- Added idempotent config migration helpers in `es-ESS.py`.
+- Updated existing migration defaults so user-provided service flags,
+  `[NoBatToEV]`, and `[MqttPvInverter]` values are preserved.
+- Added hardware-free regression tests in `tests/test_config_migration.py` for
+  existing later sections, missing later sections, and preserved legacy service
+  flags.
+- Verified with `py_compile` and the full unittest suite.
+- Manual validation confirmed a v7 config with existing `[MqttPvInverter]`
+  upgraded to v8, preserved custom values, added missing defaults, and started
+  without the duplicate-section crash.
+
 ## Backlog
 
 ### P0 - Guard Manual Wattpilot Mode From D-Bus/VRM Control Writes
@@ -307,101 +324,6 @@ Done criteria:
 - Existing Wattpilot runtime-status tests pass.
 - Manual outage/recovery validation succeeds without duplicate worker threads.
 
-### P1 - Make Configuration Upgrades Idempotent And Section-Safe
-
-Problem:
-
-Configuration upgrades are supposed to let users skip versions safely. Some
-upgrade steps currently create sections unconditionally, so a user config that
-already contains those sections can fail during startup instead of being
-upgraded in place.
-
-Evidence:
-
-- `es-ESS.py` `_validateConfiguration()` says users may skip versions and each
-  change should be applied incrementally.
-- Version 7 calls `self.config.add_section("NoBatToEV")` without first checking
-  whether the section already exists.
-- Version 8 calls `self.config.add_section("MqttPvInverter")` without first
-  checking whether the section already exists.
-- `config.sample.ini` already contains `[NoBatToEV]` and `[MqttPvInverter]`,
-  so hand-maintained production configs may reasonably contain either section
-  before their `ConfigVersion` is bumped.
-- There are no tests around `_validateConfiguration()` migration behavior.
-
-Implementation:
-
-- Add a small helper for idempotent migration writes, for example
-  `ensureConfigSection(section)` and `setdefault`-style option assignment.
-- Update each migration step to add missing sections/options only when absent
-  and to preserve user-provided values when already present.
-- Keep backups and final write behavior unchanged.
-- Add tests that load representative older config text with pre-existing
-  `NoBatToEV` and `MqttPvInverter` sections and verify migration reaches the
-  current `ConfigVersion` without raising.
-- Include a regression test proving existing user values are preserved across
-  migration.
-
-Files to change:
-
-- `es-ESS.py`
-- Tests under `tests/`
-
-Files to add:
-
-- Possibly `tests/test_config_migration.py`.
-
-Tests:
-
-- Add config-migration tests for version 6 and version 7 configs that already
-  contain later sections.
-- Add a test for a minimal old config that lacks the new sections, proving
-  defaults are still added.
-- Add a preservation test for existing `NoBatToEV.UseRelay` and
-  `MqttPvInverter` option values.
-- Run `python -m py_compile es-ESS.py`.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- Users can skip config versions without a duplicate-section startup failure.
-- Migration remains additive and does not overwrite deliberate user settings.
-- Future migration changes have a clear test pattern.
-
-Manual validation:
-
-- Required on a copy of a production `/data/es-ESS/config.ini` before live
-  deployment.
-
-Manual test steps:
-
-1. Back up the production config.
-2. Create a staging config with an older `ConfigVersion` and existing
-   `[NoBatToEV]` and `[MqttPvInverter]` sections.
-3. Start es-ESS against the staging config.
-4. Confirm startup does not fail with a duplicate-section error.
-5. Confirm the config is upgraded to the current version.
-6. Confirm existing user values are preserved.
-
-Risks and dependencies:
-
-- Migration behavior touches startup for every service bundle user, so tests
-  should use temporary config files and avoid real `/data` paths.
-- Preserve the existing backup behavior so users can recover if a migration
-  still fails for an unrelated reason.
-
-Open questions:
-
-- Should future config migrations be centralized into a data-driven migration
-  table, or kept as explicit version blocks for readability?
-
-Done criteria:
-
-- Duplicate-section migration tests pass.
-- Existing migration behavior still writes missing defaults.
-- Existing user-provided values are preserved.
-- Full unittest suite passes.
-
 ### P1 - Rebuild Wattpilot Configuration Around `config.sample.ini`
 
 Goal:
@@ -424,8 +346,6 @@ Evidence:
 - `FroniusWattpilot.py` reads many Wattpilot settings through
   `settings.get(...)` defaults, including charge-complete hold keys that are
   not in `config.sample.ini`.
-- README still documents `ConfigVersion=1`, while the sample config uses
-  `ConfigVersion=8`.
 - `config.sample.ini` uses `BatteryMaxChargeInWh`, while README documents
   `BatteryMaxChargeInW`.
 - `Username` appears in sample/README but is not used by the Wattpilot client.
@@ -531,8 +451,6 @@ Evidence:
 - README contains upstream `realdognose/es-ESS` links in setup/source areas.
 - README includes Wattpilot behavior sections, but the current config table does
   not fully match active code settings.
-- README documents `ConfigVersion=1` while `config.sample.ini` uses
-  `ConfigVersion=8`.
 - Runtime-status behavior is documented later in README and should remain
   consistent with Wattpilot code and MQTT/D-Bus paths.
 
@@ -1318,30 +1236,28 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P1 config migration hardening, because it is small, high-impact, and protects
-   existing deployments without changing charger control.
-2. P1 config/sample cleanup, because it creates the config contract and removes
+1. P1 config/sample cleanup, because it creates the config contract and removes
    duplicate config maintenance.
-3. P1 README rewrite, because user-facing behavior should match the completed
+2. P1 README rewrite, because user-facing behavior should match the completed
    sample config.
-4. P1 CI, because it should run the config contract and existing behavior tests.
-5. P2 lifecycle script hardening, because it reduces deployment risk but should
+3. P1 CI, because it should run the config contract and existing behavior tests.
+4. P2 lifecycle script hardening, because it reduces deployment risk but should
    avoid mixing with Wattpilot behavior changes.
-6. P2 Wattpilot architecture boundary documentation, because it is
+5. P2 Wattpilot architecture boundary documentation, because it is
    documentation-only and prepares later refactors.
-7. P2 Wattpilot decision characterization tests, because it strengthens the
+6. P2 Wattpilot decision characterization tests, because it strengthens the
    safety net before production code moves.
-8. P1 Wattpilot reconnect loop, because recovery reliability affects live
+7. P1 Wattpilot reconnect loop, because recovery reliability affects live
    safety/status behavior but should be isolated to the client lifecycle.
-9. P0 Manual command-boundary hardening, because it protects the most important
+8. P0 Manual command-boundary hardening, because it protects the most important
    product invariant once the test base is stronger.
-10. P2 telemetry and allowance helper extraction, because it is the first
+9. P2 telemetry and allowance helper extraction, because it is the first
     low-side-effect Wattpilot control extraction.
-11. P2 grid-guard and battery-assist helper extraction, because it is more
+10. P2 grid-guard and battery-assist helper extraction, because it is more
     safety-sensitive and should follow characterization coverage.
-12. P2 phase-switching helper extraction, because phase switching is
+11. P2 phase-switching helper extraction, because phase switching is
     user-visible and high-impact.
-13. P3 state-machine refactor, because it needs the previous behavior, config,
+12. P3 state-machine refactor, because it needs the previous behavior, config,
     docs, and helper boundaries in place before touching overall control flow.
 
 ## Verification Plan

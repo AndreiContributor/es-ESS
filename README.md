@@ -92,7 +92,7 @@ or disable certain services.
 | [Common]                 | LogLevel             | LogLevel to use. See [Logging](#logging) use `INFO` if you are unsure.                                 | String        | INFO                         |  
 | [Common]                 | NumberOfThreads      | Number of Threads to use. 3-XX depending on enabled service count.                                     | Integer       | 5                            |
 | [Common]                 | ServiceMessageCount  | Number of ServiceMessages to publish on Mqtt. See [Service Messages](#service-messages)                | Integer       | 50                           |
-| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 1                            |
+| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 8                            |
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
 | [Common]                 | BatteryMaxChargeInW  | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
@@ -872,7 +872,7 @@ Additionally there are the following configuration options available:
 | ---------- | ---------|---- | ------------- |--|
 | [Common]    | NumberOfThreads |  Number of threads, es-ESS should use. | int | 5 |
 | [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 50 |
-| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 1 |
+| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 8 |
 
 ### Service Messages
 es-ESS also publishes Operational-Messages as well as Errors, Warnings and Critical failures under the `service`-Topic of the serivce. Check these from time to time to ensure proper functionality

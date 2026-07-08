@@ -216,6 +216,15 @@ class esESS:
 
        self.publishMainMqtt("{0}/{1}".format(Globals.esEssTag, clazz), "Enabled" if self.config["Services"][clazz].lower()=="true" else "Disabled") 
 
+    def _ensureConfigSection(self, section):
+        if (not self.config.has_section(section)):
+            self.config.add_section(section)
+
+    def _setConfigDefault(self, section, option, value):
+        self._ensureConfigSection(section)
+        if (not self.config.has_option(section, option)):
+            self.config[section][option] = value
+
     def _validateConfiguration(self):
         self.config = configparser.ConfigParser()
         self.config.optionxform = str
@@ -231,8 +240,8 @@ class esESS:
             self.config["Common"]["ConfigVersion"] = "{0}".format(version)
 
             #Version 2 introduced Shelly3EMGrid and ShellyPMInverter
-            self.config["Services"]["Shelly3EMGrid"] = "false"
-            self.config["Services"]["ShellyPMInverter"] = "false"
+            self._setConfigDefault("Services", "Shelly3EMGrid", "false")
+            self._setConfigDefault("Services", "ShellyPMInverter", "false")
             
         version = 3
         if (loadedVersion < version):
@@ -251,7 +260,7 @@ class esESS:
 
             #Introducing MqttDC
             #Create Service Control Flag, individual Entries are to be created by user.
-            self.config["Services"]["MqttDC"] = "false"
+            self._setConfigDefault("Services", "MqttDC", "false")
 
         version = 5
         if (loadedVersion < version):
@@ -269,7 +278,7 @@ class esESS:
             self.config["Common"]["ConfigVersion"] = "{0}".format(version)
 
             #Introducing MqttPVInverter
-            self.config["Services"]["MqttPVInverter"] = "false"    
+            self._setConfigDefault("Services", "MqttPVInverter", "false")    
 
         version = 7
         if (loadedVersion < version):
@@ -278,8 +287,7 @@ class esESS:
             self.config["Common"]["ConfigVersion"] = "{0}".format(version)
 
             #Relay as toggle for NoBatToEv
-            self.config.add_section("NoBatToEV")
-            self.config["NoBatToEV"]["UseRelay"] = "-1"        
+            self._setConfigDefault("NoBatToEV", "UseRelay", "-1")        
         
         version = 8
         if (loadedVersion < version):
@@ -288,12 +296,11 @@ class esESS:
             self.config["Common"]["ConfigVersion"] = "{0}".format(version)
 
             #MqttPVInverter DTU Settings
-            self.config.add_section("MqttPvInverter")
-            self.config["MqttPvInverter"]["EnableZeroFeedin"] = "false"
-            self.config["MqttPvInverter"]["EnablePvShutdown"] = "false"
-            self.config["MqttPvInverter"]["ZeroFeedinScaleStep"] = "0.05"
-            self.config["MqttPvInverter"]["ZeroFeedinDistance"] = "50"
-            self.config["MqttPvInverter"]["ZeroFeedinStartSoc"] = "100"
+            self._setConfigDefault("MqttPvInverter", "EnableZeroFeedin", "false")
+            self._setConfigDefault("MqttPvInverter", "EnablePvShutdown", "false")
+            self._setConfigDefault("MqttPvInverter", "ZeroFeedinScaleStep", "0.05")
+            self._setConfigDefault("MqttPvInverter", "ZeroFeedinDistance", "50")
+            self._setConfigDefault("MqttPvInverter", "ZeroFeedinStartSoc", "100")
 
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 
         if (loadedVersion < int(self.config["Common"]["ConfigVersion"])):
