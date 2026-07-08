@@ -76,15 +76,18 @@ Restart es-ESS (gracefully - config changes require restart!):
 /data/es-ESS/restart.sh
 ```
 
-Restart es-ESS (if it won't listen!)
+Emergency-stop es-ESS with SIGKILL only if graceful restart does not work:
 ```
 /data/es-ESS/kill_me.sh
 ```
 
-Uninstall es-ESS (to whom it may concern)
+Uninstall es-ESS:
 ```
 /data/es-ESS/uninstall.sh
 ```
+The uninstall script stops es-ESS, removes the service symlink and `rc.local`
+startup entry, and removes `/data/es-ESS`. If `/data/es-ESS/config.ini` exists,
+it is backed up first under `/data/es-ESS-backups/`.
 
 Tail current log file (log file rotated daily, 14 days kept, see [logging](#logging) for more details): 
 ```
