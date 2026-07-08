@@ -50,8 +50,7 @@ Key areas to inspect before changing behavior:
 - Runtime entry points: `es-ESS.py` and `esESSService.py`.
 - Wattpilot control and reporting: `FroniusWattpilot.py`, `Wattpilot.py`, and
   `WattpilotRuntimeStatus.py`.
-- Configuration documentation: `config.sample.ini`, `config.reference.ini`, and
-  `README.md`.
+- Configuration documentation: `config.sample.ini` and `README.md`.
 - Hardware and external integrations: Victron Venus OS, Cerbo GX, D-Bus, MQTT,
   Fronius Wattpilot, Fronius meters, Shelly devices, PV inverter data, and
   temperature data.
@@ -101,7 +100,7 @@ safety-sensitive.
 
 ## Documentation Expectations
 
-- Update `README.md`, `config.sample.ini`, and `config.reference.ini` whenever
+- Update `README.md` and `config.sample.ini` whenever
   user-facing behavior, configuration, defaults, units, or supported ranges
   change.
 - If any of those files are changed, provide complete updated versions in the
@@ -117,5 +116,5 @@ safety-sensitive.
 - Preserve unrelated content in each file.
 - Include a short list of files changed.
 - Include complete updated tests whenever production code changes.
-- Include complete updated `config.sample.ini`, `config.reference.ini`, and
-  `README.md` files whenever those files are changed.
+- Include complete updated `config.sample.ini` and `README.md` files whenever
+  those files are changed.

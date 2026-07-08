@@ -21,8 +21,7 @@ Use this reference when creating or substantially restructuring `BACKLOG.md`.
 - `BACKLOG.md` if it exists.
 - Top-level Python service modules, especially orchestration and enabled
   service boundaries.
-- `config.sample.ini` and `config.reference.ini` for supported settings and
-  documentation consistency.
+- `config.sample.ini` for supported settings and documentation consistency.
 - `tests/` for current regression coverage and hardware-free test patterns.
 - Install/service files such as `install.sh`, `restart.sh`, `kill_me.sh`,
   `uninstall.sh`, and `service/run`.
