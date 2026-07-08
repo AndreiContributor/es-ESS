@@ -32,6 +32,9 @@ class FroniusWattpilot (esESSService):
         settings = self.config["FroniusWattpilot"]
         self.minimumOnOffSeconds = int(settings["MinOnOffSeconds"])
         self.minimumPhaseSwitchSeconds = int(settings["MinPhaseSwitchSeconds"])
+        self.phaseSwitchDelaySeconds = max(
+            0, int(settings.get("PhaseSwitchDelaySeconds", 120))
+        )
 
         # Explicit EV limits. Wattpilot's AMA value can be higher than the
         # vehicle or installation limit, therefore it is only an upper bound.
@@ -148,6 +151,8 @@ class FroniusWattpilot (esESSService):
         self.lastConfirmedCarConnected = False
         self.effectiveCarConnected = False
         self.lastPhaseSwitchTime = 0
+        self.phaseSwitchCandidateMode = 0
+        self.phaseSwitchCandidateSince = 0
         self.lastOnOffTime = 0
         self.lastVarDump = 0
         self.chargingTime = 0
@@ -1796,6 +1801,7 @@ class FroniusWattpilot (esESSService):
             "PV allowance dropped below the three-phase threshold. "
             "Switching to 1-phase before applying battery-assist or stop logic."
         )
+        self.clearPhaseSwitchCandidate()
         self.lastPhaseSwitchTime = time.time()
         self.beginPhaseSwitchConfirmation(1)
         self.beginPowerTransitionGrace(
@@ -2178,6 +2184,29 @@ class FroniusWattpilot (esESSService):
             - time.time()
         )
 
+    def clearPhaseSwitchCandidate(self):
+        self.phaseSwitchCandidateMode = 0
+        self.phaseSwitchCandidateSince = 0
+
+    def getStablePhaseSwitchSeconds(self, targetPhaseMode):
+        if self.phaseSwitchDelaySeconds <= 0:
+            return self.phaseSwitchDelaySeconds
+
+        now = time.time()
+        if self.phaseSwitchCandidateMode != targetPhaseMode:
+            self.phaseSwitchCandidateMode = targetPhaseMode
+            self.phaseSwitchCandidateSince = now
+            self.publishServiceMessage(
+                self,
+                "PV threshold supports {0}-phase. Waiting {1}s before phase switching.".format(
+                    3 if targetPhaseMode == 2 else 1,
+                    self.phaseSwitchDelaySeconds,
+                ),
+            )
+            return 0
+
+        return now - self.phaseSwitchCandidateSince
+
     def adjustChargeForPvAllowance(self):
         desiredPhaseMode = self.desiredPhaseModeForPvAllowance()
         enteringPhaseMode = self.currentPhaseMode
@@ -2193,6 +2222,20 @@ class FroniusWattpilot (esESSService):
         # Phase-up is allowed only by real PV surplus and respects the phase
         # switch cooldown. While waiting, one-phase charging is capped at 16 A.
         if desiredPhaseMode == 2 and enteringPhaseMode != 2:
+            stableSeconds = self.getStablePhaseSwitchSeconds(2)
+            if stableSeconds < self.phaseSwitchDelaySeconds:
+                targetAmps = self.targetCurrentForPhase(1, self.allowance)
+                self.currentPhaseMode = 1
+                self.wattpilot.set_power(targetAmps)
+                d(
+                    self,
+                    "3-phase PV threshold reached; waiting for stable phase-up allowance ({0:.0f}/{1}s).".format(
+                        stableSeconds,
+                        self.phaseSwitchDelaySeconds,
+                    ),
+                )
+                return VrmEvChargerStatus.Charging
+
             cooldown = self.getPhaseSwitchCooldownSeconds()
             if cooldown <= 0:
                 targetAmps = self.targetCurrentForPhase(2, self.allowance)
@@ -2205,6 +2248,7 @@ class FroniusWattpilot (esESSService):
                 self.beginPowerTransitionGrace(2, targetAmps, "1-to-3 phase switch")
                 self.wattpilot.set_phases(2)
                 self.currentPhaseMode = 2
+                self.clearPhaseSwitchCandidate()
                 self.wattpilot.set_power(targetAmps)
                 return VrmEvChargerStatus.SwitchingTo3Phase
 
@@ -2220,6 +2264,7 @@ class FroniusWattpilot (esESSService):
             return VrmEvChargerStatus.Charging
 
         # No phase change; adjust current from PV allowance only.
+        self.clearPhaseSwitchCandidate()
         self.currentPhaseMode = desiredPhaseMode
         targetAmps = self.targetCurrentForPhase(desiredPhaseMode, self.allowance)
         i(

@@ -124,6 +124,9 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.maxCurrentPerPhase = 16
         controller.threePhasePvSurplusStartW = 4200
         controller.threePhasePvSurplusStopW = 4140
+        controller.phaseSwitchDelaySeconds = 0
+        controller.phaseSwitchCandidateMode = 0
+        controller.phaseSwitchCandidateSince = 0
         controller.minimumOnOffSeconds = 300
         controller.minimumPhaseSwitchSeconds = 300
         controller.lastOnOffTime = 0
@@ -365,6 +368,30 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(controller.currentPhaseMode, 1)
         controller.wattpilot.set_phases.assert_not_called()
         controller.wattpilot.set_power.assert_called_once_with(16)
+
+    def test_one_to_three_phase_switch_requires_stable_delay(self):
+        controller = self._controller()
+        controller.phaseSwitchDelaySeconds = 120
+        self._set_allowance(controller, 5000, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 1)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_called_once_with(16)
+
+        controller.wattpilot.set_power.reset_mock()
+        self._set_allowance(controller, 5000, 220)
+        with patch.object(self.fwp.time, "time", return_value=220):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo3Phase)
+        self.assertEqual(controller.currentPhaseMode, 2)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 0)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+        controller.wattpilot.set_power.assert_called_once_with(7)
 
     def test_real_pv_below_three_phase_threshold_keeps_one_phase(self):
         controller = self._controller()

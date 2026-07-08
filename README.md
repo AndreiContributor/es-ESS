@@ -392,7 +392,8 @@ FroniusWattpilot requires a few variables to be set in `/data/es-ESS/config.ini`
 | [Services]    | FroniusWattpilot | Flag, if the service should be enabled or not | Boolean | true |
 | [FroniusWattpilot]  | VRMInstanceID |  VRMInstanceId to be used on dbus | Integer  | 1001 |
 | [FroniusWattpilot]  | VRMInstanceID_OverheadRequest |  VRMInstanceId to be used on dbus for the FAKE-BMS | Integer  | 1002 |
-| [FroniusWattpilot]  | MinPhaseSwitchSeconds  | Seconds between Phase-Switching  | Integer| 300 |
+| [FroniusWattpilot]  | MinPhaseSwitchSeconds  | Minimum seconds between es-ESS phase-switching commands. Use `600` to match a 10 minute Wattpilot phase switch interval.  | Integer| 600 |
+| [FroniusWattpilot]  | PhaseSwitchDelaySeconds  | Seconds the 3-phase PV threshold must remain continuously available before es-ESS switches from 1 phase to 3 phases. Use `120` to match a 2 minute Wattpilot phase switch delay.  | Integer| 120 |
 | [FroniusWattpilot]  | MinOnOffSeconds | Seconds between starting/stopping charging | Integer | 600 |
 | [FroniusWattpilot]  | ResetChargedEnergyCounter |  Define when the counters *Charge Time* and *Charged Energy* in VRM should reset. Options: OnDisconnect, OnConnect| String  | OnDisconnect |
 | [FroniusWattpilot]  | Position | Position, where the Wattpilot is connected to. Options: 0:=ac-out, 1:=ac-in | Integer  | 0 |
@@ -408,10 +409,10 @@ FroniusWattpilot requires a few variables to be set in `/data/es-ESS/config.ini`
 In `Auto` / Wattpilot `ECO` mode, es-ESS follows this PV-only policy:
 
 - A new charge starts only after a fresh, distributor-assigned **real PV allowance** has continuously met the one-phase minimum for `MinOnOffSeconds`. It starts on one phase when that minimum is available.
-- A one-to-three-phase change requires a fresh real PV allowance at or above `ThreePhasePvSurplusStartW` (and the electrical three-phase minimum). Battery assist and raw-overhead data never start a charge and never cause a phase-up.
+- A one-to-three-phase change requires a fresh real PV allowance at or above `ThreePhasePvSurplusStartW` (and the electrical three-phase minimum) continuously for `PhaseSwitchDelaySeconds`. Battery assist and raw-overhead data never start a charge and never cause a phase-up.
 - Battery assist is optional and may only bridge a short cloud for an **already-running** charge. It is limited by its configured SOC, shortfall-power, duration, and PV-recovery settings; it cannot create a new charging session.
 - Auto/Eco stops when sustained grid import exceeds `GridImportStopW` for `GridImportStopSeconds`. With `AllowGridCharging=false`, Auto/Eco therefore does not intentionally use grid power.
-- `MinOnOffSeconds` applies to starts and stops, and `MinPhaseSwitchSeconds` applies to one-to-three-phase changes. A safety three-to-one-phase reduction is allowed immediately when PV no longer supports three phases but still supports one phase.
+- `MinOnOffSeconds` applies to starts and stops, `PhaseSwitchDelaySeconds` debounces one-to-three-phase changes, and `MinPhaseSwitchSeconds` sets the minimum interval between phase-switching commands. A safety three-to-one-phase reduction is allowed immediately when PV no longer supports three phases but still supports one phase.
 - Normal Wattpilot `Manual` mode remains under the user's control and is not changed by this Auto/Eco policy.
 
 ### Auto/Eco telemetry fail-safe
