@@ -8,8 +8,8 @@ description: Review es-ESS and update BACKLOG.md with safety-focused, architectu
 Review es-ESS as a Python service bundle for Victron Venus OS / GX devices.
 
 Start by inspecting `README.md`, `BACKLOG.md`, top-level service modules,
-`config.sample.ini`, `config.reference.ini`, `tests/`, and service scripts such
-as `install.sh`, `restart.sh`, `kill_me.sh`, `uninstall.sh`, and `service/run`.
+`config.sample.ini`, `tests/`, and service scripts such as `install.sh`,
+`restart.sh`, `kill_me.sh`, `uninstall.sh`, and `service/run`.
 
 Summarize the architecture before listing findings: runtime entry points, major
 services, external integrations, test strategy, and unclear deployment details.
