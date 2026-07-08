@@ -52,6 +52,8 @@ Key areas to inspect before changing behavior:
   `WattpilotRuntimeStatus.py`.
 - Wattpilot architecture boundaries and safety invariants:
   `docs/wattpilot-architecture.md`.
+- App-wide service inventory and integration boundaries:
+  `docs/service-inventory.md`.
 - Configuration documentation: `config.sample.ini` and `README.md`.
 - Hardware and external integrations: Victron Venus OS, Cerbo GX, D-Bus, MQTT,
   Fronius Wattpilot, Fronius meters, Shelly devices, PV inverter data, and
@@ -112,6 +114,10 @@ safety-sensitive.
   change.
 - Update `docs/wattpilot-architecture.md` whenever Wattpilot architecture,
   command ownership, safety invariants, or runtime-status contracts change.
+- Update `docs/service-inventory.md` whenever service initialization,
+  `[Services]` flags, service config sections, D-Bus/MQTT contracts, external
+  dependencies, grid-setpoint ownership, or active/dormant service status
+  changes.
 - If any of those files are changed, provide complete updated versions in the
   delivery package.
 - At the end of each task, check whether this file needs an update. If agent
