@@ -505,9 +505,9 @@ state is published on the Wattpilot runtime-status contract:
 
 - When the Wattpilot transport is unreachable, es-ESS sets the standard charger
   `/Connected` path to `0`, keeps `/Status` VRM-compatible as `Disconnected`,
-  and sets `/CustomName` to `Wattpilot not reachable` so the GX/VRM overview
-  tile has a visible outage hint even when it does not display
-  `/StatusLiteral`.
+  sets `/StatusLiteral` to `Wattpilot not accessible`, and sets
+  `/CustomName` to `Wattpilot not reachable` for detail views, D-Bus
+  inspection, MQTT consumers, and SolarOverheadDistributor messages.
 - D-Bus paths on `com.victronenergy.evcharger.*_FroniusWattpilot`:
   `/ControlState`, `/ControlStateLiteral`, `/PhaseMode`,
   `/PhaseModeLiteral`, `/BatteryAssistActive`, `/GridImportGuardActive`, and
@@ -1048,9 +1048,18 @@ The standard `/Status` path remains VRM-compatible and is not changed to
 force a custom Charging label. `/CustomName` is optional presentation metadata
 only; it is not used as a source of phase or runtime state. During a Wattpilot
 transport outage, `/CustomName` is temporarily set to
-`Wattpilot not reachable` because the standard GX/VRM overview tile may show
-only the enum text `Disconnected` instead of the more specific
-`/StatusLiteral`.
+`Wattpilot not reachable` for detail views, D-Bus inspection, MQTT consumers,
+and SolarOverheadDistributor messages.
+
+The standard Venus OS / GX EVCS overview tile has a display limitation: current
+gui-v2 sources render the tile title from a fixed translated `EVCS` label and
+the single-charger details from the standard `/Status`, `/Mode`,
+`/Session/Energy`, and `/Session/Time` values. That tile does not read the
+service `/CustomName` or `/StatusLiteral`, so a Wattpilot transport outage may
+still appear there as `EVCS`, `Disconnected`, and the selected mode such as
+`Auto`. Use the EV-charger detail view, D-Bus, MQTT runtime status, es-ESS
+service messages, or SolarOverheadDistributor messages for the specific
+`Wattpilot not accessible` / `Wattpilot not reachable` outage text.
 
 The following D-Bus values are published on the existing
 `com.victronenergy.evcharger.*_FroniusWattpilot` service:

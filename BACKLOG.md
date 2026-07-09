@@ -62,8 +62,9 @@ Current test strategy:
   Wattpilot PV-control policy, runtime status, grid guards, phase switching,
   stale telemetry, battery assist, charge-complete hold, and several Manual
   mode safety cases.
-- Remaining gaps are around writable D-Bus command boundaries, dashboard-visible
-  Wattpilot transport outage status, WebSocket reconnect lifecycle behavior,
+- Remaining gaps are around writable D-Bus command boundaries, Venus EVCS
+  session energy/time compatibility, user-visible Wattpilot transport-outage
+  presentation, WebSocket reconnect lifecycle behavior,
   broader configuration migration compatibility, CI, and lifecycle shell
   scripts.
 
@@ -284,8 +285,9 @@ Completion note:
   `/Status=Disconnected`, and `/StatusLiteral="Wattpilot not accessible"` when
   the Wattpilot transport is unavailable, and restored `/Connected=1` on
   recovery.
-- Added a visible GX/VRM overview hint by setting `/CustomName` and the
-  SolarOverheadDistributor Wattpilot custom-name topic to
+- Added a visible naming hint for EV-charger detail views, D-Bus inspection,
+  MQTT consumers, and SolarOverheadDistributor messages by setting
+  `/CustomName` and the SolarOverheadDistributor Wattpilot custom-name topic to
   `Wattpilot not reachable` during transport outages, then restoring the normal
   Wattpilot name on recovery.
 - Published one outage service message and one recovery service message per
@@ -301,6 +303,26 @@ Completion note:
   observation, README, tests, and backlog; no Manual mode, Auto/Eco charge
   policy, reconnect-loop ownership, configuration defaults, D-Bus path names,
   or MQTT topic names were changed.
+
+### Completed 2026-07-09 - Investigate Venus EVCS Overview Tile Outage Text
+
+Completion note:
+
+- Investigated the current upstream Victron `gui-v2` EVCS overview tile source.
+- Confirmed `components/widgets/EvcsWidget.qml` renders the overview tile title
+  from a fixed translated `EVCS` label and reads single-charger detail text from
+  standard `/Status`, `/Mode`, `/Session/Energy`, and `/Session/Time` values.
+- Confirmed the overview tile does not read the EV-charger service
+  `/CustomName` or `/StatusLiteral`, so there is no safe es-ESS-only
+  tile-title path to show `Wattpilot not reachable` there without changing
+  truthful `/Status` or `/Mode` values or patching Venus GUI behavior.
+- Updated README to document the Venus/GX overview-tile limitation and to point
+  users to the EV-charger detail view, D-Bus, MQTT runtime status, es-ESS
+  service messages, and SolarOverheadDistributor messages for specific
+  Wattpilot transport-outage text.
+- Kept the change documentation/backlog-only; no production code, tests,
+  configuration defaults, D-Bus path names, MQTT topic names, Manual mode, or
+  Auto/Eco charging behavior were changed.
 
 ## Backlog
 
@@ -499,60 +521,53 @@ Done criteria:
 - Existing Wattpilot runtime-status tests pass.
 - Manual outage/recovery validation succeeds without duplicate worker threads.
 
-### P3 - Investigate Venus EVCS Overview Tile Outage Text
+### P2 - Publish Venus EVCS Session Energy And Time Paths
 
 Problem:
 
-The Wattpilot transport-outage D-Bus state is now published correctly, but the
-standard Venus/GX overview tile still renders the cached/user tile title
-`EVCS`, the standard enum text `Disconnected`, and the last selected mode
-`Auto`. The tile does not show `/CustomName="Wattpilot not reachable"` or
-`/StatusLiteral="Wattpilot not accessible"`, so the overview does not make the
-difference between "car disconnected" and "wallbox unreachable" obvious.
+The standard Venus OS / GX EVCS overview tile can show `--kWh` for the
+FroniusWattpilot service even while live EV power is displayed. Current
+`gui-v2` sources read the overview tile's session energy and timer from
+`/Session/Energy` and `/Session/Time`, but es-ESS currently publishes the same
+concepts only on older/existing paths.
 
 Evidence:
 
-- Live GX validation during a Wattpilot outage showed:
-  `/CustomName = 'Wattpilot not reachable'`,
-  `/Connected = 0`,
-  `/Status = 0`,
-  `/StatusLiteral = 'Wattpilot not accessible'`,
-  `/Mode = 1`, and `/ModeLiteral = 'Auto'`.
-- The Venus overview tile still showed `EVCS`, `0W`, `Disconnected`, and
-  `Auto`.
-- SolarOverheadDistributor service messages did update to
-  `Assigned 0W to Wattpilot not reachable`, proving es-ESS and the distributor
-  received the new custom name.
-- `Disconnected` maps to the standard `VrmEvChargerStatus.Disconnected` enum
-  and `Auto` maps to the standard `VrmEvChargerControlMode.Auto` enum. Changing
-  either just for display would misrepresent the underlying state.
+- Upstream Victron `gui-v2` `components/widgets/EvcsWidget.qml` reads
+  `serviceUid + "/Session/Energy"` for the kWh value and
+  `serviceUid + "/Session/Time"` for the charging-time value.
+- `FroniusWattpilot.py` registers and publishes `/Ac/Energy/Forward`.
+- `FroniusWattpilot.py` registers and publishes `/ChargingTime`.
+- `FroniusWattpilot.py` does not currently register or publish
+  `/Session/Energy` or `/Session/Time`.
+- Live GX observation showed the EVCS tile displaying `--kWh` while EVCS power
+  was present.
 
 Implementation:
 
-- Investigate which Venus OS / GUI path or settings value supplies the EVCS
-  overview tile title and whether it can be safely influenced by an external
-  EV-charger D-Bus service.
-- Check `com.victronenergy.settings` and the Venus GUI/VRM naming behavior for
-  device aliases, cached names, or EV-charger-specific display-name paths.
-- Do not change `/Mode` away from Auto during transport outage unless product
-  intent explicitly changes; selected Auto mode can remain true even while the
-  wallbox is unreachable.
-- Do not map transport outage to an electrical fault status unless the team
-  explicitly decides a communication outage should be user-visible as a charger
-  fault.
-- If a safe tile-title path exists, update it only during confirmed transport
-  outage and restore the prior user-configured value on recovery.
-- If no safe path exists, document that the overview tile is limited to
-  standard enum text and that detailed outage text is available through D-Bus,
-  service messages, MQTT runtime status, and SolarOverheadDistributor messages.
+- Add `/Session/Energy` and `/Session/Time` to the FroniusWattpilot D-Bus
+  service during initialization.
+- Keep `/Ac/Energy/Forward` and `/ChargingTime` unchanged for existing
+  consumers.
+- When Wattpilot session energy is valid and published to `/Ac/Energy/Forward`,
+  publish the same kWh value to `/Session/Energy`.
+- When energy is reset to `0.0` by the existing reset policy, reset
+  `/Session/Energy` at the same time.
+- Publish `/Session/Time` from the same `chargingTime` value currently used for
+  `/ChargingTime`.
+- Do not change Wattpilot commands, Auto/Eco policy, phase switching, grid
+  guards, Manual mode, MQTT topics, or configuration defaults.
 
 Files to change:
 
-- Possibly `FroniusWattpilot.py`
-- Possibly `WattpilotRuntimeStatus.py`
-- Possibly `README.md`
-- Possibly `BACKLOG.md`
-- Tests under `tests/` if behavior changes
+- `FroniusWattpilot.py`
+- `tests/`
+- `README.md`
+- `BACKLOG.md`
+- Possibly `docs/service-inventory.md` if the EV-charger D-Bus contract summary
+  is expanded.
+- Possibly `docs/wattpilot-architecture.md` if the public D-Bus contract is
+  updated there.
 
 Files to add:
 
@@ -560,55 +575,183 @@ Files to add:
 
 Tests:
 
-- If a writable/display-name path is used, add hardware-free tests proving the
-  path is set on outage and restored on recovery.
-- Keep tests proving `/Status`, `/StatusLiteral`, `/CustomName`, and
-  `/Connected` publish the current outage contract.
-- Run focused Wattpilot runtime-status/startup tests and the full unittest
-  suite.
+- Add or update hardware-free tests proving `/Session/Energy` and
+  `/Session/Time` are registered at D-Bus service initialization.
+- Add tests proving valid Wattpilot `energyCounterSinceStart` publishes the
+  same kWh value to `/Ac/Energy/Forward` and `/Session/Energy`.
+- Add tests proving reset behavior clears both `/Ac/Energy/Forward` and
+  `/Session/Energy`.
+- Add tests proving `chargingTime` publishes to both `/ChargingTime` and
+  `/Session/Time`.
+- Run focused Wattpilot startup/session-path tests.
+- Run `python -m py_compile FroniusWattpilot.py`.
+- Run the full hardware-free unittest suite.
+
+Expected coverage:
+
+- The Venus/GX EVCS overview tile can display session kWh and session time for
+  the es-ESS FroniusWattpilot EV-charger service.
+- Existing D-Bus consumers that read `/Ac/Energy/Forward` or `/ChargingTime`
+  continue to work.
+- Charging behavior remains unchanged.
 
 Manual validation:
 
-- Required on the GX/Venus OS overview screen because this is UI-rendering
-  behavior outside es-ESS.
+- Required on the GX/Venus OS overview screen because this fixes a
+  GUI-rendered value.
 
 Manual test steps:
 
-1. Put Wattpilot in a normal reachable state and record the current EVCS tile
-   title and D-Bus naming values.
-2. Trigger a Wattpilot transport outage.
-3. Confirm the candidate Venus display-name path changes, if one is used.
-4. Confirm the overview tile changes visibly without changing `/Mode` or
-   pretending there is an electrical charger fault.
-5. Restore Wattpilot transport.
-6. Confirm the tile and D-Bus/service-message values recover and any prior
-   user-configured title is restored.
+1. Start es-ESS with Wattpilot enabled and a reachable Wattpilot.
+2. Start an EV charge and confirm `/Ac/Energy/Forward` and `/Session/Energy`
+   both report the current session kWh.
+3. Confirm `/ChargingTime` and `/Session/Time` both report the session timer.
+4. Confirm the Venus/GX EVCS overview tile no longer shows `--kWh` once
+   Wattpilot energy telemetry is available.
+5. Disconnect/reconnect according to the configured `ResetChargedEnergyCounter`
+   behavior and confirm both energy paths reset consistently.
 
 Risks and dependencies:
 
-- Venus OS may cache tile labels or use user settings outside the service's
-  D-Bus contract.
-- Writing a user-configured device alias could be surprising; preserve and
-  restore any previous value if this path is used.
-- Misusing `/Status` or `/Mode` for display would make automation and VRM data
-  less truthful.
+- Low implementation risk because this is additive D-Bus publication.
+- Venus GUI behavior is outside es-ESS and must be validated on a live GX or
+  representative Venus OS UI.
+- Avoid changing the existing reset policy while adding the compatibility
+  paths.
 
 Open questions:
 
-- Which exact Venus OS component renders the EVCS overview tile?
-- Is the `EVCS` label a user alias, a VRM cached name, or a hard-coded
-  EV-charger tile label?
-- Is there a safe, supported D-Bus/settings path for a service to expose a
-  temporary transport-outage title?
+- Should README document `/Session/Energy` and `/Session/Time` as compatibility
+  aliases or as part of the public Wattpilot D-Bus contract?
 
 Done criteria:
 
-- The tile-title source is identified or proven not safely controllable from
-  es-ESS.
-- Any implemented change preserves the truthful D-Bus contract for `/Status`
-  and `/Mode`.
-- Live GX validation documents whether the overview tile can show a transport
-  outage distinctly from a disconnected vehicle.
+- `/Session/Energy` and `/Session/Time` are published with values matching the
+  existing energy/time paths.
+- Existing session reset behavior is preserved.
+- Hardware-free tests and full unittest suite pass.
+- Live GX validation confirms the EVCS overview tile displays session kWh when
+  Wattpilot telemetry is available.
+
+### P3 - Add A Supported User-Visible Wattpilot Unavailable Indicator
+
+Problem:
+
+es-ESS now publishes truthful Wattpilot transport-outage state on D-Bus, MQTT,
+service messages, and SolarOverheadDistributor messages, but the standard Venus
+OS / GX EVCS overview tile can still show only generic `EVCS`, `Disconnected`,
+and the selected mode such as `Auto`. Users need an obvious supported way to see
+that the Wattpilot wallbox itself is unreachable, not merely that the vehicle is
+disconnected.
+
+Evidence:
+
+- Live GX validation during a Wattpilot outage showed
+  `/CustomName = 'Wattpilot not reachable'`,
+  `/StatusLiteral = 'Wattpilot not accessible'`, `/Connected = 0`,
+  `/Status = Disconnected`, and `/ModeLiteral = 'Auto'`.
+- The completed Venus EVCS overview-tile investigation confirmed current
+  upstream `gui-v2` `EvcsWidget.qml` does not read `/CustomName` or
+  `/StatusLiteral` for the overview tile.
+- Changing `/Status` or `/Mode` only to force overview text would misrepresent
+  the charger state to automation and VRM consumers.
+- Existing es-ESS service messages and MQTT runtime status contain the specific
+  outage text but are not as obvious as the standard overview tile.
+
+Implementation:
+
+- Investigate supported Venus OS / GX surfaces for a communication outage that
+  do not misuse the EV-charger `/Status` or `/Mode` contract.
+- Candidate approaches include:
+  - a small Cerbo/GX dashboard extension or custom overview widget that reads
+    `/StatusLiteral`, `/CustomName`, or the Wattpilot runtime-status contract;
+  - an upstream `gui-v2` issue or patch to show `/StatusLiteral` for EVCS
+    transport outages when present;
+  - a truthful notification/alarm path if Venus OS has a supported D-Bus
+    contract for service communication alarms;
+  - improved retained MQTT status intended for external dashboards.
+- Keep the existing standard EV-charger D-Bus values truthful:
+  `/Status=Disconnected` and `/Mode=Auto` may both remain correct during a
+  transport outage.
+- Do not mark the charger as an electrical fault unless the team explicitly
+  decides that communication loss should be represented as a charger fault and
+  tests the downstream behavior.
+- Prefer additive visibility over control-policy changes.
+
+Files to change:
+
+- Possibly `README.md`
+- Possibly `docs/service-inventory.md`
+- Possibly `docs/wattpilot-architecture.md`
+- Possibly `FroniusWattpilot.py` and tests if a supported D-Bus notification or
+  status surface is added.
+- Possibly a new dashboard/extension artifact if that route is chosen.
+- `BACKLOG.md`
+
+Files to add:
+
+- Possibly a small GX/Cerbo extension or documentation page, depending on the
+  selected approach.
+
+Tests:
+
+- If production code publishes a new notification/status path, add
+  hardware-free tests proving it appears on outage and clears on recovery.
+- Keep existing transport-outage tests proving `/Connected`, `/Status`,
+  `/StatusLiteral`, `/CustomName`, and service-message behavior.
+- Run focused Wattpilot runtime-status/startup tests and the full unittest
+  suite for any production-code change.
+- If a dashboard/extension is added, include manual or automated rendering
+  checks appropriate to that artifact.
+
+Expected coverage:
+
+- A user can clearly identify "Wattpilot not accessible" from a supported UI,
+  notification, dashboard, or documented MQTT/D-Bus surface.
+- The standard EV-charger state remains truthful for automation and VRM.
+- No Wattpilot control behavior changes.
+
+Manual validation:
+
+- Required on a GX/Venus OS system because the desired result is user-visible
+  outage presentation.
+
+Manual test steps:
+
+1. Start with Wattpilot reachable and confirm the selected visible indicator is
+   normal or absent.
+2. Trigger a Wattpilot transport outage.
+3. Confirm the selected indicator clearly says the Wattpilot/wallbox is not
+   reachable.
+4. Confirm `/Status` and `/Mode` remain truthful and compatible.
+5. Restore Wattpilot transport and confirm the indicator clears.
+6. Repeat outage/recovery to confirm no stale alarms or duplicate messages.
+
+Risks and dependencies:
+
+- Venus OS may not offer a supported alarm/notification path for third-party
+  EV-charger communication outages.
+- A custom dashboard extension may not affect the standard overview tile.
+- Upstream `gui-v2` changes would depend on Victron acceptance and the Venus OS
+  release cycle.
+- Misusing fault/status enums for display could confuse automation, VRM, and
+  dashboards.
+
+Open questions:
+
+- Is a Venus OS service communication alarm available and appropriate for an
+  external EV-charger service?
+- Is a local Cerbo/GX extension acceptable, or should this be proposed upstream
+  to Victron `gui-v2`?
+- Should the indicator be always-on in a custom dashboard, or only appear
+  during transport outage?
+
+Done criteria:
+
+- A supported visibility route is selected and documented.
+- If implemented in es-ESS, outage and recovery behavior is covered by tests.
+- Live GX validation confirms the user can clearly see Wattpilot transport
+  outage without misleading `/Status` or `/Mode`.
 
 ### P2 - Extract Wattpilot Telemetry And Allowance Evaluation Helpers
 
@@ -993,18 +1136,20 @@ Wattpilot behavior.
 
 1. P1 Wattpilot reconnect loop, because recovery reliability affects live
    safety/status behavior but should be isolated to the client lifecycle.
-2. P3 Venus EVCS overview tile outage-text investigation, because live testing
-   proved the D-Bus outage contract works but the Venus tile ignores
-   `/CustomName` and `/StatusLiteral`.
-3. P0 Manual command-boundary hardening, because it protects the most important
+2. P2 Venus EVCS session energy/time paths, because it is additive D-Bus UI
+   compatibility work and does not change charging control behavior.
+3. P3 supported Wattpilot unavailable indicator, because it improves outage
+   visibility without changing charging control behavior if a supported surface
+   is available.
+4. P0 Manual command-boundary hardening, because it protects the most important
    product invariant once the test base is stronger.
-4. P2 telemetry and allowance helper extraction, because it is the first
+5. P2 telemetry and allowance helper extraction, because it is the first
    low-side-effect Wattpilot control extraction.
-5. P2 grid-guard and battery-assist helper extraction, because it is more
+6. P2 grid-guard and battery-assist helper extraction, because it is more
    safety-sensitive and should follow characterization coverage.
-6. P2 phase-switching helper extraction, because phase switching is
+7. P2 phase-switching helper extraction, because phase switching is
    user-visible and high-impact.
-7. P3 state-machine refactor, because it needs the previous behavior, config,
+8. P3 state-machine refactor, because it needs the previous behavior, config,
     docs, and helper boundaries in place before touching overall control flow.
 
 ## Verification Plan
