@@ -22,7 +22,6 @@ import logging
 import base64
 
 from enum import Enum, auto
-from time import sleep
 from types import SimpleNamespace
 
 import Helper
@@ -380,19 +379,42 @@ class Wattpilot(object):
 
         return ret
     def connect(self):
-        self._carStateReady = False
-        self._wst = threading.Thread(target=self._wsapp.run_forever)
-        self._wst.daemon = True
-        self._wst.start()
+        with self._connection_lock:
+            if self._wst is not None and self._wst.is_alive():
+                d(self, "Wattpilot WebSocket worker already running.")
+                return
+
+            self._carStateReady = False
+            self._stop_reconnect.clear()
+            self._wst = threading.Thread(target=self.__connection_worker)
+            self._wst.daemon = True
+            self._wst.start()
+
         self.__call_event_handler(Event.WP_CONNECT)
         i(self, "Wattpilot WebSocket worker started")
 
     def disconnect(self, auto_reconnect=False):
+        self._auto_reconnect = auto_reconnect
+        if not auto_reconnect:
+            self._stop_reconnect.set()
+
         self._wsapp.close()
         self._connected=False
-        self._auto_reconnect = auto_reconnect
         self.__call_event_handler(Event.WP_DISCONNECT)
         i(self, "Wattpilot disconnected")
+
+    def __connection_worker(self):
+        while not self._stop_reconnect.is_set():
+            try:
+                self._wsapp.run_forever()
+            except Exception as ex:
+                c(self, "Exception in Wattpilot WebSocket worker.", exc_info=ex)
+
+            if not self._auto_reconnect or self._stop_reconnect.is_set():
+                break
+
+            if self._stop_reconnect.wait(self._reconnect_interval):
+                break
 
     # Wattpilot Event Handling
 
@@ -676,9 +698,6 @@ class Wattpilot(object):
     def __on_close(self,wsapp,code,msg):
         self._connected=False
         self.__call_event_handler(Event.WS_CLOSE, wsapp, code, msg)
-        if (self._auto_reconnect):
-            sleep(self._reconnect_interval)
-            self._wsapp.run_forever()
 
     def __on_message(self, wsapp, message):
         ## called whenever a message through websocket is received
@@ -763,7 +782,9 @@ class Wattpilot(object):
         self._awattarCurrentPrice = 0.0
         self._startState = None
 
-        self._wst=threading.Thread()
+        self._wst=None
+        self._connection_lock = threading.Lock()
+        self._stop_reconnect = threading.Event()
 
         websocket.setdefaulttimeout(self._websocket_default_timeout)
         self._wsapp = websocket.WebSocketApp(
