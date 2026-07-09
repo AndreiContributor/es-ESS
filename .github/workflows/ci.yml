@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  tests:
+    name: Python 3.12 hardware-free checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Syntax-check Python files
+        run: python -m compileall -q .
+
+      - name: Validate config sample contract
+        run: python -m unittest tests.test_config_contract
+
+      - name: Run hardware-free regression tests
+        run: python -m unittest discover -s tests

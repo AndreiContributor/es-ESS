@@ -48,6 +48,12 @@ That note documents the current module boundaries, command side-effect
 ownership, runtime-status contract, and safety invariants that future
 implementation tasks must preserve and update when they change.
 
+GitHub Actions CI is defined in
+[.github/workflows/ci.yml](.github/workflows/ci.yml). It runs on pull requests
+and on pushes to `main`, using Python 3.12 to syntax-check the repository,
+validate the `config.sample.ini` contract, and run the hardware-free unittest
+suite.
+
 # Setup
 Your system needs to match the following requirements in order to use es-ESS:
 - Be an ESS
