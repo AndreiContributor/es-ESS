@@ -385,7 +385,7 @@ class Wattpilot(object):
         self._wst.daemon = True
         self._wst.start()
         self.__call_event_handler(Event.WP_CONNECT)
-        i(self, "Wattpilot connected")
+        i(self, "Wattpilot WebSocket worker started")
 
     def disconnect(self, auto_reconnect=False):
         self._wsapp.close()
@@ -739,6 +739,7 @@ class Wattpilot(object):
         self._amps3=None
         self._ampLimit=None
         self._startingPower=None
+        self._energyCounterSinceStart=None
         self._power1=None
         self._power2=None
         self._power3=None

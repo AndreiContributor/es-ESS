@@ -388,14 +388,23 @@ class FroniusWattpilot (esESSService):
         self.wattpilot._reconnect_interval = 30
         self.wattpilot.connect()
         
-        #Wait for some information to arrive. 
-        Helper.waitTimeout(lambda: self.wattpilot.connected, 30) or e(self, "Unable to connect to wattpilot within 30 seconds...")
+        #Wait for some information to arrive.
+        if not Helper.waitTimeout(lambda: self.wattpilot.connected, 30):
+            w(
+                self,
+                "Wattpilot connection not ready during startup; "
+                "runtime status will stay deferred until telemetry arrives."
+            )
         Helper.waitTimeout(lambda: self.wattpilot.power1 is not None, 30)
         Helper.waitTimeout(lambda: self.wattpilot.power2 is not None, 30)
         Helper.waitTimeout(lambda: self.wattpilot.power3 is not None, 30)
 
         if not Helper.waitTimeout(lambda: self.wattpilot.carStateReady, 30):
-           e(self, "Wattpilot car state not available after 30 seconds")
+           w(
+               self,
+               "Wattpilot car state not ready during startup; "
+               "runtime status will stay deferred until telemetry arrives."
+           )
 
         Helper.waitTimeout(lambda: self.wattpilot.mode is not None, 30)
 
