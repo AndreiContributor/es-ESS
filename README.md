@@ -515,6 +515,11 @@ state is published on the Wattpilot runtime-status contract:
   sets `/StatusLiteral` to `Wattpilot not accessible`, and sets
   `/CustomName` to `Wattpilot not reachable` for detail views, D-Bus
   inspection, MQTT consumers, and SolarOverheadDistributor messages.
+- The supported es-ESS visibility route for a wallbox transport outage is the
+  EV-charger detail view, D-Bus, retained MQTT runtime status, es-ESS service
+  messages, or SolarOverheadDistributor messages. es-ESS does not publish a
+  synthetic charger fault or change `/Mode` only to force text into the standard
+  EVCS overview tile.
 - D-Bus paths on `com.victronenergy.evcharger.*_FroniusWattpilot`:
   `/ControlState`, `/ControlStateLiteral`, `/PhaseMode`,
   `/PhaseModeLiteral`, `/BatteryAssistActive`, `/GridImportGuardActive`, and
@@ -1069,7 +1074,9 @@ service `/CustomName` or `/StatusLiteral`, so a Wattpilot transport outage may
 still appear there as `EVCS`, `Disconnected`, and the selected mode such as
 `Auto`. Use the EV-charger detail view, D-Bus, MQTT runtime status, es-ESS
 service messages, or SolarOverheadDistributor messages for the specific
-`Wattpilot not accessible` / `Wattpilot not reachable` outage text.
+`Wattpilot not accessible` / `Wattpilot not reachable` outage text. This is the
+supported route in es-ESS until a maintained GX dashboard extension or upstream
+Victron `gui-v2` change is selected.
 
 For EVCS overview compatibility, es-ESS publishes Wattpilot session energy and
 time on both the older project paths and the current Venus session paths:

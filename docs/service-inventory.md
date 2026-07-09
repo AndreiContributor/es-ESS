@@ -75,6 +75,12 @@ Several services create Victron-compatible D-Bus services through
   `WattpilotRuntimeStatus`.
 - Dormant DC systems: `MqttDC`.
 
+For a Fronius Wattpilot transport outage, the supported es-ESS user-visible
+surfaces are the EV-charger detail paths (`/StatusLiteral`, `/CustomName`),
+the Wattpilot runtime-status D-Bus/MQTT contract, es-ESS service messages, and
+SolarOverheadDistributor consumer messages. The standard Venus/GX EVCS overview
+tile is not forced with synthetic `/Status` or `/Mode` values.
+
 When changing any published D-Bus path, check README/config expectations,
 runtime-status consumers, and VRM/Cerbo compatibility.
 
