@@ -50,7 +50,8 @@ Current Wattpilot state:
 - Configuration migration currently performs unconditional section creation for
   some legacy upgrades, which can break older user configs that already contain
   those sections.
-- There is no `.github/workflows` CI configuration in this checkout.
+- A GitHub Actions CI workflow now runs hardware-free Python 3.12 syntax,
+  config-contract, and unittest checks on pull requests and pushes to `main`.
 - Tests cover many Wattpilot control decisions and now include a config
   contract test for undocumented or unknown Wattpilot config keys.
 
@@ -67,7 +68,8 @@ Current test strategy:
 
 Unclear deployment details:
 
-- Exact supported Venus OS / GX Python versions are not stated in CI or README.
+- The checked GX/Venus OS device reported Python 3.12.13. The oldest supported
+  Venus OS / GX Python version is still not explicitly stated in README.
 - Available live-device, MQTT, D-Bus, or hardware-in-the-loop validation is not
   known.
 - Firmware behavior across Wattpilot revisions is not described beyond the
@@ -101,7 +103,8 @@ Assumptions:
 
 Open questions:
 
-- Which Venus OS / GX versions and Python versions must CI target?
+- Which Venus OS / GX versions, beyond the checked Python 3.12.13 device, must
+  CI target?
 - Should VRM/D-Bus writes to `/Mode` remain allowed to switch between Auto and
   Manual, while `/SetCurrent` and `/StartStop` are blocked whenever Wattpilot is
   already in Manual?
@@ -230,6 +233,21 @@ Completion note:
 - Reused the existing `tests/test_eco_pv_policy.py` controller fixture so the
   tests describe observable controller decisions and Wattpilot command calls.
 - Kept the change tests/backlog-only; no production code, configuration
+  defaults, D-Bus paths, MQTT topics, architecture boundaries, or charging
+  behavior were changed.
+
+### Completed 2026-07-09 - Add Automated Checks With GitHub Actions
+
+Completion note:
+
+- Added `.github/workflows/ci.yml`.
+- Configured CI to run on pull requests and pushes to `main`.
+- Set CI to Python 3.12, matching the checked GX/Venus OS device Python
+  3.12.13 runtime.
+- Added hardware-free checks for repository Python syntax via `compileall`,
+  the `config.sample.ini` contract test, and the full unittest suite.
+- Documented the workflow path and triggers in README Developer Notes.
+- Kept the change CI/docs/backlog-only; no production code, configuration
   defaults, D-Bus paths, MQTT topics, architecture boundaries, or charging
   behavior were changed.
 
@@ -548,81 +566,6 @@ Done criteria:
 - Reconnect loop tests pass.
 - Existing Wattpilot runtime-status tests pass.
 - Manual outage/recovery validation succeeds without duplicate worker threads.
-
-### P1 - Add Automated Checks With GitHub Actions
-
-Goal:
-
-Prevent regressions from reaching `main`.
-
-Problem:
-
-There is no CI workflow in this checkout, so syntax errors, failing regression
-tests, and config/sample drift can land unnoticed.
-
-Evidence:
-
-- No `.github/workflows` directory exists in the current file list.
-- Tests are present under `tests/` and can be run without hardware stubs.
-- The planned config contract test needs CI enforcement.
-
-Implementation:
-
-- Add a workflow triggered by pull requests and pushes to `main`.
-- Run Python syntax checks for changed Python files or all repository Python
-  files.
-- Run the complete unittest suite.
-- Validate `config.sample.ini` through the config contract test.
-- Ensure CI expects only `config.sample.ini`.
-- Use and document a Python version compatible with the supported Venus OS
-  target.
-- Optionally add a README CI badge.
-- Optionally upload unittest output as a failure artifact.
-
-Files to change:
-
-- `.github/workflows/ci.yml`
-- `README.md` if adding a badge or documenting CI Python version
-
-Files to add:
-
-- `.github/workflows/ci.yml`
-
-Tests:
-
-- Run the workflow locally where possible with equivalent commands.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- A pull request cannot be merged with broken syntax, failing tests, or invalid
-  sample configuration.
-
-Manual validation:
-
-- Required once pushed to GitHub.
-
-Manual test steps:
-
-1. Push a branch with the workflow.
-2. Confirm PR and push triggers run.
-3. Confirm syntax checks, unittest, and config contract checks pass.
-4. Temporarily test a failing branch or local equivalent to ensure failures are
-   visible.
-
-Risks and dependencies:
-
-- CI Python version must match the oldest supported runtime closely enough to
-  avoid accepting syntax unsupported on Venus OS.
-
-Open questions:
-
-- Which exact Python version should CI use for the supported GX/Venus OS target?
-
-Done criteria:
-
-- GitHub Actions workflow is present and passing.
-- CI validates `config.sample.ini` as the single config artifact.
 
 ### P2 - Extract Wattpilot Telemetry And Allowance Evaluation Helpers
 
@@ -1005,20 +948,19 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P1 CI, because it should run the config contract and existing behavior tests.
-2. P1 Wattpilot startup deferred-state/logging cleanup, because it reduces
+1. P1 Wattpilot startup deferred-state/logging cleanup, because it reduces
    confusing production diagnostics without changing charge policy.
-3. P1 Wattpilot reconnect loop, because recovery reliability affects live
+2. P1 Wattpilot reconnect loop, because recovery reliability affects live
    safety/status behavior but should be isolated to the client lifecycle.
-4. P0 Manual command-boundary hardening, because it protects the most important
+3. P0 Manual command-boundary hardening, because it protects the most important
    product invariant once the test base is stronger.
-5. P2 telemetry and allowance helper extraction, because it is the first
+4. P2 telemetry and allowance helper extraction, because it is the first
    low-side-effect Wattpilot control extraction.
-6. P2 grid-guard and battery-assist helper extraction, because it is more
+5. P2 grid-guard and battery-assist helper extraction, because it is more
    safety-sensitive and should follow characterization coverage.
-7. P2 phase-switching helper extraction, because phase switching is
+6. P2 phase-switching helper extraction, because phase switching is
    user-visible and high-impact.
-8. P3 state-machine refactor, because it needs the previous behavior, config,
+7. P3 state-machine refactor, because it needs the previous behavior, config,
     docs, and helper boundaries in place before touching overall control flow.
 
 ## Verification Plan
