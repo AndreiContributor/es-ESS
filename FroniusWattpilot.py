@@ -155,6 +155,8 @@ class FroniusWattpilot (esESSService):
         self.lastConfirmedCarConnected = False
         self.effectiveCarConnected = False
         self.lastPhaseSwitchTime = 0
+        self.lastThreePhaseConfirmedAt = 0
+        self.phaseDownCandidateSince = 0
         self.phaseSwitchCandidateMode = 0
         self.phaseSwitchCandidateSince = 0
         self.lastOnOffTime = 0
@@ -1481,6 +1483,10 @@ class FroniusWattpilot (esESSService):
                     3 if pending == 2 else 1
                 )
             )
+            if pending == 2:
+                self.lastThreePhaseConfirmedAt = time.time()
+            else:
+                self.phaseDownCandidateSince = 0
             self.clearPendingPhaseSwitch()
             return None
 
@@ -1830,6 +1836,7 @@ class FroniusWattpilot (esESSService):
         # A valid 3φ-sized allocation always wins over a possibly stale raw
         # overhead subscription.
         if assignedAllowance >= threePhaseThreshold:
+            self.phaseDownCandidateSince = 0
             d(
                 self,
                 "Keeping 3-phase: assigned allowance {0:.0f}W is above "
@@ -1841,6 +1848,7 @@ class FroniusWattpilot (esESSService):
 
         rawOverhead = self.rawPvOverheadW()
         if rawOverhead is None:
+            self.phaseDownCandidateSince = 0
             d(
                 self,
                 "Raw PV overhead is unavailable; not phase-down switching "
@@ -1850,6 +1858,7 @@ class FroniusWattpilot (esESSService):
 
         onePhaseMinimum = self.minimumChargePower()
         if rawOverhead < onePhaseMinimum:
+            self.phaseDownCandidateSince = 0
             d(
                 self,
                 "Raw PV overhead {0:.0f}W is below the one-phase minimum "
@@ -1859,7 +1868,49 @@ class FroniusWattpilot (esESSService):
             )
             return False
 
-        return rawOverhead < threePhaseThreshold
+        if rawOverhead >= threePhaseThreshold:
+            self.phaseDownCandidateSince = 0
+            return False
+
+        if self.phaseDownSettleGraceActive():
+            return False
+
+        self.phaseDownCandidateSince = 0
+        return True
+
+    def phaseDownSettleGraceActive(self):
+        """Debounce a low-PV sample just after a successful phase-up.
+
+        A 1-to-3 switch causes short-lived ESS/battery telemetry movement. If
+        the first refreshed distributor sample briefly gates the three-phase
+        request to 0 W, hold the confirmed 3-phase state for the normal
+        allowance-drop grace. The grid-import guard runs before this helper
+        and can still stop Auto/Eco charging for sustained import.
+        """
+        now = time.time()
+        confirmedAt = getattr(self, "lastThreePhaseConfirmedAt", 0)
+        candidateSince = getattr(self, "phaseDownCandidateSince", 0)
+        phaseUpStillSettling = (
+            confirmedAt > 0
+            and now - confirmedAt < self.startupGraceSeconds
+        )
+
+        if not phaseUpStillSettling and candidateSince == 0:
+            return False
+
+        if candidateSince == 0:
+            self.phaseDownCandidateSince = now
+            self.publishServiceMessage(
+                self,
+                "PV allowance dipped after a confirmed 3-phase switch. "
+                "Waiting up to {0}s for ESS telemetry to settle before "
+                "falling back to 1-phase.".format(
+                    self.allowanceDropGraceSeconds
+                )
+            )
+            return True
+
+        return now - candidateSince < self.allowanceDropGraceSeconds
 
     def switchToOnePhaseForPvDip(self):
         if not self.allowanceIsFresh():
@@ -1881,6 +1932,7 @@ class FroniusWattpilot (esESSService):
             "PV allowance dropped below the three-phase threshold. "
             "Switching to 1-phase before applying battery-assist or stop logic."
         )
+        self.phaseDownCandidateSince = 0
         self.clearPhaseSwitchCandidate()
         self.lastPhaseSwitchTime = time.time()
         self.beginPhaseSwitchConfirmation(1)
