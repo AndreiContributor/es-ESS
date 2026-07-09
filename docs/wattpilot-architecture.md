@@ -107,6 +107,10 @@ Future Wattpilot changes must preserve these invariants:
   Manual status, but must not start, stop, phase-switch, or current-limit a
   Manual charging session unless that behavior is explicitly approved and
   tested.
+- Writable EV-charger `/SetCurrent` and `/StartStop` commands may issue
+  Wattpilot current, phase, start, or stop commands only when Wattpilot mode
+  telemetry confirms ECO mode. Missing or Manual/default mode telemetry must
+  fail closed. `/Mode` selection is a separate explicit mode-change path.
 - Auto/Eco mode is PV-surplus driven and must not intentionally use grid power
   when `AllowGridCharging=false`.
 - Battery assist may only bridge a short PV dip during an already-running

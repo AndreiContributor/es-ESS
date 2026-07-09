@@ -446,6 +446,10 @@ class FroniusWattpilot (esESSService):
         i(self, "User/cerbo/vrm updated " + str(path) + " to " + str(value))
 
         if path == "/SetCurrent":
+            if not self.wattpilotAutoControlSelected():
+                self.rejectDirectWattpilotCommand(path)
+                return False
+
             requestedCurrent = int(value)
             maxCurrent = self.getEffectiveMaxCurrent()
 
@@ -472,6 +476,10 @@ class FroniusWattpilot (esESSService):
                     self.wattpilot.set_power(ampPerPhase)
 
         elif path == "/StartStop":
+            if not self.wattpilotAutoControlSelected():
+                self.rejectDirectWattpilotCommand(path)
+                return False
+
             state = VrmEvChargerStartStop(value)
             self.dbusService["/StartStopLiteral"] = state.name
 
@@ -487,6 +495,24 @@ class FroniusWattpilot (esESSService):
 
         self.dumpEvChargerInfo()
         return True
+
+    def wattpilotAutoControlSelected(self):
+        """Return True only when Wattpilot telemetry confirms ECO control."""
+        try:
+            wattpilotMode = getattr(self.wattpilot, "mode", None)
+        except Exception:
+            return False
+
+        return wattpilotMode == WattpilotControlMode.ECO
+
+    def rejectDirectWattpilotCommand(self, path):
+        self.publishServiceMessage(
+            self,
+            "Ignored {0} command because Wattpilot is not in Auto/ECO mode.".format(
+                path
+            )
+        )
+        self.dumpEvChargerInfo()
 
     def switchMode(self, fromMode:VrmEvChargerControlMode, toMode:VrmEvChargerControlMode):
         # TODO: When we are in hibernate mode, and attempting to switch mode, it fails, because of 

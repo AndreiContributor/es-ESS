@@ -355,108 +355,32 @@ Completion note:
   Manual mode, Auto/Eco charge policy, phase switching, grid guards,
   configuration defaults, D-Bus path names, or MQTT topic names were changed.
 
+### Completed 2026-07-09 - Guard Manual Wattpilot Mode From D-Bus/VRM Control Writes
+
+Completion note:
+
+- Added a conservative Wattpilot command-boundary helper in
+  `FroniusWattpilot.py` that accepts direct `/SetCurrent` and `/StartStop`
+  writes only when Wattpilot mode telemetry confirms ECO mode.
+- Rejected direct current, phase, start, and stop commands when Wattpilot
+  reports Manual/default mode or mode telemetry is unavailable.
+- Kept `/Mode` handling separate so VRM/D-Bus can still intentionally switch
+  between Manual and Auto/ECO.
+- Published an operational service message and refreshed charger info when a
+  direct command write is rejected.
+- Added `tests/test_wattpilot_command_boundary.py` coverage for blocked
+  Manual/default writes, fail-closed missing mode telemetry, preserved ECO
+  command behavior, and preserved `/Mode` switching.
+- Updated README to clarify that direct VRM current and start/stop controls are
+  accepted only while Wattpilot telemetry confirms ECO mode.
+- Updated `docs/wattpilot-architecture.md` to document the writable command
+  boundary and fail-closed Manual/default telemetry rule.
+- Kept the change limited to the D-Bus/VRM command boundary, tests, README,
+  architecture docs, and backlog; no Auto/Eco PV policy, phase thresholds, grid
+  guards, MQTT topic names, D-Bus path names, or configuration defaults were
+  changed.
+
 ## Backlog
-
-### P0 - Guard Manual Wattpilot Mode From D-Bus/VRM Control Writes
-
-Problem:
-
-Normal Wattpilot Manual mode must remain user-controlled. The current controller
-reports Manual mode and avoids Auto/Eco policy control in several paths, but the
-writable EV-charger D-Bus callbacks can still send direct Wattpilot commands for
-current, phase, start, and stop without first proving Auto/Eco control is active.
-
-Evidence:
-
-- `FroniusWattpilot.py` registers `/SetCurrent`, `/Mode`, and `/StartStop` as
-  writable paths with `_froniusHandleChangedValue()` callbacks.
-- `_froniusHandleChangedValue()` can call `self.wattpilot.set_power()`,
-  `self.wattpilot.set_phases()`, and `self.wattpilot.set_start_stop()` for
-  `/SetCurrent` and `/StartStop`.
-- `switchMode()` intentionally calls `self.wattpilot.set_mode()` when changing
-  between Manual and Auto, which is a separate mode-selection concern from
-  controlling an already-Manual charging session.
-- Tests cover Manual mode against Auto/Eco allowance and telemetry guards, but
-  do not lock the writable D-Bus command boundary.
-
-Implementation:
-
-- Add a small helper such as `wattpilotAutoControlSelected()` or reuse a
-  carefully reviewed `autoControlActive()` check for D-Bus command writes.
-- Allow `/Mode` handling to switch modes according to the intended UX, but block
-  `/SetCurrent` and `/StartStop` from sending Wattpilot current/phase/start/stop
-  commands while Wattpilot is in Manual mode.
-- Keep Manual mode status reporting to VRM/D-Bus/MQTT unchanged.
-- Publish an operational service message when a VRM/D-Bus command is ignored
-  because Wattpilot is in Manual mode.
-- Make the guard conservative when Wattpilot mode telemetry is missing: do not
-  send current, phase, start, or stop commands unless Auto/ECO control is known
-  to be selected.
-
-Files to change:
-
-- `FroniusWattpilot.py`
-- `tests/test.py` or `tests/test_eco_pv_policy.py`
-- Possibly `README.md` if the Manual-mode command boundary is clarified for
-  users.
-- Possibly `config.sample.ini` only if related user-facing config text changes.
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add tests proving `/SetCurrent` does not call `set_power()` or `set_phases()`
-  while Wattpilot reports Manual/default mode.
-- Add tests proving `/StartStop` does not call `set_start_stop()` while
-  Wattpilot reports Manual/default mode.
-- Add tests proving `/Mode` can still intentionally switch to Auto/ECO and back
-  if that remains supported behavior.
-- Add tests proving missing Wattpilot mode telemetry does not allow control
-  commands.
-
-Expected coverage:
-
-- Manual charging cannot be started, stopped, phase-switched, or current-limited
-  by es-ESS command callbacks.
-- Auto/Eco command behavior remains unchanged.
-- Manual status reporting still updates VRM/D-Bus/MQTT.
-
-Manual validation:
-
-- Required on a Wattpilot or representative test system.
-
-Manual test steps:
-
-1. Put Wattpilot in Manual mode from the Fronius app.
-2. Confirm es-ESS reports Manual mode to VRM/D-Bus/MQTT.
-3. Attempt VRM/D-Bus `/SetCurrent` and `/StartStop` writes.
-4. Confirm Wattpilot does not change current, phase mode, start state, or stop
-   state.
-5. Switch to Auto/ECO through the intended UI path.
-6. Confirm Auto/Eco PV control still starts, stops, and adjusts only under valid
-   PV/no-grid conditions.
-
-Risks and dependencies:
-
-- Over-blocking `/Mode` could prevent the intended VRM workflow for selecting
-  Auto/ECO. Keep mode selection separate from current/start/phase control.
-- Runtime mode telemetry may briefly be unavailable during reconnect; the guard
-  should fail closed for direct charge commands.
-
-Open questions:
-
-- Should `/StartStop=Stop` be allowed as an emergency stop even while Wattpilot
-  is Manual, or should Manual mode be fully untouched by es-ESS except for
-  reporting?
-
-Done criteria:
-
-- Manual-mode command-boundary tests pass.
-- Existing Wattpilot behavior tests pass.
-- No new control commands are sent in Manual mode except any explicitly
-  approved mode-selection behavior.
 
 ### P2 - Publish Venus EVCS Session Energy And Time Paths
 
