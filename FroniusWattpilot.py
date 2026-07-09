@@ -247,6 +247,7 @@ class FroniusWattpilot (esESSService):
         self.dbusService.add_path('/Serial', "1337")
         self.dbusService.add_path('/LastUpdate', 0)
         self.dbusService.add_path('/Ac/Energy/Forward', 0)
+        self.dbusService.add_path('/Session/Energy', 0)
         self.dbusService.add_path('/Ac/L1/Power', 0)
         self.dbusService.add_path('/Ac/L2/Power', 0)
         self.dbusService.add_path('/Ac/L3/Power', 0)
@@ -260,6 +261,7 @@ class FroniusWattpilot (esESSService):
         self.dbusService.add_path('/Ac/L2/PowerFactor', 0)
         self.dbusService.add_path('/Ac/L3/PowerFactor', 0)
         self.dbusService.add_path('/ChargingTime', self.chargingTime)
+        self.dbusService.add_path('/Session/Time', self.chargingTime)
         self.dbusService.add_path('/Ac/Power', 0)
         self.dbusService.add_path('/Ac/PowerPercent', 0)
         self.dbusService.add_path('/Ac/PowerMax', 0)
@@ -2536,30 +2538,27 @@ class FroniusWattpilot (esESSService):
             self.consumerPowerForDistributor()
         )
 
+        sessionEnergy = 0.0
         if (
             self.wattpilot.energyCounterSinceStart is not None
             and self.wattpilot.carConnected
         ):
-            self.publish(
-                "/Ac/Energy/Forward",
-                self.wattpilot.energyCounterSinceStart / 1000
-            )
+            sessionEnergy = self.wattpilot.energyCounterSinceStart / 1000
         elif (
             self.wattpilot.energyCounterSinceStart is not None
             and not self.wattpilot.carConnected
             and self.config["FroniusWattpilot"]["ResetChargedEnergyCounter"].lower()
             == "onconnect"
         ):
-            self.publish(
-                "/Ac/Energy/Forward",
-                self.wattpilot.energyCounterSinceStart / 1000
-            )
+            sessionEnergy = self.wattpilot.energyCounterSinceStart / 1000
         else:
-            self.publish("/Ac/Energy/Forward", 0.0)
             self.chargingTime = 0
 
+        self.publish("/Ac/Energy/Forward", sessionEnergy)
+        self.publish("/Session/Energy", sessionEnergy)
         self.publish("/AutoStart", self.autostart)
         self.publish("/ChargingTime", self.chargingTime)
+        self.publish("/Session/Time", self.chargingTime)
         self.publish("/CarState", self.wattpilot.carConnected)
         self.reportPhaseMode()
 
