@@ -47,6 +47,9 @@ Current Wattpilot state:
 - README now points setup and config-comment source links at the maintained
   repository and documents the current Wattpilot Auto/Eco policy, examples, and
   runtime-status contract.
+- Wattpilot WebSocket reconnect handling is now owned by one bounded worker
+  loop in `Wattpilot.py`; close callbacks no longer recursively call
+  `run_forever()`.
 - Configuration migration currently performs unconditional section creation for
   some legacy upgrades, which can break older user configs that already contain
   those sections.
@@ -64,9 +67,8 @@ Current test strategy:
   mode safety cases.
 - Remaining gaps are around writable D-Bus command boundaries, Venus EVCS
   session energy/time compatibility, user-visible Wattpilot transport-outage
-  presentation, WebSocket reconnect lifecycle behavior,
-  broader configuration migration compatibility, CI, and lifecycle shell
-  scripts.
+  presentation, broader configuration migration compatibility, CI, and
+  lifecycle shell scripts.
 
 Unclear deployment details:
 
@@ -324,6 +326,35 @@ Completion note:
   configuration defaults, D-Bus path names, MQTT topic names, Manual mode, or
   Auto/Eco charging behavior were changed.
 
+### Completed 2026-07-09 - Replace Wattpilot Recursive Reconnect With A Bounded Connection Loop
+
+Completion note:
+
+- Replaced recursive `run_forever()` calls from the Wattpilot WebSocket close
+  callback with a single daemon connection worker loop in `Wattpilot.py`.
+- Added an idempotent `connect()` guard so repeated wake-up/start calls do not
+  create duplicate live WebSocket worker threads.
+- Updated `disconnect(auto_reconnect=False)` to set a stop event, close the
+  WebSocket once, and prevent further reconnect attempts.
+- Preserved existing Wattpilot event callbacks used by
+  `WattpilotRuntimeStatus.py`; close callbacks now only update transport state
+  and emit `WS_CLOSE`.
+- Added `tests/test_wattpilot_client.py` with fake-WebSocket coverage for
+  idempotent connect behavior, non-recursive close handling, worker-loop
+  reconnect, and clean disconnect stopping.
+- Updated README, `docs/wattpilot-architecture.md`, and
+  `docs/service-inventory.md` to document the connection-worker ownership and
+  manual outage/recovery validation path.
+- Live GX/Wattpilot validation confirmed baseline reachability, outage
+  publication (`/Connected=0`, `Wattpilot not accessible`, `Wattpilot not
+  reachable`, `TelemetryHealthy=0`), recovery publication
+  (`/Connected=1`, normal custom name, `TelemetryHealthy=1`), and repeated
+  outage/recovery without duplicate WebSocket workers or worker-loop
+  exceptions.
+- Kept the change limited to Wattpilot client lifecycle, tests, and docs; no
+  Manual mode, Auto/Eco charge policy, phase switching, grid guards,
+  configuration defaults, D-Bus path names, or MQTT topic names were changed.
+
 ## Backlog
 
 ### P0 - Guard Manual Wattpilot Mode From D-Bus/VRM Control Writes
@@ -426,100 +457,6 @@ Done criteria:
 - Existing Wattpilot behavior tests pass.
 - No new control commands are sent in Manual mode except any explicitly
   approved mode-selection behavior.
-
-### P1 - Replace Wattpilot Recursive Reconnect With A Bounded Connection Loop
-
-Problem:
-
-Wattpilot reconnect handling currently calls `run_forever()` from the WebSocket
-close callback. Re-entering the WebSocket loop from inside its own callback can
-make repeated disconnects hard to reason about and may create brittle behavior
-during Wattpilot power loss, Wi-Fi outages, router restarts, or GX network
-changes.
-
-Evidence:
-
-- `Wattpilot.py` starts `self._wsapp.run_forever` in a daemon thread in
-  `connect()`.
-- `Wattpilot.py` `__on_close()` sleeps, then calls `self._wsapp.run_forever()`
-  again when `_auto_reconnect` is true.
-- `FroniusWattpilot.py` enables `_auto_reconnect` during normal startup and
-  wake-up handling.
-- Runtime-status tests cover startup-deferred behavior, but not the underlying
-  client reconnect loop mechanics.
-
-Implementation:
-
-- Move reconnect responsibility out of `__on_close()` recursion into one
-  connection worker loop controlled by an event/flag.
-- Ensure `connect()` is idempotent and does not start multiple live worker
-  threads for the same client.
-- Ensure `disconnect(auto_reconnect=False)` stops reconnect attempts cleanly and
-  closes the socket once.
-- Preserve existing Wattpilot event callbacks used by
-  `WattpilotRuntimeStatus.py`.
-- Add bounded sleep/backoff using the existing `_reconnect_interval`.
-
-Files to change:
-
-- `Wattpilot.py`
-- `tests/test_wattpilot_runtime_status.py` or a new Wattpilot-client test module
-- Possibly `WattpilotRuntimeStatus.py` if event timing expectations need a small
-  adaptation.
-
-Files to add:
-
-- Possibly `tests/test_wattpilot_client.py`.
-
-Tests:
-
-- Add hardware-free tests with a fake WebSocketApp proving `connect()` starts
-  only one worker.
-- Add a test proving close events schedule reconnect through the worker loop
-  without recursively calling `run_forever()` from `__on_close()`.
-- Add a test proving `disconnect(auto_reconnect=False)` prevents further
-  reconnect attempts.
-- Run existing runtime-status reconnect tests.
-
-Expected coverage:
-
-- Startup-unavailable behavior remains non-blocking.
-- Runtime status still records open/message/close/error events.
-- Repeated close events do not create nested loops or multiple active worker
-  threads.
-
-Manual validation:
-
-- Required on GX/Wattpilot hardware or a representative network test.
-
-Manual test steps:
-
-1. Start es-ESS with Wattpilot reachable.
-2. Confirm normal Wattpilot runtime status and Auto/Eco behavior.
-3. Power off or disconnect Wattpilot from the network.
-4. Confirm es-ESS remains running and publishes unavailable/stopped status.
-5. Restore Wattpilot network/power.
-6. Confirm reconnect, runtime status recovery, and normal Auto/Eco safety
-   checks.
-7. Repeat the outage several times and inspect logs for duplicate reconnect
-   workers or unbounded exceptions.
-
-Risks and dependencies:
-
-- The Wattpilot client is used by runtime-status event hooks; preserve event
-  names and callback order where practical.
-- WebSocket behavior may differ across `websocket-client` versions on Venus OS.
-
-Open questions:
-
-- Should reconnect backoff stay fixed at 30 seconds, or should repeated failures
-  use a capped exponential backoff?
-
-Done criteria:
-
-- Reconnect loop tests pass.
-- Existing Wattpilot runtime-status tests pass.
-- Manual outage/recovery validation succeeds without duplicate worker threads.
 
 ### P2 - Publish Venus EVCS Session Energy And Time Paths
 
@@ -1134,23 +1071,21 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P1 Wattpilot reconnect loop, because recovery reliability affects live
-   safety/status behavior but should be isolated to the client lifecycle.
-2. P2 Venus EVCS session energy/time paths, because it is additive D-Bus UI
+1. P2 Venus EVCS session energy/time paths, because it is additive D-Bus UI
    compatibility work and does not change charging control behavior.
-3. P3 supported Wattpilot unavailable indicator, because it improves outage
+2. P3 supported Wattpilot unavailable indicator, because it improves outage
    visibility without changing charging control behavior if a supported surface
    is available.
-4. P0 Manual command-boundary hardening, because it protects the most important
+3. P0 Manual command-boundary hardening, because it protects the most important
    product invariant once the test base is stronger.
-5. P2 telemetry and allowance helper extraction, because it is the first
+4. P2 telemetry and allowance helper extraction, because it is the first
    low-side-effect Wattpilot control extraction.
-6. P2 grid-guard and battery-assist helper extraction, because it is more
+5. P2 grid-guard and battery-assist helper extraction, because it is more
    safety-sensitive and should follow characterization coverage.
-7. P2 phase-switching helper extraction, because phase switching is
+6. P2 phase-switching helper extraction, because phase switching is
    user-visible and high-impact.
-8. P3 state-machine refactor, because it needs the previous behavior, config,
-    docs, and helper boundaries in place before touching overall control flow.
+7. P3 state-machine refactor, because it needs the previous behavior, config,
+   docs, and helper boundaries in place before touching overall control flow.
 
 ## Verification Plan
 

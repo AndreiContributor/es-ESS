@@ -26,6 +26,8 @@ freshness checks, and the public D-Bus/MQTT status contract.
 It owns:
 
 - WebSocket connection setup and close/error/message callbacks.
+- The single Wattpilot connection worker loop, including automatic reconnect
+  attempts controlled by `_auto_reconnect` and `_reconnect_interval`.
 - Wattpilot authentication and secure message wrapping.
 - Parsing Wattpilot status messages into local client properties.
 - Sending direct Wattpilot protocol updates such as `amp`, `frc`, `psm`, and
@@ -42,7 +44,10 @@ It must not own:
 - VRM, D-Bus, MQTT, or dashboard status semantics.
 
 The client can expose transport and Wattpilot-state facts, but charging policy
-belongs outside this module.
+belongs outside this module. WebSocket callbacks should remain lightweight:
+they may update local transport state and emit registered events, but reconnect
+ownership stays in the connection worker loop rather than recursively entering
+`run_forever()` from a close callback.
 
 ### `FroniusWattpilot.py`
 
@@ -127,6 +132,8 @@ Refactors should be small and behavior-preserving:
 
 - Add characterization tests before moving decision logic.
 - Keep Wattpilot protocol details in `Wattpilot.py`.
+- Keep Wattpilot reconnect lifecycle changes isolated from charger-control
+  policy changes.
 - Keep charger command side effects in `FroniusWattpilot.py` until a tested
   command boundary exists.
 - Extract pure decision helpers before introducing a broader state machine.

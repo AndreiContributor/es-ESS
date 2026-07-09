@@ -567,7 +567,10 @@ tail -f -n 20 /data/log/es-ESS/current.log
 
 Live Wattpilot behavior still needs validation on a GX/Wattpilot system. Check
 that Manual mode is only reported, Auto/Eco waits for fresh PV allowance, and
-the runtime-status D-Bus/MQTT values match the observed charging state.
+the runtime-status D-Bus/MQTT values match the observed charging state. For
+transport changes, also power-cycle or disconnect the Wattpilot network link
+several times and confirm es-ESS reconnects without duplicate WebSocket worker
+messages or unbounded exceptions.
 
 ### Low Price Charging. 
 Wattpilot supports the function to charge due to cheap grid prices, you can use the builtin feature as you are used to. es-ESS will then detect,
@@ -1126,9 +1129,11 @@ phase-up. The contract adds no shared 16 A cable/current-limiting logic.
 
 A Wattpilot that is unavailable when es-ESS or the GX starts no longer makes
 Wattpilot initialization wait through consecutive 30-second field checks. The
-existing Wattpilot client is started with its automatic reconnect behavior, but
-the runtime contract remains in a safe neutral state until a usable controller
-cycle is available:
+Wattpilot client is started with its automatic reconnect behavior, and the
+client keeps reconnect attempts inside one daemon WebSocket worker loop. Close
+callbacks only record the close event; they do not recursively re-enter the
+WebSocket loop. The runtime contract remains in a safe neutral state until a
+usable controller cycle is available:
 
 ```text
 /ControlState = 0
