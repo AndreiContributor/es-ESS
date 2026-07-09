@@ -251,6 +251,26 @@ Completion note:
   defaults, D-Bus paths, MQTT topics, architecture boundaries, or charging
   behavior were changed.
 
+### Completed 2026-07-09 - Clean Up Wattpilot Startup Deferred State And Logs
+
+Completion note:
+
+- Initialized `Wattpilot._energyCounterSinceStart` to `None` during client
+  construction so early runtime-status publication can read the property before
+  the first Wattpilot status update.
+- Reworded the Wattpilot client startup log from `Wattpilot connected` to
+  `Wattpilot WebSocket worker started`, matching the actual lifecycle point.
+- Downgraded expected deferred Wattpilot startup readiness messages in
+  `FroniusWattpilot.initFinalize()` from error logging to warning logging and
+  removed misleading `within 30 seconds` hard-failure wording.
+- Added hardware-free startup hygiene tests for the early energy-counter field,
+  WebSocket worker log wording, and deferred-start warning behavior.
+- Verified with `py_compile`, targeted Wattpilot startup/runtime-status tests,
+  and the full hardware-free unittest suite.
+- Kept the change limited to initialization/logging/tests/backlog; no Manual
+  mode, Auto/Eco control decisions, reconnect-loop ownership, D-Bus paths, MQTT
+  topics, or configuration defaults were changed.
+
 ## Backlog
 
 ### P0 - Guard Manual Wattpilot Mode From D-Bus/VRM Control Writes
@@ -353,125 +373,6 @@ Done criteria:
 - Existing Wattpilot behavior tests pass.
 - No new control commands are sent in Manual mode except any explicitly
   approved mode-selection behavior.
-
-### P1 - Clean Up Wattpilot Startup Deferred State And Logs
-
-Problem:
-
-Wattpilot startup can recover successfully, but the current logs make a normal
-deferred startup look like a hard failure. Runtime status intentionally avoids
-blocking service startup while the Wattpilot WebSocket finishes connecting, but
-`FroniusWattpilot.initFinalize()` still emits legacy messages saying the
-connection or car state was unavailable "within 30 seconds." A production log
-also showed a deferred startup caused by a missing `_energyCounterSinceStart`
-attribute before the first full Wattpilot status populated it.
-
-Evidence:
-
-- A production startup log showed:
-  `Unable to connect to wattpilot within 30 seconds...`,
-  `Wattpilot car state not available after 30 seconds`, and
-  `Wattpilot startup deferred until the client reconnects:
-  'Wattpilot' object has no attribute '_energyCounterSinceStart'`.
-- The same log later showed successful recovery:
-  `Connected to WattPilot Serial 32719055`, `Authentication successful`,
-  `Full Status Update Completed`, and
-  `Initialization of consumer Wattpilot completed`.
-- `WattpilotRuntimeStatus.py` wraps `FroniusWattpilot.initFinalize()` and
-  temporarily replaces `Helper.waitTimeout()` with an immediate predicate check
-  so startup is non-blocking.
-- `Wattpilot.py` initializes many telemetry fields in `__init__()`, but
-  `_energyCounterSinceStart` is only assigned after a `car` status update.
-- `Wattpilot.connect()` logs `Wattpilot connected` immediately after starting
-  the WebSocket thread, before WebSocket open, hello, authentication, or full
-  status are complete.
-
-Implementation:
-
-- Initialize `_energyCounterSinceStart` in `Wattpilot.__init__()` to a safe
-  neutral value such as `0` or `None`, matching existing property semantics.
-- Make startup-deferred log messages reflect the non-blocking startup path:
-  avoid saying "within 30 seconds" when runtime status has intentionally
-  replaced the wait with an immediate check.
-- Downgrade expected deferred-start messages from `ERROR` to warning/debug
-  where they are not control faults and recovery is expected.
-- Rename or reword `Wattpilot connected` so it means "connection worker
-  started" unless the actual WebSocket open/authentication has completed.
-- Preserve the existing runtime-status behavior: unavailable startup should
-  remain non-blocking and recover when Wattpilot telemetry arrives.
-- Do not change Manual mode, Auto/Eco control decisions, reconnect-loop
-  ownership, D-Bus paths, MQTT topics, or configuration defaults in this task.
-
-Files to change:
-
-- `Wattpilot.py`
-- `FroniusWattpilot.py`
-- `WattpilotRuntimeStatus.py`
-- Tests under `tests/`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add or update hardware-free runtime-status startup tests proving a missing
-  early Wattpilot telemetry field does not raise during deferred startup.
-- Add a test proving unavailable startup remains non-blocking and later
-  WebSocket events can recover runtime status.
-- Add a focused test, if practical with existing logging helpers, proving
-  deferred startup does not emit hard-failure wording for expected unavailable
-  telemetry.
-- Run existing Wattpilot runtime-status tests.
-- Run the full unittest suite.
-- Run `python -m py_compile` for changed Python files.
-
-Expected coverage:
-
-- Startup logs distinguish between "not ready yet" and a real control fault.
-- A partly initialized Wattpilot object has all fields needed by runtime
-  status before the first full status update.
-- Successful delayed WebSocket hello/auth/full-status recovery remains
-  unchanged.
-
-Manual validation:
-
-- Required on GX/Wattpilot hardware or with a representative Wattpilot network
-  outage/recovery test.
-
-Manual test steps:
-
-1. Start es-ESS with Wattpilot reachable and confirm no misleading
-   startup-deferred `ERROR` lines appear before normal hello/auth/full status.
-2. Start es-ESS while Wattpilot is unreachable or slow to respond.
-3. Confirm es-ESS remains running, publishes neutral runtime status, and does
-   not throw `_energyCounterSinceStart` attribute errors.
-4. Restore Wattpilot network/power.
-5. Confirm the log shows WebSocket hello, authentication, full status, and
-   SolarOverhead consumer initialization without duplicate worker threads.
-6. Confirm Manual reporting and Auto/Eco waiting state still behave normally.
-
-Risks and dependencies:
-
-- This is mostly observability and initialization hygiene, but it touches
-  Wattpilot startup. Keep it separate from reconnect-loop restructuring and
-  charging-policy changes.
-- Avoid hiding real failures. Unexpected exceptions should still be visible as
-  faults; only expected deferred telemetry should use softer wording.
-
-Open questions:
-
-- Should deferred startup messages be logged once per startup or repeated until
-  recovery if the Wattpilot remains unavailable?
-
-Done criteria:
-
-- `_energyCounterSinceStart` no longer raises during startup-deferred runtime
-  status publication.
-- Expected slow/unavailable Wattpilot startup is logged as deferred/not-ready,
-  not as a misleading 30-second hard failure.
-- Existing runtime-status reconnect behavior remains unchanged.
-- Full unittest suite passes.
 
 ### P1 - Replace Wattpilot Recursive Reconnect With A Bounded Connection Loop
 
@@ -948,19 +849,17 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P1 Wattpilot startup deferred-state/logging cleanup, because it reduces
-   confusing production diagnostics without changing charge policy.
-2. P1 Wattpilot reconnect loop, because recovery reliability affects live
+1. P1 Wattpilot reconnect loop, because recovery reliability affects live
    safety/status behavior but should be isolated to the client lifecycle.
-3. P0 Manual command-boundary hardening, because it protects the most important
+2. P0 Manual command-boundary hardening, because it protects the most important
    product invariant once the test base is stronger.
-4. P2 telemetry and allowance helper extraction, because it is the first
+3. P2 telemetry and allowance helper extraction, because it is the first
    low-side-effect Wattpilot control extraction.
-5. P2 grid-guard and battery-assist helper extraction, because it is more
+4. P2 grid-guard and battery-assist helper extraction, because it is more
    safety-sensitive and should follow characterization coverage.
-6. P2 phase-switching helper extraction, because phase switching is
+5. P2 phase-switching helper extraction, because phase switching is
    user-visible and high-impact.
-7. P3 state-machine refactor, because it needs the previous behavior, config,
+6. P3 state-machine refactor, because it needs the previous behavior, config,
     docs, and helper boundaries in place before touching overall control flow.
 
 ## Verification Plan
