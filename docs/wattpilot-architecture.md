@@ -61,17 +61,42 @@ It owns:
 - Session energy/time compatibility paths: `/Ac/Energy/Forward` mirrors
   `/Session/Energy`, and `/ChargingTime` mirrors `/Session/Time`.
 - Auto/Eco PV surplus charging decisions.
-- SolarOverheadDistributor allowance requests and allowance consumption.
-- Grid telemetry freshness and no-grid stop behavior.
+- SolarOverheadDistributor allowance requests and allowance consumption,
+  delegating pure allowance freshness checks to `WattpilotDecisionInputs.py`.
+- Grid telemetry state updates and no-grid stop behavior, delegating pure
+  telemetry freshness checks to `WattpilotDecisionInputs.py`.
 - Optional battery-assist rules for an already-running charge.
 - One-phase and three-phase switching decisions and timing guards.
 - Wattpilot command issuing through the `Wattpilot` client.
 - Wattpilot shutdown behavior during es-ESS termination.
 
-Until smaller helpers are extracted, this file remains the place where command
-side effects are allowed. Refactors should move decision logic only when the
-same behavior is covered by focused tests and command side effects remain easy
-to audit.
+This file remains the place where command side effects are allowed. Refactors
+should move decision logic only when the same behavior is covered by focused
+tests and command side effects remain easy to audit.
+
+### `WattpilotDecisionInputs.py`
+
+`WattpilotDecisionInputs.py` owns pure or mostly pure input evaluation helpers
+for the Wattpilot controller.
+
+It owns:
+
+- Finite numeric parsing for Wattpilot decision inputs.
+- Grid telemetry validity and freshness evaluation across required phases.
+- SolarOverheadDistributor assigned-allowance freshness evaluation.
+- Minimum-allowance evaluation for Auto/Eco charging.
+- Fresh raw-overhead evaluation for the safe three-to-one fallback path.
+
+It must not own:
+
+- D-Bus or MQTT subscriptions/publication.
+- Wattpilot command issuing.
+- Service messages.
+- Manual versus Auto/Eco mode policy.
+- Grid-import stop policy, battery-assist policy, or phase-switch commands.
+
+The controller still stores the live timestamps and values. This helper only
+answers whether a supplied input snapshot is fresh and usable.
 
 ### `WattpilotRuntimeStatus.py`
 

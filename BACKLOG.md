@@ -66,10 +66,9 @@ Current test strategy:
   Wattpilot PV-control policy, runtime status, grid guards, phase switching,
   stale telemetry, battery assist, charge-complete hold, and several Manual
   mode safety cases.
-- Remaining gaps are around user-visible Wattpilot transport-outage
-  presentation, UI-format alignment across Venus/VRM surfaces, Wattpilot
-  decision-helper extraction, phase-switch extraction, and the longer-term
-  explicit state-machine refactor.
+- Remaining gaps are around UI-format alignment across Venus/VRM surfaces,
+  Wattpilot decision-helper extraction, phase-switch extraction, and the
+  longer-term explicit state-machine refactor.
 
 Unclear deployment details:
 
@@ -402,127 +401,49 @@ Completion note:
   switching, grid guards, MQTT topic names, or configuration defaults were
   changed.
 
+### Completed 2026-07-09 - Document Supported Wattpilot Unavailable Indicator Route
+
+Completion note:
+
+- Selected the supported es-ESS visibility route for Wattpilot transport
+  outages: EV-charger detail view fields, D-Bus inspection, retained MQTT
+  runtime status, es-ESS service messages, and SolarOverheadDistributor
+  consumer messages.
+- Documented that es-ESS will not publish a synthetic charger fault or change
+  `/Status` or `/Mode` only to force outage-specific text into the standard
+  Venus/GX EVCS overview tile.
+- Kept the standard EV-charger contract truthful during wallbox transport
+  outages: `/Connected=0`, `/Status=Disconnected`, and the selected mode such
+  as `/Mode=Auto` can remain simultaneously correct.
+- Left custom GX dashboard extension work and upstream Victron `gui-v2`
+  changes as future explicit product decisions rather than introducing an
+  unproven local UI artifact in this task.
+- Kept the change documentation/backlog-only; no production code, tests,
+  configuration defaults, D-Bus path names, MQTT topic names, Manual mode, or
+  Auto/Eco charging behavior were changed.
+
+### Completed 2026-07-09 - Extract Wattpilot Telemetry And Allowance Evaluation Helpers
+
+Completion note:
+
+- Added `WattpilotDecisionInputs.py` for pure Wattpilot decision-input
+  evaluation: finite numeric parsing, grid telemetry freshness, assigned
+  allowance freshness, minimum-allowance checks, and fresh raw-overhead checks.
+- Updated `FroniusWattpilot.py` to delegate telemetry/allowance evaluation to
+  the helper while keeping MQTT callbacks, D-Bus publication, service messages,
+  Wattpilot command issuing, and mutable controller state in the controller.
+- Added focused helper tests in `tests/test_wattpilot_decision_inputs.py`,
+  including freshness cutoff behavior and stale/non-finite input rejection.
+- Updated `docs/wattpilot-architecture.md` to document the new helper boundary
+  and preserve the controller as the command side-effect owner.
+- Verified with `py_compile`, focused helper tests, existing Wattpilot
+  policy/runtime/startup/session/command-boundary/client tests, and the full
+  hardware-free unittest suite.
+- Kept the change extraction-only; no Manual mode, Auto/Eco control policy,
+  phase thresholds, grid-guard behavior, battery-assist behavior, D-Bus path
+  names, MQTT topic names, or configuration defaults were changed.
+
 ## Backlog
-
-### P3 - Add A Supported User-Visible Wattpilot Unavailable Indicator
-
-Problem:
-
-es-ESS now publishes truthful Wattpilot transport-outage state on D-Bus, MQTT,
-service messages, and SolarOverheadDistributor messages, but the standard Venus
-OS / GX EVCS overview tile can still show only generic `EVCS`, `Disconnected`,
-and the selected mode such as `Auto`. Users need an obvious supported way to see
-that the Wattpilot wallbox itself is unreachable, not merely that the vehicle is
-disconnected.
-
-Evidence:
-
-- Live GX validation during a Wattpilot outage showed
-  `/CustomName = 'Wattpilot not reachable'`,
-  `/StatusLiteral = 'Wattpilot not accessible'`, `/Connected = 0`,
-  `/Status = Disconnected`, and `/ModeLiteral = 'Auto'`.
-- The completed Venus EVCS overview-tile investigation confirmed current
-  upstream `gui-v2` `EvcsWidget.qml` does not read `/CustomName` or
-  `/StatusLiteral` for the overview tile.
-- Changing `/Status` or `/Mode` only to force overview text would misrepresent
-  the charger state to automation and VRM consumers.
-- Existing es-ESS service messages and MQTT runtime status contain the specific
-  outage text but are not as obvious as the standard overview tile.
-
-Implementation:
-
-- Investigate supported Venus OS / GX surfaces for a communication outage that
-  do not misuse the EV-charger `/Status` or `/Mode` contract.
-- Candidate approaches include:
-  - a small Cerbo/GX dashboard extension or custom overview widget that reads
-    `/StatusLiteral`, `/CustomName`, or the Wattpilot runtime-status contract;
-  - an upstream `gui-v2` issue or patch to show `/StatusLiteral` for EVCS
-    transport outages when present;
-  - a truthful notification/alarm path if Venus OS has a supported D-Bus
-    contract for service communication alarms;
-  - improved retained MQTT status intended for external dashboards.
-- Keep the existing standard EV-charger D-Bus values truthful:
-  `/Status=Disconnected` and `/Mode=Auto` may both remain correct during a
-  transport outage.
-- Do not mark the charger as an electrical fault unless the team explicitly
-  decides that communication loss should be represented as a charger fault and
-  tests the downstream behavior.
-- Prefer additive visibility over control-policy changes.
-
-Files to change:
-
-- Possibly `README.md`
-- Possibly `docs/service-inventory.md`
-- Possibly `docs/wattpilot-architecture.md`
-- Possibly `FroniusWattpilot.py` and tests if a supported D-Bus notification or
-  status surface is added.
-- Possibly a new dashboard/extension artifact if that route is chosen.
-- `BACKLOG.md`
-
-Files to add:
-
-- Possibly a small GX/Cerbo extension or documentation page, depending on the
-  selected approach.
-
-Tests:
-
-- If production code publishes a new notification/status path, add
-  hardware-free tests proving it appears on outage and clears on recovery.
-- Keep existing transport-outage tests proving `/Connected`, `/Status`,
-  `/StatusLiteral`, `/CustomName`, and service-message behavior.
-- Run focused Wattpilot runtime-status/startup tests and the full unittest
-  suite for any production-code change.
-- If a dashboard/extension is added, include manual or automated rendering
-  checks appropriate to that artifact.
-
-Expected coverage:
-
-- A user can clearly identify "Wattpilot not accessible" from a supported UI,
-  notification, dashboard, or documented MQTT/D-Bus surface.
-- The standard EV-charger state remains truthful for automation and VRM.
-- No Wattpilot control behavior changes.
-
-Manual validation:
-
-- Required on a GX/Venus OS system because the desired result is user-visible
-  outage presentation.
-
-Manual test steps:
-
-1. Start with Wattpilot reachable and confirm the selected visible indicator is
-   normal or absent.
-2. Trigger a Wattpilot transport outage.
-3. Confirm the selected indicator clearly says the Wattpilot/wallbox is not
-   reachable.
-4. Confirm `/Status` and `/Mode` remain truthful and compatible.
-5. Restore Wattpilot transport and confirm the indicator clears.
-6. Repeat outage/recovery to confirm no stale alarms or duplicate messages.
-
-Risks and dependencies:
-
-- Venus OS may not offer a supported alarm/notification path for third-party
-  EV-charger communication outages.
-- A custom dashboard extension may not affect the standard overview tile.
-- Upstream `gui-v2` changes would depend on Victron acceptance and the Venus OS
-  release cycle.
-- Misusing fault/status enums for display could confuse automation, VRM, and
-  dashboards.
-
-Open questions:
-
-- Is a Venus OS service communication alarm available and appropriate for an
-  external EV-charger service?
-- Is a local Cerbo/GX extension acceptable, or should this be proposed upstream
-  to Victron `gui-v2`?
-- Should the indicator be always-on in a custom dashboard, or only appear
-  during transport outage?
-
-Done criteria:
-
-- A supported visibility route is selected and documented.
-- If implemented in es-ESS, outage and recovery behavior is covered by tests.
-- Live GX validation confirms the user can clearly see Wattpilot transport
-  outage without misleading `/Status` or `/Mode`.
 
 ### P4 - Investigate EVCS UI Formatting Alignment
 
@@ -618,90 +539,6 @@ Done criteria:
   proposal.
 - Any implemented UI-only change is validated visually.
 - es-ESS D-Bus numeric contracts remain unchanged.
-
-### P2 - Extract Wattpilot Telemetry And Allowance Evaluation Helpers
-
-Depends on:
-
-- Completed Wattpilot decision characterization tests.
-
-Goal:
-
-Reduce `FroniusWattpilot.py` complexity without changing charging behavior.
-
-Problem:
-
-Telemetry freshness and SolarOverheadDistributor allowance checks are core
-inputs to Auto/Eco control, but they are mixed into the large controller with
-command side effects. This makes later safety review harder than it needs to
-be.
-
-Evidence:
-
-- `FroniusWattpilot.py` tracks grid telemetry timestamps, Wattpilot allowance,
-  raw overhead, startup grace, allowance drop grace, and related status flags.
-- Tests already exercise stale allowance, missing allowance, raw-overhead
-  freshness, and telemetry fail-safe behavior.
-
-Implementation:
-
-- Extract pure or mostly pure helper functions/classes for telemetry freshness
-  and allowance status.
-- Keep D-Bus, MQTT, and Wattpilot command side effects in `FroniusWattpilot.py`
-  for this PR.
-- Preserve existing config keys, defaults, D-Bus paths, MQTT topics, and public
-  runtime-status behavior.
-- Move tests or add focused tests for the extracted helpers.
-
-Files to change:
-
-- `FroniusWattpilot.py`
-- Tests under `tests/`
-
-Files to add:
-
-- Possibly a small helper module such as `WattpilotDecisionInputs.py`.
-
-Tests:
-
-- Run telemetry and allowance characterization tests.
-- Run existing Wattpilot control tests.
-- Run the full unittest suite.
-- Run `python -m py_compile` for changed Python files.
-
-Expected coverage:
-
-- Stale telemetry behavior is unchanged.
-- Missing, malformed, stale, and fresh allowance behavior is unchanged.
-- Raw-overhead data still cannot start charging or authorize a phase-up.
-
-Manual validation:
-
-- Not required if the PR is a pure extraction and tests show unchanged behavior.
-  Optional live observation is useful before deploying broadly.
-
-Manual test steps:
-
-1. Start es-ESS with Wattpilot enabled on a staging system.
-2. Confirm runtime status and Auto/Eco waiting state still publish normally.
-3. Temporarily interrupt allowance or grid telemetry.
-4. Confirm fail-safe status matches pre-refactor behavior.
-
-Risks and dependencies:
-
-- This code is safety-sensitive. Keep the PR limited to extraction and tests.
-- Do not change timing defaults, control commands, or Manual mode behavior.
-
-Open questions:
-
-- Should helper code stay in the same file first, then move to a new module in a
-  later PR?
-
-Done criteria:
-
-- Extracted helper behavior matches existing tests.
-- No command behavior changes are introduced.
-- Full unittest suite passes.
 
 ### P2 - Extract Wattpilot Grid-Guard And Battery-Assist Decisions
 
@@ -1000,18 +837,13 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P3 supported Wattpilot unavailable indicator, because it improves outage
-   visibility without changing charging control behavior if a supported surface
-   is available.
-2. P2 telemetry and allowance helper extraction, because it is the first
-   low-side-effect Wattpilot control extraction.
-3. P2 grid-guard and battery-assist helper extraction, because it is more
+1. P2 grid-guard and battery-assist helper extraction, because it is more
    safety-sensitive and should follow characterization coverage.
-4. P2 phase-switching helper extraction, because phase switching is
+2. P2 phase-switching helper extraction, because phase switching is
    user-visible and high-impact.
-5. P3 state-machine refactor, because it needs the previous behavior, config,
+3. P3 state-machine refactor, because it needs the previous behavior, config,
    docs, and helper boundaries in place before touching overall control flow.
-6. P4 EVCS UI formatting alignment, because it is cosmetic and should stay
+4. P4 EVCS UI formatting alignment, because it is cosmetic and should stay
    separate from the es-ESS numeric D-Bus contract.
 
 ## Verification Plan

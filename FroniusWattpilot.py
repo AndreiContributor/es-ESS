@@ -17,6 +17,7 @@ from vedbus import VeDbusService # type: ignore
 import Globals
 import Helper
 from Helper import i, c, d, w, e, t,  dbusConnection
+import WattpilotDecisionInputs as DecisionInputs
 from Wattpilot import Wattpilot
 from enums import WattpilotModelStatus, WattpilotStartStop, WattpilotControlMode, VrmEvChargerControlMode, VrmEvChargerStatus, VrmEvChargerStartStop
 from esESSService import esESSService
@@ -342,25 +343,16 @@ class FroniusWattpilot (esESSService):
 
     def recordGridTelemetry(self, phase, value):
         """Record validity and receive time for one required grid-power phase."""
-        valid = False
-        try:
-            valid = isfinite(float(value))
-        except (TypeError, ValueError):
-            valid = False
+        valid, updatedAt = DecisionInputs.telemetry_sample(value, time.time())
 
         setattr(self, "grid{0}Valid".format(phase), valid)
-        setattr(self, "grid{0}UpdatedAt".format(phase), time.time())
+        setattr(self, "grid{0}UpdatedAt".format(phase), updatedAt)
 
     def onMqttMessage(self, client, userdata, msg):
         """Receive Wattpilot allowance and raw distributor-overhead updates."""
         topic = getattr(msg, "topic", None)
         try:
-            payload = msg.payload
-            if isinstance(payload, bytes):
-                payload = payload.decode("utf-8")
-            value = float(str(payload).strip())
-            if not isfinite(value):
-                raise ValueError("MQTT value must be finite")
+            value = DecisionInputs.parse_finite_payload(msg.payload)
 
             if topic == self.mqttAllowanceTopic:
                 self.allowance = value
@@ -1292,18 +1284,34 @@ class FroniusWattpilot (esESSService):
         return self.threePhaseVoltage() * self.minCurrentPerPhase
 
     def allowanceIsFresh(self):
-        updatedAt = getattr(self, "allowanceUpdatedAt", 0)
-        return (
-            bool(getattr(self, "allowanceValid", False))
-            and updatedAt > 0
-            and time.time() - updatedAt <= self.allowanceFreshSeconds
+        return DecisionInputs.allowance_is_fresh(
+            getattr(self, "allowanceValid", False),
+            getattr(self, "allowanceUpdatedAt", 0),
+            self.allowanceFreshSeconds,
+            time.time(),
         )
 
     def hasMinimumAllowance(self):
-        return (
-            self.allowanceIsFresh()
-            and self.canChargeAtMinimumCurrent()
-            and self.allowance >= self.minimumChargePower()
+        now = time.time()
+        if not DecisionInputs.allowance_is_fresh(
+            getattr(self, "allowanceValid", False),
+            getattr(self, "allowanceUpdatedAt", 0),
+            self.allowanceFreshSeconds,
+            now,
+        ):
+            return False
+
+        if not self.canChargeAtMinimumCurrent():
+            return False
+
+        return DecisionInputs.has_minimum_allowance(
+            self.allowance,
+            getattr(self, "allowanceValid", False),
+            getattr(self, "allowanceUpdatedAt", 0),
+            self.allowanceFreshSeconds,
+            now,
+            self.minimumChargePower(),
+            True,
         )
 
     def onePhaseVoltage(self):
@@ -1798,14 +1806,16 @@ class FroniusWattpilot (esESSService):
 
     def gridTelemetryIsFresh(self):
         """Return whether all required grid-power inputs are valid and current."""
-        now = time.time()
-        for phase in ("L1", "L2", "L3"):
-            if not getattr(self, "grid{0}Valid".format(phase), False):
-                return False
-            updatedAt = getattr(self, "grid{0}UpdatedAt".format(phase), 0)
-            if updatedAt <= 0 or now - updatedAt > self.gridTelemetryFreshSeconds:
-                return False
-        return True
+        samples = [
+            (
+                getattr(self, "grid{0}Valid".format(phase), False),
+                getattr(self, "grid{0}UpdatedAt".format(phase), 0),
+            )
+            for phase in ("L1", "L2", "L3")
+        ]
+        return DecisionInputs.grid_telemetry_is_fresh(
+            samples, self.gridTelemetryFreshSeconds, time.time()
+        )
 
     def batterySoc(self):
         return self.dbusValue(self.batterySocDbus, None)
@@ -1819,16 +1829,12 @@ class FroniusWattpilot (esESSService):
         value could cause a false phase transition. Starts and phase-up always
         use the distributor's assigned allowance instead.
         """
-        mqttValue = getattr(self, "mqttRawOverheadW", None)
-        mqttUpdatedAt = getattr(self, "mqttRawOverheadUpdatedAt", 0)
-        if (
-            mqttValue is not None
-            and mqttUpdatedAt > 0
-            and time.time() - mqttUpdatedAt <= self.rawOverheadFreshSeconds
-        ):
-            return max(0.0, float(mqttValue))
-
-        return None
+        return DecisionInputs.fresh_raw_overhead(
+            getattr(self, "mqttRawOverheadW", None),
+            getattr(self, "mqttRawOverheadUpdatedAt", 0),
+            self.rawOverheadFreshSeconds,
+            time.time(),
+        )
 
     def phaseDownThresholdW(self):
         return max(
