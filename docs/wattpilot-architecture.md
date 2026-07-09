@@ -58,6 +58,8 @@ It owns:
 
 - The Victron EV-charger D-Bus service paths and writable command callbacks.
 - Mapping Wattpilot state into VRM-compatible status values.
+- Session energy/time compatibility paths: `/Ac/Energy/Forward` mirrors
+  `/Session/Energy`, and `/ChargingTime` mirrors `/Session/Time`.
 - Auto/Eco PV surplus charging decisions.
 - SolarOverheadDistributor allowance requests and allowance consumption.
 - Grid telemetry freshness and no-grid stop behavior.

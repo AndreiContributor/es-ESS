@@ -1071,6 +1071,11 @@ still appear there as `EVCS`, `Disconnected`, and the selected mode such as
 service messages, or SolarOverheadDistributor messages for the specific
 `Wattpilot not accessible` / `Wattpilot not reachable` outage text.
 
+For EVCS overview compatibility, es-ESS publishes Wattpilot session energy and
+time on both the older project paths and the current Venus session paths:
+`/Ac/Energy/Forward` mirrors `/Session/Energy`, and `/ChargingTime` mirrors
+`/Session/Time`.
+
 The following D-Bus values are published on the existing
 `com.victronenergy.evcharger.*_FroniusWattpilot` service:
 

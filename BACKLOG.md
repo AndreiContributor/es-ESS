@@ -36,9 +36,11 @@ Current Wattpilot state:
 - Auto/Eco PV-only control, no-grid protection, battery assist, telemetry
   freshness, startup grace, raw-overhead freshness, and runtime status reporting
   are already present in code and tests.
-- Manual-mode reporting is present, but the writable EV-charger command paths
-  still need an explicit command-boundary review so Manual Wattpilot mode cannot
-  be controlled accidentally through VRM/D-Bus writes.
+- Manual-mode reporting is present, and writable EV-charger command paths are
+  guarded so direct current/start/stop/phase commands are accepted only when
+  Wattpilot mode telemetry confirms ECO mode.
+- The Wattpilot EV-charger service publishes both legacy project energy/time
+  paths and the standard Venus `/Session/Energy` and `/Session/Time` paths.
 - `config.sample.ini` and the production config are intended to match. The
   project uses `config.sample.ini` as the single configuration artifact, and
   the Wattpilot sample keys are covered by a config contract test.
@@ -50,9 +52,8 @@ Current Wattpilot state:
 - Wattpilot WebSocket reconnect handling is now owned by one bounded worker
   loop in `Wattpilot.py`; close callbacks no longer recursively call
   `run_forever()`.
-- Configuration migration currently performs unconditional section creation for
-  some legacy upgrades, which can break older user configs that already contain
-  those sections.
+- Configuration migration uses idempotent helpers so legacy user configs with
+  existing later sections can upgrade without duplicate-section crashes.
 - A GitHub Actions CI workflow now runs hardware-free Python 3.12 syntax,
   config-contract, and unittest checks on pull requests and pushes to `main`.
 - Tests cover many Wattpilot control decisions and now include a config
@@ -65,10 +66,10 @@ Current test strategy:
   Wattpilot PV-control policy, runtime status, grid guards, phase switching,
   stale telemetry, battery assist, charge-complete hold, and several Manual
   mode safety cases.
-- Remaining gaps are around writable D-Bus command boundaries, Venus EVCS
-  session energy/time compatibility, user-visible Wattpilot transport-outage
-  presentation, broader configuration migration compatibility, CI, and
-  lifecycle shell scripts.
+- Remaining gaps are around user-visible Wattpilot transport-outage
+  presentation, UI-format alignment across Venus/VRM surfaces, Wattpilot
+  decision-helper extraction, phase-switch extraction, and the longer-term
+  explicit state-machine refactor.
 
 Unclear deployment details:
 
@@ -380,119 +381,28 @@ Completion note:
   guards, MQTT topic names, D-Bus path names, or configuration defaults were
   changed.
 
+### Completed 2026-07-09 - Publish Venus EVCS Session Energy And Time Paths
+
+Completion note:
+
+- Added `/Session/Energy` and `/Session/Time` to the FroniusWattpilot
+  EV-charger D-Bus service for Venus/GX EVCS overview compatibility.
+- Kept existing `/Ac/Energy/Forward` and `/ChargingTime` paths unchanged and
+  mirrored the same values to the new session paths.
+- Preserved the existing charged-energy reset policy so both energy paths reset
+  together and both time paths publish the same `chargingTime` value.
+- Added hardware-free tests in `tests/test_wattpilot_session_paths.py` for path
+  registration, valid session energy, `onconnect` reset-policy preservation,
+  reset clearing, and charging-time mirroring.
+- Updated README, `docs/wattpilot-architecture.md`, and
+  `docs/service-inventory.md` to document the standard EV-charger session path
+  compatibility.
+- Kept the change limited to additive D-Bus/MQTT path publication, tests, docs,
+  and backlog; no Wattpilot commands, Auto/Eco policy, Manual mode, phase
+  switching, grid guards, MQTT topic names, or configuration defaults were
+  changed.
+
 ## Backlog
-
-### P2 - Publish Venus EVCS Session Energy And Time Paths
-
-Problem:
-
-The standard Venus OS / GX EVCS overview tile can show `--kWh` for the
-FroniusWattpilot service even while live EV power is displayed. Current
-`gui-v2` sources read the overview tile's session energy and timer from
-`/Session/Energy` and `/Session/Time`, but es-ESS currently publishes the same
-concepts only on older/existing paths.
-
-Evidence:
-
-- Upstream Victron `gui-v2` `components/widgets/EvcsWidget.qml` reads
-  `serviceUid + "/Session/Energy"` for the kWh value and
-  `serviceUid + "/Session/Time"` for the charging-time value.
-- `FroniusWattpilot.py` registers and publishes `/Ac/Energy/Forward`.
-- `FroniusWattpilot.py` registers and publishes `/ChargingTime`.
-- `FroniusWattpilot.py` does not currently register or publish
-  `/Session/Energy` or `/Session/Time`.
-- Live GX observation showed the EVCS tile displaying `--kWh` while EVCS power
-  was present.
-
-Implementation:
-
-- Add `/Session/Energy` and `/Session/Time` to the FroniusWattpilot D-Bus
-  service during initialization.
-- Keep `/Ac/Energy/Forward` and `/ChargingTime` unchanged for existing
-  consumers.
-- When Wattpilot session energy is valid and published to `/Ac/Energy/Forward`,
-  publish the same kWh value to `/Session/Energy`.
-- When energy is reset to `0.0` by the existing reset policy, reset
-  `/Session/Energy` at the same time.
-- Publish `/Session/Time` from the same `chargingTime` value currently used for
-  `/ChargingTime`.
-- Do not change Wattpilot commands, Auto/Eco policy, phase switching, grid
-  guards, Manual mode, MQTT topics, or configuration defaults.
-
-Files to change:
-
-- `FroniusWattpilot.py`
-- `tests/`
-- `README.md`
-- `BACKLOG.md`
-- Possibly `docs/service-inventory.md` if the EV-charger D-Bus contract summary
-  is expanded.
-- Possibly `docs/wattpilot-architecture.md` if the public D-Bus contract is
-  updated there.
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add or update hardware-free tests proving `/Session/Energy` and
-  `/Session/Time` are registered at D-Bus service initialization.
-- Add tests proving valid Wattpilot `energyCounterSinceStart` publishes the
-  same kWh value to `/Ac/Energy/Forward` and `/Session/Energy`.
-- Add tests proving reset behavior clears both `/Ac/Energy/Forward` and
-  `/Session/Energy`.
-- Add tests proving `chargingTime` publishes to both `/ChargingTime` and
-  `/Session/Time`.
-- Run focused Wattpilot startup/session-path tests.
-- Run `python -m py_compile FroniusWattpilot.py`.
-- Run the full hardware-free unittest suite.
-
-Expected coverage:
-
-- The Venus/GX EVCS overview tile can display session kWh and session time for
-  the es-ESS FroniusWattpilot EV-charger service.
-- Existing D-Bus consumers that read `/Ac/Energy/Forward` or `/ChargingTime`
-  continue to work.
-- Charging behavior remains unchanged.
-
-Manual validation:
-
-- Required on the GX/Venus OS overview screen because this fixes a
-  GUI-rendered value.
-
-Manual test steps:
-
-1. Start es-ESS with Wattpilot enabled and a reachable Wattpilot.
-2. Start an EV charge and confirm `/Ac/Energy/Forward` and `/Session/Energy`
-   both report the current session kWh.
-3. Confirm `/ChargingTime` and `/Session/Time` both report the session timer.
-4. Confirm the Venus/GX EVCS overview tile no longer shows `--kWh` once
-   Wattpilot energy telemetry is available.
-5. Disconnect/reconnect according to the configured `ResetChargedEnergyCounter`
-   behavior and confirm both energy paths reset consistently.
-
-Risks and dependencies:
-
-- Low implementation risk because this is additive D-Bus publication.
-- Venus GUI behavior is outside es-ESS and must be validated on a live GX or
-  representative Venus OS UI.
-- Avoid changing the existing reset policy while adding the compatibility
-  paths.
-
-Open questions:
-
-- Should README document `/Session/Energy` and `/Session/Time` as compatibility
-  aliases or as part of the public Wattpilot D-Bus contract?
-
-Done criteria:
-
-- `/Session/Energy` and `/Session/Time` are published with values matching the
-  existing energy/time paths.
-- Existing session reset behavior is preserved.
-- Hardware-free tests and full unittest suite pass.
-- Live GX validation confirms the EVCS overview tile displays session kWh when
-  Wattpilot telemetry is available.
 
 ### P3 - Add A Supported User-Visible Wattpilot Unavailable Indicator
 
@@ -613,6 +523,101 @@ Done criteria:
 - If implemented in es-ESS, outage and recovery behavior is covered by tests.
 - Live GX validation confirms the user can clearly see Wattpilot transport
   outage without misleading `/Status` or `/Mode`.
+
+### P4 - Investigate EVCS UI Formatting Alignment
+
+Problem:
+
+After es-ESS publishes correct Wattpilot EVCS session energy/time values, the
+Venus/GX web overview and VRM/mobile detail views may display the same
+underlying values with different precision, units, rounding, and refresh
+cadence. This can look inconsistent even though the D-Bus values are correct.
+
+Evidence:
+
+- Live GX validation confirmed `/Session/Energy` mirrors
+  `/Ac/Energy/Forward`, and `/Session/Time` mirrors `/ChargingTime`.
+- The Venus/GX overview tile showed real EVCS energy and time rather than
+  `--kWh`.
+- The web overview and mobile/detail views formatted similar values
+  differently, such as rounded power on the overview, energy in Wh versus kWh,
+  and `00h 07m` versus `6m, 15s`.
+- These formatting differences come from UI presentation layers, not from the
+  es-ESS D-Bus numeric values.
+
+Implementation:
+
+- Treat this as a UI-layer investigation, not an es-ESS control or D-Bus-value
+  change.
+- Identify where Venus/GX web overview formatting is implemented for EVCS
+  power, session energy, and session time.
+- If local Venus/GX customization is acceptable, evaluate a small UI patch or
+  extension that formats overview values closer to the mobile/detail view.
+- If broad consistency is desired, consider documenting or proposing an
+  upstream Victron `gui-v2` formatting improvement.
+- Do not change es-ESS numeric units, round published D-Bus values, or publish
+  strings on numeric paths to force UI alignment.
+
+Files to change:
+
+- Possibly documentation only.
+- Possibly local Venus/GX UI or extension files if that route is explicitly
+  selected.
+- Possibly no es-ESS production code.
+- `BACKLOG.md`
+
+Files to add:
+
+- Possibly a local UI patch note, custom dashboard extension, or upstream issue
+  reference.
+
+Tests:
+
+- If no es-ESS code changes are made, no Python tests are required.
+- If a UI artifact is added, validate rendering on the target GX/Venus OS UI.
+- Recheck D-Bus values to prove `/Session/Energy`, `/Ac/Energy/Forward`,
+  `/Session/Time`, and `/ChargingTime` remain numeric and truthful.
+
+Expected coverage:
+
+- The team has a clear decision on whether cosmetic web/mobile formatting
+  alignment is worth a UI customization or upstream proposal.
+- es-ESS continues publishing precise numeric D-Bus values for automations,
+  VRM, MQTT consumers, and dashboards.
+
+Manual validation:
+
+- Required on the relevant UI surface because this is a presentation concern.
+
+Manual test steps:
+
+1. Start an EV charging session and confirm es-ESS D-Bus values are correct.
+2. Capture Venus/GX web overview formatting for power, energy, and time.
+3. Capture VRM/mobile detail formatting for the same values at about the same
+   time.
+4. If a UI patch is tested, confirm the display alignment improves without
+   losing useful precision or breaking standard units.
+
+Risks and dependencies:
+
+- Local Venus/GX UI patches may be overwritten by Venus OS updates.
+- VRM/mobile formatting is controlled by Victron app/cloud UI behavior and is
+  not realistically changeable from es-ESS.
+- Changing es-ESS numeric outputs for display consistency would reduce data
+  quality and risk breaking consumers.
+
+Open questions:
+
+- Is local GX/web formatting consistency important enough to maintain a custom
+  UI patch?
+- Should formatting feedback be proposed upstream to Victron instead?
+
+Done criteria:
+
+- A decision is documented: no change, local UI customization, or upstream
+  proposal.
+- Any implemented UI-only change is validated visually.
+- es-ESS D-Bus numeric contracts remain unchanged.
 
 ### P2 - Extract Wattpilot Telemetry And Allowance Evaluation Helpers
 
@@ -995,21 +1000,19 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P2 Venus EVCS session energy/time paths, because it is additive D-Bus UI
-   compatibility work and does not change charging control behavior.
-2. P3 supported Wattpilot unavailable indicator, because it improves outage
+1. P3 supported Wattpilot unavailable indicator, because it improves outage
    visibility without changing charging control behavior if a supported surface
    is available.
-3. P0 Manual command-boundary hardening, because it protects the most important
-   product invariant once the test base is stronger.
-4. P2 telemetry and allowance helper extraction, because it is the first
+2. P2 telemetry and allowance helper extraction, because it is the first
    low-side-effect Wattpilot control extraction.
-5. P2 grid-guard and battery-assist helper extraction, because it is more
+3. P2 grid-guard and battery-assist helper extraction, because it is more
    safety-sensitive and should follow characterization coverage.
-6. P2 phase-switching helper extraction, because phase switching is
+4. P2 phase-switching helper extraction, because phase switching is
    user-visible and high-impact.
-7. P3 state-machine refactor, because it needs the previous behavior, config,
+5. P3 state-machine refactor, because it needs the previous behavior, config,
    docs, and helper boundaries in place before touching overall control flow.
+6. P4 EVCS UI formatting alignment, because it is cosmetic and should stay
+   separate from the es-ESS numeric D-Bus contract.
 
 ## Verification Plan
 
