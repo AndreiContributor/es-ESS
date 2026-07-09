@@ -434,6 +434,13 @@ current selection maps to phase mode like this:
 - Selecting `18` to `48` A requests three-phase charging at one third of the
   selected total current per phase.
 
+These direct current and start/stop controls are accepted only while Wattpilot
+telemetry confirms ECO mode. When Wattpilot is in normal Manual/default mode,
+or when mode telemetry is unavailable, es-ESS rejects `/SetCurrent` and
+`/StartStop` writes and leaves the Manual session under Wattpilot app/user
+control. The VRM `/Mode` selector can still intentionally switch between
+Manual and Auto/ECO.
+
 > :warning: **FAKE-BMS injection**:<br /> This feature is creating FAKE-BMS information on dbus. Make sure to manually select your *actual* BMS unter *Settings > System setup > Battery Monitor* else your ESS may not behave correctly anymore. Don't leave this setting to *Automatic*
 
 > :warning: **Dependency**:<br /> If you want to enable Solar-Overhead Charging, you need to enable the [SolarOverheadDistributor](#solaroverheaddistributor) as well. (It will be responsible for giving a clearence to Wattpilots charge request)
