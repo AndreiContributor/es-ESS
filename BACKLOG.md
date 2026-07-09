@@ -272,6 +272,36 @@ Completion note:
   mode, Auto/Eco control decisions, reconnect-loop ownership, D-Bus paths, MQTT
   topics, or configuration defaults were changed.
 
+### Completed 2026-07-09 - Publish Wattpilot Transport Outage Status To Victron Dashboard
+
+Completion note:
+
+- Added controller-owned Wattpilot transport dashboard reporting in
+  `FroniusWattpilot.py`.
+- Extended runtime-status transport observation to record `WS_ERROR` as well as
+  `WS_CLOSE`, while keeping raw WebSocket callbacks side-effect-free.
+- Set standard Victron EV-charger paths to `/Connected=0`,
+  `/Status=Disconnected`, and `/StatusLiteral="Wattpilot not accessible"` when
+  the Wattpilot transport is unavailable, and restored `/Connected=1` on
+  recovery.
+- Added a visible GX/VRM overview hint by setting `/CustomName` and the
+  SolarOverheadDistributor Wattpilot custom-name topic to
+  `Wattpilot not reachable` during transport outages, then restoring the normal
+  Wattpilot name on recovery.
+- Published one outage service message and one recovery service message per
+  outage/recovery cycle.
+- Preserved intentional hibernate idle disconnects as normal idle behavior, not
+  dashboard transport outages.
+- Added hardware-free tests for WebSocket close/error outage reporting,
+  visible custom-name publication, recovery, message de-duplication, no
+  Wattpilot command side effects, and the direct Fronius dashboard hook.
+- Verified with targeted Wattpilot startup/runtime-status tests and the full
+  hardware-free unittest suite.
+- Kept the change limited to dashboard/status publication, runtime transport
+  observation, README, tests, and backlog; no Manual mode, Auto/Eco charge
+  policy, reconnect-loop ownership, configuration defaults, D-Bus path names,
+  or MQTT topic names were changed.
+
 ## Backlog
 
 ### P0 - Guard Manual Wattpilot Mode From D-Bus/VRM Control Writes
@@ -375,144 +405,6 @@ Done criteria:
 - No new control commands are sent in Manual mode except any explicitly
   approved mode-selection behavior.
 
-### P1 - Publish Wattpilot Transport Outage Status To Victron Dashboard
-
-Problem:
-
-When the Wattpilot WebSocket is disconnected after startup, the Victron energy
-dashboard can still show a stale or vague EV-charger state instead of a clear
-"Wattpilot not accessible" status. This makes a transport outage look like a
-valid charger state and hides the difference between "no vehicle", "waiting for
-PV", and "wallbox unreachable".
-
-Evidence:
-
-- The inspected `D:\current.log` showed startup and reconnect recovery working,
-  but also showed runtime transport errors:
-  `Connection timed out - goodbye` and `[Errno 113] No route to host - goodbye`.
-- During the outage window, SolarOverheadDistributor continued publishing
-  messages such as `Assigned 0W to Fronius Wattpilot - No vehicle`, which is
-  misleading when the Wattpilot is not reachable.
-- `FroniusWattpilot.py` initializes the Victron EV-charger `/Connected` D-Bus
-  path to `1`, but there is no explicit outage path that sets `/Connected=0`
-  and `/StatusLiteral="Wattpilot not accessible"` on WebSocket close/error.
-- `WattpilotRuntimeStatus.py` records `WS_CLOSE` and publishes
-  `/TelemetryHealthy=0`, but the standard Victron EV-charger dashboard paths
-  remain owned by `FroniusWattpilot.py` and can stay stale until later normal
-  controller updates.
-- `docs/wattpilot-architecture.md` defines `WattpilotRuntimeStatus.py` as an
-  observer only; charger command and VRM/D-Bus status ownership remains in
-  `FroniusWattpilot.py`.
-
-Implementation:
-
-- Add explicit Wattpilot transport availability reporting in the controller or
-  through a small runtime-status hook that delegates dashboard-path updates back
-  to `FroniusWattpilot.py`.
-- On first confirmed WebSocket close/error or disconnected update, publish one
-  operational service message such as `Wattpilot is not accessible. Waiting for
-  reconnect.`
-- Set Victron dashboard-facing paths conservatively while transport is down:
-  `/Connected = 0`, `/Status = VrmEvChargerStatus.Disconnected.value`, and
-  `/StatusLiteral = "Wattpilot not accessible"`.
-- Keep runtime-status `/TelemetryHealthy=0` behavior aligned with the existing
-  outage state.
-- On first healthy Wattpilot message/auth/full-status recovery, publish one
-  recovery message such as `Wattpilot connection recovered.`, set
-  `/Connected = 1`, and allow normal controller status publication to resume.
-- Avoid issuing any Wattpilot `set_power`, `set_phases`, `set_start_stop`, or
-  mode commands as part of dashboard-status publication.
-- Avoid service-message spam by tracking whether an outage has already been
-  announced.
-
-Files to change:
-
-- `FroniusWattpilot.py`
-- `WattpilotRuntimeStatus.py`
-- Tests under `tests/`
-- Possibly `docs/wattpilot-architecture.md` if the public D-Bus/runtime-status
-  contract is clarified.
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add hardware-free runtime-status/controller tests proving a Wattpilot
-  WebSocket close or disconnected client sets `/Connected=0`, `/Status` to
-  `Disconnected`, `/StatusLiteral` to `Wattpilot not accessible`, and
-  `/TelemetryHealthy=0`.
-- Add a test proving repeated worker cycles during the same outage do not
-  publish repeated service messages.
-- Add a recovery test proving the next healthy Wattpilot transport message sets
-  `/Connected=1`, publishes one recovery message, and permits normal status
-  updates again.
-- Add tests proving no Wattpilot charge-control command is sent by outage or
-  recovery status publication.
-- Run existing Wattpilot runtime-status tests.
-- Run the full unittest suite.
-- Run `python -m py_compile` for changed Python files.
-
-Expected coverage:
-
-- Victron dashboard users see an explicit unavailable state when the Wattpilot
-  cannot be reached.
-- Runtime-status consumers continue to see unhealthy telemetry during transport
-  loss.
-- SolarOverheadDistributor and VRM status no longer imply "No vehicle" or a
-  valid waiting state while the wallbox is unreachable.
-- Recovery returns the dashboard to the normal EV-charger status path without
-  changing Manual mode, Auto/Eco decisions, or reconnect-loop ownership.
-
-Manual validation:
-
-- Required on a GX/Venus OS system or representative staging system with
-  Wattpilot network access that can be interrupted.
-
-Manual test steps:
-
-1. Start es-ESS with Wattpilot reachable.
-2. Confirm the Victron dashboard shows the normal EV-charger state and
-   `/Connected=1`.
-3. Disconnect the Wattpilot from the network or power it off.
-4. Confirm the Victron dashboard changes to a clear unavailable/disconnected
-   state and no longer implies `No vehicle` or `Waiting for PV`.
-5. Confirm service messages include one `Wattpilot is not accessible` message,
-   not repeated spam every worker cycle.
-6. Restore Wattpilot network/power.
-7. Confirm the dashboard returns to `/Connected=1`, normal Wattpilot status
-   publication resumes, and one recovery message is published.
-8. Confirm Manual reporting and Auto/Eco waiting behavior are unchanged after
-   recovery.
-
-Risks and dependencies:
-
-- Victron/VRM may display `/StatusLiteral` differently across Venus OS
-  versions; manual dashboard validation is required.
-- Do not publish outage status directly from raw WebSocket callbacks if that
-  would violate the runtime-status observer boundary. Prefer lightweight event
-  recording plus normal controller-path publication or an explicit controller
-  method wrapped by the reporter.
-- This should remain separate from the reconnect-loop refactor unless the
-  implementation proves the reconnect mechanics must change first.
-
-Open questions:
-
-- Should the dashboard literal be exactly `Wattpilot not accessible`, or should
-  it use a shorter Venus-friendly string such as `Wallbox unreachable`?
-- Should `/Connected=0` be set immediately on `WS_CLOSE`, or only after one
-  failed controller update to avoid flicker during very short reconnects?
-
-Done criteria:
-
-- Dashboard-facing D-Bus paths clearly report Wattpilot transport outage.
-- Runtime-status telemetry remains unhealthy during outage and recovers after
-  healthy Wattpilot messages.
-- Outage and recovery messages are published once per outage/recovery cycle.
-- No Wattpilot charge-control command is issued by status-only outage handling.
-- Existing Wattpilot behavior tests pass.
-
 ### P1 - Replace Wattpilot Recursive Reconnect With A Bounded Connection Loop
 
 Problem:
@@ -606,6 +498,117 @@ Done criteria:
 - Reconnect loop tests pass.
 - Existing Wattpilot runtime-status tests pass.
 - Manual outage/recovery validation succeeds without duplicate worker threads.
+
+### P3 - Investigate Venus EVCS Overview Tile Outage Text
+
+Problem:
+
+The Wattpilot transport-outage D-Bus state is now published correctly, but the
+standard Venus/GX overview tile still renders the cached/user tile title
+`EVCS`, the standard enum text `Disconnected`, and the last selected mode
+`Auto`. The tile does not show `/CustomName="Wattpilot not reachable"` or
+`/StatusLiteral="Wattpilot not accessible"`, so the overview does not make the
+difference between "car disconnected" and "wallbox unreachable" obvious.
+
+Evidence:
+
+- Live GX validation during a Wattpilot outage showed:
+  `/CustomName = 'Wattpilot not reachable'`,
+  `/Connected = 0`,
+  `/Status = 0`,
+  `/StatusLiteral = 'Wattpilot not accessible'`,
+  `/Mode = 1`, and `/ModeLiteral = 'Auto'`.
+- The Venus overview tile still showed `EVCS`, `0W`, `Disconnected`, and
+  `Auto`.
+- SolarOverheadDistributor service messages did update to
+  `Assigned 0W to Wattpilot not reachable`, proving es-ESS and the distributor
+  received the new custom name.
+- `Disconnected` maps to the standard `VrmEvChargerStatus.Disconnected` enum
+  and `Auto` maps to the standard `VrmEvChargerControlMode.Auto` enum. Changing
+  either just for display would misrepresent the underlying state.
+
+Implementation:
+
+- Investigate which Venus OS / GUI path or settings value supplies the EVCS
+  overview tile title and whether it can be safely influenced by an external
+  EV-charger D-Bus service.
+- Check `com.victronenergy.settings` and the Venus GUI/VRM naming behavior for
+  device aliases, cached names, or EV-charger-specific display-name paths.
+- Do not change `/Mode` away from Auto during transport outage unless product
+  intent explicitly changes; selected Auto mode can remain true even while the
+  wallbox is unreachable.
+- Do not map transport outage to an electrical fault status unless the team
+  explicitly decides a communication outage should be user-visible as a charger
+  fault.
+- If a safe tile-title path exists, update it only during confirmed transport
+  outage and restore the prior user-configured value on recovery.
+- If no safe path exists, document that the overview tile is limited to
+  standard enum text and that detailed outage text is available through D-Bus,
+  service messages, MQTT runtime status, and SolarOverheadDistributor messages.
+
+Files to change:
+
+- Possibly `FroniusWattpilot.py`
+- Possibly `WattpilotRuntimeStatus.py`
+- Possibly `README.md`
+- Possibly `BACKLOG.md`
+- Tests under `tests/` if behavior changes
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- If a writable/display-name path is used, add hardware-free tests proving the
+  path is set on outage and restored on recovery.
+- Keep tests proving `/Status`, `/StatusLiteral`, `/CustomName`, and
+  `/Connected` publish the current outage contract.
+- Run focused Wattpilot runtime-status/startup tests and the full unittest
+  suite.
+
+Manual validation:
+
+- Required on the GX/Venus OS overview screen because this is UI-rendering
+  behavior outside es-ESS.
+
+Manual test steps:
+
+1. Put Wattpilot in a normal reachable state and record the current EVCS tile
+   title and D-Bus naming values.
+2. Trigger a Wattpilot transport outage.
+3. Confirm the candidate Venus display-name path changes, if one is used.
+4. Confirm the overview tile changes visibly without changing `/Mode` or
+   pretending there is an electrical charger fault.
+5. Restore Wattpilot transport.
+6. Confirm the tile and D-Bus/service-message values recover and any prior
+   user-configured title is restored.
+
+Risks and dependencies:
+
+- Venus OS may cache tile labels or use user settings outside the service's
+  D-Bus contract.
+- Writing a user-configured device alias could be surprising; preserve and
+  restore any previous value if this path is used.
+- Misusing `/Status` or `/Mode` for display would make automation and VRM data
+  less truthful.
+
+Open questions:
+
+- Which exact Venus OS component renders the EVCS overview tile?
+- Is the `EVCS` label a user alias, a VRM cached name, or a hard-coded
+  EV-charger tile label?
+- Is there a safe, supported D-Bus/settings path for a service to expose a
+  temporary transport-outage title?
+
+Done criteria:
+
+- The tile-title source is identified or proven not safely controllable from
+  es-ESS.
+- Any implemented change preserves the truthful D-Bus contract for `/Status`
+  and `/Mode`.
+- Live GX validation documents whether the overview tile can show a transport
+  outage distinctly from a disconnected vehicle.
 
 ### P2 - Extract Wattpilot Telemetry And Allowance Evaluation Helpers
 
@@ -988,10 +991,11 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P1 Wattpilot transport outage dashboard status, because it improves
-   user-visible fault reporting without changing charge policy.
-2. P1 Wattpilot reconnect loop, because recovery reliability affects live
+1. P1 Wattpilot reconnect loop, because recovery reliability affects live
    safety/status behavior but should be isolated to the client lifecycle.
+2. P3 Venus EVCS overview tile outage-text investigation, because live testing
+   proved the D-Bus outage contract works but the Venus tile ignores
+   `/CustomName` and `/StatusLiteral`.
 3. P0 Manual command-boundary hardening, because it protects the most important
    product invariant once the test base is stronger.
 4. P2 telemetry and allowance helper extraction, because it is the first

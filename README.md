@@ -503,6 +503,11 @@ Auto/Eco also requires a valid Wattpilot allowance received within `AllowanceFre
 The normal Victron EV-charger status stays compatible with VRM. More detailed
 state is published on the Wattpilot runtime-status contract:
 
+- When the Wattpilot transport is unreachable, es-ESS sets the standard charger
+  `/Connected` path to `0`, keeps `/Status` VRM-compatible as `Disconnected`,
+  and sets `/CustomName` to `Wattpilot not reachable` so the GX/VRM overview
+  tile has a visible outage hint even when it does not display
+  `/StatusLiteral`.
 - D-Bus paths on `com.victronenergy.evcharger.*_FroniusWattpilot`:
   `/ControlState`, `/ControlStateLiteral`, `/PhaseMode`,
   `/PhaseModeLiteral`, `/BatteryAssistActive`, `/GridImportGuardActive`, and
@@ -1041,7 +1046,11 @@ is separate from the normal Victron EV-charger status path.
 
 The standard `/Status` path remains VRM-compatible and is not changed to
 force a custom Charging label. `/CustomName` is optional presentation metadata
-only; it is not used as a source of phase or runtime state.
+only; it is not used as a source of phase or runtime state. During a Wattpilot
+transport outage, `/CustomName` is temporarily set to
+`Wattpilot not reachable` because the standard GX/VRM overview tile may show
+only the enum text `Disconnected` instead of the more specific
+`/StatusLiteral`.
 
 The following D-Bus values are published on the existing
 `com.victronenergy.evcharger.*_FroniusWattpilot` service:

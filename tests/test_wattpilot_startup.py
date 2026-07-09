@@ -109,6 +109,7 @@ def _install_fronius_startup_stubs(warnings, errors):
         Auto = 1
 
     class VrmEvChargerStatus(Enum):
+        Disconnected = 0
         StopCharging = 24
 
     class VrmEvChargerStartStop(Enum):
@@ -211,6 +212,91 @@ class WattpilotStartupTests(unittest.TestCase):
         self.assertTrue(any("connection not ready during startup" in message for message in warnings))
         self.assertTrue(any("car state not ready during startup" in message for message in warnings))
         self.assertFalse(any("within 30 seconds" in message for message in warnings))
+
+    def test_fronius_dashboard_transport_outage_updates_standard_paths(self):
+        warnings = []
+        errors = []
+        _install_fronius_startup_stubs(warnings, errors)
+        fronius_module = _load_module(
+            "fronius_transport_dashboard_under_test",
+            ROOT / "FroniusWattpilot.py",
+        )
+        controller = fronius_module.FroniusWattpilot.__new__(
+            fronius_module.FroniusWattpilot
+        )
+        dbus_values = {}
+        messages = []
+        mqtt_messages = []
+
+        def fail_command(*_args, **_kwargs):
+            raise AssertionError("transport status must not issue Wattpilot commands")
+
+        controller.wattpilotDashboardTransportUnavailable = False
+        controller.isHibernateEnabled = False
+        controller.isIdleMode = False
+        controller.effectiveCarConnected = True
+        controller.wattpilot = types.SimpleNamespace(
+            connected=False,
+            set_power=fail_command,
+            set_phases=fail_command,
+            set_start_stop=fail_command,
+        )
+        controller.publish = lambda path, value: dbus_values.__setitem__(path, value)
+        controller.publishMainMqtt = (
+            lambda topic, payload, qos=0, retain=False: mqtt_messages.append(
+                (topic, payload, qos, retain)
+            )
+        )
+        controller.publishServiceMessage = (
+            lambda _service, message: messages.append(message)
+        )
+
+        self.assertTrue(controller.updateWattpilotTransportDashboardStatus())
+        self.assertEqual(dbus_values["/Connected"], 0)
+        self.assertEqual(dbus_values["/Status"], 0)
+        self.assertEqual(
+            dbus_values["/StatusLiteral"],
+            fronius_module.WATTPILOT_UNAVAILABLE_STATUS_LITERAL,
+        )
+        self.assertEqual(
+            dbus_values["/CustomName"],
+            fronius_module.WATTPILOT_UNAVAILABLE_CUSTOM_NAME,
+        )
+        self.assertIn(
+            (
+                "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/CustomName",
+                fronius_module.WATTPILOT_UNAVAILABLE_CUSTOM_NAME,
+                0,
+                False,
+            ),
+            mqtt_messages,
+        )
+        self.assertEqual(
+            messages,
+            ["Wattpilot is not accessible. Waiting for reconnect."],
+        )
+
+        self.assertTrue(controller.updateWattpilotTransportDashboardStatus())
+        self.assertEqual(
+            messages,
+            ["Wattpilot is not accessible. Waiting for reconnect."],
+        )
+
+        controller.wattpilot.connected = True
+
+        self.assertFalse(controller.updateWattpilotTransportDashboardStatus())
+        self.assertEqual(dbus_values["/Connected"], 1)
+        self.assertEqual(
+            dbus_values["/CustomName"],
+            fronius_module.WATTPILOT_BASE_CUSTOM_NAME,
+        )
+        self.assertEqual(
+            messages,
+            [
+                "Wattpilot is not accessible. Waiting for reconnect.",
+                "Wattpilot connection recovered.",
+            ],
+        )
 
 
 if __name__ == "__main__":

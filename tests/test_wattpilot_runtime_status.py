@@ -85,6 +85,7 @@ class FakeWattpilot:
         self.modelStatus = SimpleNamespace(value=4)
         self.handlers = {}
         self.connect_calls = 0
+        self.command_calls = []
 
     def add_event_handler(self, event, callback):
         self.handlers.setdefault(event, []).append(callback)
@@ -98,6 +99,15 @@ class FakeWattpilot:
 
     def disconnect(self):
         self.connected = False
+
+    def set_power(self, value):
+        self.command_calls.append(("set_power", value))
+
+    def set_phases(self, value):
+        self.command_calls.append(("set_phases", value))
+
+    def set_start_stop(self, value):
+        self.command_calls.append(("set_start_stop", value))
 
 
 class FroniusWattpilot:
@@ -120,9 +130,15 @@ class FroniusWattpilot:
         self.init_finished = False
         self.update_calls = 0
         self.last_status_name = ""
+        self.messages = []
+        self.isHibernateEnabled = False
+        self.isIdleMode = False
+        self.effectiveCarConnected = True
+        self.wattpilotDashboardTransportUnavailable = False
 
     def initDbusService(self):
         self.dbusService = VeDbusService("com.victronenergy.evcharger.test", register=False)
+        self.dbusService.add_path("/Connected", 1)
         self.dbusService.add_path("/Status", 123)
         self.dbusService.add_path("/StatusLiteral", "Disconnected")
         self.dbusService.add_path("/PhaseMode", 0)
@@ -144,12 +160,72 @@ class FroniusWattpilot:
         self.init_finished = True
 
     def _update(self):
+        if self.updateWattpilotTransportDashboardStatus():
+            return
         self.update_calls += 1
-        self.reportVRMStatus(FakeStatus(self.last_status_name or "WaitingForSun"))
+        status_name = (
+            self.last_status_name
+            if self.last_status_name not in ("", "Disconnected")
+            else "WaitingForSun"
+        )
+        self.reportVRMStatus(FakeStatus(status_name))
 
-    def reportVRMStatus(self, status):
+    def reportVRMStatus(self, status, statusLiteral=None):
         self.last_status_name = status.name
-        self.dbusService["/StatusLiteral"] = status.name
+        self.dbusService["/Status"] = getattr(status, "value", 0)
+        self.dbusService["/StatusLiteral"] = statusLiteral or status.name
+
+    def publish(self, path, value):
+        self.dbusService[path] = value
+
+    def publishServiceMessage(self, _service, message):
+        self.messages.append(message)
+
+    def updateWattpilotTransportDashboardStatus(self):
+        unavailable = self.isWattpilotTransportUnavailableForDashboard()
+
+        if unavailable:
+            if not self.wattpilotDashboardTransportUnavailable:
+                self.publishServiceMessage(
+                    self,
+                    "Wattpilot is not accessible. Waiting for reconnect.",
+                )
+            self.wattpilotDashboardTransportUnavailable = True
+            self.publish("/Connected", 0)
+            self.reportVRMStatus(
+                FakeStatus("Disconnected"), "Wattpilot not accessible"
+            )
+            self.publishWattpilotCustomName("Wattpilot not reachable")
+            return True
+
+        if self.wattpilotDashboardTransportUnavailable:
+            self.wattpilotDashboardTransportUnavailable = False
+            self.publish("/Connected", 1)
+            self.publishWattpilotCustomName("Fronius Wattpilot")
+            self.publishServiceMessage(self, "Wattpilot connection recovered.")
+
+        return False
+
+    def isWattpilotTransportUnavailableForDashboard(self):
+        if self.isIntentionalWattpilotIdleDisconnect():
+            return False
+
+        reporter = getattr(self, "_runtime_status_reporter", None)
+        is_unavailable = getattr(
+            reporter, "transport_unavailable_for_dashboard", None
+        )
+        if callable(is_unavailable):
+            return bool(is_unavailable())
+
+        return not bool(getattr(self.wattpilot, "connected", False))
+
+    def isIntentionalWattpilotIdleDisconnect(self):
+        return (
+            self.isHibernateEnabled
+            and self.isIdleMode
+            and not self.effectiveCarConnected
+            and not self.wattpilot.connected
+        )
 
     def reportPhaseMode(self):
         pass
@@ -208,6 +284,13 @@ class FroniusWattpilot:
     def publishMainMqtt(self, topic, payload, qos=0, retain=False):
         self.mqtt.append((topic, payload, qos, retain))
 
+    def publishWattpilotCustomName(self, customName):
+        self.publish("/CustomName", customName)
+        self.publishMainMqtt(
+            "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/CustomName",
+            customName,
+        )
+
 
 class WattpilotRuntimeStatusTests(unittest.TestCase):
     def setUp(self):
@@ -245,7 +328,9 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
     @staticmethod
     def wattpilot_event_module():
         module = ModuleType("Wattpilot")
-        module.Event = SimpleNamespace(WS_MESSAGE="message", WS_CLOSE="close")
+        module.Event = SimpleNamespace(
+            WS_MESSAGE="message", WS_CLOSE="close", WS_ERROR="error"
+        )
         return module
 
     def establish_transport_baseline(self, controller, module, now=1000.0):
@@ -458,14 +543,46 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
             controller, _reporter = self.make_controller()
             self.establish_transport_baseline(controller, module)
             self.assert_state(controller, CONTROL_STATE_WAITING_FOR_PV, "Waiting for PV")
+            self.assertEqual(controller.dbusService["/Connected"], 1)
 
             before_mqtt = len(controller.mqtt)
             controller.wattpilot.connected = False
             controller.wattpilot.emit(module.Event.WS_CLOSE)
             self.assertEqual(len(controller.mqtt), before_mqtt)
+            self.assertEqual(controller.dbusService["/Connected"], 1)
             controller._update()
             self.assert_state(controller, CONTROL_STATE_STOPPED, "Stopped")
             self.assertEqual(controller.dbusService["/TelemetryHealthy"], 0)
+            self.assertEqual(controller.dbusService["/Connected"], 0)
+            self.assertEqual(controller.dbusService["/Status"], 0)
+            self.assertEqual(
+                controller.dbusService["/StatusLiteral"],
+                "Wattpilot not accessible",
+            )
+            self.assertEqual(
+                controller.dbusService["/CustomName"],
+                "Wattpilot not reachable",
+            )
+            self.assertIn(
+                (
+                    "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/CustomName",
+                    "Wattpilot not reachable",
+                    0,
+                    False,
+                ),
+                controller.mqtt,
+            )
+            self.assertEqual(
+                controller.messages,
+                ["Wattpilot is not accessible. Waiting for reconnect."],
+            )
+            self.assertEqual(controller.wattpilot.command_calls, [])
+
+            controller._update()
+            self.assertEqual(
+                controller.messages,
+                ["Wattpilot is not accessible. Waiting for reconnect."],
+            )
 
             controller.wattpilot.connected = True
             controller.wattpilot.carStateReady = True
@@ -474,6 +591,52 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
             controller._update()
             self.assert_state(controller, CONTROL_STATE_WAITING_FOR_PV, "Waiting for PV")
             self.assertEqual(controller.dbusService["/TelemetryHealthy"], 1)
+            self.assertEqual(controller.dbusService["/Connected"], 1)
+            self.assertEqual(controller.dbusService["/CustomName"], "Fronius Wattpilot")
+            self.assertEqual(
+                controller.messages,
+                [
+                    "Wattpilot is not accessible. Waiting for reconnect.",
+                    "Wattpilot connection recovered.",
+                ],
+            )
+
+    def test_websocket_error_marks_dashboard_unavailable_on_update(self):
+        module = self.wattpilot_event_module()
+        with mock.patch.dict(sys.modules, {"Wattpilot": module}):
+            controller, _reporter = self.make_controller()
+            self.establish_transport_baseline(controller, module)
+
+            controller.wattpilot.connected = False
+            controller.wattpilot.emit(module.Event.WS_ERROR)
+            self.assertEqual(controller.dbusService["/Connected"], 1)
+            controller._update()
+
+        self.assertEqual(controller.dbusService["/Connected"], 0)
+        self.assertEqual(
+            controller.dbusService["/StatusLiteral"],
+            "Wattpilot not accessible",
+        )
+        self.assertEqual(controller.dbusService["/CustomName"], "Wattpilot not reachable")
+
+    def test_intentional_hibernate_idle_disconnect_does_not_mark_outage(self):
+        module = self.wattpilot_event_module()
+        with mock.patch.dict(sys.modules, {"Wattpilot": module}):
+            controller, _reporter = self.make_controller()
+            self.establish_transport_baseline(controller, module)
+            controller.isHibernateEnabled = True
+            controller.isIdleMode = True
+            controller.effectiveCarConnected = False
+            controller.wattpilot.connected = False
+            controller.wattpilot.emit(module.Event.WS_CLOSE)
+            controller._update()
+
+        self.assertEqual(controller.dbusService["/Connected"], 1)
+        self.assertNotEqual(
+            controller.dbusService["/StatusLiteral"],
+            "Wattpilot not accessible",
+        )
+        self.assertEqual(controller.messages, [])
 
     def test_silent_transport_staleness_stops_auto_after_a_healthy_baseline(self):
         module = self.wattpilot_event_module()

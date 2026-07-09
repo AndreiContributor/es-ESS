@@ -21,6 +21,10 @@ from Wattpilot import Wattpilot
 from enums import WattpilotModelStatus, WattpilotStartStop, WattpilotControlMode, VrmEvChargerControlMode, VrmEvChargerStatus, VrmEvChargerStartStop
 from esESSService import esESSService
 
+WATTPILOT_BASE_CUSTOM_NAME = "Fronius Wattpilot"
+WATTPILOT_UNAVAILABLE_STATUS_LITERAL = "Wattpilot not accessible"
+WATTPILOT_UNAVAILABLE_CUSTOM_NAME = "Wattpilot not reachable"
+
 class FroniusWattpilot (esESSService):
     
     def __init__(self):
@@ -162,6 +166,7 @@ class FroniusWattpilot (esESSService):
         self.noChargeSince = 0
         self.isIdleMode = False
         self.isHibernateEnabled = settings["HibernateMode"].lower() == "true"
+        self.wattpilotDashboardTransportUnavailable = False
         self.mqttAllowanceTopic = 'es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Allowance'
         # SolarOverheadDistributor already publishes its raw, pre-allocation
         # overhead on MQTT. Keep a local copy as a reliable fallback for the
@@ -231,8 +236,8 @@ class FroniusWattpilot (esESSService):
         # Create the mandatory objects (plus some extras)
         self.dbusService.add_path('/DeviceInstance', int(self.vrmInstanceID))
         self.dbusService.add_path('/ProductId', 65535)
-        self.dbusService.add_path('/ProductName', "Fronius Wattpilot") 
-        self.dbusService.add_path('/CustomName', "Fronius Wattpilot") 
+        self.dbusService.add_path('/ProductName', WATTPILOT_BASE_CUSTOM_NAME)
+        self.dbusService.add_path('/CustomName', WATTPILOT_BASE_CUSTOM_NAME)
         self.dbusService.add_path('/Latency', None)    
         self.dbusService.add_path('/FirmwareVersion', Globals.currentVersionString)
         self.dbusService.add_path('/HardwareVersion', Globals.currentVersionString)
@@ -533,6 +538,9 @@ class FroniusWattpilot (esESSService):
 
     def _update(self):
         try:
+            if self.updateWattpilotTransportDashboardStatus():
+                return
+
             effectiveCarConnected = self.updateEffectiveCarConnection()
 
             # In idle mode the charger is polled only every five minutes. While a
@@ -1052,6 +1060,62 @@ class FroniusWattpilot (esESSService):
         self.publish("/Status", status.value)
         self.publish("/StatusLiteral", statusLiteral or status.name)
 
+    def updateWattpilotTransportDashboardStatus(self):
+        unavailable = self.isWattpilotTransportUnavailableForDashboard()
+
+        if unavailable:
+            if not getattr(self, "wattpilotDashboardTransportUnavailable", False):
+                self.publishServiceMessage(
+                    self,
+                    "Wattpilot is not accessible. Waiting for reconnect.",
+                )
+            self.wattpilotDashboardTransportUnavailable = True
+            self.publish("/Connected", 0)
+            self.reportVRMStatus(
+                VrmEvChargerStatus.Disconnected,
+                WATTPILOT_UNAVAILABLE_STATUS_LITERAL,
+            )
+            self.publishWattpilotCustomName(WATTPILOT_UNAVAILABLE_CUSTOM_NAME)
+            return True
+
+        if getattr(self, "wattpilotDashboardTransportUnavailable", False):
+            self.wattpilotDashboardTransportUnavailable = False
+            self.publish("/Connected", 1)
+            self.publishWattpilotCustomName(WATTPILOT_BASE_CUSTOM_NAME)
+            self.publishServiceMessage(
+                self,
+                "Wattpilot connection recovered.",
+            )
+
+        return False
+
+    def isWattpilotTransportUnavailableForDashboard(self):
+        if self.isIntentionalWattpilotIdleDisconnect():
+            return False
+
+        reporter = getattr(self, "_runtime_status_reporter", None)
+        is_unavailable = getattr(
+            reporter, "transport_unavailable_for_dashboard", None
+        )
+        if callable(is_unavailable):
+            return bool(is_unavailable())
+
+        if self.wattpilot is None:
+            return False
+        return not bool(getattr(self.wattpilot, "connected", False))
+
+    def isIntentionalWattpilotIdleDisconnect(self):
+        if not (
+            getattr(self, "isHibernateEnabled", False)
+            and getattr(self, "isIdleMode", False)
+        ):
+            return False
+        if getattr(self, "effectiveCarConnected", False):
+            return False
+        if self.wattpilot is None:
+            return False
+        return not bool(getattr(self.wattpilot, "connected", False))
+
     def reportBaseRequest(self):
         if self.wattpilot.voltage1 is not None:
             minimumPower = (
@@ -1165,17 +1229,24 @@ class FroniusWattpilot (esESSService):
             phaseLiteral = "Phase switching" if self.wattpilot.carConnected else "No vehicle"
 
         if charging:
-            customName = "Fronius Wattpilot - Charging {0}".format(phaseLiteral)
+            customName = "{0} - Charging {1}".format(
+                WATTPILOT_BASE_CUSTOM_NAME, phaseLiteral
+            )
         elif self.wattpilot.carConnected:
-            customName = "Fronius Wattpilot - Ready ({0})".format(phaseLiteral)
+            customName = "{0} - Ready ({1})".format(
+                WATTPILOT_BASE_CUSTOM_NAME, phaseLiteral
+            )
         else:
-            customName = "Fronius Wattpilot - No vehicle"
+            customName = "{0} - No vehicle".format(WATTPILOT_BASE_CUSTOM_NAME)
 
         # /CustomName is the only standard text field likely to be shown in the
         # standard GX/VRM EV charger view. /PhaseMode and /PhaseModeLiteral are
         # also published for MQTT, DBus inspection and custom dashboards.
         self.publish("/PhaseMode", phaseCount)
         self.publish("/PhaseModeLiteral", phaseLiteral)
+        self.publishWattpilotCustomName(customName)
+
+    def publishWattpilotCustomName(self, customName):
         self.publish("/CustomName", customName)
 
         # Keep the SolarOverheadDistributor's consumer name in sync as well.

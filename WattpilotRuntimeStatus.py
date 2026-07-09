@@ -148,6 +148,7 @@ class WattpilotRuntimeStatusReporter:
         self._transport_lock = threading.Lock()
         self._last_wattpilot_message_at: Optional[float] = None
         self._last_wattpilot_close_at: Optional[float] = None
+        self._last_wattpilot_error_at: Optional[float] = None
         self._transport_has_healthy_baseline = False
 
     def install(self) -> "WattpilotRuntimeStatusReporter":
@@ -255,6 +256,7 @@ class WattpilotRuntimeStatusReporter:
             # fields it dereferences. This is what makes an offline startup safe
             # and keeps its D-Bus contract responsive rather than blocking.
             if not self._controller_ready_for_update():
+                self.publish_controller_transport_dashboard_status()
                 return self.publish()
 
             completed = False
@@ -354,7 +356,7 @@ class WattpilotRuntimeStatusReporter:
             return
 
         attached = False
-        for event_name in ("WS_MESSAGE", "WS_CLOSE"):
+        for event_name in ("WS_MESSAGE", "WS_CLOSE", "WS_ERROR"):
             event = getattr(Event, event_name, None)
             if event is None:
                 continue
@@ -379,6 +381,31 @@ class WattpilotRuntimeStatusReporter:
             elif event_name == "WS_CLOSE":
                 self._last_wattpilot_close_at = now
                 self._last_wattpilot_message_at = None
+            elif event_name == "WS_ERROR":
+                self._last_wattpilot_error_at = now
+                self._last_wattpilot_message_at = None
+
+    def transport_unavailable_for_dashboard(self) -> bool:
+        """Return whether the controller should mark dashboard status offline."""
+        if not self._init_finalize_completed and not self.runtime_state_ready:
+            return False
+        if not self._wattpilot_connected():
+            return True
+        return self._transport_is_stale()
+
+    def publish_controller_transport_dashboard_status(self) -> None:
+        """Let the controller update its own standard EV-charger paths."""
+        method = getattr(
+            self.controller, "updateWattpilotTransportDashboardStatus", None
+        )
+        if not callable(method):
+            return
+        try:
+            method()
+        except Exception as ex:
+            _LOG.warning(
+                "Wattpilot dashboard transport status update failed: %s", ex
+            )
 
     def _transport_is_stale(self) -> bool:
         """Return true only for a silent loss after a known-good baseline."""
