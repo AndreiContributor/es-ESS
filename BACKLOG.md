@@ -62,9 +62,10 @@ Current test strategy:
   Wattpilot PV-control policy, runtime status, grid guards, phase switching,
   stale telemetry, battery assist, charge-complete hold, and several Manual
   mode safety cases.
-- Remaining gaps are around writable D-Bus command boundaries, WebSocket
-  reconnect lifecycle behavior, broader configuration migration compatibility,
-  CI, and lifecycle shell scripts.
+- Remaining gaps are around writable D-Bus command boundaries, dashboard-visible
+  Wattpilot transport outage status, WebSocket reconnect lifecycle behavior,
+  broader configuration migration compatibility, CI, and lifecycle shell
+  scripts.
 
 Unclear deployment details:
 
@@ -373,6 +374,144 @@ Done criteria:
 - Existing Wattpilot behavior tests pass.
 - No new control commands are sent in Manual mode except any explicitly
   approved mode-selection behavior.
+
+### P1 - Publish Wattpilot Transport Outage Status To Victron Dashboard
+
+Problem:
+
+When the Wattpilot WebSocket is disconnected after startup, the Victron energy
+dashboard can still show a stale or vague EV-charger state instead of a clear
+"Wattpilot not accessible" status. This makes a transport outage look like a
+valid charger state and hides the difference between "no vehicle", "waiting for
+PV", and "wallbox unreachable".
+
+Evidence:
+
+- The inspected `D:\current.log` showed startup and reconnect recovery working,
+  but also showed runtime transport errors:
+  `Connection timed out - goodbye` and `[Errno 113] No route to host - goodbye`.
+- During the outage window, SolarOverheadDistributor continued publishing
+  messages such as `Assigned 0W to Fronius Wattpilot - No vehicle`, which is
+  misleading when the Wattpilot is not reachable.
+- `FroniusWattpilot.py` initializes the Victron EV-charger `/Connected` D-Bus
+  path to `1`, but there is no explicit outage path that sets `/Connected=0`
+  and `/StatusLiteral="Wattpilot not accessible"` on WebSocket close/error.
+- `WattpilotRuntimeStatus.py` records `WS_CLOSE` and publishes
+  `/TelemetryHealthy=0`, but the standard Victron EV-charger dashboard paths
+  remain owned by `FroniusWattpilot.py` and can stay stale until later normal
+  controller updates.
+- `docs/wattpilot-architecture.md` defines `WattpilotRuntimeStatus.py` as an
+  observer only; charger command and VRM/D-Bus status ownership remains in
+  `FroniusWattpilot.py`.
+
+Implementation:
+
+- Add explicit Wattpilot transport availability reporting in the controller or
+  through a small runtime-status hook that delegates dashboard-path updates back
+  to `FroniusWattpilot.py`.
+- On first confirmed WebSocket close/error or disconnected update, publish one
+  operational service message such as `Wattpilot is not accessible. Waiting for
+  reconnect.`
+- Set Victron dashboard-facing paths conservatively while transport is down:
+  `/Connected = 0`, `/Status = VrmEvChargerStatus.Disconnected.value`, and
+  `/StatusLiteral = "Wattpilot not accessible"`.
+- Keep runtime-status `/TelemetryHealthy=0` behavior aligned with the existing
+  outage state.
+- On first healthy Wattpilot message/auth/full-status recovery, publish one
+  recovery message such as `Wattpilot connection recovered.`, set
+  `/Connected = 1`, and allow normal controller status publication to resume.
+- Avoid issuing any Wattpilot `set_power`, `set_phases`, `set_start_stop`, or
+  mode commands as part of dashboard-status publication.
+- Avoid service-message spam by tracking whether an outage has already been
+  announced.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `WattpilotRuntimeStatus.py`
+- Tests under `tests/`
+- Possibly `docs/wattpilot-architecture.md` if the public D-Bus/runtime-status
+  contract is clarified.
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add hardware-free runtime-status/controller tests proving a Wattpilot
+  WebSocket close or disconnected client sets `/Connected=0`, `/Status` to
+  `Disconnected`, `/StatusLiteral` to `Wattpilot not accessible`, and
+  `/TelemetryHealthy=0`.
+- Add a test proving repeated worker cycles during the same outage do not
+  publish repeated service messages.
+- Add a recovery test proving the next healthy Wattpilot transport message sets
+  `/Connected=1`, publishes one recovery message, and permits normal status
+  updates again.
+- Add tests proving no Wattpilot charge-control command is sent by outage or
+  recovery status publication.
+- Run existing Wattpilot runtime-status tests.
+- Run the full unittest suite.
+- Run `python -m py_compile` for changed Python files.
+
+Expected coverage:
+
+- Victron dashboard users see an explicit unavailable state when the Wattpilot
+  cannot be reached.
+- Runtime-status consumers continue to see unhealthy telemetry during transport
+  loss.
+- SolarOverheadDistributor and VRM status no longer imply "No vehicle" or a
+  valid waiting state while the wallbox is unreachable.
+- Recovery returns the dashboard to the normal EV-charger status path without
+  changing Manual mode, Auto/Eco decisions, or reconnect-loop ownership.
+
+Manual validation:
+
+- Required on a GX/Venus OS system or representative staging system with
+  Wattpilot network access that can be interrupted.
+
+Manual test steps:
+
+1. Start es-ESS with Wattpilot reachable.
+2. Confirm the Victron dashboard shows the normal EV-charger state and
+   `/Connected=1`.
+3. Disconnect the Wattpilot from the network or power it off.
+4. Confirm the Victron dashboard changes to a clear unavailable/disconnected
+   state and no longer implies `No vehicle` or `Waiting for PV`.
+5. Confirm service messages include one `Wattpilot is not accessible` message,
+   not repeated spam every worker cycle.
+6. Restore Wattpilot network/power.
+7. Confirm the dashboard returns to `/Connected=1`, normal Wattpilot status
+   publication resumes, and one recovery message is published.
+8. Confirm Manual reporting and Auto/Eco waiting behavior are unchanged after
+   recovery.
+
+Risks and dependencies:
+
+- Victron/VRM may display `/StatusLiteral` differently across Venus OS
+  versions; manual dashboard validation is required.
+- Do not publish outage status directly from raw WebSocket callbacks if that
+  would violate the runtime-status observer boundary. Prefer lightweight event
+  recording plus normal controller-path publication or an explicit controller
+  method wrapped by the reporter.
+- This should remain separate from the reconnect-loop refactor unless the
+  implementation proves the reconnect mechanics must change first.
+
+Open questions:
+
+- Should the dashboard literal be exactly `Wattpilot not accessible`, or should
+  it use a shorter Venus-friendly string such as `Wallbox unreachable`?
+- Should `/Connected=0` be set immediately on `WS_CLOSE`, or only after one
+  failed controller update to avoid flicker during very short reconnects?
+
+Done criteria:
+
+- Dashboard-facing D-Bus paths clearly report Wattpilot transport outage.
+- Runtime-status telemetry remains unhealthy during outage and recovers after
+  healthy Wattpilot messages.
+- Outage and recovery messages are published once per outage/recovery cycle.
+- No Wattpilot charge-control command is issued by status-only outage handling.
+- Existing Wattpilot behavior tests pass.
 
 ### P1 - Replace Wattpilot Recursive Reconnect With A Bounded Connection Loop
 
@@ -849,17 +988,19 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P1 Wattpilot reconnect loop, because recovery reliability affects live
+1. P1 Wattpilot transport outage dashboard status, because it improves
+   user-visible fault reporting without changing charge policy.
+2. P1 Wattpilot reconnect loop, because recovery reliability affects live
    safety/status behavior but should be isolated to the client lifecycle.
-2. P0 Manual command-boundary hardening, because it protects the most important
+3. P0 Manual command-boundary hardening, because it protects the most important
    product invariant once the test base is stronger.
-3. P2 telemetry and allowance helper extraction, because it is the first
+4. P2 telemetry and allowance helper extraction, because it is the first
    low-side-effect Wattpilot control extraction.
-4. P2 grid-guard and battery-assist helper extraction, because it is more
+5. P2 grid-guard and battery-assist helper extraction, because it is more
    safety-sensitive and should follow characterization coverage.
-5. P2 phase-switching helper extraction, because phase switching is
+6. P2 phase-switching helper extraction, because phase switching is
    user-visible and high-impact.
-6. P3 state-machine refactor, because it needs the previous behavior, config,
+7. P3 state-machine refactor, because it needs the previous behavior, config,
     docs, and helper boundaries in place before touching overall control flow.
 
 ## Verification Plan
