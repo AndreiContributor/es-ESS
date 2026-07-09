@@ -113,6 +113,10 @@ Future Wattpilot changes must preserve these invariants:
   Auto/Eco decisions.
 - Raw overhead may help with a safe three-to-one fallback, but must not start
   charging or authorize a phase-up.
+- Immediately after a confirmed one-to-three-phase switch, a low raw-overhead
+  sample may be debounced briefly to let ESS/battery telemetry settle. The
+  grid-import guard and telemetry freshness checks still run before that
+  debounce.
 - Current limits must respect configured per-phase bounds and the
   Wattpilot-reported effective limit.
 - Public D-Bus and MQTT runtime-status paths are compatibility contracts.
