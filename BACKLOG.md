@@ -69,8 +69,8 @@ Current test strategy:
   stale telemetry, battery assist, charge-complete hold, and several Manual
   mode safety cases.
 - Remaining gaps are around UI-format alignment across Venus/VRM surfaces,
-  Fronius module packaging evaluation, and the longer-term explicit
-  state-machine refactor.
+  Fronius module packaging evaluation, and completing the Wattpilot
+  state-machine dispatch after passive shadow validation.
 
 Unclear deployment details:
 
@@ -496,7 +496,93 @@ Completion note:
   ownership, grid policy, battery-assist thresholds, phase thresholds, D-Bus
   path names, MQTT topic names, or configuration defaults were changed.
 
+### Completed 2026-07-10 - Add Wattpilot Control-State Shadow Selector
+
+Completion note:
+
+- Added `WattpilotControlState.py` with explicit pure state names and selection
+  order for the existing `FroniusWattpilot._update()` branch routing.
+- Added `tests/test_wattpilot_control_state.py` before implementation and used
+  it to lock safety ordering: transport outage, stale grid telemetry, grid
+  import phase-down/stop, pending phase switch, confirmed disconnect, charging,
+  not-charging, external low-price, phase-switching, and unknown model states.
+- Wired `FroniusWattpilot.py` to run the selector as a passive shadow check
+  beside the existing branch flow. Matching cycles stay quiet; mismatches are
+  logged as warnings with the relevant input snapshot.
+- Kept existing Wattpilot command dispatch, D-Bus/MQTT publication, service
+  messages, timers, and Auto/Eco policy in the controller. The selector does
+  not issue commands or publish state.
+- Updated `docs/wattpilot-architecture.md` to document the new helper boundary
+  and the production-validation stage before the selector owns dispatch.
+- Verified with the new selector tests, existing Wattpilot policy regression
+  tests, syntax checks, and the full hardware-free unittest suite.
+- Kept the change behavior-preserving except for diagnostic warning logs on a
+  shadow-selector mismatch; no Manual mode, Auto/Eco charging policy, phase
+  thresholds, D-Bus path names, MQTT topic names, or configuration defaults
+  were changed.
+
 ## Backlog
+
+### P4 - Winter Validate Wattpilot Grid-Import Shadow Branches
+
+Goal:
+
+Use natural low-PV / higher-load winter conditions to live-validate the
+Wattpilot control-state shadow selector on grid-import and stale-telemetry
+branches that are difficult to exercise safely during summer surplus.
+
+Problem:
+
+Summer production and available battery energy made sustained grid import
+unlikely during the initial production validation. The shadow selector already
+showed zero mismatches across normal Manual, Auto/Eco start, active charging,
+battery assist, transport outage/recovery, disconnect/reconnect, one-to-three
+phase switching, and three-to-one fallback paths. The remaining live coverage
+gap is the no-grid safety path during real sustained import or grid-telemetry
+outage.
+
+Implementation:
+
+- Wait for natural winter or low-PV operating conditions rather than forcing an
+  artificial grid-import event.
+- During representative winter Auto/Eco charging, check logs for
+  `Wattpilot control-state shadow mismatch`.
+- If sustained grid import naturally occurs with `AllowGridCharging=false`,
+  confirm the existing grid-import guard either phase-downs first when safe or
+  stops Auto/Eco charging.
+- If a real grid-meter / D-Bus telemetry outage occurs, confirm Auto/Eco blocks
+  starts or stops active charging according to the existing fail-safe policy.
+- Do not change Wattpilot settings, force grid import, disconnect critical
+  telemetry, or modify the production energy system only to satisfy this
+  validation item.
+
+Files to change:
+
+- Possibly `BACKLOG.md` only, when recording the result.
+
+Tests:
+
+- Existing unit tests already cover stale grid telemetry and grid-import guard
+  ordering.
+- No new automated tests are required unless the winter run reveals a mismatch
+  or unclear diagnostic output.
+
+Manual validation:
+
+1. Run normal winter Auto/Eco charging with `AllowGridCharging=false`.
+2. Search the live log:
+   `grep -i "Wattpilot control-state shadow mismatch" /data/log/es-ESS/current.log`
+3. If grid import occurs, capture the relevant log window around the guard
+   decision.
+4. Confirm there are no selector mismatches.
+5. Record the result in this backlog item.
+
+Done criteria:
+
+- Winter or naturally low-PV validation records no control-state shadow
+  mismatches for any observed grid-import or stale-telemetry branch.
+- If those branches still do not occur naturally, the item records that result
+  without forcing unsafe or unrealistic system behavior.
 
 ### P4 - Investigate EVCS UI Formatting Alignment
 
@@ -654,7 +740,7 @@ Done criteria:
 - Any file move is isolated from behavior changes and covered by import tests.
 - Full hardware-free tests pass after the packaging change.
 
-### P3 - Refactor Wattpilot Control Into An Explicit State Machine
+### P3 - Complete Wattpilot Control State-Machine Dispatch
 
 Depends on:
 
@@ -666,10 +752,12 @@ Depends on:
 - Wattpilot decision characterization tests.
 - Telemetry, allowance, grid guard, battery assist, and phase decision helper
   extraction.
+- Wattpilot control-state shadow selector live validation with no mismatches.
 
 Goal:
 
-Improve maintainability without changing established behavior.
+Improve maintainability without changing established behavior by making the
+already-tested explicit state selector own `_update()` dispatch.
 
 Problem:
 
@@ -686,19 +774,27 @@ Evidence:
   behavior in one class.
 - Existing tests already encode many expected transitions and should become the
   safety net for refactoring.
+- `WattpilotControlState.py` now defines the intended branch order and
+  `FroniusWattpilot.py` passively logs selector mismatches, but the existing
+  controller branch flow still owns actual dispatch.
 
 Implementation:
 
-- Separate telemetry input, PV allowance evaluation, grid guard, battery assist,
-  phase switching, and status publishing.
-- Introduce explicit state transitions instead of scattered flags and
-  timestamps.
+- First run the shadow selector in production during normal Wattpilot use and
+  confirm there are no `Wattpilot control-state shadow mismatch` warnings.
+- Replace the current `_update()` branch ladder with dispatch from
+  `WattpilotControlState.select_control_state()`.
+- Keep telemetry input, PV allowance evaluation, grid guard, battery assist,
+  phase switching, status publishing, and command side effects in their
+  existing ownership boundaries unless a smaller helper extraction is required.
+- Introduce explicit transition handlers around the selected state instead of
+  adding new scattered flags and timestamps.
 - Preserve all public D-Bus and MQTT paths from the runtime-status contract.
 - Preserve existing config keys and defaults in `config.sample.ini`.
 - Keep Manual mode behavior unchanged.
 - Avoid combining this refactor with new features.
 - Keep the existing behavior suite passing unchanged.
-- Add transition tests for every state-machine edge.
+- Extend transition tests for every state-machine dispatch edge.
 
 Files to change:
 
@@ -711,7 +807,9 @@ Files to change:
 
 Files to add:
 
-- Possibly a dedicated state-machine module and focused test module.
+- Possibly no new files if `WattpilotControlState.py` remains sufficient.
+- Possibly focused dispatch tests if they are clearer than extending existing
+  policy tests.
 
 Tests:
 
@@ -722,8 +820,8 @@ Tests:
 
 Expected coverage:
 
-- The controller is easier to reason about and produces one clear reason for
-  each stop/start/phase decision.
+- The controller is easier to reason about and dispatches each cycle from one
+  explicit selected state.
 - Behavior remains compatible with existing tests and public D-Bus/MQTT paths.
 
 Manual validation:
@@ -748,13 +846,16 @@ Risks and dependencies:
 
 Open questions:
 
-- Should the state machine be introduced behind internal helper methods first,
-  or moved to a separate module in one PR?
+- How long should the passive shadow selector run on the live GX/Wattpilot
+  before dispatch is switched to the selector?
 
 Done criteria:
 
+- Production validation finds no selector mismatch warnings during representative
+  Manual, Auto/Eco, disconnect, stale-telemetry, phase-switch, and cloud-dip
+  scenarios.
 - Existing behavior is preserved.
-- State transitions are explicit and covered by tests.
+- State selection owns `_update()` dispatch and is covered by tests.
 - Manual live-device validation confirms no unintended grid use or Manual-mode
   control.
 

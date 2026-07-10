@@ -72,6 +72,10 @@ It owns:
 - One-phase and three-phase switching orchestration, delegating pure thresholds,
   target-current, distributor-request, and phase-up timing decisions to
   `WattpilotPhaseDecisions.py`.
+- Passive control-state shadow validation through `WattpilotControlState.py`.
+  The current controller still owns the actual branch dispatch and side
+  effects; the selector is used to prove the explicit state order before it is
+  allowed to own dispatch.
 - Wattpilot command issuing through the `Wattpilot` client.
 - Wattpilot shutdown behavior during es-ESS termination.
 
@@ -162,6 +166,33 @@ user-visible messages, starts transition grace, confirms pending phase
 switches from live telemetry, and issues `set_phases()` / `set_power()`
 commands.
 
+### `WattpilotControlState.py`
+
+`WattpilotControlState.py` owns the explicit, pure control-state ordering for
+the Wattpilot controller.
+
+It owns:
+
+- The named controller states used to describe each `_update()` branch.
+- Model-status classification for charging and not-charging Wattpilot states.
+- Pure selection of the next controller branch from an input snapshot.
+- Formatting of shadow-selector inputs for mismatch diagnostics.
+
+It must not own:
+
+- Wattpilot command issuing.
+- D-Bus or MQTT publication.
+- Service messages, except that the controller may log selector mismatches.
+- Mutable controller timers such as allowance, phase-switch, grid-import, or
+  battery-assist timestamps.
+- Live telemetry sampling.
+
+During the validation stage, `FroniusWattpilot.py` still executes the existing
+branch order and calls the selector only as a passive shadow check. A mismatch
+is logged as a warning with the relevant inputs. Normal matching cycles stay
+quiet. The selector should own actual dispatch only after tests and live
+validation show that the shadow state always matches the existing branch.
+
 ### `WattpilotRuntimeStatus.py`
 
 `WattpilotRuntimeStatus.py` owns the separate runtime-status contract for
@@ -235,5 +266,7 @@ Refactors should be small and behavior-preserving:
 - Keep charger command side effects in `FroniusWattpilot.py` until a tested
   command boundary exists.
 - Extract pure decision helpers before introducing a broader state machine.
+- Validate any broader state-machine refactor with passive shadow selection
+  before replacing the controller's existing side-effect dispatch.
 - Do not combine config/default changes with control-flow refactors.
 - Do not add shared 16 A cable/current-limiting logic.

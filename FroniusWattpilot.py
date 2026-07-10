@@ -17,6 +17,7 @@ from vedbus import VeDbusService # type: ignore
 import Globals
 import Helper
 from Helper import i, c, d, w, e, t,  dbusConnection
+import WattpilotControlState as ControlStates
 import WattpilotDecisionInputs as DecisionInputs
 import WattpilotPhaseDecisions as PhaseDecisions
 import WattpilotSafetyDecisions as SafetyDecisions
@@ -560,9 +561,67 @@ class FroniusWattpilot (esESSService):
        self.wattpilot.connect()
        self.isIdleMode = False
 
+    def controlStateInputs(
+        self,
+        effectiveCarConnected=None,
+        gridTelemetryFresh=True,
+        gridImportLimitExceeded=False,
+        phaseDownForPvDip=False,
+        pendingPhaseStatus=False,
+        transportUnavailable=False,
+    ):
+        modelStatus = getattr(self.wattpilot, "modelStatus", None)
+        lowPriceStatus = getattr(
+            WattpilotModelStatus, "ChargingBecauseAwattarPriceLow", None
+        )
+        phaseSwitchStatus = getattr(
+            WattpilotModelStatus, "NotChargingBecausePhaseSwitch", None
+        )
+        if effectiveCarConnected is None:
+            effectiveCarConnected = getattr(self, "effectiveCarConnected", False)
+
+        return ControlStates.ControlStateInputs(
+            transport_unavailable=transportUnavailable,
+            auto_mode=self.mode == VrmEvChargerControlMode.Auto,
+            allow_grid_charging=self.allowGridCharging,
+            grid_telemetry_fresh=gridTelemetryFresh,
+            grid_import_limit_exceeded=gridImportLimitExceeded,
+            current_phase_mode=self.currentPhaseMode,
+            phase_down_for_pv_dip=phaseDownForPvDip,
+            pending_phase_status=bool(pendingPhaseStatus),
+            effective_car_connected=bool(effectiveCarConnected),
+            model_status_value=getattr(modelStatus, "value", None),
+            external_low_price=(
+                lowPriceStatus is not None
+                and modelStatus == lowPriceStatus
+            ),
+            phase_switching=(
+                phaseSwitchStatus is not None
+                and modelStatus == phaseSwitchStatus
+            ),
+        )
+
+    def traceControlStateDecision(self, selectedState, inputs):
+        predictedState = ControlStates.select_control_state(inputs)
+        if predictedState != selectedState:
+            w(
+                self,
+                "Wattpilot control-state shadow mismatch: predicted={0}; "
+                "actual={1}; inputs: {2}".format(
+                    predictedState.value,
+                    selectedState.value,
+                    ControlStates.describe_control_inputs(inputs),
+                )
+            )
+        return predictedState
+
     def _update(self):
         try:
             if self.updateWattpilotTransportDashboardStatus():
+                self.traceControlStateDecision(
+                    ControlStates.WattpilotControlState.TRANSPORT_UNAVAILABLE,
+                    ControlStates.ControlStateInputs(transport_unavailable=True),
+                )
                 return
 
             effectiveCarConnected = self.updateEffectiveCarConnection()
@@ -637,6 +696,7 @@ class FroniusWattpilot (esESSService):
                 return
 
             self.publishSafetyTelemetry()
+            gridTelemetryFresh = self.gridTelemetryIsFresh()
 
             # No-grid Auto/Eco control cannot safely decide whether a charge
             # may continue without all three grid-power values. This is an
@@ -645,8 +705,15 @@ class FroniusWattpilot (esESSService):
             if (
                 self.mode == VrmEvChargerControlMode.Auto
                 and not self.allowGridCharging
-                and not self.gridTelemetryIsFresh()
+                and not gridTelemetryFresh
             ):
+                self.traceControlStateDecision(
+                    ControlStates.WattpilotControlState.GRID_TELEMETRY_UNSAFE,
+                    self.controlStateInputs(
+                        effectiveCarConnected=effectiveCarConnected,
+                        gridTelemetryFresh=gridTelemetryFresh,
+                    ),
+                )
                 self.publishServiceMessage(
                     self,
                     "Grid telemetry is missing, invalid, or stale. "
@@ -670,10 +737,21 @@ class FroniusWattpilot (esESSService):
                 and not self.allowGridCharging
                 and self.gridImportLimitExceeded()
             ):
+                phaseDownForPvDip = False
                 if (
                     self.currentPhaseMode == 2
                     and self.shouldPhaseDownForPvDip()
                 ):
+                    phaseDownForPvDip = True
+                    self.traceControlStateDecision(
+                        ControlStates.WattpilotControlState.GRID_IMPORT_PHASE_DOWN,
+                        self.controlStateInputs(
+                            effectiveCarConnected=effectiveCarConnected,
+                            gridTelemetryFresh=gridTelemetryFresh,
+                            gridImportLimitExceeded=True,
+                            phaseDownForPvDip=phaseDownForPvDip,
+                        ),
+                    )
                 
                     self.publishServiceMessage(
                         self,
@@ -685,6 +763,15 @@ class FroniusWattpilot (esESSService):
                     self.dumpEvChargerInfo()
                     return
 
+                self.traceControlStateDecision(
+                    ControlStates.WattpilotControlState.GRID_IMPORT_STOP,
+                    self.controlStateInputs(
+                        effectiveCarConnected=effectiveCarConnected,
+                        gridTelemetryFresh=gridTelemetryFresh,
+                        gridImportLimitExceeded=True,
+                        phaseDownForPvDip=phaseDownForPvDip,
+                    ),
+                )
                 self.publishServiceMessage(
                     self,
                     "Grid import guard triggered. Stopping EV charging."
@@ -698,6 +785,14 @@ class FroniusWattpilot (esESSService):
 
             pendingPhaseStatus = self.reconcilePendingPhaseSwitch()
             if pendingPhaseStatus is not None:
+                self.traceControlStateDecision(
+                    ControlStates.WattpilotControlState.PENDING_PHASE_SWITCH,
+                    self.controlStateInputs(
+                        effectiveCarConnected=effectiveCarConnected,
+                        gridTelemetryFresh=gridTelemetryFresh,
+                        pendingPhaseStatus=True,
+                    ),
+                )
                 self.reportVRMStatus(pendingPhaseStatus)
                 self.reportBaseRequest()
                 self.dumpEvChargerInfo()
@@ -707,6 +802,13 @@ class FroniusWattpilot (esESSService):
             # debounce is particularly important while Wattpilot is processing
             # a start command or a phase transition.
             if not effectiveCarConnected:
+                self.traceControlStateDecision(
+                    ControlStates.WattpilotControlState.DISCONNECTED,
+                    self.controlStateInputs(
+                        effectiveCarConnected=effectiveCarConnected,
+                        gridTelemetryFresh=gridTelemetryFresh,
+                    ),
+                )
                 self.reportVRMStatus(VrmEvChargerStatus.Disconnected)
                 self.noChargeSince = 0
                 self.surplusSince = 0
@@ -719,15 +821,36 @@ class FroniusWattpilot (esESSService):
                 self.clearPendingPhaseSwitch()
 
             elif self.wattpilot.modelStatus.value in [3, 12, 15, 19, 20]:
+                self.traceControlStateDecision(
+                    ControlStates.WattpilotControlState.CHARGING,
+                    self.controlStateInputs(
+                        effectiveCarConnected=effectiveCarConnected,
+                        gridTelemetryFresh=gridTelemetryFresh,
+                    ),
+                )
                 self.handleChargingState()
 
             elif self.wattpilot.modelStatus.value in [4, 5, 6, 16, 17, 18, 22, 24]:
+                self.traceControlStateDecision(
+                    ControlStates.WattpilotControlState.NOT_CHARGING,
+                    self.controlStateInputs(
+                        effectiveCarConnected=effectiveCarConnected,
+                        gridTelemetryFresh=gridTelemetryFresh,
+                    ),
+                )
                 self.handleNotChargingState()
 
             elif (
                 self.wattpilot.modelStatus
                 == WattpilotModelStatus.ChargingBecauseAwattarPriceLow
             ):
+                self.traceControlStateDecision(
+                    ControlStates.WattpilotControlState.EXTERNAL_LOW_PRICE,
+                    self.controlStateInputs(
+                        effectiveCarConnected=effectiveCarConnected,
+                        gridTelemetryFresh=gridTelemetryFresh,
+                    ),
+                )
                 # In automatic mode this project is configured for no grid
                 # charging. Manual mode remains under the user's direct control.
                 if (
@@ -747,6 +870,13 @@ class FroniusWattpilot (esESSService):
                 self.wattpilot.modelStatus
                 == WattpilotModelStatus.NotChargingBecausePhaseSwitch
             ):
+                self.traceControlStateDecision(
+                    ControlStates.WattpilotControlState.PHASE_SWITCHING,
+                    self.controlStateInputs(
+                        effectiveCarConnected=effectiveCarConnected,
+                        gridTelemetryFresh=gridTelemetryFresh,
+                    ),
+                )
                 self.chargingTime += 5
                 if self.currentPhaseMode == 1:
                     self.reportVRMStatus(VrmEvChargerStatus.SwitchingTo1Phase)
@@ -754,6 +884,13 @@ class FroniusWattpilot (esESSService):
                     self.reportVRMStatus(VrmEvChargerStatus.SwitchingTo3Phase)
 
             else:
+                self.traceControlStateDecision(
+                    ControlStates.WattpilotControlState.UNKNOWN,
+                    self.controlStateInputs(
+                        effectiveCarConnected=effectiveCarConnected,
+                        gridTelemetryFresh=gridTelemetryFresh,
+                    ),
+                )
                 w(
                     self,
                     "Unknown Modelstatus reported: {0} - doing nothing.".format(
