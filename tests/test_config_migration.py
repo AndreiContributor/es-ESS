@@ -130,14 +130,18 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "8")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "9")
+        self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["NoBatToEV"]["UseRelay"], "4")
         self.assertEqual(migrated["MqttPvInverter"]["EnableZeroFeedin"], "true")
         self.assertEqual(migrated["MqttPvInverter"]["EnablePvShutdown"], "false")
         self.assertEqual(migrated["MqttPvInverter"]["ZeroFeedinScaleStep"], "0.05")
         self.assertEqual(migrated["MqttPvInverter"]["ZeroFeedinDistance"], "50")
         self.assertEqual(migrated["MqttPvInverter"]["ZeroFeedinStartSoc"], "100")
-        self.assertEqual(backups, ["config.ini.v6.backup", "config.ini.v7.backup"])
+        self.assertEqual(
+            backups,
+            ["config.ini.v6.backup", "config.ini.v7.backup", "config.ini.v8.backup"],
+        )
 
     def test_missing_later_sections_are_added_with_defaults(self):
         migrated, _backups = self._run_migration(
@@ -150,7 +154,8 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "8")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "9")
+        self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["NoBatToEV"]["UseRelay"], "-1")
         self.assertEqual(migrated["MqttPvInverter"]["EnableZeroFeedin"], "false")
         self.assertEqual(migrated["MqttPvInverter"]["EnablePvShutdown"], "false")
@@ -175,12 +180,28 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "8")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "9")
+        self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["Services"]["Shelly3EMGrid"], "true")
         self.assertEqual(migrated["Services"]["ShellyPMInverter"], "true")
         self.assertEqual(migrated["Services"]["MqttDC"], "true")
         self.assertEqual(migrated["Services"]["MqttPVInverter"], "true")
         self.assertFalse(migrated.has_option("SolarOverheadDistributor", "Strategy"))
+
+    def test_existing_http_request_timeout_is_preserved(self):
+        migrated, _backups = self._run_migration(
+            """
+            [Common]
+            ConfigVersion=8
+            HttpRequestTimeout=12
+
+            [Services]
+            MqttPVInverter=false
+            """
+        )
+
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "9")
+        self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "12")
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ class FroniusSmartmeterRS485(esESSService):
         self.vrmInstanceID = self.config["FroniusSmartmeterRS485"]["VRMInstanceID"]
         self.customName = self.config["FroniusSmartmeterRS485"]["CustomName"]
         self.meterID = self.config["FroniusSmartmeterRS485"]["MeterID"]
+        self.httpRequestTimeout = float(self.config["Common"].get("HttpRequestTimeout", "5"))
         self.connectionErrors = 0
 
     def initDbusService(self):
@@ -121,8 +122,7 @@ class FroniusSmartmeterRS485(esESSService):
         try:
             URL = "http://%s/solar_api/v1/GetMeterRealtimeData.cgi?Scope=Device&DeviceId=%s&DataCollection=MeterRealtimeData" % (self.meterHost, self.meterID)
         
-            #timeout should be half the poll frequency, so there is time to process.
-            meter_r = requests.get(url = URL, timeout=(self.pollFrequencyMs/2000))
+            meter_r = requests.get(url = URL, timeout=self.httpRequestTimeout)
             meter_data = meter_r.json()     
         
             # check for Json

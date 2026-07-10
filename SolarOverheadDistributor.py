@@ -21,11 +21,29 @@ import Globals
 from Helper import i, c, d, w, e, t, dbusConnection
 from esESSService import esESSService
 
+DEFAULT_HTTP_REQUEST_TIMEOUT_SECONDS = 5.0
+
+
+def _positiveFloatOrDefault(value, default):
+   try:
+      parsed = float(value)
+      if (parsed > 0):
+         return parsed
+   except Exception:
+      pass
+
+   return default
+
+
 class SolarOverheadDistributor(esESSService):
    def __init__(self):
       esESSService.__init__(self)
       self.vrmInstanceID = int(self.config['SolarOverheadDistributor']['VRMInstanceID'])
       self.vrmInstanceIDBMS = int(self.config['SolarOverheadDistributor']['VRMInstanceID_ReservationMonitor'])
+      self.httpRequestTimeout = _positiveFloatOrDefault(
+         self.config["Common"].get("HttpRequestTimeout", DEFAULT_HTTP_REQUEST_TIMEOUT_SECONDS),
+         DEFAULT_HTTP_REQUEST_TIMEOUT_SECONDS,
+      )
       self.serviceType = "com.victronenergy.settings"
       self.serviceName = self.serviceType + "." + Globals.esEssTagService + "_SolarOverheadDistributor"
       self.bmsServiceType = "com.victronenergy.battery"
@@ -653,6 +671,7 @@ class SolarOverheadConsumer:
      self.offUrl = None
      self.powerUrl = None
      self.statusUrl = None
+     self.httpRequestTimeout = DEFAULT_HTTP_REQUEST_TIMEOUT_SECONDS
 
      #Mqtt specific
      self.isMqttConsumer = False
@@ -806,6 +825,7 @@ class SolarOverheadConsumer:
      return False
 
   def initialize(self, sod:SolarOverheadDistributor):
+     self.httpRequestTimeout = getattr(sod, "httpRequestTimeout", DEFAULT_HTTP_REQUEST_TIMEOUT_SECONDS)
      self.serviceType = "com.victronenergy.battery"
      self.serviceName = self.serviceType + "." + Globals.esEssTagService + "_SolarOverheadConsumer_" + str(self.consumerKey)
      self.dbusService = VeDbusService(self.serviceName, bus=dbusConnection(), register=False)
@@ -930,11 +950,11 @@ class SolarOverheadConsumer:
          if (self.allowance >= self.request and not self.npcState):
             #turn on!
             d(self, "Turn on HttpConsumer required, calling: " + self.onUrl)
-            requests.get(url=self.onUrl)
+            requests.get(url=self.onUrl, timeout=self.httpRequestTimeout)
             self.validateHttpStatus(True)
          elif (self.allowance == 0 and self.npcState):
             #turn off!
-            requests.get(url=self.offUrl)
+            requests.get(url=self.offUrl, timeout=self.httpRequestTimeout)
             d(self, "Turn off HttpConsumer required, calling: " + self.offUrl)
             self.validateHttpStatus(False)
 
@@ -962,7 +982,7 @@ class SolarOverheadConsumer:
   def validateHttpStatus(self, should):
       try:
          d(self, "Validating HttpConsumer {0} state through: {1} against: {2}".format(self.consumerKey, self.statusUrl,self.onKeywordRegex))
-         status = requests.get(url=self.statusUrl)
+         status = requests.get(url=self.statusUrl, timeout=self.httpRequestTimeout)
          isMatch = re.search(str(self.onKeywordRegex), status.text) is not None
          self.validateNpcStatus(isMatch, should)
 
@@ -981,7 +1001,7 @@ class SolarOverheadConsumer:
 
   def fetchNpcPower(self):
       if (self.isHttpConsumer and self.powerUrl is not None and self.powerExtractRegex is not None):
-         body = requests.get(url=self.powerUrl)
+         body = requests.get(url=self.powerUrl, timeout=self.httpRequestTimeout)
          res = re.search(str(self.powerExtractRegex), body.text)
          if res is not None:
            d(self, "powerExtractRegex {0} did match for consumer {1}: {2}".format(self.powerExtractRegex, self.consumerKey, res.group(1)))

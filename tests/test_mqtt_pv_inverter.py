@@ -1,0 +1,200 @@
+"""Hardware-free tests for MQTT PV inverter behavior."""
+
+import configparser
+import importlib.util
+import sys
+import types
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _module(name, **attributes):
+    module = types.ModuleType(name)
+    for key, value in attributes.items():
+        setattr(module, key, value)
+    sys.modules[name] = module
+    return module
+
+
+def _load_module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakeDbusService(dict):
+    def __init__(self, *_args, **_kwargs):
+        super().__init__()
+        self.registered = False
+
+    def add_path(self, path, value, *args, **kwargs):
+        self[path] = value
+
+    def register(self):
+        self.registered = True
+
+
+def _config():
+    config = configparser.ConfigParser()
+    config.optionxform = str
+    config.read_dict(
+        {
+            "MqttPvInverter": {
+                "EnableZeroFeedin": "true",
+                "EnablePvShutdown": "false",
+                "ZeroFeedinScaleStep": "0.05",
+                "ZeroFeedinDistance": "50",
+                "ZeroFeedinStartSoc": "90",
+            },
+            "MqttPVInverter:roof": {
+                "CustomName": "Roof",
+                "VRMInstanceID": "51",
+                "Position": "0",
+                "L1VoltageTopic": "roof/l1v",
+                "L2VoltageTopic": "roof/l2v",
+                "L3VoltageTopic": "roof/l3v",
+                "L1PowerTopic": "roof/l1p",
+                "L2PowerTopic": "roof/l2p",
+                "L3PowerTopic": "roof/l3p",
+                "TotalPowerTopic": "roof/power",
+                "L1CurrentTopic": "roof/l1c",
+                "L2CurrentTopic": "roof/l2c",
+                "L3CurrentTopic": "roof/l3c",
+                "L1EnergyForwardedTopic": "roof/l1e",
+                "L2EnergyForwardedTopic": "roof/l2e",
+                "L3EnergyForwardedTopic": "roof/l3e",
+                "TotalEnergyForwardedTopic": "roof/energy",
+                "DtuControlTopic": "opendtu/roof",
+            },
+        }
+    )
+    return config
+
+
+CONFIG = _config()
+
+
+class BaseService:
+    def __init__(self):
+        self.config = CONFIG
+        self.published = []
+        self.subscriptions = []
+
+    def publishMainMqtt(self, topic, payload, qos=0, retain=False):
+        self.published.append((topic, payload, qos, retain))
+
+    def publishServiceMessage(self, *_args, **_kwargs):
+        pass
+
+    def registerMqttSubscription(self, topic, qos=0, type=0, callback=None):
+        self.subscriptions.append((topic, qos, type, callback))
+        return self.subscriptions[-1]
+
+    def registerWorkerThread(self, *_args, **_kwargs):
+        pass
+
+
+def _install_runtime_stubs():
+    dbus = _module("dbus")
+    dbus.__path__ = []
+    dbus_service = _module("dbus.service")
+    dbus.service = dbus_service
+    _module("vedbus", VeDbusService=FakeDbusService)
+    _module(
+        "Globals",
+        esEssTagService="test",
+        esEssTag="es-ESS",
+        currentVersionString="test",
+    )
+    _module(
+        "Helper",
+        i=lambda *args, **kwargs: None,
+        c=lambda *args, **kwargs: None,
+        d=lambda *args, **kwargs: None,
+        w=lambda *args, **kwargs: None,
+        e=lambda *args, **kwargs: None,
+        t=lambda *args, **kwargs: None,
+        dbusConnection=lambda: None,
+    )
+    _module("esESSService", esESSService=BaseService)
+
+
+class MqttPVInverterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _install_runtime_stubs()
+        cls.module = _load_module(
+            "mqtt_pv_inverter_under_test", ROOT / "MqttPVInverter.py"
+        )
+
+    def setUp(self):
+        self.module.c = Mock()
+
+    @staticmethod
+    def _dbus(value):
+        return SimpleNamespace(value=value)
+
+    def _service(self):
+        service = self.module.MqttPVInverter()
+        inverter = service.mqttPVInverters["roof"]
+        inverter.l1power = 100
+        inverter.l2power = 0
+        inverter.l3power = 0
+        inverter._throttle = 0.5
+        service.noPhasesDbus = self._dbus(3)
+        service.socDbus = self._dbus(100)
+        service.consumptionL1Dbus = self._dbus(0)
+        service.consumptionL2Dbus = self._dbus(0)
+        service.consumptionL3Dbus = self._dbus(0)
+        return service, inverter
+
+    def test_zero_feedin_zero_target_publishes_zero_throttle(self):
+        service, inverter = self._service()
+        service.consumptionL1Dbus.value = 30
+
+        service._dtuZeroFeedin()
+
+        self.module.c.assert_not_called()
+        self.assertEqual(inverter.throttle, 0.0)
+        self.assertIn(
+            ("opendtu/roof/cmd/limit_nonpersistent_relative", 0.0, 0, False),
+            service.published,
+        )
+
+    def test_zero_feedin_positive_target_keeps_proportional_scaling(self):
+        service, inverter = self._service()
+        service.consumptionL1Dbus.value = 250
+
+        service._dtuZeroFeedin()
+
+        self.module.c.assert_not_called()
+        self.assertEqual(inverter.throttle, 0.55)
+        self.assertIn(
+            ("opendtu/roof/cmd/limit_nonpersistent_relative", 55.00000000000001, 0, False),
+            service.published,
+        )
+
+    def test_dbus_service_and_mqtt_subscriptions_initialize(self):
+        service = self.module.MqttPVInverter()
+
+        service.initDbusService()
+        service.initMqttSubscriptions()
+
+        inverter = service.mqttPVInverters["roof"]
+        self.assertTrue(inverter.dbusService.registered)
+        self.assertEqual(inverter.dbusService["/DeviceInstance"], 51)
+        subscribed_topics = {entry[0] for entry in service.subscriptions}
+        self.assertIn("roof/l1v", subscribed_topics)
+        self.assertIn("roof/power", subscribed_topics)
+        self.assertIn("roof/energy", subscribed_topics)
+
+
+if __name__ == "__main__":
+    unittest.main()

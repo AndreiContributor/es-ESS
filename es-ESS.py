@@ -302,6 +302,15 @@ class esESS:
             self._setConfigDefault("MqttPvInverter", "ZeroFeedinDistance", "50")
             self._setConfigDefault("MqttPvInverter", "ZeroFeedinStartSoc", "100")
 
+        version = 9
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+
+            #Shared timeout for bounded HTTP consumer/device requests.
+            self._setConfigDefault("Common", "HttpRequestTimeout", "5")
+
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 
         if (loadedVersion < int(self.config["Common"]["ConfigVersion"])):
             with open("{0}/config.ini".format(os.path.dirname(os.path.realpath(__file__))), 'w') as configfile:

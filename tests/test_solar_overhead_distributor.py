@@ -30,8 +30,15 @@ def _load_module(name, path):
 
 
 def _install_runtime_stubs():
+    class Timeout(Exception):
+        pass
+
     _module("vedbus", VeDbusService=object)
-    _module("requests", get=lambda *args, **kwargs: SimpleNamespace(text=""))
+    _module(
+        "requests",
+        get=lambda *args, **kwargs: SimpleNamespace(text=""),
+        exceptions=SimpleNamespace(Timeout=Timeout),
+    )
     _module(
         "Globals",
         esEssTagService="test",
@@ -209,6 +216,73 @@ class SolarOverheadDistributorTests(unittest.TestCase):
         self.assertTrue(registration_done.is_set())
         self.assertIn("new", service._knownSolarOverheadConsumers)
         self.assertEqual(service._knownSolarOverheadConsumers["slow"].persist_calls, 1)
+
+    def _http_consumer(self):
+        consumer = self.sod.SolarOverheadConsumer.__new__(
+            self.sod.SolarOverheadConsumer
+        )
+        consumer.consumerKey = "load"
+        consumer.isHttpConsumer = True
+        consumer.isMqttConsumer = False
+        consumer.allowance = 1000
+        consumer.request = 1000
+        consumer.npcState = False
+        consumer.onUrl = "http://load/on"
+        consumer.offUrl = "http://load/off"
+        consumer.statusUrl = "http://load/status"
+        consumer.powerUrl = "http://load/power"
+        consumer.onKeywordRegex = "ison"
+        consumer.powerExtractRegex = r"power=(\d+)"
+        consumer.consumption = 0
+        consumer.httpRequestTimeout = 7.5
+        return consumer
+
+    def test_http_consumer_on_status_and_power_requests_use_configured_timeout(self):
+        consumer = self._http_consumer()
+        self.sod.requests.get = Mock(
+            side_effect=[
+                SimpleNamespace(text=""),
+                SimpleNamespace(text="ison"),
+                SimpleNamespace(text="power=450"),
+            ]
+        )
+
+        consumer.httpControl()
+
+        self.sod.requests.get.assert_any_call(
+            url="http://load/on", timeout=7.5
+        )
+        self.sod.requests.get.assert_any_call(
+            url="http://load/status", timeout=7.5
+        )
+        self.sod.requests.get.assert_any_call(
+            url="http://load/power", timeout=7.5
+        )
+        self.assertTrue(consumer.npcState)
+        self.assertEqual(consumer.consumption, 450)
+
+    def test_http_consumer_off_request_uses_configured_timeout(self):
+        consumer = self._http_consumer()
+        consumer.allowance = 0
+        consumer.npcState = True
+        self.sod.requests.get = Mock(return_value=SimpleNamespace(text=""))
+
+        consumer.httpControl()
+
+        self.sod.requests.get.assert_any_call(
+            url="http://load/off", timeout=7.5
+        )
+        self.sod.requests.get.assert_any_call(
+            url="http://load/status", timeout=7.5
+        )
+
+    def test_http_consumer_timeout_does_not_crash_control_path(self):
+        consumer = self._http_consumer()
+        self.sod.requests.get = Mock(side_effect=self.sod.requests.exceptions.Timeout())
+
+        consumer.httpControl()
+
+        self.sod.c.assert_called()
 
 
 if __name__ == "__main__":

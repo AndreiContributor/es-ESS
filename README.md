@@ -113,11 +113,12 @@ have to mind adding / remove values as you enable or disable certain services.
 | [Common]                 | LogLevel             | LogLevel to use. See [Logging](#logging) use `INFO` if you are unsure.                                 | String        | INFO                         |  
 | [Common]                 | NumberOfThreads      | Number of Threads to use. 3-XX depending on enabled service count.                                     | Integer       | 5                            |
 | [Common]                 | ServiceMessageCount  | Number of ServiceMessages to publish on Mqtt. See [Service Messages](#service-messages)                | Integer       | 50                           |
-| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 8                            |
+| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 9                            |
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
 | [Common]                 | BatteryMaxChargeInWh | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
 | [Common]                 | DefaultPowerSetPoint | Default Power Setpoint (W), when using features that manipulte the set point programmatically.         | Integer       | -10                          |
+| [Common]                 | HttpRequestTimeout   | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers and legacy FroniusSmartmeterRS485 polling. | Double        | 5                            |
 | [Mqtt]                   | Host                 | Hostname / IP of your main-mqtt to work with.                                                          | String        | mqtt.ad.equinox-solutions.de |
 | [Mqtt]                   | User                 | Username to connect to your main-mqtt.                                                                 | String        | user                         |
 | [Mqtt]                   | Password             | Password to connect to your main-mqtt.                                                                 | String        | secure123!                   |
@@ -295,9 +296,13 @@ MqttPvInverter requires a few variables to be set in `/data/es-ESS/config.ini`:
 | [Services]    | MqttPvInverter | Flag, if the service should be enabled or not | Boolean | true 
 | [MqttPvInverter]    | EnableZeroFeedin | Experimental, leave to false! | Boolean | false 
 | [MqttPvInverter]    | EnablePvShutdown | Flag, if the Inverters should be shutdown through OpenDTU, when the GX is shutting down PV. | Boolean | true 
-| [MqttPvInverter]    | ZeroFeedinScaleStep | Experimental, just ignore| Double | 0.0
-| [MqttPvInverter]    | ZeroFeedinDistance | Experimental, just ignore| Double | 0.0
-| [MqttPvInverter]    | ZeroFeedinStartSoc | Experimental, just ignore| Double | 0.0
+| [MqttPvInverter]    | ZeroFeedinScaleStep | Experimental OpenDTU throttle rate-of-change limit per zero-feed-in cycle. | Double | 0.05
+| [MqttPvInverter]    | ZeroFeedinDistance | Experimental buffer in W subtracted from measured consumption before calculating target inverter power. | Double | 50
+| [MqttPvInverter]    | ZeroFeedinStartSoc | Experimental SOC threshold where zero-feed-in control may begin. | Double | 100
+
+When zero-feed-in is enabled and the calculated target inverter power is `0`,
+producing inverters with `DtuControlTopic` receive an explicit `0%` OpenDTU
+limit command.
 
 For every inverter you want to create you have to create a additional section, specifying paths on mqtt. This is quite a bunch of work, but generally only done once. 
 
@@ -832,6 +837,10 @@ After evaluating and creating the proper request, the current allowance is proce
 Some consumers are not controllable in steps or you simply don't want to write scripts for them. To eliminate the need to create multiple on/off-scripts for these consumers, 
 the NPC-SolarOverheadConsumer has been introduced. es-ESS can automatically control consumers that can be switched on/off through `http` or `mqtt`.
 
+HTTP consumer control, status, and power requests are bounded by
+`[Common] HttpRequestTimeout` so slow or unavailable endpoints cannot block
+SolarOverheadDistributor worker threads indefinitely.
+
 It can be fully configured in `/data/es-ESS/config.ini` and will be orchestrated by the SolarOverhead-Distributer itself. An example would be our *waterplay* in the front garden. It is connected through a (first-gen, dumb) shelly device, which is at least http-controllable - and I know it consumes roughly 120 Watts AND I want this to run as soon as Solar-Overhead is available, despite any battery reservation. (Doesn't make sence to wait, until the battery reached 90% Soc or more)
 
 The following lines inside `/data/es-ESS/config.ini` can be used to create such an NPC-SolarOverheadConsumer. A config section has to be created, containing
@@ -1039,7 +1048,8 @@ Additionally there are the following configuration options available:
 | ---------- | ---------|---- | ------------- |--|
 | [Common]    | NumberOfThreads |  Number of threads, es-ESS should use. | int | 5 |
 | [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 50 |
-| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 8 |
+| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 9 |
+| [Common]    | HttpRequestTimeout | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers and legacy FroniusSmartmeterRS485 polling. | double | 5 |
 
 ### Service Messages
 es-ESS also publishes Operational-Messages as well as Errors, Warnings and Critical failures under the `service`-Topic of the serivce. Check these from time to time to ensure proper functionality
