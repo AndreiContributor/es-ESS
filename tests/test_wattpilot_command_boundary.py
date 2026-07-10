@@ -211,6 +211,10 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         controller.wattpilot.set_mode.assert_called_once_with(
             self.fwp.WattpilotControlMode.Default
         )
+        controller.wattpilot.set_phases.assert_called_once_with(0)
+        controller.wattpilot.set_power.assert_called_once_with(
+            controller.getEffectiveMaxCurrent()
+        )
         controller.clearChargeCompleteHold.assert_called_once_with(
             "manual mode selected"
         )
@@ -218,6 +222,58 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         self.assertEqual(
             controller.dbusService["/ModeLiteral"],
             self.fwp.VrmEvChargerControlMode.Manual.name,
+        )
+
+    def test_observed_manual_mode_releases_auto_phase_and_current_once(self):
+        controller = self._controller()
+        controller.mode = self.fwp.VrmEvChargerControlMode.Auto
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+        controller.wattpilot.connected = True
+        controller.wattpilot.carStateReady = True
+        controller.wattpilot.carConnected = True
+        controller.wattpilot.power = 1.4
+        controller.wattpilot.modelStatus = SimpleNamespace(value=15)
+        controller.updateWattpilotTransportDashboardStatus = Mock(return_value=False)
+        controller.updateEffectiveCarConnection = Mock(return_value=True)
+        controller.isIdleMode = False
+        controller.lastVarDump = 0
+        controller.reportStartStopValue = Mock()
+        controller.publishSafetyTelemetry = Mock()
+        controller.gridTelemetryIsFresh = Mock(return_value=True)
+        controller.selectControlState = Mock(
+            return_value=(
+                self.fwp.ControlStates.WattpilotControlState.CHARGING,
+                None,
+                None,
+            )
+        )
+        controller.dispatchControlState = Mock(return_value=False)
+        controller.reportBaseRequest = Mock()
+
+        controller._update()
+
+        controller.wattpilot.set_phases.assert_called_once_with(0)
+        controller.wattpilot.set_power.assert_called_once_with(
+            controller.getEffectiveMaxCurrent()
+        )
+        controller.dispatchControlState.assert_called_once_with(
+            self.fwp.ControlStates.WattpilotControlState.CHARGING,
+            True,
+            None,
+        )
+
+        controller.wattpilot.set_phases.reset_mock()
+        controller.wattpilot.set_power.reset_mock()
+        controller.dispatchControlState.reset_mock()
+
+        controller._update()
+
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+        controller.dispatchControlState.assert_called_once_with(
+            self.fwp.ControlStates.WattpilotControlState.CHARGING,
+            True,
+            None,
         )
 
 

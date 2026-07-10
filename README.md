@@ -362,7 +362,9 @@ surplus:
   guards.
 - Manual Wattpilot mode remains user-controlled. es-ESS reports Manual status,
   but Auto/Eco PV policy does not start, stop, current-limit, or phase-switch a
-  normal Manual session.
+  normal Manual session. When leaving Auto/Eco for Manual, es-ESS releases its
+  previous Auto/Eco phase and current commands once so Manual charging is not
+  left constrained by the PV controller.
 - Battery assist is optional and only bridges a short PV dip during an
   already-running Auto/Eco charge. It cannot start a charge and cannot authorize
   a phase-up.
@@ -439,7 +441,9 @@ telemetry confirms ECO mode. When Wattpilot is in normal Manual/default mode,
 or when mode telemetry is unavailable, es-ESS rejects `/SetCurrent` and
 `/StartStop` writes and leaves the Manual session under Wattpilot app/user
 control. The VRM `/Mode` selector can still intentionally switch between
-Manual and Auto/ECO.
+Manual and Auto/ECO. When Manual is selected, es-ESS sends a one-time release
+of its previous Auto/Eco phase/current limits, then leaves subsequent Manual
+charging under Wattpilot app/user control.
 
 > :warning: **FAKE-BMS injection**:<br /> This feature is creating FAKE-BMS information on dbus. Make sure to manually select your *actual* BMS unter *Settings > System setup > Battery Monitor* else your ESS may not behave correctly anymore. Don't leave this setting to *Automatic*
 

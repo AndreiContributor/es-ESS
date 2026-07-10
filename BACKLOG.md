@@ -69,8 +69,9 @@ Current test strategy:
   stale telemetry, battery assist, charge-complete hold, and several Manual
   mode safety cases.
 - Remaining gaps are around UI-format alignment across Venus/VRM surfaces,
-  Fronius module packaging evaluation, and the longer-term explicit
-  state-machine refactor.
+  Fronius module packaging evaluation, and winter live validation of
+  grid-import / stale-telemetry control branches under natural low-PV
+  conditions.
 
 Unclear deployment details:
 
@@ -496,7 +497,137 @@ Completion note:
   ownership, grid policy, battery-assist thresholds, phase thresholds, D-Bus
   path names, MQTT topic names, or configuration defaults were changed.
 
+### Completed 2026-07-10 - Add Wattpilot Control-State Shadow Selector
+
+Completion note:
+
+- Added `WattpilotControlState.py` with explicit pure state names and selection
+  order for the existing `FroniusWattpilot._update()` branch routing.
+- Added `tests/test_wattpilot_control_state.py` before implementation and used
+  it to lock safety ordering: transport outage, stale grid telemetry, grid
+  import phase-down/stop, pending phase switch, confirmed disconnect, charging,
+  not-charging, external low-price, phase-switching, and unknown model states.
+- Wired `FroniusWattpilot.py` to run the selector as a passive shadow check
+  beside the existing branch flow. Matching cycles stay quiet; mismatches are
+  logged as warnings with the relevant input snapshot.
+- Kept existing Wattpilot command dispatch, D-Bus/MQTT publication, service
+  messages, timers, and Auto/Eco policy in the controller. The selector does
+  not issue commands or publish state.
+- Updated `docs/wattpilot-architecture.md` to document the new helper boundary
+  and the production-validation stage before the selector owns dispatch.
+- Verified with the new selector tests, existing Wattpilot policy regression
+  tests, syntax checks, and the full hardware-free unittest suite.
+- Kept the change behavior-preserving except for diagnostic warning logs on a
+  shadow-selector mismatch; no Manual mode, Auto/Eco charging policy, phase
+  thresholds, D-Bus path names, MQTT topic names, or configuration defaults
+  were changed.
+
+### Completed 2026-07-10 - Complete Wattpilot Control State-Machine Dispatch
+
+Completion note:
+
+- Updated `FroniusWattpilot._update()` so `WattpilotControlState` now owns the
+  explicit branch selection for each duty cycle.
+- Preserved the safety-sensitive evaluation order: stale no-grid telemetry
+  short-circuits before grid-import checks, grid import is evaluated before
+  pending phase-switch reconciliation, and pending phase-switch reconciliation
+  is evaluated before disconnect/model-status routing.
+- Moved the existing side-effect bodies behind explicit controller dispatch
+  handlers while keeping Wattpilot commands, D-Bus/MQTT publication, service
+  messages, timers, and mutable Auto/Eco state in `FroniusWattpilot.py`.
+- Added a dispatch-ownership regression test proving `_update()` follows the
+  selected control state rather than falling back to the old model-status
+  ladder.
+- Updated `docs/wattpilot-architecture.md` to document selector-owned dispatch
+  and the preserved command boundary.
+- Verified with selector tests, Wattpilot policy/runtime regression tests,
+  syntax checks, and the full hardware-free unittest suite.
+- Kept the change behavior-preserving; no Manual mode command ownership,
+  Auto/Eco charging policy, phase thresholds, D-Bus path names, MQTT topic
+  names, or configuration defaults were changed.
+
+### Completed 2026-07-10 - Release Auto/Eco Limits When Entering Manual Mode
+
+Completion note:
+
+- Investigated live logs showing a charge that started in Auto/Eco one-phase
+  mode, then moved to Manual/default mode while Wattpilot remained constrained
+  to one phase.
+- Added a one-time Manual-entry release path for both explicit VRM `/Mode`
+  Auto-to-Manual writes and observed Wattpilot ECO-to-Default transitions.
+- The release clears Auto/Eco transition state, sets Wattpilot phase selection
+  back to automatic/unrestricted mode, and restores the configured effective
+  maximum current without sending a Manual start or stop command.
+- Added regression tests proving Manual entry releases stale Auto/Eco phase and
+  current limits once and does not repeat those commands while Manual remains
+  active.
+- Updated README and `docs/wattpilot-architecture.md` to document the approved
+  Manual-mode exception: es-ESS does not control normal Manual charging, but it
+  may release its own stale Auto/Eco constraints when Manual is selected.
+- Kept normal Manual `/SetCurrent` and `/StartStop` command rejection unchanged.
+
 ## Backlog
+
+### P4 - Winter Validate Wattpilot Grid-Import Dispatch Branches
+
+Goal:
+
+Use natural low-PV / higher-load winter conditions to live-validate the
+Wattpilot control-state dispatch on grid-import and stale-telemetry branches
+that are difficult to exercise safely during summer surplus.
+
+Problem:
+
+Summer production and available battery energy made sustained grid import
+unlikely during the initial production validation. Selector-owned dispatch is
+covered by unit tests and by live validation across normal Manual, Auto/Eco
+start, active charging, battery assist, transport outage/recovery,
+disconnect/reconnect, one-to-three phase switching, and three-to-one fallback
+paths. The remaining live coverage gap is the no-grid safety path during real
+sustained import or grid-telemetry outage.
+
+Implementation:
+
+- Wait for natural winter or low-PV operating conditions rather than forcing an
+  artificial grid-import event.
+- During representative winter Auto/Eco charging, monitor the normal service
+  logs for grid-import guard or stale grid-telemetry safety messages.
+- If sustained grid import naturally occurs with `AllowGridCharging=false`,
+  confirm the existing grid-import guard either phase-downs first when safe or
+  stops Auto/Eco charging.
+- If a real grid-meter / D-Bus telemetry outage occurs, confirm Auto/Eco blocks
+  starts or stops active charging according to the existing fail-safe policy.
+- Do not change Wattpilot settings, force grid import, disconnect critical
+  telemetry, or modify the production energy system only to satisfy this
+  validation item.
+
+Files to change:
+
+- Possibly `BACKLOG.md` only, when recording the result.
+
+Tests:
+
+- Existing unit tests already cover stale grid telemetry and grid-import guard
+  ordering.
+- No new automated tests are required unless the winter run reveals unexpected
+  behavior or unclear diagnostic output.
+
+Manual validation:
+
+1. Run normal winter Auto/Eco charging with `AllowGridCharging=false`.
+2. Search the live log for relevant guard messages:
+   `grep -Ei "Grid import guard|Grid telemetry is missing" /data/log/es-ESS/current.log`
+3. If grid import occurs, capture the relevant log window around the guard
+   decision.
+4. Confirm the observed decision matches the documented no-grid policy.
+5. Record the result in this backlog item.
+
+Done criteria:
+
+- Winter or naturally low-PV validation records correct behavior for any
+  observed grid-import or stale-telemetry branch.
+- If those branches still do not occur naturally, the item records that result
+  without forcing unsafe or unrealistic system behavior.
 
 ### P4 - Investigate EVCS UI Formatting Alignment
 
@@ -654,110 +785,6 @@ Done criteria:
 - Any file move is isolated from behavior changes and covered by import tests.
 - Full hardware-free tests pass after the packaging change.
 
-### P3 - Refactor Wattpilot Control Into An Explicit State Machine
-
-Depends on:
-
-- Manual command-boundary hardening.
-- Config/sample contract.
-- README behavior rewrite.
-- CI checks.
-- Wattpilot architecture boundary documentation.
-- Wattpilot decision characterization tests.
-- Telemetry, allowance, grid guard, battery assist, and phase decision helper
-  extraction.
-
-Goal:
-
-Improve maintainability without changing established behavior.
-
-Problem:
-
-Wattpilot control is safety-sensitive and currently spread across many flags,
-timestamps, telemetry freshness helpers, and status/reporting side effects in
-one large controller. This is workable but hard to reason about as behavior
-grows.
-
-Evidence:
-
-- `FroniusWattpilot.py` contains startup, Manual/Auto mode reflection, grid
-  guards, allowance handling, battery assist, phase switching, charge-complete
-  hold, runtime D-Bus publishing, MQTT distributor requests, and shutdown
-  behavior in one class.
-- Existing tests already encode many expected transitions and should become the
-  safety net for refactoring.
-
-Implementation:
-
-- Separate telemetry input, PV allowance evaluation, grid guard, battery assist,
-  phase switching, and status publishing.
-- Introduce explicit state transitions instead of scattered flags and
-  timestamps.
-- Preserve all public D-Bus and MQTT paths from the runtime-status contract.
-- Preserve existing config keys and defaults in `config.sample.ini`.
-- Keep Manual mode behavior unchanged.
-- Avoid combining this refactor with new features.
-- Keep the existing behavior suite passing unchanged.
-- Add transition tests for every state-machine edge.
-
-Files to change:
-
-- `FroniusWattpilot.py`
-- Possibly new Wattpilot control helper modules
-- Tests under `tests/`
-- README only if code organization affects documented behavior
-- `config.sample.ini` only if config behavior changes, which should be avoided
-  for this refactor
-
-Files to add:
-
-- Possibly a dedicated state-machine module and focused test module.
-
-Tests:
-
-- Keep all existing Wattpilot behavior tests passing.
-- Add transition tests for start, stop, phase-up, phase-down, stale telemetry,
-  grid import, battery assist, charge-complete hold, Manual mode, reconnect, and
-  command fault paths.
-
-Expected coverage:
-
-- The controller is easier to reason about and produces one clear reason for
-  each stop/start/phase decision.
-- Behavior remains compatible with existing tests and public D-Bus/MQTT paths.
-
-Manual validation:
-
-- Required on a Wattpilot/GX system because this touches safety-sensitive
-  control flow.
-
-Manual test steps:
-
-1. Validate Manual mode reporting and non-control behavior.
-2. Validate Auto/Eco PV-only start.
-3. Validate no-grid stop on sustained import.
-4. Validate telemetry outage fail-safe.
-5. Validate one-to-three and three-to-one phase behavior.
-6. Validate battery assist duration and recovery.
-7. Validate reconnect and service restart behavior.
-
-Risks and dependencies:
-
-- High regression risk if combined with feature work.
-- Requires strong tests and a simple rollback plan before live testing.
-
-Open questions:
-
-- Should the state machine be introduced behind internal helper methods first,
-  or moved to a separate module in one PR?
-
-Done criteria:
-
-- Existing behavior is preserved.
-- State transitions are explicit and covered by tests.
-- Manual live-device validation confirms no unintended grid use or Manual-mode
-  control.
-
 ## Suggested Implementation Order
 
 This order is intentionally low-risk-first. The P0/P1 labels still show safety
@@ -765,12 +792,12 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P3 state-machine refactor, because it needs the previous behavior, config,
-   docs, and helper boundaries in place before touching overall control flow.
-2. P3 Fronius module packaging evaluation, because it is a cross-cutting
+1. P3 Fronius module packaging evaluation, because it is a cross-cutting
    import/deployment refactor and should stay separate from behavior changes.
-3. P4 EVCS UI formatting alignment, because it is cosmetic and should stay
+2. P4 EVCS UI formatting alignment, because it is cosmetic and should stay
    separate from the es-ESS numeric D-Bus contract.
+3. P4 winter grid-import dispatch validation, because it needs natural low-PV
+   conditions and should not be forced during summer surplus.
 
 ## Verification Plan
 

@@ -397,6 +397,22 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.wattpilot.set_power.assert_not_called()
         controller.wattpilot.set_phases.assert_not_called()
 
+    def test_update_dispatch_is_owned_by_control_state_selector(self):
+        controller = self._controller()
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
+        controller.handleChargingState = Mock()
+        controller.handleNotChargingState = Mock()
+
+        with patch.object(
+            self.fwp.ControlStates,
+            "select_control_state",
+            return_value=self.fwp.ControlStates.WattpilotControlState.NOT_CHARGING,
+        ):
+            controller._update()
+
+        controller.handleNotChargingState.assert_called_once_with()
+        controller.handleChargingState.assert_not_called()
+
     def test_stable_pv_wait_reports_countdown_status_literal(self):
         controller = self._controller()
         controller.allowance = 1380

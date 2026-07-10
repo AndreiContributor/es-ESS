@@ -17,6 +17,7 @@ from vedbus import VeDbusService # type: ignore
 import Globals
 import Helper
 from Helper import i, c, d, w, e, t,  dbusConnection
+import WattpilotControlState as ControlStates
 import WattpilotDecisionInputs as DecisionInputs
 import WattpilotPhaseDecisions as PhaseDecisions
 import WattpilotSafetyDecisions as SafetyDecisions
@@ -510,6 +511,22 @@ class FroniusWattpilot (esESSService):
         )
         self.dumpEvChargerInfo()
 
+    def releaseAutoControlLimitsForManualMode(self):
+        """Release stale Auto/Eco phase and current commands once on Manual entry."""
+        self.clearBatteryAssist()
+        self.clearPowerTransitionGrace()
+        self.clearPendingPhaseSwitch()
+        self.clearPhaseSwitchCandidate()
+        self.phaseDownCandidateSince = 0
+        self.currentPhaseMode = 0
+
+        self.publishServiceMessage(
+            self,
+            "Manual mode selected. Releasing Auto/Eco phase and current limits."
+        )
+        self.wattpilot.set_phases(0)
+        self.wattpilot.set_power(self.getEffectiveMaxCurrent())
+
     def switchMode(self, fromMode:VrmEvChargerControlMode, toMode:VrmEvChargerControlMode):
         # TODO: When we are in hibernate mode, and attempting to switch mode, it fails, because of 
         #       Hibernate. Maybe needs resolution? WakeUp + KeepAlive? -> Would need a generally different
@@ -531,6 +548,7 @@ class FroniusWattpilot (esESSService):
                 self.autostart = 0
                 self.clearChargeCompleteHold("manual mode selected")
                 self.wattpilot.set_mode(WattpilotControlMode.Default)
+                self.releaseAutoControlLimitsForManualMode()
 
         elif (toMode == VrmEvChargerControlMode.Scheduled):
             #Scheduled Charge - this is not used. We use this to temorary wakeup wattpilot, if in Hibernate mode. 
@@ -559,6 +577,184 @@ class FroniusWattpilot (esESSService):
        self.wattpilot._auto_reconnect = True
        self.wattpilot.connect()
        self.isIdleMode = False
+
+    def controlStateInputs(
+        self,
+        effectiveCarConnected=None,
+        gridTelemetryFresh=True,
+        gridImportLimitExceeded=False,
+        phaseDownForPvDip=False,
+        pendingPhaseStatus=False,
+        transportUnavailable=False,
+    ):
+        modelStatus = getattr(self.wattpilot, "modelStatus", None)
+        lowPriceStatus = getattr(
+            WattpilotModelStatus, "ChargingBecauseAwattarPriceLow", None
+        )
+        phaseSwitchStatus = getattr(
+            WattpilotModelStatus, "NotChargingBecausePhaseSwitch", None
+        )
+        if effectiveCarConnected is None:
+            effectiveCarConnected = getattr(self, "effectiveCarConnected", False)
+
+        return ControlStates.ControlStateInputs(
+            transport_unavailable=transportUnavailable,
+            auto_mode=self.mode == VrmEvChargerControlMode.Auto,
+            allow_grid_charging=self.allowGridCharging,
+            grid_telemetry_fresh=gridTelemetryFresh,
+            grid_import_limit_exceeded=gridImportLimitExceeded,
+            current_phase_mode=self.currentPhaseMode,
+            phase_down_for_pv_dip=phaseDownForPvDip,
+            pending_phase_status=bool(pendingPhaseStatus),
+            effective_car_connected=bool(effectiveCarConnected),
+            model_status_value=getattr(modelStatus, "value", None),
+            external_low_price=(
+                lowPriceStatus is not None
+                and modelStatus == lowPriceStatus
+            ),
+            phase_switching=(
+                phaseSwitchStatus is not None
+                and modelStatus == phaseSwitchStatus
+            ),
+        )
+
+    def selectControlState(self, effectiveCarConnected, gridTelemetryFresh):
+        if (
+            self.mode == VrmEvChargerControlMode.Auto
+            and not self.allowGridCharging
+            and not gridTelemetryFresh
+        ):
+            inputs = self.controlStateInputs(
+                effectiveCarConnected=effectiveCarConnected,
+                gridTelemetryFresh=gridTelemetryFresh,
+            )
+            return ControlStates.select_control_state(inputs), None, inputs
+
+        gridImportLimitExceeded = False
+        phaseDownForPvDip = False
+        if (
+            self.mode == VrmEvChargerControlMode.Auto
+            and not self.allowGridCharging
+            and self.gridImportLimitExceeded()
+        ):
+            gridImportLimitExceeded = True
+            phaseDownForPvDip = (
+                self.currentPhaseMode == 2
+                and self.shouldPhaseDownForPvDip()
+            )
+            inputs = self.controlStateInputs(
+                effectiveCarConnected=effectiveCarConnected,
+                gridTelemetryFresh=gridTelemetryFresh,
+                gridImportLimitExceeded=gridImportLimitExceeded,
+                phaseDownForPvDip=phaseDownForPvDip,
+            )
+            return ControlStates.select_control_state(inputs), None, inputs
+
+        pendingPhaseStatus = self.reconcilePendingPhaseSwitch()
+        inputs = self.controlStateInputs(
+            effectiveCarConnected=effectiveCarConnected,
+            gridTelemetryFresh=gridTelemetryFresh,
+            pendingPhaseStatus=pendingPhaseStatus is not None,
+        )
+        return ControlStates.select_control_state(inputs), pendingPhaseStatus, inputs
+
+    def dispatchControlState(
+        self,
+        selectedState,
+        effectiveCarConnected,
+        pendingPhaseStatus,
+    ):
+        state = ControlStates.WattpilotControlState
+
+        if selectedState == state.GRID_TELEMETRY_UNSAFE:
+            self.publishServiceMessage(
+                self,
+                "Grid telemetry is missing, invalid, or stale. "
+                "Stopping Auto/Eco charging for safety."
+            )
+            if self.wattpilotReportsActiveCharge():
+                self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
+                self.forceStopForNoAllowance()
+            else:
+                self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+                self.forceStopForNoAllowance()
+            return True
+
+        if selectedState == state.GRID_IMPORT_PHASE_DOWN:
+            self.publishServiceMessage(
+                self,
+                "Grid import guard triggered, but PV supports 1-phase. "
+                "Switching to 1-phase before stopping."
+            )
+            self.reportVRMStatus(self.switchToOnePhaseForPvDip())
+            return True
+
+        if selectedState == state.GRID_IMPORT_STOP:
+            self.publishServiceMessage(
+                self,
+                "Grid import guard triggered. Stopping EV charging."
+            )
+            self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
+            self.forceStopForNoAllowance()
+            return True
+
+        if selectedState == state.PENDING_PHASE_SWITCH:
+            self.reportVRMStatus(pendingPhaseStatus)
+            return True
+
+        if selectedState == state.DISCONNECTED:
+            self.reportVRMStatus(VrmEvChargerStatus.Disconnected)
+            self.noChargeSince = 0
+            self.surplusSince = 0
+            self.surplusBelowMinimumSince = 0
+            self.noAllowanceForcedOff = False
+            self.clearBatteryAssist()
+            self.clearBatteryAssistLockout("car disconnected")
+            self.clearChargeCompleteHold("car disconnected")
+            self.clearPowerTransitionGrace()
+            self.clearPendingPhaseSwitch()
+            return False
+
+        if selectedState == state.CHARGING:
+            self.handleChargingState()
+            return False
+
+        if selectedState == state.NOT_CHARGING:
+            self.handleNotChargingState()
+            return False
+
+        if selectedState == state.EXTERNAL_LOW_PRICE:
+            # In automatic mode this project is configured for no grid
+            # charging. Manual mode remains under the user's direct control.
+            if (
+                self.mode == VrmEvChargerControlMode.Auto
+                and not self.allowGridCharging
+            ):
+                self.publishServiceMessage(
+                    self,
+                    "Grid-price charging is disabled in Auto mode. Stopping EV charging."
+                )
+                self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
+                self.forceStopForNoAllowance()
+            else:
+                self.handleExternalChargingState("LowPrice")
+            return False
+
+        if selectedState == state.PHASE_SWITCHING:
+            self.chargingTime += 5
+            if self.currentPhaseMode == 1:
+                self.reportVRMStatus(VrmEvChargerStatus.SwitchingTo1Phase)
+            elif self.currentPhaseMode == 2:
+                self.reportVRMStatus(VrmEvChargerStatus.SwitchingTo3Phase)
+            return False
+
+        w(
+            self,
+            "Unknown Modelstatus reported: {0} - doing nothing.".format(
+                self.wattpilot.modelStatus
+            )
+        )
+        return False
 
     def _update(self):
         try:
@@ -617,6 +813,8 @@ class FroniusWattpilot (esESSService):
                 "Wattpilot Modelstatus: {0}".format(self.wattpilot.modelStatus)
             )
 
+            priorMode = self.mode
+
             # Reflect the mode selected in the Wattpilot.
             if self.wattpilot.mode == WattpilotControlMode.ECO:
                 self.autostart = 1
@@ -625,6 +823,8 @@ class FroniusWattpilot (esESSService):
                 self.autostart = 0
                 self.mode = VrmEvChargerControlMode.Manual
                 self.clearChargeCompleteHold("manual mode selected")
+                if priorMode == VrmEvChargerControlMode.Auto:
+                    self.releaseAutoControlLimitsForManualMode()
 
             self.reportStartStopValue(
                 VrmEvChargerStartStop.Start
@@ -637,129 +837,21 @@ class FroniusWattpilot (esESSService):
                 return
 
             self.publishSafetyTelemetry()
+            gridTelemetryFresh = self.gridTelemetryIsFresh()
 
-            # No-grid Auto/Eco control cannot safely decide whether a charge
-            # may continue without all three grid-power values. This is an
-            # immediate stop, unlike the allowance debounce, because unknown
-            # import must never keep an active EV command alive.
-            if (
-                self.mode == VrmEvChargerControlMode.Auto
-                and not self.allowGridCharging
-                and not self.gridTelemetryIsFresh()
-            ):
-                self.publishServiceMessage(
-                    self,
-                    "Grid telemetry is missing, invalid, or stale. "
-                    "Stopping Auto/Eco charging for safety."
-                )
-                if self.wattpilotReportsActiveCharge():
-                    self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
-                    self.forceStopForNoAllowance()
-                else:
-                    self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
-                    self.forceStopForNoAllowance()
+            selectedState, pendingPhaseStatus, _inputs = self.selectControlState(
+                effectiveCarConnected,
+                gridTelemetryFresh,
+            )
+            shouldReturn = self.dispatchControlState(
+                selectedState,
+                effectiveCarConnected,
+                pendingPhaseStatus,
+            )
+            if shouldReturn:
                 self.reportBaseRequest()
                 self.dumpEvChargerInfo()
                 return
-
-            # Backstop: Auto mode must not sustain meaningful grid import.
-            # When PV is no longer enough for 3-phase but is still enough for
-            # 1-phase, downshift first instead of stopping the session.
-            if (
-                self.mode == VrmEvChargerControlMode.Auto
-                and not self.allowGridCharging
-                and self.gridImportLimitExceeded()
-            ):
-                if (
-                    self.currentPhaseMode == 2
-                    and self.shouldPhaseDownForPvDip()
-                ):
-                
-                    self.publishServiceMessage(
-                        self,
-                        "Grid import guard triggered, but PV supports 1-phase. "
-                        "Switching to 1-phase before stopping."
-                    )
-                    self.reportVRMStatus(self.switchToOnePhaseForPvDip())
-                    self.reportBaseRequest()
-                    self.dumpEvChargerInfo()
-                    return
-
-                self.publishServiceMessage(
-                    self,
-                    "Grid import guard triggered. Stopping EV charging."
-                )
-
-                self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
-                self.forceStopForNoAllowance()
-                self.reportBaseRequest()
-                self.dumpEvChargerInfo()
-                return
-
-            pendingPhaseStatus = self.reconcilePendingPhaseSwitch()
-            if pendingPhaseStatus is not None:
-                self.reportVRMStatus(pendingPhaseStatus)
-                self.reportBaseRequest()
-                self.dumpEvChargerInfo()
-                return
-
-            # Do not clear a live session on one false carConnected update. The
-            # debounce is particularly important while Wattpilot is processing
-            # a start command or a phase transition.
-            if not effectiveCarConnected:
-                self.reportVRMStatus(VrmEvChargerStatus.Disconnected)
-                self.noChargeSince = 0
-                self.surplusSince = 0
-                self.surplusBelowMinimumSince = 0
-                self.noAllowanceForcedOff = False
-                self.clearBatteryAssist()
-                self.clearBatteryAssistLockout("car disconnected")
-                self.clearChargeCompleteHold("car disconnected")
-                self.clearPowerTransitionGrace()
-                self.clearPendingPhaseSwitch()
-
-            elif self.wattpilot.modelStatus.value in [3, 12, 15, 19, 20]:
-                self.handleChargingState()
-
-            elif self.wattpilot.modelStatus.value in [4, 5, 6, 16, 17, 18, 22, 24]:
-                self.handleNotChargingState()
-
-            elif (
-                self.wattpilot.modelStatus
-                == WattpilotModelStatus.ChargingBecauseAwattarPriceLow
-            ):
-                # In automatic mode this project is configured for no grid
-                # charging. Manual mode remains under the user's direct control.
-                if (
-                    self.mode == VrmEvChargerControlMode.Auto
-                    and not self.allowGridCharging
-                ):
-                    self.publishServiceMessage(
-                        self,
-                        "Grid-price charging is disabled in Auto mode. Stopping EV charging."
-                    )
-                    self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
-                    self.forceStopForNoAllowance()
-                else:
-                    self.handleExternalChargingState("LowPrice")
-
-            elif (
-                self.wattpilot.modelStatus
-                == WattpilotModelStatus.NotChargingBecausePhaseSwitch
-            ):
-                self.chargingTime += 5
-                if self.currentPhaseMode == 1:
-                    self.reportVRMStatus(VrmEvChargerStatus.SwitchingTo1Phase)
-                elif self.currentPhaseMode == 2:
-                    self.reportVRMStatus(VrmEvChargerStatus.SwitchingTo3Phase)
-
-            else:
-                w(
-                    self,
-                    "Unknown Modelstatus reported: {0} - doing nothing.".format(
-                        self.wattpilot.modelStatus
-                    )
-                )
 
             self.reportBaseRequest()
             self.dumpEvChargerInfo()

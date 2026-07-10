@@ -72,6 +72,10 @@ It owns:
 - One-phase and three-phase switching orchestration, delegating pure thresholds,
   target-current, distributor-request, and phase-up timing decisions to
   `WattpilotPhaseDecisions.py`.
+- Explicit control-state dispatch through `WattpilotControlState.py`.
+  The selector owns the `_update()` branch choice, while the controller still
+  owns command side effects, D-Bus/MQTT publication, service messages, and
+  mutable timers.
 - Wattpilot command issuing through the `Wattpilot` client.
 - Wattpilot shutdown behavior during es-ESS termination.
 
@@ -162,6 +166,34 @@ user-visible messages, starts transition grace, confirms pending phase
 switches from live telemetry, and issues `set_phases()` / `set_power()`
 commands.
 
+### `WattpilotControlState.py`
+
+`WattpilotControlState.py` owns the explicit, pure control-state ordering for
+the Wattpilot controller.
+
+It owns:
+
+- The named controller states used to describe each `_update()` branch.
+- Model-status classification for charging and not-charging Wattpilot states.
+- Pure selection of the next controller branch from an input snapshot.
+- Formatting of selector inputs for diagnostics and tests.
+
+It must not own:
+
+- Wattpilot command issuing.
+- D-Bus or MQTT publication.
+- Service messages.
+- Mutable controller timers such as allowance, phase-switch, grid-import, or
+  battery-assist timestamps.
+- Live telemetry sampling.
+
+`FroniusWattpilot.py` gathers the safety facts in the same order as the
+pre-selector controller: stale no-grid telemetry short-circuits before
+grid-import checks, grid import is evaluated before pending phase-switch
+reconciliation, and pending phase-switch reconciliation is evaluated before
+disconnect/model-status routing. The selector then chooses the explicit state,
+and the controller dispatches that state to the existing side-effect handlers.
+
 ### `WattpilotRuntimeStatus.py`
 
 `WattpilotRuntimeStatus.py` owns the separate runtime-status contract for
@@ -197,7 +229,9 @@ Future Wattpilot changes must preserve these invariants:
 - Normal Wattpilot Manual mode remains user-controlled. es-ESS may report
   Manual status, but must not start, stop, phase-switch, or current-limit a
   Manual charging session unless that behavior is explicitly approved and
-  tested.
+  tested. The approved exception is a one-time release when leaving Auto/Eco
+  for Manual/default mode: es-ESS may clear its previous Auto/Eco phase and
+  current commands so the Manual session is not left constrained by PV control.
 - Writable EV-charger `/SetCurrent` and `/StartStop` commands may issue
   Wattpilot current, phase, start, or stop commands only when Wattpilot mode
   telemetry confirms ECO mode. Missing or Manual/default mode telemetry must
@@ -235,5 +269,7 @@ Refactors should be small and behavior-preserving:
 - Keep charger command side effects in `FroniusWattpilot.py` until a tested
   command boundary exists.
 - Extract pure decision helpers before introducing a broader state machine.
+- Keep the explicit state selector pure and command-free; command side effects
+  remain in the controller dispatch handlers.
 - Do not combine config/default changes with control-flow refactors.
 - Do not add shared 16 A cable/current-limiting logic.

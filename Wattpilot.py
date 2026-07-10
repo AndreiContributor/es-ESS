@@ -544,7 +544,9 @@ class Wattpilot(object):
         elif name=="ust":
             self._cableLock = Wattpilot.ustValues[value]
         elif name=="awcp":
-            self._awattarCurrentPrice = getattr(value, "marketprice")
+            marketprice = getattr(value, "marketprice", None)
+            if marketprice is not None:
+                self._awattarCurrentPrice = marketprice
         elif name=="awp":
             self._awattarMaxPrice = value
         elif name=="eto":
