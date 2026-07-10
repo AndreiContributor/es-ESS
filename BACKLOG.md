@@ -718,8 +718,13 @@ Risks and dependencies:
 
 Open questions:
 
-- Should HTTP consumer timeout be globally fixed, globally configurable, or
-  configurable per `HttpConsumer:*` section?
+- ~~Should HTTP consumer timeout be globally fixed, globally configurable, or
+  configurable per `HttpConsumer:*` section?~~ **Decided 2026-07-10:** Add
+  `HttpRequestTimeout=5` to `[Common]` in `config.sample.ini`. Wire
+  `SolarOverheadDistributor.py` and `FroniusSmartmeterRS485.py` to read that
+  key. Leave `FroniusSmartmeterJSON`, `Shelly3EMGrid`, and `ShellyPMInverter`
+  on their existing `pollFrequencyMs/2000` formula — their timeout is
+  meaningfully tied to their own poll cadence.
 
 Done criteria:
 
@@ -822,8 +827,11 @@ Risks and dependencies:
 
 Open questions:
 
-- Should zero target command `0%`, `ZeroFeedinScaleStep`, or a configurable
-  minimum inverter limit?
+- ~~Should zero target command `0%`, `ZeroFeedinScaleStep`, or a configurable
+  minimum inverter limit?~~ **Decided 2026-07-10:** Publish `throttle = 0.0`
+  (0%) when `target == 0`. `ZeroFeedinScaleStep` is a rate-of-change limiter,
+  not a floor value. A configurable minimum is scope creep. Add an early branch
+  in `_dtuZeroFeedin()` before the proportional loop; no new config key.
 
 Done criteria:
 
@@ -1167,6 +1175,506 @@ Done criteria:
 - If those branches still do not occur naturally, the item records that result
   without forcing unsafe or unrealistic system behavior.
 
+### P2 - Guard NoBatToEV Worker Against None D-Bus Values
+
+Goal:
+
+Prevent `NoBatToEV._update()` from crashing with `TypeError` every two seconds
+during the startup window before D-Bus paths deliver their first values.
+
+Problem:
+
+`NoBatToEV._update()` reads twelve D-Bus subscription values and two Wattpilot
+per-phase power values, then immediately sums them with no None guard. Every
+`DbusSubscription` starts with `value = None` and stays `None` until the backing
+D-Bus path publishes. Because the worker fires every 2 seconds and `_update()`
+has no try/except, the `TypeError` propagates to the GLib scheduler, which can
+suppress the worker silently or log an unhandled exception on every tick until
+all paths are populated.
+
+There is an existing guard on `noPhasesDbus.value` (the outer `if` on line 77),
+but it only protects the `numberOfPhases` check, not the arithmetic blocks inside.
+
+Evidence:
+
+- `NoBatToEV.py` line 82: `evPower = (Globals.esESS._services["FroniusWattpilot"].wattpilot.power1 + wattpilot.power2 + wattpilot.power3) * 1000` — `power1/2/3` initialize to `None` in `Wattpilot.py`.
+- `NoBatToEV.py` lines 84–88: twelve `.value` reads summed directly with no None guard.
+- `esESSService.py` registers `DbusSubscription` with `self.value = None` as the initial state.
+
+Implementation:
+
+- Add a None guard before the arithmetic blocks in `_update()`. Either return
+  early if any required value is None, or substitute 0 for non-critical
+  per-phase PV paths that may be absent on single-phase systems.
+- For the Wattpilot power path (line 82), guard against `power1/2/3` being None
+  before the multiplication; returning early or substituting 0 is both correct.
+- Do not change the grid-setpoint logic, the relay-enable check, or the
+  `FroniusWattpilot` service lookup.
+
+Files to change:
+
+- `NoBatToEV.py`
+
+Files to add:
+
+- None expected. Tests for `NoBatToEV` may be added if a test file is created.
+
+Tests:
+
+- Add hardware-free tests with None-valued dbus stubs that confirm `_update()`
+  returns without raising when values are None.
+- Add a test that confirms the grid-setpoint calculation is correct once all
+  values are non-None.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- No TypeError during the startup window before D-Bus paths deliver values.
+- Correct grid-setpoint behavior once all values are available.
+
+Manual validation:
+
+- Restart es-ESS with NoBatToEV enabled and monitor
+  `/data/log/es-ESS/current.log` for the first 30 seconds after startup.
+- Confirm no TypeError exceptions appear from the NoBatToEV worker.
+
+Risks and dependencies:
+
+- Substituting 0 for missing per-phase PV values may suppress a grid-setpoint
+  request during the startup grace window; this is acceptable since no EV charge
+  is present at that point.
+
+Open questions:
+
+- Should missing Wattpilot power values skip the setpoint calculation entirely
+  (return early) or treat them as 0 W EV power?
+
+Done criteria:
+
+- `NoBatToEV._update()` does not raise `TypeError` when any D-Bus value is None.
+- Startup window behavior is covered by hardware-free tests.
+- Full unittest suite passes.
+
+### P2 - Guard SolarOverheadDistributor Distribution Cycle Against None Grid Values
+
+Goal:
+
+Prevent None grid-phase or battery-power values from aborting the entire
+SolarOverheadDistributor distribution cycle and leaving all consumers with
+their previous allowances.
+
+Problem:
+
+`updateDistribution()` reads `gridL1Dbus.value`, `gridL2Dbus.value`,
+`gridL3Dbus.value`, and `batteryPower.value`, then performs arithmetic on them
+before any None check. When any of these values is None (device absent,
+startup, or grid-loss), the arithmetic raises `TypeError`. The outer
+`except Exception` at line 440 catches it and logs at CRITICAL level, but the
+distribution cycle is skipped entirely for that tick. All consumers retain
+their last-issued allowances indefinitely until a successful cycle runs.
+During a prolonged grid outage or BMS disconnect this means consumers that
+should be stopped or reduced continue to receive non-zero allowances.
+
+Evidence:
+
+- `SolarOverheadDistributor.py` lines 328–334: `l1Power`, `l2Power`, `l3Power`
+  assigned from `self.gridL1Dbus.value` etc. with no None guard; `feedIn =
+  (l1Power + l2Power + l3Power) * -1` raises `TypeError` if any is None.
+- `SolarOverheadDistributor.py` line 335: `batPower = self.batteryPower.value`
+  — also None at startup or when BMS is unavailable.
+- `SolarOverheadDistributor.py` line 440: bare `except Exception` catches the
+  TypeError and logs `"Exception"` at CRITICAL level without publishing safe
+  zero allowances.
+
+Implementation:
+
+- Add None guards for all four D-Bus reads (`gridL1/L2/L3`, `batteryPower`)
+  before the feedIn/overhead arithmetic.
+- On None, emit a warning and publish safe zeroed overhead values (overhead=0,
+  all consumer allowances=0), rather than skipping the cycle entirely.
+- Keep the existing CRITICAL-level exception handler for genuinely unexpected
+  errors, but move None handling before the arithmetic so it is explicit.
+- Do not change the allocation algorithm, consumer-priority logic, or MQTT
+  topic names.
+
+Files to change:
+
+- `SolarOverheadDistributor.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add hardware-free tests for `updateDistribution()` with None grid L1/L2/L3
+  and None battery power; assert the cycle publishes overhead=0 and does not
+  raise.
+- Add a regression test that normal non-None values still produce the correct
+  overhead calculation.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- Distribution cycle completes with zeroed output when grid/battery values are None.
+- No TypeError reaches the outer exception handler for None inputs.
+- Existing allocation behavior for non-None inputs is unchanged.
+
+Manual validation:
+
+- On a GX/Venus OS device, briefly disconnect the grid meter or BMS from D-Bus
+  while SolarOverheadDistributor is active.
+- Confirm the log shows a warning (not CRITICAL exception) and consumers receive
+  0 W allowances during the outage window.
+- Confirm allowances recover when the grid meter reconnects.
+
+Risks and dependencies:
+
+- Publishing overhead=0 during a grid/BMS outage will stop or reduce all
+  consumers; this is the safer behavior, but it should be documented.
+
+Open questions:
+
+- Should the None-grid cycle publish a service message so the user is notified
+  of the missing input?
+
+Done criteria:
+
+- None grid/battery values are explicitly handled before arithmetic.
+- Hardware-free tests cover None inputs.
+- Full unittest suite passes.
+
+### P2 - Fix Missing Lock In SolarOverheadDistributor _persistEnergyStats
+
+Goal:
+
+Prevent a `RuntimeError: dictionary changed size during iteration` crash in the
+5-minute energy-stats persist cycle.
+
+Problem:
+
+`_persistEnergyStats()` iterates `self._knownSolarOverheadConsumers` without
+holding `_knownSolarOverheadConsumersLock`. `onMqttMessage()` adds new
+consumers while holding the lock. If a consumer registration MQTT message
+arrives during the persist pass, CPython raises `RuntimeError`, aborting the
+persist cycle and losing energy data for all consumers after the insertion
+point. The existing `_validateNpcConsumerStates()` correctly acquires the lock
+before iterating the same dict; `_persistEnergyStats()` does not.
+
+Evidence:
+
+- `SolarOverheadDistributor.py` lines 277–282: `_persistEnergyStats()` iterates
+  `self._knownSolarOverheadConsumers` with no lock.
+- `SolarOverheadDistributor.py` `onMqttMessage()`: adds consumers under
+  `self._knownSolarOverheadConsumersLock`.
+- `SolarOverheadDistributor.py` `_validateNpcConsumerStates()`: correctly
+  acquires the lock before iterating.
+
+Implementation:
+
+- Acquire `_knownSolarOverheadConsumersLock` (or a copy of the dict under the
+  lock) at the start of `_persistEnergyStats()`, matching the pattern in
+  `_validateNpcConsumerStates()`.
+- Do not change energy-stat persistence logic or MQTT topic names.
+
+Files to change:
+
+- `SolarOverheadDistributor.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add a hardware-free test that registers consumers from one thread while
+  `_persistEnergyStats()` runs concurrently and confirms no RuntimeError.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- `_persistEnergyStats()` holds the lock during iteration.
+- Concurrent consumer registration does not corrupt the persist pass.
+
+Manual validation:
+
+- Tail `/data/log/es-ESS/current.log` with several consumers registered and
+  confirm no RuntimeError in the 5-minute persist window.
+
+Risks and dependencies:
+
+- Lock contention is negligible at the 5-minute persist cadence.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- `_persistEnergyStats()` acquires the consumer dict lock before iterating.
+- Lock-pattern is consistent with `_validateNpcConsumerStates()`.
+- Full unittest suite passes.
+
+### P3 - Fix Duplicate OnKeywordRegex MQTT Subscription In SolarOverheadDistributor
+
+Goal:
+
+Remove the duplicate MQTT subscription that causes `onMqttMessage` to fire
+twice for every `OnKeywordRegex` consumer registration message.
+
+Problem:
+
+`SolarOverheadDistributor.initMqttSubscriptions()` registers the topic
+`es-ESS/SolarOverheadDistributor/Requests/+/OnKeywordRegex` twice with the
+same callback. Paho MQTT calls `message_callback_add` twice for the same
+pattern, so `onMqttMessage` fires twice per incoming message. On retained
+messages this produces double log output on every reconnect; on live
+registration messages it triggers double side-effects inside `setValue()`
+(e.g., `dbusReportConsumption()` and consumer state updates).
+
+Evidence:
+
+- `SolarOverheadDistributor.py` line 109: first registration of
+  `Requests/+/OnKeywordRegex`.
+- `SolarOverheadDistributor.py` line 120: second registration of the same
+  topic, in the "NPC Consumer Common" block. The comment on line 119 says
+  "NPC Consumer Common" suggesting it was split from the basic props block
+  but the duplicate was not removed.
+
+Implementation:
+
+- Remove the second `registerMqttSubscription` call for `OnKeywordRegex` at
+  line 120.
+- Keep the first registration at line 109.
+- Do not change any other MQTT subscriptions.
+
+Files to change:
+
+- `SolarOverheadDistributor.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add a hardware-free test that initializes `SolarOverheadDistributor` and
+  confirms `OnKeywordRegex` is registered exactly once.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- Each consumer registration MQTT message triggers `onMqttMessage` exactly once.
+
+Manual validation:
+
+- Enable a NPC consumer and tail the log after a restart; confirm `OnKeywordRegex`
+  messages appear once, not twice, per retained message.
+
+Risks and dependencies:
+
+- Low risk; removing a duplicate registration cannot affect non-duplicate
+  subscriptions.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- `OnKeywordRegex` is registered once in `initMqttSubscriptions()`.
+- Callback fires once per message.
+- Full unittest suite passes.
+
+### P3 - Replace eval() With Safe Expression In MinBatteryCharge Config
+
+Goal:
+
+Remove the `eval()` call on the user-controlled `MinBatteryCharge` config value
+and replace it with a safe arithmetic parser.
+
+Problem:
+
+`SolarOverheadDistributor.updateDistribution()` evaluates the raw
+`MinBatteryCharge` config string with `eval()` after substituting the current
+battery SOC. This executes arbitrary Python from `config.ini`. On a Venus OS
+device where `config.ini` is writable by a local user or remotely via VRM, a
+crafted `MinBatteryCharge` value such as
+`__import__('os').system('reboot')` would execute with the process's privileges
+on every distribution cycle. Even without a threat actor, a typo in the
+equation can produce unexpected behavior that the broad `except Exception`
+handler silently swallows.
+
+Additionally, when `batterySoc.value` is None, `str(None)` substitutes the
+literal string `"None"`, causing a `NameError` inside `eval()`. The handler
+then silently uses `minBatCharge=0`, removing the battery reservation without
+any warning beyond a logged exception.
+
+Evidence:
+
+- `SolarOverheadDistributor.py` lines 369–371:
+  ```python
+  equation = self.config["SolarOverheadDistributor"]["MinBatteryCharge"]
+  equation = equation.replace("SOC", str(batSoc))
+  minBatCharge = round(eval(equation))
+  ```
+- The `MinBatteryCharge` value in `config.sample.ini` is a simple arithmetic
+  expression like `max(0, (80-SOC)*100)`.
+- `batterySoc.value` is `None` at startup and when BMS is unavailable.
+
+Implementation:
+
+- Replace `eval()` with a purpose-built safe evaluator that supports only the
+  operations documented in `config.sample.ini`: numeric literals, `SOC`
+  substitution, `max()`/`min()`, and basic arithmetic operators (`+`, `-`, `*`,
+  `/`).
+- A simple approach: parse the substituted string with `ast.literal_eval` after
+  confirming it only contains numeric tokens and known functions; or pre-parse
+  the expression into a lambda at config-load time using only the `ast` module.
+- When `batSoc` is None, emit a warning and use `minBatCharge=0` explicitly
+  (the same fallback as today but intentional and logged clearly).
+- Keep the `ZeroDivisionError` and general `except Exception` handlers for
+  unexpected arithmetic errors.
+- Do not change the overhead calculation or consumer-priority logic.
+
+Files to change:
+
+- `SolarOverheadDistributor.py`
+- `README.md` and `config.sample.ini` if supported expression syntax is clarified.
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add hardware-free tests for valid `MinBatteryCharge` expressions with known
+  SOC values and confirm correct `minBatCharge` output.
+- Add a test with `batSoc=None` and confirm `minBatCharge=0` with a warning log
+  and no exception.
+- Add a test with an invalid/malicious expression and confirm it is rejected
+  without executing.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- `MinBatteryCharge` evaluation cannot execute arbitrary Python.
+- None SOC produces explicit fallback, not a silent swallowed exception.
+
+Manual validation:
+
+- Set `MinBatteryCharge=max(0,(80-SOC)*100)` in config and confirm correct
+  reservation at known SOC values.
+- Temporarily break the expression to confirm a clear error log.
+
+Risks and dependencies:
+
+- The safe parser must support all expression forms users currently rely on.
+  If a user has a more complex expression, document the supported subset.
+
+Open questions:
+
+- Should the supported expression grammar be documented explicitly in
+  `config.sample.ini` and README?
+
+Done criteria:
+
+- `MinBatteryCharge` is evaluated without `eval()`.
+- Arbitrary Python in config cannot execute.
+- Hardware-free tests cover valid expressions, None SOC, and invalid expressions.
+- Full unittest suite passes.
+
+### P3 - Replace os.popen Shell Interpolation In getUserTime
+
+Goal:
+
+Remove the shell-injection risk in `Globals.getUserTime()` by replacing
+`os.popen()` string interpolation with `subprocess.run()` and explicit
+argument passing.
+
+Problem:
+
+`Globals.getUserTime()` constructs a shell command by formatting `userTimezone`
+directly into a string passed to `os.popen()`. If `userTimezone` contains
+shell metacharacters (e.g., a value such as `UTC"; reboot; echo "` from
+`config.ini`), they are executed verbatim by the shell. On a GX device running
+as root this is a full privilege-escalation path from config file to shell. The
+risk is mitigated by the fact that `config.ini` requires local write access,
+but the pattern is unsafe by default and `os.popen()` is deprecated since
+Python 3.0.
+
+Evidence:
+
+- `Globals.py` line 23:
+  ```python
+  usertime = os.popen('TZ=":{0}" date +"%Y-%m-%d %H:%M:%S"'.format(userTimezone)).read()
+  ```
+- `userTimezone` is read from the `[Common]` section of `config.ini` at
+  startup. No sanitization is applied before the substitution.
+- `os.popen()` passes the full string to `/bin/sh -c`, which interprets
+  metacharacters.
+
+Implementation:
+
+- Replace `os.popen()` with `subprocess.run()` passing `TZ` as an environment
+  variable and `date` arguments as a list, eliminating shell interpolation:
+  ```python
+  import subprocess, os
+  env = {**os.environ, "TZ": ":" + userTimezone}
+  result = subprocess.run(["date", '+%Y-%m-%d %H:%M:%S'], env=env,
+                          capture_output=True, text=True, timeout=3)
+  usertime = result.stdout.strip()
+  ```
+- Add a basic validation of `userTimezone` before use (e.g., allow only
+  printable non-whitespace characters with no shell metacharacters).
+- Keep the return value and call sites unchanged.
+
+Files to change:
+
+- `Globals.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add a hardware-free test confirming `getUserTime()` calls `subprocess.run()`
+  with `TZ` in the environment and not as a shell-interpolated string.
+- Add a test with a timezone string containing a shell metacharacter and confirm
+  it is rejected or sanitized before subprocess invocation.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- `getUserTime()` does not pass user config values to a shell.
+- Timezone validation rejects malformed values before subprocess invocation.
+
+Manual validation:
+
+- On a GX/Venus OS device, confirm `getUserTime()` returns the correct local
+  time for the configured timezone.
+
+Risks and dependencies:
+
+- `date` command behavior and TZ prefix (`":"`) must be verified on Venus OS's
+  embedded shell.
+- If the GX device's `date` binary does not support TZ override via environment,
+  an alternative (Python `datetime`/`pytz`/`zoneinfo`) should be evaluated.
+
+Open questions:
+
+- Should `getUserTime()` be replaced entirely with Python's `datetime`/`zoneinfo`
+  to eliminate the subprocess dependency?
+
+Done criteria:
+
+- `getUserTime()` does not interpolate `userTimezone` into a shell command.
+- Shell metacharacters in the timezone config value cannot execute arbitrary
+  commands.
+- Hardware-free tests cover normal and malformed timezone values.
+- Full unittest suite passes.
+
 ## Suggested Implementation Order
 
 This order is intentionally low-risk-first. The P0/P1 labels still show safety
@@ -1176,16 +1684,29 @@ Wattpilot behavior.
 
 1. P4 winter grid-import dispatch validation, because it needs natural low-PV
    conditions and should not be forced during summer surplus.
-2. P2 SolarOverheadDistributor HTTP consumer timeouts, because a blocked HTTP
+2. P2 NoBatToEV None D-Bus guard, because the worker crashes silently on every
+   tick at startup until all twelve D-Bus paths deliver values.
+3. P2 SolarOverheadDistributor distribution-cycle None guard, because None
+   grid/battery values abort the entire cycle and leave consumers with stale
+   allowances.
+4. P2 SolarOverheadDistributor `_persistEnergyStats` lock fix, because a
+   concurrent consumer registration can crash the 5-minute persist pass.
+5. P2 SolarOverheadDistributor HTTP consumer timeouts, because a blocked HTTP
    endpoint can delay PV-allocation publication used by other consumers.
-3. P2 MQTT PV inverter zero-target feed-in guard, because the experimental
+6. P2 MQTT PV inverter zero-target feed-in guard, because the experimental
    control path can skip safe throttle publication on a divide-by-zero cycle.
-4. P3 local MQTT reconnect resubscription, because it is a low-risk
-   app-orchestration reliability fix.
-5. P3 service-message connected-state guard, because it improves diagnostics
-   during MQTT outages without changing device-control policy.
-6. P3 dormant service docs/config/runtime alignment, because it prevents
-   configuration confusion and should not be mixed with behavior changes.
+7. P3 duplicate `OnKeywordRegex` subscription fix, because it is a one-line
+   removal with no behavior change on correct messages.
+8. P3 `eval()` replacement in `MinBatteryCharge`, because it removes a code-
+   execution risk in a frequently evaluated config expression.
+9. P3 `os.popen` replacement in `getUserTime`, because it removes shell
+   injection while preserving the same output contract.
+10. P3 local MQTT reconnect resubscription, because it is a low-risk
+    app-orchestration reliability fix.
+11. P3 service-message connected-state guard, because it improves diagnostics
+    during MQTT outages without changing device-control policy.
+12. P3 dormant service docs/config/runtime alignment, because it prevents
+    configuration confusion and should not be mixed with behavior changes.
 
 ## Verification Plan
 
