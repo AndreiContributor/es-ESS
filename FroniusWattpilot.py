@@ -18,6 +18,7 @@ import Globals
 import Helper
 from Helper import i, c, d, w, e, t,  dbusConnection
 import WattpilotDecisionInputs as DecisionInputs
+import WattpilotSafetyDecisions as SafetyDecisions
 from Wattpilot import Wattpilot
 from enums import WattpilotModelStatus, WattpilotStartStop, WattpilotControlMode, VrmEvChargerControlMode, VrmEvChargerStatus, VrmEvChargerStartStop
 from esESSService import esESSService
@@ -2016,24 +2017,24 @@ class FroniusWattpilot (esESSService):
         )
 
     def gridImportLimitExceeded(self):
-        if self.allowGridCharging:
-            self.gridImportSince = 0
-            return False
-
         gridImport = self.gridImportPower()
-        if gridImport > self.gridImportStopW:
-            if self.gridImportSince == 0:
-                self.gridImportSince = time.time()
-                d(
-                    self,
-                    "Grid import guard started at {0:.0f}W.".format(gridImport)
-                )
-            elif time.time() - self.gridImportSince >= self.gridImportStopSeconds:
-                return True
-        else:
-            self.gridImportSince = 0
+        decision = SafetyDecisions.evaluate_grid_import_guard(
+            self.allowGridCharging,
+            gridImport,
+            self.gridImportSince,
+            self.gridImportStopW,
+            self.gridImportStopSeconds,
+            time.time(),
+        )
+        self.gridImportSince = decision.next_import_since
 
-        return False
+        if decision.reason == SafetyDecisions.GRID_IMPORT_STARTED:
+            d(
+                self,
+                "Grid import guard started at {0:.0f}W.".format(gridImport)
+            )
+
+        return decision.limit_exceeded
 
     def shouldIgnoreBatteryReservation(self):
         soc = self.batterySoc()
@@ -2087,21 +2088,28 @@ class FroniusWattpilot (esESSService):
         # A lockout means the bridge has used its full allowed time during the
         # current low-PV event. Do not open another window until PV has fully
         # covered the live EV demand for the configured recovery duration.
-        if not self.batteryAssistLockedOut:
+        decision = SafetyDecisions.evaluate_battery_assist_recovery(
+            self.batteryAssistLockedOut,
+            shortfallW,
+            self.batteryAssistRecoverySince,
+            self.batteryAssistRecoverySeconds,
+            time.time(),
+        )
+
+        if decision.reason == SafetyDecisions.BATTERY_RECOVERY_NOT_LOCKED:
             return
 
-        if shortfallW > 0:
-            if self.batteryAssistRecoverySince != 0:
-                d(
-                    self,
-                    "PV recovery interrupted before battery-assist lockout "
-                    "could clear."
-                )
-            self.batteryAssistRecoverySince = 0
+        if decision.recovery_interrupted:
+            d(
+                self,
+                "PV recovery interrupted before battery-assist lockout "
+                "could clear."
+            )
+            self.batteryAssistRecoverySince = decision.next_recovery_since
             return
 
-        if self.batteryAssistRecoverySince == 0:
-            self.batteryAssistRecoverySince = time.time()
+        if decision.recovery_started:
+            self.batteryAssistRecoverySince = decision.next_recovery_since
             self.publishServiceMessage(
                 self,
                 "PV fully covers EV demand. Waiting {0}s before allowing "
@@ -2110,7 +2118,7 @@ class FroniusWattpilot (esESSService):
                 )
             )
 
-        if self.getBatteryAssistRecoverySeconds() >= self.batteryAssistRecoverySeconds:
+        if decision.clear_lockout:
             self.clearBatteryAssistLockout(
                 "PV covered EV demand continuously for {0}s".format(
                     self.batteryAssistRecoverySeconds
@@ -2118,35 +2126,39 @@ class FroniusWattpilot (esESSService):
             )
 
     def startOrContinueBatteryAssist(self, shortfallW):
-        # No shortfall means PV covers the present EV load. End any bridge.
-        if shortfallW <= 0:
-            self.clearBatteryAssist()
-            return False
+        soc = None
+        gridImport = 0
+        if shortfallW > 0 and not self.batteryAssistLockedOut:
+            soc = self.batterySoc()
+            gridImport = self.gridImportPower()
 
-        # Once the configured bridge time has been consumed, preserve the
-        # lockout through all later 5-second control cycles. It is cleared
-        # only by updateBatteryAssistLockoutRecovery() or car disconnect.
-        if self.batteryAssistLockedOut:
-            self.clearBatteryAssist()
-            return False
-
-        soc = self.batterySoc()
-        canAssist = (
-            self.batteryAssistEnabled
-            and self.wattpilot.power is not None
-            and self.wattpilot.power > 0
-            and soc is not None
-            and soc >= self.batteryAssistSocMin
-            and shortfallW <= self.batteryAssistMaxShortfallW
-            and self.gridImportPower() <= self.gridImportStopW
+        decision = SafetyDecisions.evaluate_battery_assist(
+            self.batteryAssistEnabled,
+            shortfallW,
+            self.batteryAssistLockedOut,
+            self.wattpilot.power,
+            soc,
+            self.batteryAssistSocMin,
+            self.batteryAssistMaxShortfallW,
+            gridImport,
+            self.gridImportStopW,
+            self.batteryAssistSince,
+            self.batteryAssistMaxSeconds,
+            time.time(),
         )
 
-        if not canAssist:
+        if (
+            decision.reason in [
+                SafetyDecisions.BATTERY_ASSIST_NO_SHORTFALL,
+                SafetyDecisions.BATTERY_ASSIST_LOCKED_OUT,
+                SafetyDecisions.BATTERY_ASSIST_INELIGIBLE,
+            ]
+        ):
             self.clearBatteryAssist()
             return False
 
-        if self.batteryAssistSince == 0:
-            self.batteryAssistSince = time.time()
+        self.batteryAssistSince = decision.next_assist_since
+        if decision.assist_started:
             self.publishServiceMessage(
                 self,
                 "PV dip detected. Starting battery assist at {0:.0f}% SOC.".format(soc)
@@ -2155,7 +2167,7 @@ class FroniusWattpilot (esESSService):
         self.batteryAssistActive = True
         self.batteryAssistShortfallW = shortfallW
 
-        if self.getBatteryAssistSeconds() >= self.batteryAssistMaxSeconds:
+        if decision.time_limit_reached:
             self.publishServiceMessage(
                 self,
                 "Battery assist time limit reached. Locking out further "
