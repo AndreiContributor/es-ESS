@@ -2050,49 +2050,65 @@ Done criteria:
 - Valid production configs pass without raising.
 - Full unittest suite passes.
 
-## Suggested Implementation Order
+## PR Execution Queue
 
-This order is intentionally low-risk-first. The P0/P1 labels still show safety
-and production impact, but the first PRs avoid live charging-control changes so
-the project can build tests, docs, and confidence before touching sensitive
-Wattpilot behavior.
+Use this queue as the implementation order. Each numbered entry is one
+PR-sized batch. Do not pull later items into the active PR. When the user says
+`fix next PR items`, select the first PR below containing unfinished backlog
+items, present the required implementation plan, risks, and verification, and
+then follow the repository working agreement for approval and implementation.
+After delivery, move the finished backlog items to `Completed` and advance the
+queue on the next request.
 
-1. P4 winter grid-import dispatch validation, because it needs natural low-PV
-   conditions and should not be forced during summer surplus.
-2. P2 NoBatToEV None D-Bus guard, because the worker crashes silently on every
-   tick at startup until all twelve D-Bus paths deliver values.
-3. P2 SolarOverheadDistributor distribution-cycle None guard, because None
-   grid/battery values abort the entire cycle and leave consumers with stale
-   allowances.
-4. P2 SolarOverheadDistributor `_persistEnergyStats` lock fix, because a
-   concurrent consumer registration can crash the 5-minute persist pass.
-5. P2 SolarOverheadDistributor HTTP consumer timeouts, because a blocked HTTP
-   endpoint can delay PV-allocation publication used by other consumers.
-6. P2 MQTT PV inverter zero-target feed-in guard, because the experimental
-   control path can skip safe throttle publication on a divide-by-zero cycle.
-7. P2 add hardware-free tests for untested services, beginning with
-   `NoBatToEV` and `SolarOverheadDistributor` to lock in the None-guard and
-   lock fixes; then `MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`,
-   `FroniusSmartmeterJSON`, and the local MQTT reconnect routing.
-8. P3 duplicate `OnKeywordRegex` subscription fix, because it is a one-line
-   removal with no behavior change on correct messages.
-9. P3 `eval()` replacement in `MinBatteryCharge`, because it removes a code-
-   execution risk in a frequently evaluated config expression.
-10. P3 `os.popen` replacement in `getUserTime`, because it removes shell
-    injection while preserving the same output contract.
-11. P3 local MQTT reconnect resubscription, because it is a low-risk
-    app-orchestration reliability fix.
-12. P3 service-message connected-state guard, because it improves diagnostics
-    during MQTT outages without changing device-control policy.
-13. P3 dormant service docs/config/runtime alignment, because it prevents
-    configuration confusion and should not be mixed with behavior changes.
-14. P3 startup config value validation, because a single invalid key can
-    produce runaway-poll or oscillation behavior that is hard to trace back to
-    the config file; place after the test coverage items so validation failures
-    are already covered by hardware-free tests.
-15. P3 extract Wattpilot dispatch handlers to named methods, because it is a
-    pure structural improvement with no policy change; place last so the test
-    suite is already exercising each handler before the extraction.
+1. **PR 1 - NoBatToEV startup safety:** implement the None D-Bus guard and add
+   `tests/test_nobattoev.py` as the focused regression anchor.
+2. **PR 2 - SolarOverheadDistributor startup safety:** implement the
+   distribution-cycle None guard and `_persistEnergyStats` lock fix, with
+   focused coverage in `tests/test_solar_overhead_distributor.py`.
+3. **PR 3 - Service I/O safety and remaining service coverage:** add bounded
+   SolarOverheadDistributor HTTP consumer timeouts, guard MqttPVInverter
+   zero-feed-in against zero target power, and add the remaining hardware-free
+   service tests for `MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, and
+   `FroniusSmartmeterJSON`.
+4. **PR 4 - MQTT and orchestration reliability:** remove the duplicate
+   SolarOverheadDistributor `OnKeywordRegex` subscription, fix local MQTT
+   reconnect resubscription routing, call the main MQTT client's
+   `is_connected()` method correctly, and add the associated orchestration and
+   fake-client tests.
+5. **PR 5 - Security hardening:** replace the `MinBatteryCharge` `eval()` path
+   with a constrained AST evaluator and replace `getUserTime()` shell
+   interpolation with a structured subprocess call, with malformed-input and
+   compatibility tests for both changes.
+6. **PR 6 - Dormant service alignment:** reconcile README, sample config,
+   service inventory, and runtime intent for dormant or missing services. Keep
+   this documentation/configuration alignment separate from active-service
+   behavior changes.
+7. **PR 7 - Startup config value validation:** add bounded, cross-field config
+   validation with tests for valid production values and clean startup failure
+   for invalid values.
+8. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
+   `dispatchControlState()` side-effect bodies into named controller methods,
+   add isolated characterization tests for the non-trivial handlers, and prove
+   delegation for every control state without changing state selection,
+   command ownership, Manual behavior, or Auto/Eco policy.
+
+The P4 winter grid-import dispatch validation is an observation task, not a
+code PR, and remains open independently of this queue. Complete it only under
+natural suitable low-PV conditions; do not force production grid import or
+disconnect critical telemetry to satisfy it.
+
+Hardware validation scope for this queue:
+
+- PRs 1-7 do not require a connected car for their acceptance criteria.
+  A real or simulated EV load adds end-to-end confidence for NoBatToEV grid-
+  setpoint math, but is not required to verify the None guard.
+- PR 8 uses focused characterization, all-state delegation, and the full
+  hardware-free suite as its merge gate. A short normal GX/Wattpilot smoke test
+  is recommended before production deployment, but the previously validated
+  Manual/Auto, phase-switch, transport-reconnect, and car-debounce matrices do
+  not need to be repeated when the change remains purely structural.
+- The separate P4 winter validation requires an active Auto/Eco charging
+  session to observe real grid-import phase-down or stop behavior.
 
 ## Verification Plan
 
