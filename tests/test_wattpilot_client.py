@@ -1,6 +1,7 @@
 """Hardware-free regressions for the Wattpilot WebSocket client lifecycle."""
 
 import importlib.util
+import json
 import sys
 import threading
 import types
@@ -193,6 +194,48 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(FakeWebSocketApp.instances[0].run_forever_calls, 1)
         self.assertTrue(FakeWebSocketApp.instances[0].closed)
+
+    def test_null_awattar_current_price_does_not_break_status_parsing(self):
+        _install_wattpilot_client_stubs()
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_null_awattar_status_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+        client._awattarCurrentPrice = 12.34
+
+        client._Wattpilot__on_message(
+            client._wsapp,
+            json.dumps(
+                {
+                    "type": "fullStatus",
+                    "partial": False,
+                    "status": {"awcp": None},
+                }
+            ),
+        )
+
+        self.assertEqual(client.awattarCurrentPrice, 12.34)
+        self.assertTrue(client.allPropsInitialized)
+
+    def test_awattar_current_price_updates_when_marketprice_is_present(self):
+        _install_wattpilot_client_stubs()
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_awattar_status_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+
+        client._Wattpilot__on_message(
+            client._wsapp,
+            json.dumps(
+                {
+                    "type": "fullStatus",
+                    "partial": False,
+                    "status": {"awcp": {"marketprice": 0.42}},
+                }
+            ),
+        )
+
+        self.assertEqual(client.awattarCurrentPrice, 0.42)
 
 
 if __name__ == "__main__":
