@@ -28,6 +28,18 @@ The runtime also owns the shared D-Bus monitor, main MQTT client, local Venus
 MQTT client, worker scheduling, service messages, and combined grid-setpoint
 requests.
 
+## Module Layout
+
+The active service modules intentionally remain in the repository root for now.
+`es-ESS.py` loads services by a root module/class name pair such as
+`FroniusWattpilot` -> `FroniusWattpilot.py`, and existing tests and deployment
+scripts also assume direct root-module imports from `/data/es-ESS`.
+
+Moving Fronius or Wattpilot modules into a package would require a standalone
+compatibility refactor that preserves those service names, import paths, tests,
+and Venus OS startup behavior. Do not combine that package refactor with
+Wattpilot control, safety, phase-switching, or runtime-status changes.
+
 ## Active Initialized Services
 
 These services are actively initialized by `es-ESS.py` when their `[Services]`

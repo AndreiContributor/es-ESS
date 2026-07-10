@@ -68,10 +68,8 @@ Current test strategy:
   Wattpilot PV-control policy, runtime status, grid guards, phase switching,
   stale telemetry, battery assist, charge-complete hold, and several Manual
   mode safety cases.
-- Remaining gaps are around UI-format alignment across Venus/VRM surfaces,
-  Fronius module packaging evaluation, and winter live validation of
-  grid-import / stale-telemetry control branches under natural low-PV
-  conditions.
+- The remaining known validation gap is winter live validation of grid-import /
+  stale-telemetry control branches under natural low-PV conditions.
 
 Unclear deployment details:
 
@@ -566,6 +564,60 @@ Completion note:
   may release its own stale Auto/Eco constraints when Manual is selected.
 - Kept normal Manual `/SetCurrent` and `/StartStop` command rejection unchanged.
 
+### Completed 2026-07-10 - Evaluate Fronius Module Packaging
+
+Completion note:
+
+- Inventoried the Fronius and Wattpilot root modules and their current import
+  assumptions.
+- Confirmed active services are loaded from `es-ESS.py` by root module/class
+  name through `_checkAndEnable()`, so service names such as
+  `FroniusWattpilot` and `FroniusSmartmeterJSON` currently double as import
+  contracts.
+- Confirmed `FroniusWattpilot.py`, `esESSService.py`, and the hardware-free
+  tests still use direct root imports or direct root file loading for
+  `Wattpilot.py`, `WattpilotRuntimeStatus.py`, and Wattpilot decision helpers.
+- Confirmed Venus OS deployment runs `/data/es-ESS/es-ESS.py` directly through
+  `service/run`, making root-module imports the lowest-risk layout for the
+  current service bundle.
+- Decided to keep the flat root service-module layout for now. A future
+  `fronius` or `integrations/fronius` package move should be a standalone
+  compatibility refactor with root wrappers or service-loader changes, explicit
+  import tests, and live startup validation.
+- Updated `docs/service-inventory.md` with the module-layout decision and the
+  rule not to combine package refactors with Wattpilot control, safety,
+  phase-switching, or runtime-status changes.
+- Kept the change documentation/backlog-only; no production code, tests,
+  imports, configuration defaults, D-Bus paths, MQTT topics, Manual mode, or
+  Auto/Eco charging behavior were changed.
+
+### Completed 2026-07-10 - Investigate EVCS UI Formatting Alignment
+
+Completion note:
+
+- Confirmed es-ESS publishes truthful numeric Wattpilot EVCS values:
+  `/Session/Energy` mirrors `/Ac/Energy/Forward`, and `/Session/Time` mirrors
+  `/ChargingTime`.
+- Inspected current upstream Victron `gui-v2` sources for the EVCS overview,
+  list, and detail surfaces.
+- Confirmed `components/widgets/EvcsWidget.qml` reads `/Session/Energy` as
+  kWh through a compact quantity label and formats `/Session/Time` with
+  `HH:MM` once the value reaches 60 seconds, otherwise `HH:MM:SS`.
+- Confirmed `pages/evcs/EvChargerPage.qml` uses `QuantityTableSummary` for the
+  detail page and formats charging time through `Utils.formatAsHHMM(...)`.
+- Confirmed `pages/evcs/EvChargerListPage.qml` summarizes EVCS power and
+  energy through the standard quantity-table model.
+- Decided not to change es-ESS numeric D-Bus values, not to round or publish
+  display strings for UI alignment, and not to maintain a local GX/Venus UI
+  patch for this cosmetic difference.
+- Documented in README that EVCS precision, unit display, and charging-time
+  text are controlled by Victron UI components and may differ between
+  overview, list, and detail surfaces even when the underlying D-Bus values are
+  correct.
+- Kept the change documentation/backlog-only; no production code, tests,
+  configuration defaults, D-Bus paths, MQTT topics, Manual mode, or Auto/Eco
+  charging behavior were changed.
+
 ## Backlog
 
 ### P4 - Winter Validate Wattpilot Grid-Import Dispatch Branches
@@ -629,162 +681,6 @@ Done criteria:
 - If those branches still do not occur naturally, the item records that result
   without forcing unsafe or unrealistic system behavior.
 
-### P4 - Investigate EVCS UI Formatting Alignment
-
-Problem:
-
-After es-ESS publishes correct Wattpilot EVCS session energy/time values, the
-Venus/GX web overview and VRM/mobile detail views may display the same
-underlying values with different precision, units, rounding, and refresh
-cadence. This can look inconsistent even though the D-Bus values are correct.
-
-Evidence:
-
-- Live GX validation confirmed `/Session/Energy` mirrors
-  `/Ac/Energy/Forward`, and `/Session/Time` mirrors `/ChargingTime`.
-- The Venus/GX overview tile showed real EVCS energy and time rather than
-  `--kWh`.
-- The web overview and mobile/detail views formatted similar values
-  differently, such as rounded power on the overview, energy in Wh versus kWh,
-  and `00h 07m` versus `6m, 15s`.
-- These formatting differences come from UI presentation layers, not from the
-  es-ESS D-Bus numeric values.
-
-Implementation:
-
-- Treat this as a UI-layer investigation, not an es-ESS control or D-Bus-value
-  change.
-- Identify where Venus/GX web overview formatting is implemented for EVCS
-  power, session energy, and session time.
-- If local Venus/GX customization is acceptable, evaluate a small UI patch or
-  extension that formats overview values closer to the mobile/detail view.
-- If broad consistency is desired, consider documenting or proposing an
-  upstream Victron `gui-v2` formatting improvement.
-- Do not change es-ESS numeric units, round published D-Bus values, or publish
-  strings on numeric paths to force UI alignment.
-
-Files to change:
-
-- Possibly documentation only.
-- Possibly local Venus/GX UI or extension files if that route is explicitly
-  selected.
-- Possibly no es-ESS production code.
-- `BACKLOG.md`
-
-Files to add:
-
-- Possibly a local UI patch note, custom dashboard extension, or upstream issue
-  reference.
-
-Tests:
-
-- If no es-ESS code changes are made, no Python tests are required.
-- If a UI artifact is added, validate rendering on the target GX/Venus OS UI.
-- Recheck D-Bus values to prove `/Session/Energy`, `/Ac/Energy/Forward`,
-  `/Session/Time`, and `/ChargingTime` remain numeric and truthful.
-
-Expected coverage:
-
-- The team has a clear decision on whether cosmetic web/mobile formatting
-  alignment is worth a UI customization or upstream proposal.
-- es-ESS continues publishing precise numeric D-Bus values for automations,
-  VRM, MQTT consumers, and dashboards.
-
-Manual validation:
-
-- Required on the relevant UI surface because this is a presentation concern.
-
-Manual test steps:
-
-1. Start an EV charging session and confirm es-ESS D-Bus values are correct.
-2. Capture Venus/GX web overview formatting for power, energy, and time.
-3. Capture VRM/mobile detail formatting for the same values at about the same
-   time.
-4. If a UI patch is tested, confirm the display alignment improves without
-   losing useful precision or breaking standard units.
-
-Risks and dependencies:
-
-- Local Venus/GX UI patches may be overwritten by Venus OS updates.
-- VRM/mobile formatting is controlled by Victron app/cloud UI behavior and is
-  not realistically changeable from es-ESS.
-- Changing es-ESS numeric outputs for display consistency would reduce data
-  quality and risk breaking consumers.
-
-Open questions:
-
-- Is local GX/web formatting consistency important enough to maintain a custom
-  UI patch?
-- Should formatting feedback be proposed upstream to Victron instead?
-
-Done criteria:
-
-- A decision is documented: no change, local UI customization, or upstream
-  proposal.
-- Any implemented UI-only change is validated visually.
-- es-ESS D-Bus numeric contracts remain unchanged.
-
-### P3 - Evaluate Fronius Module Packaging
-
-Goal:
-
-Decide whether Fronius-related root modules should move into a package without
-disrupting Venus OS deployment or existing imports.
-
-Problem:
-
-The repository root contains several Fronius-focused modules, including
-`FroniusWattpilot.py`, `FroniusSmartmeterJSON.py`,
-`FroniusSmartmeterRS485.py`, `Wattpilot.py`, `WattpilotRuntimeStatus.py`, and
-Wattpilot decision helpers. Grouping them could improve navigation, but moving
-files is a cross-cutting import and deployment refactor.
-
-Implementation:
-
-- Inventory all root-level Fronius and Wattpilot modules and their imports.
-- Check `es-ESS.py`, service initialization, tests, install scripts, and any
-  documented command examples for direct root-module assumptions.
-- Decide between keeping the flat service-module layout, introducing a
-  `fronius`/`integrations/fronius` package, or adding compatibility wrappers.
-- If moving files, make the package refactor a standalone PR with no charging
-  behavior changes.
-- Do not combine this with Wattpilot safety, phase-switching, or state-machine
-  changes.
-
-Files to change:
-
-- Possibly Fronius/Wattpilot Python modules and imports.
-- Possibly tests under `tests/`.
-- Possibly README and architecture/service-inventory docs.
-- `BACKLOG.md`
-
-Tests:
-
-- Run repository syntax checks.
-- Run the full hardware-free unittest suite.
-- Run any import-focused tests added for package compatibility.
-
-Expected coverage:
-
-- Runtime imports still work from the service entry point.
-- Existing tests can import the moved or wrapped modules.
-- Venus OS deployment paths and service scripts remain compatible.
-
-Risks and dependencies:
-
-- Root-module imports may be used by tests, user scripts, or deployment
-  assumptions.
-- Venus OS service startup is sensitive to `PYTHONPATH` and working-directory
-  assumptions.
-- Compatibility wrappers may be worthwhile for one release if external imports
-  are plausible.
-
-Done criteria:
-
-- A packaging decision is documented.
-- Any file move is isolated from behavior changes and covered by import tests.
-- Full hardware-free tests pass after the packaging change.
-
 ## Suggested Implementation Order
 
 This order is intentionally low-risk-first. The P0/P1 labels still show safety
@@ -792,11 +688,7 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P3 Fronius module packaging evaluation, because it is a cross-cutting
-   import/deployment refactor and should stay separate from behavior changes.
-2. P4 EVCS UI formatting alignment, because it is cosmetic and should stay
-   separate from the es-ESS numeric D-Bus contract.
-3. P4 winter grid-import dispatch validation, because it needs natural low-PV
+1. P4 winter grid-import dispatch validation, because it needs natural low-PV
    conditions and should not be forced during summer surplus.
 
 ## Verification Plan
