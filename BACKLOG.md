@@ -25,6 +25,8 @@ Major services and integrations:
 - The Wattpilot WebSocket client lives in `Wattpilot.py`.
 - Runtime status for dashboards, Cerbo extensions, MQTT consumers, and
   diagnostics lives in `WattpilotRuntimeStatus.py`.
+- Wattpilot decision helpers live in `WattpilotDecisionInputs.py`,
+  `WattpilotSafetyDecisions.py`, and `WattpilotPhaseDecisions.py`.
 - PV allowance and battery-reservation coordination come from
   `SolarOverheadDistributor.py`.
 - Other integrations include MQTT inverter/export services, Shelly grid and PV
@@ -67,8 +69,8 @@ Current test strategy:
   stale telemetry, battery assist, charge-complete hold, and several Manual
   mode safety cases.
 - Remaining gaps are around UI-format alignment across Venus/VRM surfaces,
-  Wattpilot decision-helper extraction, phase-switch extraction, and the
-  longer-term explicit state-machine refactor.
+  Fronius module packaging evaluation, and the longer-term explicit
+  state-machine refactor.
 
 Unclear deployment details:
 
@@ -459,6 +461,41 @@ Completion note:
   phase thresholds, D-Bus path names, MQTT topic names, configuration defaults,
   or Wattpilot command side effects were changed.
 
+### Completed 2026-07-10 - Extract Wattpilot Phase-Switching Decisions
+
+Completion note:
+
+- Added `WattpilotPhaseDecisions.py` for pure phase threshold, desired phase,
+  target-current, distributor-request, and phase-up timing decisions.
+- Updated `FroniusWattpilot.py` to delegate those calculations while keeping
+  `set_phases()`, `set_power()`, pending confirmation, D-Bus/MQTT publication,
+  service messages, and mutable controller timers in the controller.
+- Added focused helper tests in `tests/test_wattpilot_phase_decisions.py`.
+- Updated `docs/wattpilot-architecture.md` to document the new helper boundary.
+- Verified with `py_compile`, focused phase helper tests, existing Wattpilot
+  Eco/PV policy tests, and the full hardware-free unittest suite.
+- Kept the change extraction-only; no Manual mode, Auto/Eco charging policy,
+  phase thresholds, D-Bus path names, MQTT topic names, configuration defaults,
+  or Wattpilot command side effects were changed.
+
+### Completed 2026-07-10 - Stop Auto Control After Confirmed Wattpilot Disconnect
+
+Completion note:
+
+- Fixed the Wattpilot car-disconnect debounce so a stale active Wattpilot model
+  status can only hold `carConnected=false` during the configured confirmation
+  window.
+- After `CarDisconnectConfirmSeconds`, a physical disconnect now wins, clears
+  the effective connected state, reports `Disconnected`, and prevents Auto/Eco
+  current or phase control from continuing until the car is connected again.
+- Added regression tests for the short transient disconnect window, the stale
+  charging-status disconnect field case, and the full `_update()` path.
+- Updated `docs/wattpilot-architecture.md` with the confirmed-disconnect safety
+  invariant.
+- Kept the change limited to disconnect handling; no Manual mode command
+  ownership, grid policy, battery-assist thresholds, phase thresholds, D-Bus
+  path names, MQTT topic names, or configuration defaults were changed.
+
 ## Backlog
 
 ### P4 - Investigate EVCS UI Formatting Alignment
@@ -617,99 +654,6 @@ Done criteria:
 - Any file move is isolated from behavior changes and covered by import tests.
 - Full hardware-free tests pass after the packaging change.
 
-### P2 - Extract Wattpilot Phase-Switching Decisions
-
-Depends on:
-
-- Wattpilot decision characterization tests.
-- Telemetry and allowance helper extraction.
-
-Goal:
-
-Make phase-switching decisions reviewable without introducing a full state
-machine yet.
-
-Problem:
-
-One-phase and three-phase switching is a high-impact EV-control behavior. The
-current implementation works through controller flags, pending confirmations,
-timing guards, current limits, and live phase telemetry inside the large
-controller.
-
-Evidence:
-
-- `FroniusWattpilot.py` contains `MinPhaseSwitchSeconds`,
-  `PhaseSwitchDelaySeconds`, `ThreePhasePvSurplusStartW`,
-  `ThreePhasePvSurplusStopW`, `pendingPhaseSwitchMode`,
-  `phaseSwitchCandidateMode`, and phase telemetry confirmation logic.
-- Tests cover several phase-switching and fallback behaviors, but the logic is
-  still mixed with command issuing and runtime status reporting.
-
-Implementation:
-
-- Extract phase-mode eligibility and target-current decisions into pure helpers
-  first.
-- Keep actual `set_phases()` and `set_power()` calls in `FroniusWattpilot.py`
-  for this PR.
-- Preserve current one-phase start behavior, three-phase phase-up threshold,
-  three-to-one safety reduction, pending-confirmation behavior, and cooldowns.
-- Preserve current D-Bus `/PhaseMode` and runtime-status semantics.
-
-Files to change:
-
-- `FroniusWattpilot.py`
-- Tests under `tests/`
-
-Files to add:
-
-- Possibly a small phase-decision helper module.
-
-Tests:
-
-- Run phase-switching tests.
-- Add focused helper tests for one-phase, three-phase, cooldown, and fallback
-  decisions.
-- Run existing Wattpilot control tests.
-- Run the full unittest suite.
-- Run `python -m py_compile` for changed Python files.
-
-Expected coverage:
-
-- One-phase and three-phase decisions remain unchanged.
-- Current is still bounded by configured min/max and Wattpilot effective limit.
-- Phase-up still requires real fresh PV allowance and timing guards.
-- Battery assist and raw overhead still cannot trigger phase-up.
-
-Manual validation:
-
-- Required before production deployment because phase switching affects live EV
-  charging.
-
-Manual test steps:
-
-1. Validate one-phase Auto/Eco start from fresh allowance.
-2. Validate one-to-three phase-up after the configured stable PV delay.
-3. Validate three-to-one fallback when PV drops below the three-phase stop
-   threshold.
-4. Validate pending phase confirmation and runtime status.
-5. Validate no phase changes occur in Manual mode.
-
-Risks and dependencies:
-
-- Phase switching is safety-sensitive and user-visible.
-- Avoid combining this with grid guard, battery assist, or reconnect changes.
-
-Open questions:
-
-- Should phase-switch helper results include explicit reason strings for logs
-  and runtime status?
-
-Done criteria:
-
-- Phase decision helpers are tested.
-- Existing phase behavior is preserved.
-- Manual staging validation confirms expected phase switching.
-
 ### P3 - Refactor Wattpilot Control Into An Explicit State Machine
 
 Depends on:
@@ -821,13 +765,11 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P2 phase-switching helper extraction, because phase switching is
-   user-visible and high-impact.
-2. P3 state-machine refactor, because it needs the previous behavior, config,
+1. P3 state-machine refactor, because it needs the previous behavior, config,
    docs, and helper boundaries in place before touching overall control flow.
-3. P3 Fronius module packaging evaluation, because it is a cross-cutting
+2. P3 Fronius module packaging evaluation, because it is a cross-cutting
    import/deployment refactor and should stay separate from behavior changes.
-4. P4 EVCS UI formatting alignment, because it is cosmetic and should stay
+3. P4 EVCS UI formatting alignment, because it is cosmetic and should stay
    separate from the es-ESS numeric D-Bus contract.
 
 ## Verification Plan

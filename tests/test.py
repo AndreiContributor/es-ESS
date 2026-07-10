@@ -342,7 +342,7 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         with patch.object(self.fwp.time, "time", return_value=115):
             self.assertFalse(controller.updateEffectiveCarConnection())
 
-    def test_charging_status_overrides_transient_false_connection(self):
+    def test_charging_status_overrides_transient_false_connection_during_confirm_window(self):
         controller = self._controller()
         controller.lastConfirmedCarConnected = True
         controller.wattpilot.carConnected = False
@@ -350,8 +350,52 @@ class WattpilotControlRegressionTests(unittest.TestCase):
 
         with patch.object(self.fwp.time, "time", return_value=100):
             self.assertTrue(controller.updateEffectiveCarConnection())
-        with patch.object(self.fwp.time, "time", return_value=200):
+        with patch.object(self.fwp.time, "time", return_value=110):
             self.assertTrue(controller.updateEffectiveCarConnection())
+
+    def test_confirmed_disconnect_wins_over_stale_charging_status(self):
+        controller = self._controller()
+        controller.lastConfirmedCarConnected = True
+        controller.wattpilot.carConnected = False
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
+        controller.wattpilot.power = 0
+        controller.wattpilot.power1 = 0
+        controller.wattpilot.power2 = 0
+        controller.wattpilot.power3 = 0
+        controller.wattpilot.startState = self.fwp.WattpilotStartStop.Off
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.updateEffectiveCarConnection())
+        with patch.object(self.fwp.time, "time", return_value=115):
+            self.assertFalse(controller.updateEffectiveCarConnection())
+
+    def test_update_does_not_auto_control_after_confirmed_disconnect(self):
+        controller = self._controller()
+        controller.lastConfirmedCarConnected = True
+        controller.carDisconnectedSince = 100
+        controller.wattpilot.carConnected = False
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
+        controller.wattpilot.power = 0
+        controller.wattpilot.power1 = 0
+        controller.wattpilot.power2 = 0
+        controller.wattpilot.power3 = 0
+        controller.wattpilot.startState = self.fwp.WattpilotStartStop.Off
+        controller.allowance = 5000
+        controller.reportVRMStatus = Mock()
+        controller.adjustChargeForPvAllowance = Mock(
+            return_value=self.fwp.VrmEvChargerStatus.Charging
+        )
+        controller.publishSafetyTelemetry = lambda: None
+
+        with patch.object(self.fwp.time, "time", return_value=115):
+            controller._update()
+
+        controller.reportVRMStatus.assert_called_with(
+            self.fwp.VrmEvChargerStatus.Disconnected
+        )
+        controller.adjustChargeForPvAllowance.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_phases.assert_not_called()
 
     def test_stable_pv_wait_reports_countdown_status_literal(self):
         controller = self._controller()
