@@ -118,6 +118,26 @@ Open questions:
 
 ## Completed
 
+### Completed 2026-07-10 - NoBatToEV Startup Safety
+
+Completion note:
+
+- Added startup telemetry guards to `NoBatToEV._update()` so missing Wattpilot
+  phase power, external EV charger power, consumption, or PV D-Bus values
+  revoke the shared grid-setpoint request instead of raising `TypeError`.
+- Preserved existing NoBatToEV setpoint behavior once all telemetry is present,
+  including EV-load delta calculation, zero-EV revocation, relay-disabled
+  revocation, and grid-loss revocation.
+- Added `tests/test_nobattoev.py` with hardware-free coverage for missing
+  Wattpilot power, missing D-Bus consumption/PV values, populated setpoint
+  delta calculation, zero EV power, and relay-disabled behavior.
+- Verified with `py_compile`, the focused NoBatToEV unittest file, and the full
+  hardware-free unittest suite through `uv --cache-dir .uv-cache run
+  --no-project python`.
+- Kept the change limited to NoBatToEV startup safety, tests, and backlog; no
+  Wattpilot Manual/Auto control behavior, D-Bus path names, MQTT topics,
+  configuration defaults, or service initialization boundaries were changed.
+
 ### Completed 2026-07-08 - Rebuild Wattpilot Configuration Around `config.sample.ini`
 
 Completion note:
@@ -1776,26 +1796,25 @@ Done criteria:
 
 Goal:
 
-Provide hardware-free test coverage for the six active service modules that
-currently have no test files, prioritising the two with known crash-on-startup
-bugs first.
+Provide hardware-free test coverage for the remaining active service modules
+that currently have no service-specific test files, prioritising the known
+SolarOverheadDistributor crash-on-startup bugs first.
 
 Problem:
 
-`NoBatToEV` and `SolarOverheadDistributor` each have confirmed crashes during
-the startup window (None D-Bus values, missing lock) and zero test coverage.
-`MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, and `FroniusSmartmeterJSON`
-likewise have no tests. Additionally, the local MQTT reconnect resubscription
-bug identified in the P3 reconnect item has no automated coverage anywhere in
-the existing test suite. These gaps mean regressions in any of these services
-will go undetected by CI.
+`SolarOverheadDistributor` has confirmed crashes during the startup window
+(None D-Bus values, missing lock) and zero service-specific test coverage.
+`MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, and
+`FroniusSmartmeterJSON` likewise have no tests. Additionally, the local MQTT
+reconnect resubscription bug identified in the P3 reconnect item has no
+automated coverage anywhere in the existing test suite. These gaps mean
+regressions in any of these services will go undetected by CI.
 
 Evidence:
 
-- `tests/` contains no file for `NoBatToEV`, `SolarOverheadDistributor`,
-  `MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, or `FroniusSmartmeterJSON`.
-- `NoBatToEV.py` line 82: `power1 + power2 + power3` with `None` initial values
-  → `TypeError` on every 2-second tick until Wattpilot connects.
+- `tests/` contains no file for `SolarOverheadDistributor`,
+  `MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, or
+  `FroniusSmartmeterJSON`.
 - `SolarOverheadDistributor.py` lines 328–334: grid-phase arithmetic before any
   None check → `TypeError` aborts the full distribution cycle.
 - `SolarOverheadDistributor.py` lines 277–282: `_persistEnergyStats()` iterates
@@ -1811,14 +1830,6 @@ all Victron/D-Bus/MQTT/hardware dependencies using the same patterns already
 established in `tests/test.py` and `tests/test_eco_pv_policy.py`.
 
 Suggested test files and minimum coverage per file:
-
-**`tests/test_nobattoev.py`** (highest priority — known crash bug)
-- `_update()` with None Wattpilot power values returns without raising.
-- `_update()` with None D-Bus consumption/PV values returns without raising.
-- `_update()` with all values populated and `evPower > 0` and
-  `consumption >= pvAvailable` registers the correct grid-setpoint delta.
-- `_update()` with all values populated and `evPower == 0` revokes the setpoint.
-- Relay-disabled path revokes the setpoint.
 
 **`tests/test_solar_overhead_distributor.py`** (highest priority — known crash bug)
 - `updateDistribution()` with None `gridL1/L2/L3` values publishes overhead=0
@@ -1867,7 +1878,6 @@ Files to change:
 
 Files to add:
 
-- `tests/test_nobattoev.py`
 - `tests/test_solar_overhead_distributor.py`
 - `tests/test_mqtt_pv_inverter.py`
 - `tests/test_shelly3em_grid.py`
@@ -1883,16 +1893,17 @@ Tests:
 
 Expected coverage:
 
-- All six service modules have at least one passing hardware-free test.
+- All five remaining untested service modules have at least one passing
+  hardware-free test.
 - The local MQTT reconnect routing bug is locked in by a failing test before
   the fix and a passing test after.
-- `NoBatToEV` and `SolarOverheadDistributor` startup-window crashes are
-  confirmed by a failing test before the None guard is added and passing after.
+- The `SolarOverheadDistributor` startup-window crashes are confirmed by a
+  failing test before the None guard/lock fix is added and passing after.
 
 Manual validation:
 
-- Restart es-ESS on a GX device with `NoBatToEV` and `SolarOverheadDistributor`
-  enabled and confirm no `TypeError` in the first 30 seconds of
+- Restart es-ESS on a GX device with `SolarOverheadDistributor` enabled and
+  confirm no `TypeError` in the first 30 seconds of
   `/data/log/es-ESS/current.log`.
 
 Risks and dependencies:
@@ -1909,16 +1920,16 @@ Risks and dependencies:
 
 Open questions:
 
-- Should `test_nobattoev.py` and `test_solar_overhead_distributor.py` be added
-  in the same PR as the None-guard fixes, or in a separate PR that establishes
-  failing tests first?
+- Should `test_solar_overhead_distributor.py` be added in the same PR as the
+  None-guard and lock fixes, or in a separate PR that establishes failing tests
+  first?
 
 Done criteria:
 
-- All seven test files are present and pass.
+- All six remaining test files are present and pass.
 - CI runs all new files via `python -m unittest discover -s tests`.
-- The `NoBatToEV` and `SolarOverheadDistributor` None-value and lock scenarios
-  are explicitly covered.
+- The `SolarOverheadDistributor` None-value and lock scenarios are explicitly
+  covered.
 - The local MQTT reconnect routing and `is_connected` call are explicitly tested.
 - Full unittest suite passes.
 
@@ -2060,33 +2071,31 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move the finished backlog items to `Completed` and advance the
 queue on the next request.
 
-1. **PR 1 - NoBatToEV startup safety:** implement the None D-Bus guard and add
-   `tests/test_nobattoev.py` as the focused regression anchor.
-2. **PR 2 - SolarOverheadDistributor startup safety:** implement the
+1. **PR 2 - SolarOverheadDistributor startup safety:** implement the
    distribution-cycle None guard and `_persistEnergyStats` lock fix, with
    focused coverage in `tests/test_solar_overhead_distributor.py`.
-3. **PR 3 - Service I/O safety and remaining service coverage:** add bounded
+2. **PR 3 - Service I/O safety and remaining service coverage:** add bounded
    SolarOverheadDistributor HTTP consumer timeouts, guard MqttPVInverter
    zero-feed-in against zero target power, and add the remaining hardware-free
    service tests for `MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, and
    `FroniusSmartmeterJSON`.
-4. **PR 4 - MQTT and orchestration reliability:** remove the duplicate
+3. **PR 4 - MQTT and orchestration reliability:** remove the duplicate
    SolarOverheadDistributor `OnKeywordRegex` subscription, fix local MQTT
    reconnect resubscription routing, call the main MQTT client's
    `is_connected()` method correctly, and add the associated orchestration and
    fake-client tests.
-5. **PR 5 - Security hardening:** replace the `MinBatteryCharge` `eval()` path
+4. **PR 5 - Security hardening:** replace the `MinBatteryCharge` `eval()` path
    with a constrained AST evaluator and replace `getUserTime()` shell
    interpolation with a structured subprocess call, with malformed-input and
    compatibility tests for both changes.
-6. **PR 6 - Dormant service alignment:** reconcile README, sample config,
+5. **PR 6 - Dormant service alignment:** reconcile README, sample config,
    service inventory, and runtime intent for dormant or missing services. Keep
    this documentation/configuration alignment separate from active-service
    behavior changes.
-7. **PR 7 - Startup config value validation:** add bounded, cross-field config
+6. **PR 7 - Startup config value validation:** add bounded, cross-field config
    validation with tests for valid production values and clean startup failure
    for invalid values.
-8. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
+7. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
    `dispatchControlState()` side-effect bodies into named controller methods,
    add isolated characterization tests for the non-trivial handlers, and prove
    delegation for every control state without changing state selection,

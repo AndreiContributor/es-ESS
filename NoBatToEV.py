@@ -73,19 +73,51 @@ class NoBatToEV(esESSService):
         else:
             return True
 
+    def _sumDbusValues(self, *subscriptions):
+        values = [subscription.value for subscription in subscriptions]
+        if any(value is None for value in values):
+            return None
+        return sum(values)
+
+    def _evPower(self):
+        if (not "FroniusWattpilot" in Globals.esESS._services):
+            return self.evChargerPowerDbus.value
+
+        wattpilot = Globals.esESS._services["FroniusWattpilot"].wattpilot
+        values = [wattpilot.power1, wattpilot.power2, wattpilot.power3]
+        if any(value is None for value in values):
+            return None
+        return sum(values) * 1000
+
     def _update(self):
         if (self.noPhasesDbus.value is not None and self.noPhasesDbus.value > 0):
             if self.enabled():
-                if (not "FroniusWattpilot" in Globals.esESS._services):
-                    evPower = self.evChargerPowerDbus.value
-                else:
-                    evPower = (Globals.esESS._services["FroniusWattpilot"].wattpilot.power1 + Globals.esESS._services["FroniusWattpilot"].wattpilot.power2 + Globals.esESS._services["FroniusWattpilot"].wattpilot.power3)*1000
+                evPower = self._evPower()
+                consumption = self._sumDbusValues(
+                    self.consumptionL1Dbus,
+                    self.consumptionL2Dbus,
+                    self.consumptionL3Dbus,
+                )
+                pvAvailable = self._sumDbusValues(
+                    self.pvOnGensetL1Dbus,
+                    self.pvOnGensetL2Dbus,
+                    self.pvOnGensetL3Dbus,
+                    self.pvOnGridL1Dbus,
+                    self.pvOnGridL2Dbus,
+                    self.pvOnGridL3Dbus,
+                    self.pvOnOutputL1Dbus,
+                    self.pvOnOutputL2Dbus,
+                    self.pvOnOutputL3Dbus,
+                    self.pvOnDcDbus,
+                )
 
-                consumption = self.consumptionL1Dbus.value + self.consumptionL2Dbus.value + self.consumptionL3Dbus.value
-                pvAvailable = self.pvOnGensetL1Dbus.value + self.pvOnGensetL2Dbus.value + self.pvOnGensetL3Dbus.value
-                pvAvailable += self.pvOnGridL1Dbus.value + self.pvOnGridL2Dbus.value + self.pvOnGridL3Dbus.value
-                pvAvailable += self.pvOnOutputL1Dbus.value + self.pvOnOutputL2Dbus.value + self.pvOnOutputL3Dbus.value
-                pvAvailable += self.pvOnDcDbus.value
+                if (evPower is None or consumption is None or pvAvailable is None):
+                    d(
+                        self,
+                        "NoBatToEV telemetry is incomplete. Revoking grid setpoint request.",
+                    )
+                    self.revokeGridSetPointRequest()
+                    return
 
                 d(self, "EV Charge is {ev}W, Consumption is {con}W and available Pv is {pv}W.".format(ev=evPower, con=consumption, pv=pvAvailable))
 
