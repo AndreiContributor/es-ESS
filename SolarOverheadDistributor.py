@@ -135,7 +135,6 @@ class SolarOverheadDistributor(esESSService):
       self.registerMqttSubscription('es-ESS/SolarOverheadDistributor/Requests/+/IsScriptedConsumer', callback=self.onMqttMessage)
       
       #NPC Consumer Common
-      self.registerMqttSubscription('es-ESS/SolarOverheadDistributor/Requests/+/OnKeywordRegex', callback=self.onMqttMessage)
       self.registerMqttSubscription('es-ESS/SolarOverheadDistributor/Requests/+/PowerExtractRegex', callback=self.onMqttMessage)
       
       #HTTP Consumer specific
