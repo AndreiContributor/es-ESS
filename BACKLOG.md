@@ -1675,6 +1675,381 @@ Done criteria:
 - Hardware-free tests cover normal and malformed timezone values.
 - Full unittest suite passes.
 
+### P3 - Extract Wattpilot Dispatch Handlers To Named Methods
+
+Goal:
+
+Make each control-state handler in `FroniusWattpilot.dispatchControlState()` a
+named method so the dispatch table is a thin router, each branch is individually
+testable, and the call site documents intent without requiring inline reading.
+
+Problem:
+
+`dispatchControlState()` is a flat `if`-chain where every control state has its
+side-effect body written inline. After `WattpilotControlState` took ownership of
+branch selection, the dispatch method became the natural next extraction target.
+Each branch is currently 3–15 lines of service messages, VRM-status updates, and
+controller resets, making the method hard to scan and impossible to unit-test a
+single handler without exercising all the state-selection machinery.
+
+Evidence:
+
+- `FroniusWattpilot.py` `dispatchControlState()` contains inline bodies for:
+  `GRID_TELEMETRY_UNSAFE`, `GRID_IMPORT_PHASE_DOWN`, `GRID_IMPORT_STOP`,
+  `PENDING_PHASE_SWITCH`, `DISCONNECTED`, `CHARGING`, `NOT_CHARGING`,
+  `EXTERNAL_LOW_PRICE`, and `PHASE_SWITCHING`.
+- `handleChargingState()` and `handleNotChargingState()` already exist as named
+  methods called from the `CHARGING` and `NOT_CHARGING` branches, confirming the
+  pattern is established.
+- The safety ordering (transport outage → stale telemetry → grid import →
+  pending phase switch → disconnect/model-status) must be preserved through
+  extraction.
+
+Implementation:
+
+- Extract each unnamed inline body to a private method such as
+  `_handleGridTelemetryUnsafe()`, `_handleGridImportPhaseDown()`,
+  `_handleGridImportStop()`, `_handlePendingPhaseSwitch()`,
+  `_handleDisconnected()`, `_handleExternalLowPrice()`, and
+  `_handlePhaseSwitching()`.
+- Keep `handleChargingState()` and `handleNotChargingState()` as-is; their
+  existing names already follow the pattern.
+- Keep `dispatchControlState()` as a thin router that delegates to the named
+  methods and returns their result.
+- Keep all Wattpilot commands, D-Bus/MQTT publication, service messages, and
+  mutable timer resets inside `FroniusWattpilot.py`; do not move them to helper
+  modules.
+- Do not change the safety-sensitive evaluation order in `_update()` or the
+  `WattpilotControlState` selector.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `docs/wattpilot-architecture.md` if the dispatch-handler boundary is worth
+  documenting.
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add characterization tests for at least the two non-trivial renamed handlers
+  (`_handleGridTelemetryUnsafe` and `_handleDisconnected`) that confirm the
+  expected service messages, VRM-status values, and controller resets without
+  going through the full state-selection machinery.
+- Confirm the existing Wattpilot policy regression tests still pass without
+  modification.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- Each named handler is callable in isolation from a unit test.
+- `dispatchControlState()` delegates correctly for every control state.
+- Existing charging policy and safety ordering are unchanged.
+
+Manual validation:
+
+- Restart es-ESS and confirm normal Auto/Eco charge cycles, grid-import stops,
+  and disconnect events produce the same service messages as before.
+
+Risks and dependencies:
+
+- Purely structural; no command or policy behavior changes.
+- Existing policy tests act as the behavioral safety net — they must pass before
+  and after without modification.
+
+Open questions:
+
+- Should the `EXTERNAL_LOW_PRICE` handler be folded into `handleExternalChargingState()`
+  or remain separate given the Auto-mode guard?
+
+Done criteria:
+
+- `dispatchControlState()` is a thin router with no inline side-effect bodies.
+- Each state has a named private handler method.
+- Existing regression tests pass unchanged.
+- New characterization tests cover at least two handlers in isolation.
+- Full unittest suite passes.
+
+### P2 - Add Hardware-Free Tests For Untested Services
+
+Goal:
+
+Provide hardware-free test coverage for the six active service modules that
+currently have no test files, prioritising the two with known crash-on-startup
+bugs first.
+
+Problem:
+
+`NoBatToEV` and `SolarOverheadDistributor` each have confirmed crashes during
+the startup window (None D-Bus values, missing lock) and zero test coverage.
+`MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, and `FroniusSmartmeterJSON`
+likewise have no tests. Additionally, the local MQTT reconnect resubscription
+bug identified in the P3 reconnect item has no automated coverage anywhere in
+the existing test suite. These gaps mean regressions in any of these services
+will go undetected by CI.
+
+Evidence:
+
+- `tests/` contains no file for `NoBatToEV`, `SolarOverheadDistributor`,
+  `MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, or `FroniusSmartmeterJSON`.
+- `NoBatToEV.py` line 82: `power1 + power2 + power3` with `None` initial values
+  → `TypeError` on every 2-second tick until Wattpilot connects.
+- `SolarOverheadDistributor.py` lines 328–334: grid-phase arithmetic before any
+  None check → `TypeError` aborts the full distribution cycle.
+- `SolarOverheadDistributor.py` lines 277–282: `_persistEnergyStats()` iterates
+  the consumer dict without holding `_knownSolarOverheadConsumersLock`.
+- `es-ESS.py` `onLocalMqttConnect()` lines 186–187: resubscribes local topics on
+  `mainMqttClient` instead of `localMqttClient` — identified as a latent bug
+  with no automated test.
+
+Implementation:
+
+Write independent hardware-free test files for each service. Each file must stub
+all Victron/D-Bus/MQTT/hardware dependencies using the same patterns already
+established in `tests/test.py` and `tests/test_eco_pv_policy.py`.
+
+Suggested test files and minimum coverage per file:
+
+**`tests/test_nobattoev.py`** (highest priority — known crash bug)
+- `_update()` with None Wattpilot power values returns without raising.
+- `_update()` with None D-Bus consumption/PV values returns without raising.
+- `_update()` with all values populated and `evPower > 0` and
+  `consumption >= pvAvailable` registers the correct grid-setpoint delta.
+- `_update()` with all values populated and `evPower == 0` revokes the setpoint.
+- Relay-disabled path revokes the setpoint.
+
+**`tests/test_solar_overhead_distributor.py`** (highest priority — known crash bug)
+- `updateDistribution()` with None `gridL1/L2/L3` values publishes overhead=0
+  without raising.
+- `updateDistribution()` with None `batteryPower` publishes overhead=0 without
+  raising.
+- `updateDistribution()` with valid non-None values produces the correct
+  overhead and consumer allowances.
+- `_persistEnergyStats()` does not raise when a consumer registration arrives
+  concurrently (threading test using the lock).
+- `MinBatteryCharge` evaluation with `batSoc=None` uses fallback 0 without
+  raising.
+
+**`tests/test_mqtt_pv_inverter.py`**
+- `_dtuZeroFeedin()` with `target == 0` and active production publishes `0%`
+  throttle without raising.
+- `_dtuZeroFeedin()` with positive target adjusts throttle proportionally.
+- D-Bus service registration and MQTT topic subscriptions initialized correctly.
+
+**`tests/test_shelly3em_grid.py`**
+- HTTP polling path returns correct L1/L2/L3 power values from a fake response.
+- Failed HTTP request sets `/Connected=0` without raising.
+- Timeout produces the same safe failure behavior.
+
+**`tests/test_shelly_pm_inverter.py`**
+- HTTP polling path publishes correct power values per configured instance.
+- Failed HTTP request sets `/Connected=0` without raising.
+
+**`tests/test_fronius_smartmeter_json.py`**
+- HTTP polling path returns correct grid values from a fake JSON response.
+- Failed HTTP request sets `/Connected=0` without raising.
+
+**`tests/test_es_ess_orchestration.py`** (local MQTT reconnect routing)
+- `onMainMqttConnect()` subscribes only main-type topics on `mainMqttClient`.
+- `onLocalMqttConnect()` subscribes only local-type topics on `localMqttClient`,
+  not on `mainMqttClient`.
+- `publishServiceMessage()` calls `is_connected()` as a method, not as a
+  boolean attribute, and suppresses publication when the client is disconnected.
+
+Files to change:
+
+- None required. The open crash bugs (None guard, lock, zero-feedin,
+  reconnect routing, `is_connected`) may be fixed in their own PRs first;
+  these tests can land before or after those fixes — failing tests are still
+  useful as regression anchors.
+
+Files to add:
+
+- `tests/test_nobattoev.py`
+- `tests/test_solar_overhead_distributor.py`
+- `tests/test_mqtt_pv_inverter.py`
+- `tests/test_shelly3em_grid.py`
+- `tests/test_shelly_pm_inverter.py`
+- `tests/test_fronius_smartmeter_json.py`
+- `tests/test_es_ess_orchestration.py`
+
+Tests:
+
+- Each new file is a self-contained `unittest.TestCase` with no hardware
+  dependencies, following the stub pattern in `tests/test.py`.
+- Run the full unittest suite including the new files.
+
+Expected coverage:
+
+- All six service modules have at least one passing hardware-free test.
+- The local MQTT reconnect routing bug is locked in by a failing test before
+  the fix and a passing test after.
+- `NoBatToEV` and `SolarOverheadDistributor` startup-window crashes are
+  confirmed by a failing test before the None guard is added and passing after.
+
+Manual validation:
+
+- Restart es-ESS on a GX device with `NoBatToEV` and `SolarOverheadDistributor`
+  enabled and confirm no `TypeError` in the first 30 seconds of
+  `/data/log/es-ESS/current.log`.
+
+Risks and dependencies:
+
+- HTTP-polling test files (`Shelly*`, `FroniusSmartmeterJSON`) must mock the
+  `requests` library at the module level before import; follow the pattern used
+  for Wattpilot WebSocket stubs.
+- `SolarOverheadDistributor` threading test requires careful use of
+  `threading.Thread` and the real `_knownSolarOverheadConsumersLock`; stub only
+  at the D-Bus and MQTT boundaries.
+- The orchestration tests (`test_es_ess_orchestration.py`) depend on the
+  `esESS` class, which pulls in most of the app at import time; isolate with
+  `unittest.mock.patch` at the `mqtt.Client` and `gi.repository.GLib` boundaries.
+
+Open questions:
+
+- Should `test_nobattoev.py` and `test_solar_overhead_distributor.py` be added
+  in the same PR as the None-guard fixes, or in a separate PR that establishes
+  failing tests first?
+
+Done criteria:
+
+- All seven test files are present and pass.
+- CI runs all new files via `python -m unittest discover -s tests`.
+- The `NoBatToEV` and `SolarOverheadDistributor` None-value and lock scenarios
+  are explicitly covered.
+- The local MQTT reconnect routing and `is_connected` call are explicitly tested.
+- Full unittest suite passes.
+
+### P3 - Add Startup Config Value Validation
+
+Goal:
+
+Reject obviously invalid `config.ini` values at startup with a clear error
+message rather than silently producing wrong behavior or crashing mid-cycle.
+
+Problem:
+
+`_validateConfiguration()` handles version migration correctly but performs no
+semantic validation of the loaded values. A misconfigured `config.ini` — for
+example a negative `UpdateInterval`, a current outside `[6, 32]` A, a
+`PollFrequencyMs` of 0, or an inverted phase threshold pair — causes no startup
+error. The bad value propagates silently until it triggers a `TypeError`,
+`ZeroDivisionError`, or a physical mismatch that is hard to trace back to the
+config file.
+
+Evidence:
+
+- `FroniusWattpilot.py` reads `MinCurrentPerPhase` and `MaxCurrentPerPhase`
+  directly as integers with no range check; inverted values (min > max) cause
+  the target current calculation to behave incorrectly.
+- `ThreePhasePvSurplusStartW` < `ThreePhasePvSurplusStopW` inverts the
+  hysteresis and causes repeated phase oscillation.
+- `UpdateInterval=0` in `[TimeToGoCalculator]` or `[SolarOverheadDistributor]`
+  causes a GLib `timeout_add(0, ...)` — fires as fast as the event loop allows
+  and can starve other workers.
+- `PollFrequencyMs=0` in `[FroniusSmartmeterJSON]`, `[Shelly3EMGrid]`, or
+  `[ShellyPMInverter]` causes the same runaway-poll effect.
+- `AllowanceDropGraceSeconds`, `SurplusDropGraceSeconds`, and
+  `CarDisconnectConfirmSeconds` of 0 disables intentional debounce windows that
+  the Wattpilot policy relies on for stability.
+- `BatteryAssistSocMin` outside `[0, 100]` produces mathematically incorrect
+  eligibility checks.
+- `BatteryAssistMaxSeconds=0` removes the battery-assist time limit, potentially
+  allowing unlimited battery discharge during a charge.
+- `StartupGraceSeconds=0` disables the Wattpilot startup window and can trigger
+  No-allowance stops before the first PV reading arrives.
+
+Implementation:
+
+- Add a `_validateConfigValues()` method called from `_validateConfiguration()`
+  after the version migration is applied and the final config is saved.
+- Validation rules (minimum viable set; expand as needed):
+
+  | Section | Key | Rule |
+  |---|---|---|
+  | `[FroniusWattpilot]` | `MinCurrentPerPhase` | `>= 6` (IEC 61851 minimum) |
+  | `[FroniusWattpilot]` | `MaxCurrentPerPhase` | `<= 32`, `>= MinCurrentPerPhase` |
+  | `[FroniusWattpilot]` | `ThreePhasePvSurplusStartW` | `> ThreePhasePvSurplusStopW` |
+  | `[FroniusWattpilot]` | `BatteryAssistSocMin` | `0..100` |
+  | `[FroniusWattpilot]` | `BatteryAssistMaxSeconds` | `> 0` if `BatteryAssistEnabled=true` |
+  | `[FroniusWattpilot]` | `AllowanceDropGraceSeconds` | `>= 0` |
+  | `[FroniusWattpilot]` | `SurplusDropGraceSeconds` | `>= 0` |
+  | `[FroniusWattpilot]` | `CarDisconnectConfirmSeconds` | `>= 0` |
+  | `[FroniusWattpilot]` | `StartupGraceSeconds` | `>= 0` |
+  | `[SolarOverheadDistributor]` | `UpdateInterval` | `> 0` |
+  | `[TimeToGoCalculator]` | `UpdateInterval` | `> 0` |
+  | `[FroniusSmartmeterJSON]` | `PollFrequencyMs` | `> 0` (if section present) |
+  | `[Shelly3EMGrid]` | `PollFrequencyMs` | `> 0` (if section present) |
+
+- On validation failure, log a CRITICAL-level error naming the section, key, and
+  violated rule, then raise `SystemExit(1)` so the daemontools supervisor logs
+  the failure and backs off before restarting.
+- Keep validation as a separate method so it can be unit-tested independently
+  of the full `esESS` constructor.
+- Do not change the migration logic or any config defaults.
+
+Files to change:
+
+- `es-ESS.py`
+- `README.md` if the valid range for any key is not already documented.
+
+Files to add:
+
+- None expected; add validation tests to `tests/test_config_migration.py` or a
+  new `tests/test_config_validation.py`.
+
+Tests:
+
+- Add hardware-free tests that construct a config with each invalid value in
+  turn and assert `SystemExit` is raised with a message naming the offending key.
+- Add a test with a fully valid config that confirms `_validateConfigValues()`
+  does not raise.
+- Add a test for the inverted phase-threshold pair
+  (`ThreePhasePvSurplusStartW < ThreePhasePvSurplusStopW`) specifically.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- Every validated key has at least one invalid-value test and one boundary-valid
+  test.
+- A valid production config passes without raising.
+- Startup failure is explicit and logged before the D-Bus/MQTT loop starts.
+
+Manual validation:
+
+- Set `MinCurrentPerPhase=20` and `MaxCurrentPerPhase=10` in `config.ini`.
+- Start es-ESS and confirm a CRITICAL log entry and clean exit before any
+  service is initialized.
+- Correct the values and confirm normal startup resumes.
+
+Risks and dependencies:
+
+- `SystemExit` at startup will cause daemontools to restart the service
+  repeatedly if the config is not corrected; this is intentional, but the
+  operator must have access to the log to diagnose the failure.
+- The minimum current rule (`>= 6 A`) is the IEC 61851 floor, but some
+  Wattpilot hardware or firmware versions may advertise a different effective
+  minimum; document the assumed floor in `config.sample.ini` comments.
+- Do not validate `MinBatteryCharge` expression syntax here; that belongs in
+  the `eval()` replacement item (P3).
+
+Open questions:
+
+- Should validation errors be collected and reported all at once, or fail on
+  the first invalid key?
+- Should `PollFrequencyMs` lower bounds be enforced only when the service is
+  enabled (`=true` in `[Services]`)?
+
+Done criteria:
+
+- `_validateConfigValues()` is called during startup after migration.
+- Every rule in the table above is implemented and tested.
+- Invalid values cause a CRITICAL log and `SystemExit(1)` before services start.
+- Valid production configs pass without raising.
+- Full unittest suite passes.
+
 ## Suggested Implementation Order
 
 This order is intentionally low-risk-first. The P0/P1 labels still show safety
@@ -1695,18 +2070,29 @@ Wattpilot behavior.
    endpoint can delay PV-allocation publication used by other consumers.
 6. P2 MQTT PV inverter zero-target feed-in guard, because the experimental
    control path can skip safe throttle publication on a divide-by-zero cycle.
-7. P3 duplicate `OnKeywordRegex` subscription fix, because it is a one-line
+7. P2 add hardware-free tests for untested services, beginning with
+   `NoBatToEV` and `SolarOverheadDistributor` to lock in the None-guard and
+   lock fixes; then `MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`,
+   `FroniusSmartmeterJSON`, and the local MQTT reconnect routing.
+8. P3 duplicate `OnKeywordRegex` subscription fix, because it is a one-line
    removal with no behavior change on correct messages.
-8. P3 `eval()` replacement in `MinBatteryCharge`, because it removes a code-
+9. P3 `eval()` replacement in `MinBatteryCharge`, because it removes a code-
    execution risk in a frequently evaluated config expression.
-9. P3 `os.popen` replacement in `getUserTime`, because it removes shell
-   injection while preserving the same output contract.
-10. P3 local MQTT reconnect resubscription, because it is a low-risk
+10. P3 `os.popen` replacement in `getUserTime`, because it removes shell
+    injection while preserving the same output contract.
+11. P3 local MQTT reconnect resubscription, because it is a low-risk
     app-orchestration reliability fix.
-11. P3 service-message connected-state guard, because it improves diagnostics
+12. P3 service-message connected-state guard, because it improves diagnostics
     during MQTT outages without changing device-control policy.
-12. P3 dormant service docs/config/runtime alignment, because it prevents
+13. P3 dormant service docs/config/runtime alignment, because it prevents
     configuration confusion and should not be mixed with behavior changes.
+14. P3 startup config value validation, because a single invalid key can
+    produce runaway-poll or oscillation behavior that is hard to trace back to
+    the config file; place after the test coverage items so validation failures
+    are already covered by hardware-free tests.
+15. P3 extract Wattpilot dispatch handlers to named methods, because it is a
+    pure structural improvement with no policy change; place last so the test
+    suite is already exercising each handler before the extraction.
 
 ## Verification Plan
 
