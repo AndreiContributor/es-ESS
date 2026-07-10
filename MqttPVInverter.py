@@ -119,6 +119,12 @@ class MqttPVInverter(esESSService):
 
                 i(self, "Consumption is {}W, with a distance of {}W, we are targeting for {}W inverter power.".format(consumption, self.zeroFeedinDistance, target))
 
+                if target <= 0:
+                    for key, inv in self.mqttPVInverters.items():
+                        if actual[key] > 0 and inv.dtuControlTopic is not None:
+                            inv.throttle = 0.0
+                    return
+
                 #Adjust proportionally
                 for key, inv in self.mqttPVInverters.items():
                     #Only adjust if this inverter is producing

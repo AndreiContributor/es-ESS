@@ -664,227 +664,30 @@ Completion note:
   configuration defaults, D-Bus paths, MQTT topics, Manual mode, or Auto/Eco
   charging behavior were changed.
 
+### Completed 2026-07-11 - PR 3 Service I/O Safety And Remaining Service Coverage
+
+Completion note:
+
+- Added `[Common] HttpRequestTimeout=5` with a v9 config migration and
+  documentation in `config.sample.ini`, README, and the service inventory.
+- Applied the shared timeout to SolarOverheadDistributor HTTP consumer on,
+  off, status, and power requests, preserving existing exception logging and
+  allocation behavior.
+- Wired dormant `FroniusSmartmeterRS485` HTTP polling to the same shared
+  timeout setting if it is re-enabled.
+- Guarded `MqttPVInverter._dtuZeroFeedin()` so zero-target cycles publish an
+  explicit `0%` OpenDTU throttle for producing controllable inverters instead
+  of dividing by zero.
+- Added hardware-free coverage for `MqttPVInverter`, `Shelly3EMGrid`,
+  `ShellyPMInverter`, and `FroniusSmartmeterJSON`, and extended
+  SolarOverheadDistributor/config-migration regression tests for the new
+  timeout behavior.
+- Verified with focused PR 3 tests, `py_compile` on changed Python files, and
+  the full hardware-free unittest suite through `uv --cache-dir .uv-cache run
+  --no-project python`.
+- Kept PR 4 MQTT/orchestration reliability items open and out of this PR.
+
 ## Backlog
-
-### P2 - Add Bounded Timeouts For SolarOverheadDistributor HTTP Consumers
-
-Goal:
-
-Keep SolarOverheadDistributor responsive when a configured HTTP consumer,
-status endpoint, or power endpoint is slow, offline, or accepts a connection
-without returning.
-
-Problem:
-
-`SolarOverheadDistributor` configured HTTP consumers call `requests.get()`
-without a timeout. A hung consumer endpoint can block a worker-pool thread
-during allowance updates, state validation, or power polling. Because
-SolarOverheadDistributor publishes the Wattpilot PV allowance used by Auto/Eco
-charging, blocked HTTP consumer work can indirectly delay or stale EV charging
-inputs.
-
-Evidence:
-
-- `SolarOverheadDistributor.py` calls `requests.get(url=self.onUrl)` when
-  turning on an HTTP consumer.
-- `SolarOverheadDistributor.py` calls `requests.get(url=self.offUrl)` when
-  turning off an HTTP consumer.
-- `SolarOverheadDistributor.py` calls `requests.get(url=self.statusUrl)` when
-  validating HTTP consumer state.
-- `SolarOverheadDistributor.py` calls `requests.get(url=self.powerUrl)` when
-  fetching HTTP consumer power.
-- Other HTTP polling services, such as `FroniusSmartmeterJSON`, `Shelly3EMGrid`,
-  and `ShellyPMInverter`, already use bounded request timeouts based on poll
-  interval.
-
-Implementation:
-
-- Add a bounded HTTP timeout for SolarOverheadDistributor consumer requests.
-- Prefer a small configurable default only if product intent requires it;
-  otherwise use an internal constant that is safely shorter than the
-  distributor update cadence.
-- Apply the timeout consistently to on, off, status, and power requests.
-- Treat timeout exceptions as failed validation/poll attempts and preserve the
-  existing exception logging behavior.
-- Avoid changing the allocation algorithm or Wattpilot allowance semantics in
-  the same change.
-
-Files to change:
-
-- `SolarOverheadDistributor.py`
-- Possibly `config.sample.ini`, `README.md`, and
-  `docs/service-inventory.md` only if a user-facing timeout setting is added.
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add hardware-free tests for HTTP consumer control, status validation, and
-  power polling that assert `requests.get()` receives the timeout.
-- Add a timeout exception test proving a timed-out HTTP consumer does not
-  crash the distribution update path.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- HTTP consumer on/off/status/power calls are always bounded.
-- Timeout exceptions are handled without stopping SolarOverheadDistributor.
-- Existing MQTT consumer behavior and Wattpilot allowance distribution are not
-  changed.
-
-Manual validation:
-
-- Configure an HTTP consumer against a reachable endpoint and confirm normal
-  on/off/status/power behavior.
-- Configure or simulate an HTTP endpoint that does not respond and confirm
-  SolarOverheadDistributor continues publishing calculations and service
-  messages.
-- When Wattpilot is enabled, confirm allowance topics continue to update after
-  an HTTP consumer timeout.
-
-Manual test steps:
-
-1. Enable `SolarOverheadDistributor` with one test `HttpConsumer:*`.
-2. Point `StatusUrl` or `PowerUrl` at a deliberately non-responsive endpoint.
-3. Restart es-ESS and tail `/data/log/es-ESS/current.log`.
-4. Confirm timeout errors are logged but the distributor worker continues to
-   publish `es-ESS/SolarOverheadDistributor/Calculations/OverheadAvailable`.
-5. If Wattpilot is active, confirm
-   `es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Allowance` continues to
-   update.
-
-Risks and dependencies:
-
-- Too-short timeouts may mark slow devices as unavailable unnecessarily.
-- Too-long timeouts may still starve the shared worker pool.
-- If a new config setting is added, configuration migration and documentation
-  must be updated.
-
-Open questions:
-
-- ~~Should HTTP consumer timeout be globally fixed, globally configurable, or
-  configurable per `HttpConsumer:*` section?~~ **Decided 2026-07-10:** Add
-  `HttpRequestTimeout=5` to `[Common]` in `config.sample.ini`. Wire
-  `SolarOverheadDistributor.py` and `FroniusSmartmeterRS485.py` to read that
-  key. Leave `FroniusSmartmeterJSON`, `Shelly3EMGrid`, and `ShellyPMInverter`
-  on their existing `pollFrequencyMs/2000` formula — their timeout is
-  meaningfully tied to their own poll cadence.
-
-Done criteria:
-
-- All SolarOverheadDistributor HTTP consumer requests have bounded timeouts.
-- Timeout behavior is covered by hardware-free tests.
-- Full unittest suite passes.
-- Any new setting is documented in `config.sample.ini`, README, and service
-  inventory.
-
-### P2 - Guard MqttPVInverter Zero-Feed-In Against Zero Target Power
-
-Goal:
-
-Make experimental MQTT PV inverter zero-feed-in control safe and deterministic
-when the computed target inverter power is zero while one or more inverters are
-still producing.
-
-Problem:
-
-`MqttPVInverter._dtuZeroFeedin()` calculates `target =
-max(consumption - ZeroFeedinDistance, 0)`, then later calculates
-`error / target` for producing inverters. When `target` is `0`, the controller
-can raise a division-by-zero exception, skip throttle updates, and leave a
-previous OpenDTU limit unchanged exactly when the system intends to reduce or
-stop PV output.
-
-Evidence:
-
-- `MqttPVInverter.py` computes `target = max(consumption -
-  self.zeroFeedinDistance, 0)`.
-- The same method computes `c = share * (error / target)` inside the producing
-  inverter loop.
-- The broad exception handler logs `Exception during zero feedin calculation`
-  but does not publish a safe replacement throttle for the cycle.
-- `EnableZeroFeedin` is documented as experimental, but the code path can still
-  send real OpenDTU limit commands through configured `DtuControlTopic`
-  topics.
-
-Implementation:
-
-- Add an explicit `target <= 0` branch before proportional scaling.
-- In that branch, set producing inverters with `DtuControlTopic` to a safe
-  minimum throttle, likely `0.0`, unless product intent requires preserving a
-  nonzero floor.
-- Keep the existing full-throttle behavior when zero-feed-in is inactive or
-  prerequisites are not met.
-- Avoid changing MQTT topic names, instance config, or non-zero proportional
-  scaling behavior in the same change.
-
-Files to change:
-
-- `MqttPVInverter.py`
-- Possibly `README.md` and `docs/service-inventory.md` if the zero-target
-  behavior is user-facing or the experimental warning changes.
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add a hardware-free test for `_dtuZeroFeedin()` with `target == 0`, producing
-  inverter power, and configured `DtuControlTopic`; assert no exception and the
-  safe limit is published.
-- Add a regression test that nonzero target behavior still adjusts throttle
-  proportionally.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- Zero-target feed-in cycles do not divide by zero.
-- Producing inverters receive an intentional safe throttle command.
-- Existing positive-target scaling remains unchanged.
-
-Manual validation:
-
-- On a non-production or carefully observed system, enable `MqttPVInverter`
-  with `EnableZeroFeedin=true`.
-- Create a condition where consumption minus `ZeroFeedinDistance` is zero or
-  below zero while inverter MQTT telemetry still reports production.
-- Confirm the OpenDTU limit topic receives the expected safe low throttle and
-  es-ESS logs do not show `Exception during zero feedin calculation`.
-
-Manual test steps:
-
-1. Enable one MQTT PV inverter with `DtuControlTopic`.
-2. Set `ZeroFeedinDistance` above current consumption so target power becomes
-   `0`.
-3. Publish inverter power telemetry above `0`.
-4. Observe the configured OpenDTU command topic.
-5. Confirm a safe limit is published and no divide-by-zero exception appears in
-   `/data/log/es-ESS/current.log`.
-
-Risks and dependencies:
-
-- Some OpenDTU setups may interpret `0%` differently from a minimum operating
-  limit.
-- The desired zero-target throttle floor needs confirmation before treating
-  this as production-ready PV shutdown behavior.
-
-Open questions:
-
-- ~~Should zero target command `0%`, `ZeroFeedinScaleStep`, or a configurable
-  minimum inverter limit?~~ **Decided 2026-07-10:** Publish `throttle = 0.0`
-  (0%) when `target == 0`. `ZeroFeedinScaleStep` is a rate-of-change limiter,
-  not a floor value. A configurable minimum is scope creep. Add an early branch
-  in `_dtuZeroFeedin()` before the proportional loop; no new config key.
-
-Done criteria:
-
-- Zero-target zero-feed-in behavior is explicit and tested.
-- No divide-by-zero exception is possible in `_dtuZeroFeedin()`.
-- Manual validation confirms the selected OpenDTU command is accepted by the
-  target inverter setup.
 
 ### P3 - Fix Local MQTT Reconnect Resubscription Client
 
@@ -1658,147 +1461,6 @@ Done criteria:
 - New characterization tests cover at least two handlers in isolation.
 - Full unittest suite passes.
 
-### P2 - Add Hardware-Free Tests For Untested Services
-
-Goal:
-
-Provide hardware-free test coverage for the remaining active service modules
-that currently have no service-specific test files, prioritising the known
-SolarOverheadDistributor crash-on-startup bugs first.
-
-Problem:
-
-`SolarOverheadDistributor` has confirmed crashes during the startup window
-(None D-Bus values, missing lock) and zero service-specific test coverage.
-`MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, and
-`FroniusSmartmeterJSON` likewise have no tests. Additionally, the local MQTT
-reconnect resubscription bug identified in the P3 reconnect item has no
-automated coverage anywhere in the existing test suite. These gaps mean
-regressions in any of these services will go undetected by CI.
-
-Evidence:
-
-- `tests/` contains no file for `SolarOverheadDistributor`,
-  `MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, or
-  `FroniusSmartmeterJSON`.
-- `SolarOverheadDistributor.py` lines 328–334: grid-phase arithmetic before any
-  None check → `TypeError` aborts the full distribution cycle.
-- `SolarOverheadDistributor.py` lines 277–282: `_persistEnergyStats()` iterates
-  the consumer dict without holding `_knownSolarOverheadConsumersLock`.
-- `es-ESS.py` `onLocalMqttConnect()` lines 186–187: resubscribes local topics on
-  `mainMqttClient` instead of `localMqttClient` — identified as a latent bug
-  with no automated test.
-
-Implementation:
-
-Write independent hardware-free test files for each service. Each file must stub
-all Victron/D-Bus/MQTT/hardware dependencies using the same patterns already
-established in `tests/test.py` and `tests/test_eco_pv_policy.py`.
-
-Suggested test files and minimum coverage per file:
-
-**`tests/test_solar_overhead_distributor.py`** (highest priority — known crash bug)
-- `updateDistribution()` with None `gridL1/L2/L3` values publishes overhead=0
-  without raising.
-- `updateDistribution()` with None `batteryPower` publishes overhead=0 without
-  raising.
-- `updateDistribution()` with valid non-None values produces the correct
-  overhead and consumer allowances.
-- `_persistEnergyStats()` does not raise when a consumer registration arrives
-  concurrently (threading test using the lock).
-- `MinBatteryCharge` evaluation with `batSoc=None` uses fallback 0 without
-  raising.
-
-**`tests/test_mqtt_pv_inverter.py`**
-- `_dtuZeroFeedin()` with `target == 0` and active production publishes `0%`
-  throttle without raising.
-- `_dtuZeroFeedin()` with positive target adjusts throttle proportionally.
-- D-Bus service registration and MQTT topic subscriptions initialized correctly.
-
-**`tests/test_shelly3em_grid.py`**
-- HTTP polling path returns correct L1/L2/L3 power values from a fake response.
-- Failed HTTP request sets `/Connected=0` without raising.
-- Timeout produces the same safe failure behavior.
-
-**`tests/test_shelly_pm_inverter.py`**
-- HTTP polling path publishes correct power values per configured instance.
-- Failed HTTP request sets `/Connected=0` without raising.
-
-**`tests/test_fronius_smartmeter_json.py`**
-- HTTP polling path returns correct grid values from a fake JSON response.
-- Failed HTTP request sets `/Connected=0` without raising.
-
-**`tests/test_es_ess_orchestration.py`** (local MQTT reconnect routing)
-- `onMainMqttConnect()` subscribes only main-type topics on `mainMqttClient`.
-- `onLocalMqttConnect()` subscribes only local-type topics on `localMqttClient`,
-  not on `mainMqttClient`.
-- `publishServiceMessage()` calls `is_connected()` as a method, not as a
-  boolean attribute, and suppresses publication when the client is disconnected.
-
-Files to change:
-
-- None required. The open crash bugs (None guard, lock, zero-feedin,
-  reconnect routing, `is_connected`) may be fixed in their own PRs first;
-  these tests can land before or after those fixes — failing tests are still
-  useful as regression anchors.
-
-Files to add:
-
-- `tests/test_solar_overhead_distributor.py`
-- `tests/test_mqtt_pv_inverter.py`
-- `tests/test_shelly3em_grid.py`
-- `tests/test_shelly_pm_inverter.py`
-- `tests/test_fronius_smartmeter_json.py`
-- `tests/test_es_ess_orchestration.py`
-
-Tests:
-
-- Each new file is a self-contained `unittest.TestCase` with no hardware
-  dependencies, following the stub pattern in `tests/test.py`.
-- Run the full unittest suite including the new files.
-
-Expected coverage:
-
-- All five remaining untested service modules have at least one passing
-  hardware-free test.
-- The local MQTT reconnect routing bug is locked in by a failing test before
-  the fix and a passing test after.
-- The `SolarOverheadDistributor` startup-window crashes are confirmed by a
-  failing test before the None guard/lock fix is added and passing after.
-
-Manual validation:
-
-- Restart es-ESS on a GX device with `SolarOverheadDistributor` enabled and
-  confirm no `TypeError` in the first 30 seconds of
-  `/data/log/es-ESS/current.log`.
-
-Risks and dependencies:
-
-- HTTP-polling test files (`Shelly*`, `FroniusSmartmeterJSON`) must mock the
-  `requests` library at the module level before import; follow the pattern used
-  for Wattpilot WebSocket stubs.
-- `SolarOverheadDistributor` threading test requires careful use of
-  `threading.Thread` and the real `_knownSolarOverheadConsumersLock`; stub only
-  at the D-Bus and MQTT boundaries.
-- The orchestration tests (`test_es_ess_orchestration.py`) depend on the
-  `esESS` class, which pulls in most of the app at import time; isolate with
-  `unittest.mock.patch` at the `mqtt.Client` and `gi.repository.GLib` boundaries.
-
-Open questions:
-
-- Should `test_solar_overhead_distributor.py` be added in the same PR as the
-  None-guard and lock fixes, or in a separate PR that establishes failing tests
-  first?
-
-Done criteria:
-
-- All six remaining test files are present and pass.
-- CI runs all new files via `python -m unittest discover -s tests`.
-- The `SolarOverheadDistributor` None-value and lock scenarios are explicitly
-  covered.
-- The local MQTT reconnect routing and `is_connected` call are explicitly tested.
-- Full unittest suite passes.
-
 ### P3 - Add Startup Config Value Validation
 
 Goal:
@@ -1937,28 +1599,23 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move the finished backlog items to `Completed` and advance the
 queue on the next request.
 
-1. **PR 3 - Service I/O safety and remaining service coverage:** add bounded
-   SolarOverheadDistributor HTTP consumer timeouts, guard MqttPVInverter
-   zero-feed-in against zero target power, and add the remaining hardware-free
-   service tests for `MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, and
-   `FroniusSmartmeterJSON`.
-2. **PR 4 - MQTT and orchestration reliability:** remove the duplicate
+1. **PR 4 - MQTT and orchestration reliability:** remove the duplicate
    SolarOverheadDistributor `OnKeywordRegex` subscription, fix local MQTT
    reconnect resubscription routing, call the main MQTT client's
    `is_connected()` method correctly, and add the associated orchestration and
    fake-client tests.
-3. **PR 5 - Security hardening:** replace the `MinBatteryCharge` `eval()` path
+2. **PR 5 - Security hardening:** replace the `MinBatteryCharge` `eval()` path
    with a constrained AST evaluator and replace `getUserTime()` shell
    interpolation with a structured subprocess call, with malformed-input and
    compatibility tests for both changes.
-4. **PR 6 - Dormant service alignment:** reconcile README, sample config,
+3. **PR 6 - Dormant service alignment:** reconcile README, sample config,
    service inventory, and runtime intent for dormant or missing services. Keep
    this documentation/configuration alignment separate from active-service
    behavior changes.
-5. **PR 7 - Startup config value validation:** add bounded, cross-field config
+4. **PR 7 - Startup config value validation:** add bounded, cross-field config
    validation with tests for valid production values and clean startup failure
    for invalid values.
-6. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
+5. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
    `dispatchControlState()` side-effect bodies into named controller methods,
    add isolated characterization tests for the non-trivial handlers, and prove
    delegation for every control state without changing state selection,

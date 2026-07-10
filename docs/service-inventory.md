@@ -47,7 +47,7 @@ flag is set to `true`.
 
 | Service | Module | Primary config | Main role | Integration boundaries |
 | --- | --- | --- | --- | --- |
-| `SolarOverheadDistributor` | `SolarOverheadDistributor.py` | `[SolarOverheadDistributor]`, `HttpConsumer:*`, `MqttConsumer:*` | Calculates available PV surplus, battery reservation, and per-consumer allowances. | Reads Victron system grid and battery D-Bus paths, publishes settings and fake battery reservation D-Bus services, subscribes and publishes under `es-ESS/SolarOverheadDistributor/Requests/...`, can control configured HTTP and MQTT consumers. |
+| `SolarOverheadDistributor` | `SolarOverheadDistributor.py` | `[SolarOverheadDistributor]`, `[Common]`, `HttpConsumer:*`, `MqttConsumer:*` | Calculates available PV surplus, battery reservation, and per-consumer allowances. | Reads Victron system grid and battery D-Bus paths, publishes settings and fake battery reservation D-Bus services, subscribes and publishes under `es-ESS/SolarOverheadDistributor/Requests/...`, can control configured HTTP and MQTT consumers with bounded `[Common] HttpRequestTimeout` requests. |
 | `TimeToGoCalculator` | `TimeToGoCalculator.py` | `[TimeToGoCalculator]`, `[Common]` | Calculates battery time-to-go when the system does not provide it. | Reads Victron system battery power, SOC, and active SOC limit D-Bus paths; writes calculated time-to-go through local Venus MQTT and publishes a main MQTT status topic. |
 | `FroniusSmartmeterJSON` | `FroniusSmartmeterJSON.py` | `[FroniusSmartmeterJSON]` | Exposes a Fronius smart meter as a Victron grid meter. | Polls the Fronius JSON API over HTTP and publishes a `com.victronenergy.grid` D-Bus service. |
 | `MqttExporter` | `MqttExporter.py` | `MqttExporter:*` | Exports selected D-Bus values to main MQTT. | Subscribes to configured D-Bus service/path pairs and republishes on configured MQTT topics on change or at 1 s, 10 s, or 60 s intervals. |
@@ -56,7 +56,7 @@ flag is set to `true`.
 | `NoBatToEV` | `NoBatToEV.py` | `[NoBatToEV]`, `[Common]` | Offloads EV load to grid-setpoint requests so an AC-out EV charge does not drain the home battery. | Reads Victron system consumption, PV, phase-count, optional relay, and EV-charger power data; registers or revokes shared grid-setpoint requests through the es-ESS runtime. |
 | `Shelly3EMGrid` | `Shelly3EMGrid.py` | `[Shelly3EMGrid]` | Exposes a Shelly 3EM as a Victron grid meter. | Polls the Shelly HTTP status API and publishes a `com.victronenergy.grid` D-Bus service; can persist derived net-energy counters under `runtimeData/` when configured for net metering. |
 | `ShellyPMInverter` | `ShellyPMInverter.py` | `ShellyPMInverter:*` | Exposes one or more Shelly PM devices as PV inverters. | Polls Shelly Gen2 HTTP RPC status endpoints and publishes one `com.victronenergy.pvinverter` D-Bus service per configured device. |
-| `MqttPVInverter` | `MqttPVInverter.py` | `[MqttPvInverter]`, `MqttPVInverter:*` | Exposes MQTT-reported PV inverters in VRM/D-Bus. | Subscribes to configured MQTT voltage, current, power, and energy topics; publishes `com.victronenergy.pvinverter` D-Bus services; optionally publishes OpenDTU limit commands for experimental zero-feed-in control. |
+| `MqttPVInverter` | `MqttPVInverter.py` | `[MqttPvInverter]`, `MqttPVInverter:*` | Exposes MQTT-reported PV inverters in VRM/D-Bus. | Subscribes to configured MQTT voltage, current, power, and energy topics; publishes `com.victronenergy.pvinverter` D-Bus services; optionally publishes OpenDTU limit commands for experimental zero-feed-in control, including an explicit `0%` command when the target inverter power is zero. |
 
 ## Dormant Or Commented Services
 
@@ -134,8 +134,11 @@ null values after repeated failures:
 - `FroniusSmartmeterJSON` polls the Fronius inverter meter JSON API.
 - `Shelly3EMGrid` polls the Shelly 3EM `/status` endpoint.
 - `ShellyPMInverter` polls Shelly Gen2 `Switch.GetStatus` RPC endpoints.
-- `SolarOverheadDistributor` can call configured HTTP consumer control and
-  status URLs.
+- `SolarOverheadDistributor` can call configured HTTP consumer control,
+  status, and power URLs with `[Common] HttpRequestTimeout`.
+
+The dormant `FroniusSmartmeterRS485` HTTP polling path also reads
+`[Common] HttpRequestTimeout` if it is re-enabled.
 
 Keep timeout behavior, poll frequency, and failure publication in mind when
 changing these services; stale or null telemetry can influence downstream
