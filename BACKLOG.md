@@ -443,6 +443,22 @@ Completion note:
   phase thresholds, grid-guard behavior, battery-assist behavior, D-Bus path
   names, MQTT topic names, or configuration defaults were changed.
 
+### Completed 2026-07-09 - Extract Wattpilot Grid-Guard And Battery-Assist Decisions
+
+Completion note:
+
+- Added `WattpilotSafetyDecisions.py` for pure grid-import guard and
+  battery-assist decisions.
+- Updated `FroniusWattpilot.py` to delegate grid-import debounce, battery-assist
+  eligibility, timeout lockout, and recovery timing decisions to the helper.
+- Kept Wattpilot commands, mutable controller timestamps, D-Bus/MQTT
+  publication, and service messages in `FroniusWattpilot.py`.
+- Added focused helper tests in `tests/test_wattpilot_safety_decisions.py`.
+- Updated `docs/wattpilot-architecture.md` to document the new helper boundary.
+- Kept the change extraction-only; no Manual mode, Auto/Eco charging policy,
+  phase thresholds, D-Bus path names, MQTT topic names, configuration defaults,
+  or Wattpilot command side effects were changed.
+
 ## Backlog
 
 ### P4 - Investigate EVCS UI Formatting Alignment
@@ -540,98 +556,66 @@ Done criteria:
 - Any implemented UI-only change is validated visually.
 - es-ESS D-Bus numeric contracts remain unchanged.
 
-### P2 - Extract Wattpilot Grid-Guard And Battery-Assist Decisions
-
-Depends on:
-
-- Wattpilot decision characterization tests.
-- Telemetry and allowance helper extraction.
+### P3 - Evaluate Fronius Module Packaging
 
 Goal:
 
-Separate two safety-sensitive Auto/Eco decisions into reviewable helpers while
-preserving behavior.
+Decide whether Fronius-related root modules should move into a package without
+disrupting Venus OS deployment or existing imports.
 
 Problem:
 
-Grid-import stopping and battery assist are intentionally conservative but are
-currently embedded in the large controller. Keeping the decision logic separate
-from command side effects will make future changes easier to reason about.
-
-Evidence:
-
-- `FroniusWattpilot.py` contains `AllowGridCharging`, `GridImportStopW`,
-  `GridImportStopSeconds`, `GridTelemetryFreshSeconds`,
-  `BatteryAssistEnabled`, `BatteryAssistSocMin`,
-  `BatteryAssistMaxSeconds`, `BatteryAssistMaxShortfallW`, and
-  `BatteryAssistRecoverySeconds` handling.
-- Existing tests cover several no-grid and battery-assist cases, but the code
-  path is still intertwined with controller state and status publishing.
+The repository root contains several Fronius-focused modules, including
+`FroniusWattpilot.py`, `FroniusSmartmeterJSON.py`,
+`FroniusSmartmeterRS485.py`, `Wattpilot.py`, `WattpilotRuntimeStatus.py`, and
+Wattpilot decision helpers. Grouping them could improve navigation, but moving
+files is a cross-cutting import and deployment refactor.
 
 Implementation:
 
-- Extract grid-import guard decision logic into a small helper with explicit
-  inputs and result reasons.
-- Extract battery-assist eligibility, lockout, and recovery decisions into a
-  small helper with explicit inputs and result reasons.
-- Keep actual `set_power()`, `set_start_stop()`, D-Bus, MQTT, and service
-  message side effects in `FroniusWattpilot.py`.
-- Preserve current battery-assist invariant: it may only bridge an
-  already-running charge and must never start a session or trigger phase-up.
+- Inventory all root-level Fronius and Wattpilot modules and their imports.
+- Check `es-ESS.py`, service initialization, tests, install scripts, and any
+  documented command examples for direct root-module assumptions.
+- Decide between keeping the flat service-module layout, introducing a
+  `fronius`/`integrations/fronius` package, or adding compatibility wrappers.
+- If moving files, make the package refactor a standalone PR with no charging
+  behavior changes.
+- Do not combine this with Wattpilot safety, phase-switching, or state-machine
+  changes.
 
 Files to change:
 
-- `FroniusWattpilot.py`
-- Tests under `tests/`
-
-Files to add:
-
-- Possibly helper modules for grid guard and battery assist decisions.
+- Possibly Fronius/Wattpilot Python modules and imports.
+- Possibly tests under `tests/`.
+- Possibly README and architecture/service-inventory docs.
+- `BACKLOG.md`
 
 Tests:
 
-- Run grid telemetry fail-safe tests.
-- Run battery-assist tests.
-- Run existing Wattpilot control tests.
-- Run the full unittest suite.
-- Run `python -m py_compile` for changed Python files.
+- Run repository syntax checks.
+- Run the full hardware-free unittest suite.
+- Run any import-focused tests added for package compatibility.
 
 Expected coverage:
 
-- Auto/Eco still stops on sustained grid import when grid charging is disabled.
-- Battery assist still respects SOC, shortfall, duration, and recovery limits.
-- Battery assist still cannot start a charge or cause phase-up.
-- Manual mode remains unaffected by Auto/Eco guards.
-
-Manual validation:
-
-- Recommended on a staging GX/Wattpilot system because this touches
-  safety-sensitive decisions, even if intended as extraction-only.
-
-Manual test steps:
-
-1. Validate Manual mode reporting and non-control behavior.
-2. Validate Auto/Eco start from PV allowance.
-3. Validate sustained grid import stop.
-4. Validate a short PV dip during active charging with battery assist enabled.
-5. Validate battery assist lockout and recovery.
+- Runtime imports still work from the service entry point.
+- Existing tests can import the moved or wrapped modules.
+- Venus OS deployment paths and service scripts remain compatible.
 
 Risks and dependencies:
 
-- High safety sensitivity. Keep side effects in the existing controller until
-  helper behavior is proven.
-- Do not combine with config/default changes.
-
-Open questions:
-
-- Should helper results expose machine-readable reason codes for future runtime
-  status, or stay internal for now?
+- Root-module imports may be used by tests, user scripts, or deployment
+  assumptions.
+- Venus OS service startup is sensitive to `PYTHONPATH` and working-directory
+  assumptions.
+- Compatibility wrappers may be worthwhile for one release if external imports
+  are plausible.
 
 Done criteria:
 
-- Extracted helpers are covered by focused tests.
-- Existing behavior tests pass unchanged.
-- Manual live validation confirms no unintended grid use.
+- A packaging decision is documented.
+- Any file move is isolated from behavior changes and covered by import tests.
+- Full hardware-free tests pass after the packaging change.
 
 ### P2 - Extract Wattpilot Phase-Switching Decisions
 
@@ -837,12 +821,12 @@ and production impact, but the first PRs avoid live charging-control changes so
 the project can build tests, docs, and confidence before touching sensitive
 Wattpilot behavior.
 
-1. P2 grid-guard and battery-assist helper extraction, because it is more
-   safety-sensitive and should follow characterization coverage.
-2. P2 phase-switching helper extraction, because phase switching is
+1. P2 phase-switching helper extraction, because phase switching is
    user-visible and high-impact.
-3. P3 state-machine refactor, because it needs the previous behavior, config,
+2. P3 state-machine refactor, because it needs the previous behavior, config,
    docs, and helper boundaries in place before touching overall control flow.
+3. P3 Fronius module packaging evaluation, because it is a cross-cutting
+   import/deployment refactor and should stay separate from behavior changes.
 4. P4 EVCS UI formatting alignment, because it is cosmetic and should stay
    separate from the es-ESS numeric D-Bus contract.
 

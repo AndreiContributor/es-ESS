@@ -64,8 +64,11 @@ It owns:
 - SolarOverheadDistributor allowance requests and allowance consumption,
   delegating pure allowance freshness checks to `WattpilotDecisionInputs.py`.
 - Grid telemetry state updates and no-grid stop behavior, delegating pure
-  telemetry freshness checks to `WattpilotDecisionInputs.py`.
-- Optional battery-assist rules for an already-running charge.
+  telemetry freshness checks to `WattpilotDecisionInputs.py` and grid-import
+  guard decisions to `WattpilotSafetyDecisions.py`.
+- Optional battery-assist rules for an already-running charge, delegating
+  assist eligibility, timeout, lockout, and recovery decisions to
+  `WattpilotSafetyDecisions.py`.
 - One-phase and three-phase switching decisions and timing guards.
 - Wattpilot command issuing through the `Wattpilot` client.
 - Wattpilot shutdown behavior during es-ESS termination.
@@ -97,6 +100,34 @@ It must not own:
 
 The controller still stores the live timestamps and values. This helper only
 answers whether a supplied input snapshot is fresh and usable.
+
+### `WattpilotSafetyDecisions.py`
+
+`WattpilotSafetyDecisions.py` owns pure decision helpers for two
+safety-sensitive Auto/Eco policies.
+
+It owns:
+
+- Grid-import guard timing and threshold decisions.
+- Battery-assist eligibility for an already-running charge.
+- Battery-assist maximum-duration lockout decisions.
+- Battery-assist recovery decisions after PV fully covers active EV demand.
+- Internal reason codes used by tests and controller branching.
+
+It must not own:
+
+- Wattpilot command issuing.
+- D-Bus or MQTT publication.
+- Service messages.
+- Grid telemetry sampling or freshness evaluation.
+- PV allowance sampling or freshness evaluation.
+- Manual versus Auto/Eco command-boundary policy.
+- Phase-switch commands or phase-mode runtime-status publication.
+
+The controller still stores mutable timestamps such as `gridImportSince`,
+`batteryAssistSince`, and `batteryAssistRecoverySince`, publishes user-visible
+messages, and issues Wattpilot commands. This helper only evaluates supplied
+snapshots and returns the next controller-owned timer values.
 
 ### `WattpilotRuntimeStatus.py`
 
