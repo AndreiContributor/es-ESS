@@ -166,8 +166,8 @@ class esESS:
             #Check, if we need to subscribe again.
             for (key, sublist) in self._mqttSubscriptions.items():
                 for sub in sublist:
-                    d(self, "Creating Mqtt-Subscriptions for Service {0} on {1} with callback: {2}".format(sub.requestingService.__class__.__name__, sub.topic, Helper.formatCallback(sub.callback)))
                     if (sub.type == MqttSubscriptionType.Main):
+                        d(self, "Restoring main MQTT subscription for Service {0} on {1} with callback: {2}".format(sub.requestingService.__class__.__name__, sub.topic, Helper.formatCallback(sub.callback)))
                         self.mainMqttClient.subscribe(sub.topic, sub.qos)
                         self.mainMqttClient.message_callback_add(sub.topic, sub.callback)
         else:
@@ -181,10 +181,10 @@ class esESS:
             #Check, if we need to subscribe again.
             for (key, sublist) in self._mqttSubscriptions.items():
                 for sub in sublist:
-                    d(self, "Creating Mqtt-Subscriptions for Service {0} on {1} with callback: {2}".format(sub.requestingService.__class__.__name__, sub.topic, Helper.formatCallback(sub.callback)))
                     if (sub.type == MqttSubscriptionType.Local):
-                        self.mainMqttClient.subscribe(sub.topic, sub.qos)
-                        self.mainMqttClient.message_callback_add(sub.topic, sub.callback)
+                        d(self, "Restoring local MQTT subscription for Service {0} on {1} with callback: {2}".format(sub.requestingService.__class__.__name__, sub.topic, Helper.formatCallback(sub.callback)))
+                        self.localMqttClient.subscribe(sub.topic, sub.qos)
+                        self.localMqttClient.message_callback_add(sub.topic, sub.callback)
         else:
             e(self, "Failed to connect, return code %d\n", rc)
 
@@ -651,8 +651,18 @@ class esESS:
                self._localMessageCount = 0
                self._localSendCount = 0
 
+    def _isMqttClientConnected(self, client):
+        if (client is None):
+            return False
+
+        isConnected = getattr(client, "is_connected", False)
+        if (callable(isConnected)):
+            return isConnected()
+
+        return bool(isConnected)
+
     def publishServiceMessage(self, service, message, type=Globals.ServiceMessageType.Operational):
-        if (self.mainMqttClient is None or not self.mainMqttClient.is_connected):
+        if (not self._isMqttClientConnected(self.mainMqttClient)):
            #cant send service messages by now. 
            return
 

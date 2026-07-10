@@ -118,6 +118,29 @@ Open questions:
 
 ## Completed
 
+### Completed 2026-07-11 - PR 4 MQTT And Orchestration Reliability
+
+Completion note:
+
+- Fixed local MQTT reconnect restoration in `es-ESS.py` so
+  `onLocalMqttConnect()` re-subscribes local topics and callbacks on
+  `localMqttClient` instead of `mainMqttClient`.
+- Fixed `publishServiceMessage()` to test the actual main MQTT connection
+  state, including compatibility for clients that expose `is_connected` as a
+  method or as a boolean attribute.
+- Removed the duplicate SolarOverheadDistributor `OnKeywordRegex` MQTT
+  subscription while preserving the original basic-property registration and
+  all other consumer registration topics.
+- Added hardware-free fake-client orchestration tests for reconnect routing,
+  initial MQTT subscription routing, connected/disconnected service-message
+  publication, and boolean `is_connected` compatibility.
+- Added SolarOverheadDistributor subscription coverage proving
+  `OnKeywordRegex` is registered exactly once.
+- Kept the change limited to MQTT/orchestration reliability, tests, and
+  backlog; no Wattpilot charging behavior, D-Bus path names, MQTT topic names,
+  configuration defaults, README guidance, or service-inventory contracts were
+  changed.
+
 ### Completed 2026-07-10 - SolarOverheadDistributor Startup Safety
 
 Completion note:
@@ -689,179 +712,178 @@ Completion note:
 
 ## Backlog
 
-### P3 - Fix Local MQTT Reconnect Resubscription Client
+### P2 - Make Graceful Shutdown And Supervisor Restart Reliable
 
 Goal:
 
-Ensure local Venus MQTT subscriptions recover correctly after a local MQTT
-disconnect/reconnect.
+Guarantee that a completed SIGTERM cleanup is followed by actual process exit
+and daemontools restart, even when the signal interrupts an active D-Bus/GLib
+callback.
 
 Problem:
 
-`onLocalMqttConnect()` detects local subscriptions but re-subscribes and adds
-message callbacks on `mainMqttClient` instead of `localMqttClient`. Initial
-subscription registration uses the correct client, so this defect only appears
-after a local broker reconnect. It is currently a latent reliability issue
-because active services mostly publish to local MQTT, but it can break any
-current or future local MQTT subscription after reconnect.
+The production GX validation of PR 4 exposed a shutdown race. SIGTERM arrived
+while the main thread was inside a D-Bus callback. `handleSigterm()` completed
+its safety cleanup, disconnected MQTT, stopped worker scheduling, and then
+called `sys.exit(0)`. The resulting `SystemExit` propagated through the D-Bus
+callback stack, where the D-Bus dispatcher logged it as a handler exception
+and swallowed it. The Python process therefore remained alive but inert:
+daemontools still reported es-ESS as up, MQTT reconnect was disabled, and the
+worker heartbeat fell to zero executions.
+
+Because `service/run` starts Python as a child of its shell instead of replacing
+the shell, daemontools supervises the waiting shell rather than the Python
+process directly. `restart.sh` only sends SIGTERM and does not verify that the
+target PID exits, so it reports no failure and provides no bounded fallback.
 
 Evidence:
 
-- `registerMqttSubscription()` subscribes `MqttSubscriptionType.Local` topics
-  on `self.localMqttClient`.
-- `onLocalMqttConnect()` checks `sub.type == MqttSubscriptionType.Local`.
-- Inside that local branch, it calls `self.mainMqttClient.subscribe(...)` and
-  `self.mainMqttClient.message_callback_add(...)`.
-- Existing tests do not cover MQTT reconnect subscription routing.
+- `es-ESS.py` lines 690-735: `handleSigterm()` performs cleanup and then loops
+  around `sys.exit(0)`. `SystemExit` inherits from `BaseException`, not
+  `Exception`, so the retry block does not catch it; an outer D-Bus dispatcher
+  can catch and suppress it instead.
+- `es-ESS.py` lines 782-798: the signal handler runs on the same main thread as
+  the GLib/D-Bus main loop, so SIGTERM can interrupt an active D-Bus callback.
+- `service/run` invokes `python /data/es-ESS/es-ESS.py` without `exec`, leaving
+  an extra shell process between daemontools and Python.
+- `restart.sh` sends signal 15 to matching Python PIDs but does not wait for
+  exit, confirm PID turnover, or apply a bounded fallback.
+- Production incident on 2026-07-10 at 21:56:57 UTC: logs recorded
+  `Cleaned up. Bye.`, followed by `ERROR Exception in handler for D-Bus signal`
+  with `SystemExit: 0`. The same Python PID remained present, and later
+  heartbeats reported 17 and then 0 worker executions. Killing only that inert
+  Python child caused daemontools to start a new shell/Python pair, after which
+  initialization, MQTT, Wattpilot telemetry, and normal worker execution
+  recovered.
+- The same intentional shutdown logged `Mqtt Disconnect.` and `Automatic
+  reconnect is disabled.` as warnings for both MQTT clients even though
+  `handleSigterm()` deliberately disables reconnect before disconnecting them.
+  Those warnings are expected shutdown state, not runtime MQTT failures.
 
 Implementation:
 
-- Change `onLocalMqttConnect()` to use `self.localMqttClient` for local
-  subscription restoration.
-- Add a small helper if needed to de-duplicate main/local reconnect logic.
-- Keep topic names, QoS, and callback registrations unchanged.
+- Make `esESS.handleSigterm()` idempotent so repeated or overlapping shutdown
+  requests cannot run service cleanup, allowance revocation, Wattpilot stop,
+  MQTT unsubscribe, or grid-setpoint restoration more than once.
+- Separate safety cleanup from the final process-termination mechanism. After
+  cleanup has completed and `Cleaned up. Bye.` is logged/flushed, use a
+  termination path that cannot be swallowed by the active D-Bus callback
+  dispatcher. Evaluate a controlled GLib main-loop quit versus `os._exit(0)`;
+  if `os._exit(0)` is selected, call it only after all existing safety cleanup
+  and log flushing have completed.
+- Change `service/run` to replace the shell with Python (`exec python ...`) so
+  daemontools directly supervises the application process and reports the
+  actual es-ESS PID.
+- Make `restart.sh` wait a bounded period for every signaled PID to exit. If a
+  confirmed original PID remains after completed graceful cleanup, log the
+  timeout and apply a narrowly targeted SIGKILL fallback before returning.
+  Never kill a replacement PID, an unverified process, or another Python
+  service.
+- Make `onMainMqttDisconnect()` and `onLocalMqttDisconnect()` shutdown-aware:
+  when `_sigTermInvoked=True`, log the intentional disconnect and disabled
+  reconnect state at INFO level; retain WARNING severity for unexpected
+  runtime disconnects and disabled automatic reconnect outside shutdown.
+- Preserve the existing shutdown order: stop new worker dispatch, restore the
+  default grid setpoint, unsubscribe MQTT callbacks, revoke consumer
+  allowances, invoke service cleanup (including Wattpilot Auto/Eco stop), then
+  disconnect MQTT and terminate.
+- Do not change Wattpilot Manual-mode ownership, Auto/Eco charging policy,
+  grid-import behavior, D-Bus/MQTT contracts, configuration, or normal startup
+  behavior.
 
 Files to change:
 
 - `es-ESS.py`
+- `service/run`
+- `restart.sh`
+- `README.md` only if lifecycle-command behavior or timeout/fallback guidance
+  needs clarification.
 
 Files to add:
 
-- Possibly a new orchestration-focused unit test file under `tests/`.
+- `tests/test_es_ess_shutdown.py` (preferred), or extend the existing
+  orchestration test file if the shutdown fixture remains small.
 
 Tests:
 
-- Add hardware-free tests with fake MQTT clients that register one main and one
-  local subscription, invoke `onMainMqttConnect()` and `onLocalMqttConnect()`,
-  and assert subscriptions/callbacks are attached to the correct client.
+- Add a hardware-free test proving shutdown cleanup runs exactly once when
+  `handleSigterm()` is invoked repeatedly.
+- Add a test proving the final termination hook runs only after grid-setpoint
+  restoration, service cleanup, MQTT disconnect, and the final log call.
+- Add tests proving intentional main/local MQTT shutdown disconnects log at
+  INFO without warning, while unexpected runtime disconnects continue to log
+  warnings and wait for automatic reconnect when enabled.
+- Simulate a termination hook that raises `SystemExit` inside an outer callback
+  catcher and prove the selected production mechanism cannot leave the runtime
+  in `_sigTermInvoked=True` without terminating.
+- Add lifecycle-script coverage or static assertions proving `service/run`
+  uses `exec` and `restart.sh` targets only the original matching PIDs during
+  its bounded fallback.
+- Run `bash -n install.sh restart.sh kill_me.sh uninstall.sh service/run`.
+- Run `python -m py_compile es-ESS.py tests/test_es_ess_shutdown.py`.
 - Run the full unittest suite.
 
 Expected coverage:
 
-- Main reconnect restores only main subscriptions on the main client.
-- Local reconnect restores only local subscriptions on the local client.
-- Initial registration remains unchanged.
+- A SIGTERM delivered during a D-Bus/GLib callback cannot leave es-ESS alive
+  with MQTT disconnected and worker scheduling disabled.
+- Shutdown cleanup is idempotent and preserves all existing fail-safe actions.
+- Intentional shutdown disconnects are distinguishable from unexpected MQTT
+  outages by log severity for both main and local clients.
+- Daemontools supervises the Python process directly.
+- Restart fallback cannot kill an unrelated or newly started process.
 
 Manual validation:
 
-- On a GX/Venus OS device, restart the local MQTT broker or simulate a local
-  reconnect while a local subscription test service is active.
-- Confirm subscriptions recover and callbacks receive messages after reconnect.
+Log-only (safe in production during a low-risk window, with the EV disconnected
+or confirmed not charging).
 
 Manual test steps:
 
-1. Start es-ESS with a test local MQTT subscription enabled.
-2. Restart or briefly interrupt the local Venus MQTT broker.
-3. Wait for reconnect.
-4. Publish a matching local MQTT message.
-5. Confirm the callback path runs after reconnect.
+1. Record `svstat /service/es-ESS`, the Python PID, and the current log line.
+2. Run `/data/es-ESS/restart.sh` several times while normal D-Bus updates are
+   active.
+3. For each restart, confirm `Cleaned up. Bye.` appears once, the old PID exits,
+   daemontools starts a new Python PID, and initialization completes.
+4. Confirm main/local MQTT reconnect, Wattpilot consumer initialization, and a
+   non-zero worker heartbeat after each restart.
+5. Confirm intentional main/local MQTT disconnect messages appear at INFO,
+   while no shutdown-only MQTT warning, `SystemExit` D-Bus handler traceback,
+   inert old PID, duplicate cleanup, or unrelated process termination appears.
 
 Risks and dependencies:
 
-- Low runtime risk if covered by fake-client tests.
-- Hardware validation may need a temporary test subscription because most
-  active local-MQTT paths publish rather than subscribe.
+- A forced exit before cleanup completes could skip grid-setpoint restoration,
+  allowance revocation, or the Auto/Eco shutdown stop; the implementation must
+  make the cleanup/termination boundary explicit and tested.
+- A broad SIGKILL fallback could terminate the wrong process after PID
+  turnover; fallback must retain and verify only the original matched PIDs.
+- `os._exit(0)` bypasses Python interpreter teardown and buffered I/O, so it is
+  acceptable only after explicit cleanup and log-handler flushing.
+- No other backlog item is a prerequisite. Keep this lifecycle fix isolated
+  from PR 5 security changes and Wattpilot control refactors.
 
 Open questions:
 
-- Should this change also add reconnect diagnostics for main/local subscription
-  counts?
+- Should final termination use a controlled GLib main-loop quit with a bounded
+  watchdog, or explicit `os._exit(0)` after cleanup and log flushing?
+- What bounded graceful-exit timeout should `restart.sh` use before its
+  narrowly targeted fallback (for example, 10 seconds)?
 
 Done criteria:
 
-- Local reconnect uses `localMqttClient` for local topics.
-- Main reconnect behavior is unchanged.
-- Hardware-free reconnect routing tests pass.
-
-### P3 - Fix Service-Message Connected-State Guard
-
-Goal:
-
-Avoid silently attempting or skipping service-message publication based on the
-truthiness of a method object rather than the current MQTT connection state.
-
-Problem:
-
-`publishServiceMessage()` checks `not self.mainMqttClient.is_connected` without
-calling it. In common Paho MQTT versions, `is_connected` is a method. The guard
-therefore tests the truthiness of the method object instead of the actual
-connection state, which can make service-message behavior inaccurate during
-startup, disconnects, or reconnects.
-
-Evidence:
-
-- `publishServiceMessage()` returns early only when
-  `self.mainMqttClient is None or not self.mainMqttClient.is_connected`.
-- Other runtime code tracks `mainMqttClientConnected`, but
-  `publishServiceMessage()` does not use it.
-- There is no hardware-free test proving service messages are suppressed while
-  the main MQTT client is disconnected and published when connected.
-
-Implementation:
-
-- Update the guard to call `is_connected()` when available.
-- Preserve compatibility with any older fake or legacy client that exposes a
-  boolean `is_connected` attribute instead of a method.
-- Consider also checking `mainMqttClientConnected` if it remains the runtime's
-  authoritative reconnect flag.
-- Keep service-message topic names, retention behavior, and ring-buffer index
-  behavior unchanged.
-
-Files to change:
-
-- `es-ESS.py`
-
-Files to add:
-
-- Possibly a new orchestration-focused unit test file under `tests/`.
-
-Tests:
-
-- Add fake-client tests for `publishServiceMessage()` with connected,
-  disconnected, and missing-client states.
-- Assert disconnected clients do not receive publish calls.
-- Assert connected clients publish the expected retained service-message topic.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- Service-message publication is gated by actual connection state.
-- Existing message indexing and topic formatting remain unchanged.
-
-Manual validation:
-
-- Restart es-ESS with the main MQTT broker available and confirm service
-  messages publish normally.
-- Temporarily interrupt the main MQTT broker and confirm the log does not fill
-  with publish errors from service-message attempts.
-- Restore the broker and confirm service messages resume after reconnect.
-
-Manual test steps:
-
-1. Start es-ESS and subscribe to `es-ESS/+/ServiceMessages/#`.
-2. Confirm startup service messages appear.
-3. Stop or block the main MQTT broker briefly.
-4. Confirm es-ESS remains running and does not log repeated publish failures
-   from service messages.
-5. Restore the broker and confirm later service messages publish again.
-
-Risks and dependencies:
-
-- Some Paho versions or tests may stub `is_connected` differently; keep the
-  guard compatibility-focused.
-- If `mainMqttClientConnected` can drift from Paho's state, choose one
-  authoritative source and test reconnect behavior.
-
-Open questions:
-
-- Should `mainMqttClientConnected` be updated on disconnect and used as the
-  single source of truth for publication guards?
-
-Done criteria:
-
-- `publishServiceMessage()` uses the actual MQTT connected state.
-- Connected and disconnected cases are covered by unit tests.
-- Existing service-message topic contract is unchanged.
+- SIGTERM during an active D-Bus callback always leads to process exit and
+  supervisor-managed restart.
+- Shutdown safety actions run once and in the existing order.
+- `service/run` directly execs the Python process.
+- `restart.sh` detects a stuck original PID and recovers it without targeting a
+  replacement or unrelated process.
+- Intentional main/local MQTT shutdown disconnects log at INFO; unexpected
+  runtime MQTT disconnects retain WARNING severity.
+- Hardware-free shutdown and lifecycle tests pass.
+- Repeated GX log-only restart validation passes without an inert process or
+  D-Bus `SystemExit` traceback.
+- Full unittest suite passes.
 
 ### P3 - Align Dormant Service Docs, Sample Config, And Runtime Intent
 
@@ -1102,77 +1124,6 @@ Done criteria:
 
 - `NoBatToEV._update()` does not raise `TypeError` when any D-Bus value is None.
 - Startup window behavior is covered by hardware-free tests.
-- Full unittest suite passes.
-
-### P3 - Fix Duplicate OnKeywordRegex MQTT Subscription In SolarOverheadDistributor
-
-Goal:
-
-Remove the duplicate MQTT subscription that causes `onMqttMessage` to fire
-twice for every `OnKeywordRegex` consumer registration message.
-
-Problem:
-
-`SolarOverheadDistributor.initMqttSubscriptions()` registers the topic
-`es-ESS/SolarOverheadDistributor/Requests/+/OnKeywordRegex` twice with the
-same callback. Paho MQTT calls `message_callback_add` twice for the same
-pattern, so `onMqttMessage` fires twice per incoming message. On retained
-messages this produces double log output on every reconnect; on live
-registration messages it triggers double side-effects inside `setValue()`
-(e.g., `dbusReportConsumption()` and consumer state updates).
-
-Evidence:
-
-- `SolarOverheadDistributor.py` line 109: first registration of
-  `Requests/+/OnKeywordRegex`.
-- `SolarOverheadDistributor.py` line 120: second registration of the same
-  topic, in the "NPC Consumer Common" block. The comment on line 119 says
-  "NPC Consumer Common" suggesting it was split from the basic props block
-  but the duplicate was not removed.
-
-Implementation:
-
-- Remove the second `registerMqttSubscription` call for `OnKeywordRegex` at
-  line 120.
-- Keep the first registration at line 109.
-- Do not change any other MQTT subscriptions.
-
-Files to change:
-
-- `SolarOverheadDistributor.py`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add a hardware-free test that initializes `SolarOverheadDistributor` and
-  confirms `OnKeywordRegex` is registered exactly once.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- Each consumer registration MQTT message triggers `onMqttMessage` exactly once.
-
-Manual validation:
-
-- Enable a NPC consumer and tail the log after a restart; confirm `OnKeywordRegex`
-  messages appear once, not twice, per retained message.
-
-Risks and dependencies:
-
-- Low risk; removing a duplicate registration cannot affect non-duplicate
-  subscriptions.
-
-Open questions:
-
-- None.
-
-Done criteria:
-
-- `OnKeywordRegex` is registered once in `initMqttSubscriptions()`.
-- Callback fires once per message.
 - Full unittest suite passes.
 
 ### P3 - Replace eval() With Safe Expression In MinBatteryCharge Config
@@ -1599,11 +1550,11 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move the finished backlog items to `Completed` and advance the
 queue on the next request.
 
-1. **PR 4 - MQTT and orchestration reliability:** remove the duplicate
-   SolarOverheadDistributor `OnKeywordRegex` subscription, fix local MQTT
-   reconnect resubscription routing, call the main MQTT client's
-   `is_connected()` method correctly, and add the associated orchestration and
-   fake-client tests.
+1. **PR 4A - Graceful shutdown reliability:** make SIGTERM cleanup idempotent,
+   guarantee process exit when a D-Bus callback swallows `SystemExit`, directly
+   supervise Python through `service/run`, and add bounded stuck-PID recovery
+   plus shutdown-aware MQTT log severity, with hardware-free and repeated GX
+   restart validation.
 2. **PR 5 - Security hardening:** replace the `MinBatteryCharge` `eval()` path
    with a constrained AST evaluator and replace `getUserTime()` shell
    interpolation with a structured subprocess call, with malformed-input and
@@ -1628,7 +1579,9 @@ disconnect critical telemetry to satisfy it.
 
 Hardware validation scope for this queue:
 
-- PRs 1-7 do not require a connected car for their acceptance criteria.
+- PR 4A requires repeated log-only restart validation on GX with the EV
+  disconnected or confirmed not charging. It does not require an active charge.
+- PRs 5-7 do not require a connected car for their acceptance criteria.
   A real or simulated EV load adds end-to-end confidence for NoBatToEV grid-
   setpoint math, but is not required to verify the None guard.
 - PR 8 uses focused characterization, all-state delegation, and the full

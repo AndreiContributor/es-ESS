@@ -128,6 +128,25 @@ class SolarOverheadDistributorTests(unittest.TestCase):
         service.publishServiceMessage = Mock()
         return service
 
+    def test_on_keyword_regex_subscription_is_registered_once(self):
+        service = self.sod.SolarOverheadDistributor.__new__(
+            self.sod.SolarOverheadDistributor
+        )
+        service.registerMqttSubscription = Mock()
+
+        service.initMqttSubscriptions()
+
+        topics = [
+            call.args[0]
+            for call in service.registerMqttSubscription.call_args_list
+        ]
+        self.assertEqual(
+            topics.count(
+                "es-ESS/SolarOverheadDistributor/Requests/+/OnKeywordRegex"
+            ),
+            1,
+        )
+
     def test_update_distribution_with_none_grid_value_zeroes_allowance(self):
         service = self._service(grid=(None, -100, -200), battery_power=0)
         consumer = StubConsumer()
