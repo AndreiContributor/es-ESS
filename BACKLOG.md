@@ -620,6 +620,492 @@ Completion note:
 
 ## Backlog
 
+### P2 - Add Bounded Timeouts For SolarOverheadDistributor HTTP Consumers
+
+Goal:
+
+Keep SolarOverheadDistributor responsive when a configured HTTP consumer,
+status endpoint, or power endpoint is slow, offline, or accepts a connection
+without returning.
+
+Problem:
+
+`SolarOverheadDistributor` configured HTTP consumers call `requests.get()`
+without a timeout. A hung consumer endpoint can block a worker-pool thread
+during allowance updates, state validation, or power polling. Because
+SolarOverheadDistributor publishes the Wattpilot PV allowance used by Auto/Eco
+charging, blocked HTTP consumer work can indirectly delay or stale EV charging
+inputs.
+
+Evidence:
+
+- `SolarOverheadDistributor.py` calls `requests.get(url=self.onUrl)` when
+  turning on an HTTP consumer.
+- `SolarOverheadDistributor.py` calls `requests.get(url=self.offUrl)` when
+  turning off an HTTP consumer.
+- `SolarOverheadDistributor.py` calls `requests.get(url=self.statusUrl)` when
+  validating HTTP consumer state.
+- `SolarOverheadDistributor.py` calls `requests.get(url=self.powerUrl)` when
+  fetching HTTP consumer power.
+- Other HTTP polling services, such as `FroniusSmartmeterJSON`, `Shelly3EMGrid`,
+  and `ShellyPMInverter`, already use bounded request timeouts based on poll
+  interval.
+
+Implementation:
+
+- Add a bounded HTTP timeout for SolarOverheadDistributor consumer requests.
+- Prefer a small configurable default only if product intent requires it;
+  otherwise use an internal constant that is safely shorter than the
+  distributor update cadence.
+- Apply the timeout consistently to on, off, status, and power requests.
+- Treat timeout exceptions as failed validation/poll attempts and preserve the
+  existing exception logging behavior.
+- Avoid changing the allocation algorithm or Wattpilot allowance semantics in
+  the same change.
+
+Files to change:
+
+- `SolarOverheadDistributor.py`
+- Possibly `config.sample.ini`, `README.md`, and
+  `docs/service-inventory.md` only if a user-facing timeout setting is added.
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add hardware-free tests for HTTP consumer control, status validation, and
+  power polling that assert `requests.get()` receives the timeout.
+- Add a timeout exception test proving a timed-out HTTP consumer does not
+  crash the distribution update path.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- HTTP consumer on/off/status/power calls are always bounded.
+- Timeout exceptions are handled without stopping SolarOverheadDistributor.
+- Existing MQTT consumer behavior and Wattpilot allowance distribution are not
+  changed.
+
+Manual validation:
+
+- Configure an HTTP consumer against a reachable endpoint and confirm normal
+  on/off/status/power behavior.
+- Configure or simulate an HTTP endpoint that does not respond and confirm
+  SolarOverheadDistributor continues publishing calculations and service
+  messages.
+- When Wattpilot is enabled, confirm allowance topics continue to update after
+  an HTTP consumer timeout.
+
+Manual test steps:
+
+1. Enable `SolarOverheadDistributor` with one test `HttpConsumer:*`.
+2. Point `StatusUrl` or `PowerUrl` at a deliberately non-responsive endpoint.
+3. Restart es-ESS and tail `/data/log/es-ESS/current.log`.
+4. Confirm timeout errors are logged but the distributor worker continues to
+   publish `es-ESS/SolarOverheadDistributor/Calculations/OverheadAvailable`.
+5. If Wattpilot is active, confirm
+   `es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Allowance` continues to
+   update.
+
+Risks and dependencies:
+
+- Too-short timeouts may mark slow devices as unavailable unnecessarily.
+- Too-long timeouts may still starve the shared worker pool.
+- If a new config setting is added, configuration migration and documentation
+  must be updated.
+
+Open questions:
+
+- Should HTTP consumer timeout be globally fixed, globally configurable, or
+  configurable per `HttpConsumer:*` section?
+
+Done criteria:
+
+- All SolarOverheadDistributor HTTP consumer requests have bounded timeouts.
+- Timeout behavior is covered by hardware-free tests.
+- Full unittest suite passes.
+- Any new setting is documented in `config.sample.ini`, README, and service
+  inventory.
+
+### P2 - Guard MqttPVInverter Zero-Feed-In Against Zero Target Power
+
+Goal:
+
+Make experimental MQTT PV inverter zero-feed-in control safe and deterministic
+when the computed target inverter power is zero while one or more inverters are
+still producing.
+
+Problem:
+
+`MqttPVInverter._dtuZeroFeedin()` calculates `target =
+max(consumption - ZeroFeedinDistance, 0)`, then later calculates
+`error / target` for producing inverters. When `target` is `0`, the controller
+can raise a division-by-zero exception, skip throttle updates, and leave a
+previous OpenDTU limit unchanged exactly when the system intends to reduce or
+stop PV output.
+
+Evidence:
+
+- `MqttPVInverter.py` computes `target = max(consumption -
+  self.zeroFeedinDistance, 0)`.
+- The same method computes `c = share * (error / target)` inside the producing
+  inverter loop.
+- The broad exception handler logs `Exception during zero feedin calculation`
+  but does not publish a safe replacement throttle for the cycle.
+- `EnableZeroFeedin` is documented as experimental, but the code path can still
+  send real OpenDTU limit commands through configured `DtuControlTopic`
+  topics.
+
+Implementation:
+
+- Add an explicit `target <= 0` branch before proportional scaling.
+- In that branch, set producing inverters with `DtuControlTopic` to a safe
+  minimum throttle, likely `0.0`, unless product intent requires preserving a
+  nonzero floor.
+- Keep the existing full-throttle behavior when zero-feed-in is inactive or
+  prerequisites are not met.
+- Avoid changing MQTT topic names, instance config, or non-zero proportional
+  scaling behavior in the same change.
+
+Files to change:
+
+- `MqttPVInverter.py`
+- Possibly `README.md` and `docs/service-inventory.md` if the zero-target
+  behavior is user-facing or the experimental warning changes.
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add a hardware-free test for `_dtuZeroFeedin()` with `target == 0`, producing
+  inverter power, and configured `DtuControlTopic`; assert no exception and the
+  safe limit is published.
+- Add a regression test that nonzero target behavior still adjusts throttle
+  proportionally.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- Zero-target feed-in cycles do not divide by zero.
+- Producing inverters receive an intentional safe throttle command.
+- Existing positive-target scaling remains unchanged.
+
+Manual validation:
+
+- On a non-production or carefully observed system, enable `MqttPVInverter`
+  with `EnableZeroFeedin=true`.
+- Create a condition where consumption minus `ZeroFeedinDistance` is zero or
+  below zero while inverter MQTT telemetry still reports production.
+- Confirm the OpenDTU limit topic receives the expected safe low throttle and
+  es-ESS logs do not show `Exception during zero feedin calculation`.
+
+Manual test steps:
+
+1. Enable one MQTT PV inverter with `DtuControlTopic`.
+2. Set `ZeroFeedinDistance` above current consumption so target power becomes
+   `0`.
+3. Publish inverter power telemetry above `0`.
+4. Observe the configured OpenDTU command topic.
+5. Confirm a safe limit is published and no divide-by-zero exception appears in
+   `/data/log/es-ESS/current.log`.
+
+Risks and dependencies:
+
+- Some OpenDTU setups may interpret `0%` differently from a minimum operating
+  limit.
+- The desired zero-target throttle floor needs confirmation before treating
+  this as production-ready PV shutdown behavior.
+
+Open questions:
+
+- Should zero target command `0%`, `ZeroFeedinScaleStep`, or a configurable
+  minimum inverter limit?
+
+Done criteria:
+
+- Zero-target zero-feed-in behavior is explicit and tested.
+- No divide-by-zero exception is possible in `_dtuZeroFeedin()`.
+- Manual validation confirms the selected OpenDTU command is accepted by the
+  target inverter setup.
+
+### P3 - Fix Local MQTT Reconnect Resubscription Client
+
+Goal:
+
+Ensure local Venus MQTT subscriptions recover correctly after a local MQTT
+disconnect/reconnect.
+
+Problem:
+
+`onLocalMqttConnect()` detects local subscriptions but re-subscribes and adds
+message callbacks on `mainMqttClient` instead of `localMqttClient`. Initial
+subscription registration uses the correct client, so this defect only appears
+after a local broker reconnect. It is currently a latent reliability issue
+because active services mostly publish to local MQTT, but it can break any
+current or future local MQTT subscription after reconnect.
+
+Evidence:
+
+- `registerMqttSubscription()` subscribes `MqttSubscriptionType.Local` topics
+  on `self.localMqttClient`.
+- `onLocalMqttConnect()` checks `sub.type == MqttSubscriptionType.Local`.
+- Inside that local branch, it calls `self.mainMqttClient.subscribe(...)` and
+  `self.mainMqttClient.message_callback_add(...)`.
+- Existing tests do not cover MQTT reconnect subscription routing.
+
+Implementation:
+
+- Change `onLocalMqttConnect()` to use `self.localMqttClient` for local
+  subscription restoration.
+- Add a small helper if needed to de-duplicate main/local reconnect logic.
+- Keep topic names, QoS, and callback registrations unchanged.
+
+Files to change:
+
+- `es-ESS.py`
+
+Files to add:
+
+- Possibly a new orchestration-focused unit test file under `tests/`.
+
+Tests:
+
+- Add hardware-free tests with fake MQTT clients that register one main and one
+  local subscription, invoke `onMainMqttConnect()` and `onLocalMqttConnect()`,
+  and assert subscriptions/callbacks are attached to the correct client.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- Main reconnect restores only main subscriptions on the main client.
+- Local reconnect restores only local subscriptions on the local client.
+- Initial registration remains unchanged.
+
+Manual validation:
+
+- On a GX/Venus OS device, restart the local MQTT broker or simulate a local
+  reconnect while a local subscription test service is active.
+- Confirm subscriptions recover and callbacks receive messages after reconnect.
+
+Manual test steps:
+
+1. Start es-ESS with a test local MQTT subscription enabled.
+2. Restart or briefly interrupt the local Venus MQTT broker.
+3. Wait for reconnect.
+4. Publish a matching local MQTT message.
+5. Confirm the callback path runs after reconnect.
+
+Risks and dependencies:
+
+- Low runtime risk if covered by fake-client tests.
+- Hardware validation may need a temporary test subscription because most
+  active local-MQTT paths publish rather than subscribe.
+
+Open questions:
+
+- Should this change also add reconnect diagnostics for main/local subscription
+  counts?
+
+Done criteria:
+
+- Local reconnect uses `localMqttClient` for local topics.
+- Main reconnect behavior is unchanged.
+- Hardware-free reconnect routing tests pass.
+
+### P3 - Fix Service-Message Connected-State Guard
+
+Goal:
+
+Avoid silently attempting or skipping service-message publication based on the
+truthiness of a method object rather than the current MQTT connection state.
+
+Problem:
+
+`publishServiceMessage()` checks `not self.mainMqttClient.is_connected` without
+calling it. In common Paho MQTT versions, `is_connected` is a method. The guard
+therefore tests the truthiness of the method object instead of the actual
+connection state, which can make service-message behavior inaccurate during
+startup, disconnects, or reconnects.
+
+Evidence:
+
+- `publishServiceMessage()` returns early only when
+  `self.mainMqttClient is None or not self.mainMqttClient.is_connected`.
+- Other runtime code tracks `mainMqttClientConnected`, but
+  `publishServiceMessage()` does not use it.
+- There is no hardware-free test proving service messages are suppressed while
+  the main MQTT client is disconnected and published when connected.
+
+Implementation:
+
+- Update the guard to call `is_connected()` when available.
+- Preserve compatibility with any older fake or legacy client that exposes a
+  boolean `is_connected` attribute instead of a method.
+- Consider also checking `mainMqttClientConnected` if it remains the runtime's
+  authoritative reconnect flag.
+- Keep service-message topic names, retention behavior, and ring-buffer index
+  behavior unchanged.
+
+Files to change:
+
+- `es-ESS.py`
+
+Files to add:
+
+- Possibly a new orchestration-focused unit test file under `tests/`.
+
+Tests:
+
+- Add fake-client tests for `publishServiceMessage()` with connected,
+  disconnected, and missing-client states.
+- Assert disconnected clients do not receive publish calls.
+- Assert connected clients publish the expected retained service-message topic.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- Service-message publication is gated by actual connection state.
+- Existing message indexing and topic formatting remain unchanged.
+
+Manual validation:
+
+- Restart es-ESS with the main MQTT broker available and confirm service
+  messages publish normally.
+- Temporarily interrupt the main MQTT broker and confirm the log does not fill
+  with publish errors from service-message attempts.
+- Restore the broker and confirm service messages resume after reconnect.
+
+Manual test steps:
+
+1. Start es-ESS and subscribe to `es-ESS/+/ServiceMessages/#`.
+2. Confirm startup service messages appear.
+3. Stop or block the main MQTT broker briefly.
+4. Confirm es-ESS remains running and does not log repeated publish failures
+   from service messages.
+5. Restore the broker and confirm later service messages publish again.
+
+Risks and dependencies:
+
+- Some Paho versions or tests may stub `is_connected` differently; keep the
+  guard compatibility-focused.
+- If `mainMqttClientConnected` can drift from Paho's state, choose one
+  authoritative source and test reconnect behavior.
+
+Open questions:
+
+- Should `mainMqttClientConnected` be updated on disconnect and used as the
+  single source of truth for publication guards?
+
+Done criteria:
+
+- `publishServiceMessage()` uses the actual MQTT connected state.
+- Connected and disconnected cases are covered by unit tests.
+- Existing service-message topic contract is unchanged.
+
+### P3 - Align Dormant Service Docs, Sample Config, And Runtime Intent
+
+Goal:
+
+Make README, `config.sample.ini`, service inventory, and runtime service
+loading agree about dormant and config-only services.
+
+Problem:
+
+The repository currently presents some dormant or missing services as if they
+are configurable active services. This can lead users to enable settings that
+the runtime never loads, and it can mislead future implementation work around
+grid-setpoint ownership.
+
+Evidence:
+
+- README lists `ChargeCurrentReducer` in the `[Services]` configuration table.
+- README includes a full `ChargeCurrentReducer` configuration section.
+- `es-ESS.py` has `ChargeCurrentReducer`, `MqttDC`, `FroniusSmartmeterRS485`,
+  and `Grid2Bat` runtime initialization commented out.
+- `config.sample.ini` does not include `ChargeCurrentReducer`, `MqttDC`, or
+  `FroniusSmartmeterRS485` service flags, but it does include `Grid2Bat=false`
+  even though no `Grid2Bat.py` exists in this checkout.
+- `docs/service-inventory.md` already marks these as dormant/config-only
+  follow-up gaps.
+
+Implementation:
+
+- Decide whether each dormant service is supported, intentionally hidden, or
+  obsolete.
+- For unsupported dormant services, remove or clearly mark user-facing README
+  configuration as dormant/unavailable.
+- For config-only `Grid2Bat`, either remove it through a config migration or
+  document it as reserved/obsolete with a compatibility reason.
+- Do not reactivate any dormant service without a separate implementation task,
+  tests, service-inventory update, and manual validation plan.
+- Keep grid-setpoint ownership explicit: dormant `ChargeCurrentReducer` must
+  not be reintroduced while writing `/Settings/CGwacs/AcPowerSetPoint`
+  directly outside the shared request combiner.
+
+Files to change:
+
+- `README.md`
+- `config.sample.ini`
+- `docs/service-inventory.md`
+- Possibly `es-ESS.py` only if a config migration removes obsolete flags.
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Update or add config contract tests that assert documented active service
+  flags match `config.sample.ini` and runtime `_checkAndEnable()` calls.
+- Add config migration tests if any obsolete flag is removed or migrated.
+- Run the full unittest suite.
+
+Expected coverage:
+
+- Active service docs, sample config, and runtime loading agree.
+- Dormant services are clearly marked or removed from user-facing config.
+- Grid-setpoint ownership remains centralized for active services.
+
+Manual validation:
+
+- Review an upgraded user config that contains legacy dormant-service flags and
+  confirm es-ESS starts cleanly.
+- Confirm README no longer tells users to enable a service that the runtime
+  cannot start.
+
+Manual test steps:
+
+1. Prepare a legacy `config.ini` containing `ChargeCurrentReducer=true`,
+   `MqttDC=true`, `FroniusSmartmeterRS485=true`, and `Grid2Bat=false`.
+2. Run configuration migration in a hardware-free test or staging checkout.
+3. Confirm the migrated config is valid and startup does not fail on missing or
+   dormant services.
+4. Compare README, `config.sample.ini`, and `docs/service-inventory.md` for
+   matching active/dormant service status.
+
+Risks and dependencies:
+
+- Removing sample keys may surprise users who have legacy configs.
+- Reactivating dormant services would be higher risk than documenting/removing
+  stale user-facing configuration because some dormant code paths write device
+  controls directly.
+
+Open questions:
+
+- Should `Grid2Bat=false` be retained as a compatibility placeholder or removed
+  in the next config migration?
+- Are any dormant services intended for near-term revival?
+
+Done criteria:
+
+- README, sample config, runtime service loading, and service inventory agree.
+- Any config migration is covered by tests.
+- No dormant service is reactivated accidentally.
+
 ### P4 - Winter Validate Wattpilot Grid-Import Dispatch Branches
 
 Goal:
@@ -690,6 +1176,16 @@ Wattpilot behavior.
 
 1. P4 winter grid-import dispatch validation, because it needs natural low-PV
    conditions and should not be forced during summer surplus.
+2. P2 SolarOverheadDistributor HTTP consumer timeouts, because a blocked HTTP
+   endpoint can delay PV-allocation publication used by other consumers.
+3. P2 MQTT PV inverter zero-target feed-in guard, because the experimental
+   control path can skip safe throttle publication on a divide-by-zero cycle.
+4. P3 local MQTT reconnect resubscription, because it is a low-risk
+   app-orchestration reliability fix.
+5. P3 service-message connected-state guard, because it improves diagnostics
+   during MQTT outages without changing device-control policy.
+6. P3 dormant service docs/config/runtime alignment, because it prevents
+   configuration confusion and should not be mixed with behavior changes.
 
 ## Verification Plan
 
