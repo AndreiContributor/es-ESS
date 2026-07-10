@@ -118,6 +118,32 @@ Open questions:
 
 ## Completed
 
+### Completed 2026-07-10 - SolarOverheadDistributor Startup Safety
+
+Completion note:
+
+- Added explicit startup/grid-loss telemetry guards to
+  `SolarOverheadDistributor.updateDistribution()` so missing grid L1/L2/L3 or
+  battery-power values publish fail-safe zero overhead instead of falling into
+  the generic CRITICAL exception path.
+- Published zero consumer allowances, zero assigned/remaining overhead, and a
+  warning service message when required distribution inputs are unavailable.
+- Preserved existing allocation behavior when all grid and battery telemetry is
+  present.
+- Wrapped `SolarOverheadDistributor._persistEnergyStats()` with
+  `_knownSolarOverheadConsumersLock` so concurrent consumer registration cannot
+  mutate the consumer dictionary during the persist pass.
+- Added `tests/test_solar_overhead_distributor.py` with hardware-free coverage
+  for missing grid telemetry, missing battery power, normal overhead
+  calculation, and lock behavior during concurrent persist/registration.
+- Verified with `py_compile`, the focused SolarOverheadDistributor unittest
+  file, and the full hardware-free unittest suite through
+  `uv --cache-dir .uv-cache run --no-project python`.
+- Kept the change limited to SolarOverheadDistributor startup safety, tests,
+  and backlog; no Wattpilot behavior, D-Bus path names, MQTT topic names,
+  configuration defaults, service initialization boundaries, architecture
+  contracts, or README guidance were changed.
+
 ### Completed 2026-07-10 - NoBatToEV Startup Safety
 
 Completion note:
@@ -1275,166 +1301,6 @@ Done criteria:
 - Startup window behavior is covered by hardware-free tests.
 - Full unittest suite passes.
 
-### P2 - Guard SolarOverheadDistributor Distribution Cycle Against None Grid Values
-
-Goal:
-
-Prevent None grid-phase or battery-power values from aborting the entire
-SolarOverheadDistributor distribution cycle and leaving all consumers with
-their previous allowances.
-
-Problem:
-
-`updateDistribution()` reads `gridL1Dbus.value`, `gridL2Dbus.value`,
-`gridL3Dbus.value`, and `batteryPower.value`, then performs arithmetic on them
-before any None check. When any of these values is None (device absent,
-startup, or grid-loss), the arithmetic raises `TypeError`. The outer
-`except Exception` at line 440 catches it and logs at CRITICAL level, but the
-distribution cycle is skipped entirely for that tick. All consumers retain
-their last-issued allowances indefinitely until a successful cycle runs.
-During a prolonged grid outage or BMS disconnect this means consumers that
-should be stopped or reduced continue to receive non-zero allowances.
-
-Evidence:
-
-- `SolarOverheadDistributor.py` lines 328–334: `l1Power`, `l2Power`, `l3Power`
-  assigned from `self.gridL1Dbus.value` etc. with no None guard; `feedIn =
-  (l1Power + l2Power + l3Power) * -1` raises `TypeError` if any is None.
-- `SolarOverheadDistributor.py` line 335: `batPower = self.batteryPower.value`
-  — also None at startup or when BMS is unavailable.
-- `SolarOverheadDistributor.py` line 440: bare `except Exception` catches the
-  TypeError and logs `"Exception"` at CRITICAL level without publishing safe
-  zero allowances.
-
-Implementation:
-
-- Add None guards for all four D-Bus reads (`gridL1/L2/L3`, `batteryPower`)
-  before the feedIn/overhead arithmetic.
-- On None, emit a warning and publish safe zeroed overhead values (overhead=0,
-  all consumer allowances=0), rather than skipping the cycle entirely.
-- Keep the existing CRITICAL-level exception handler for genuinely unexpected
-  errors, but move None handling before the arithmetic so it is explicit.
-- Do not change the allocation algorithm, consumer-priority logic, or MQTT
-  topic names.
-
-Files to change:
-
-- `SolarOverheadDistributor.py`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add hardware-free tests for `updateDistribution()` with None grid L1/L2/L3
-  and None battery power; assert the cycle publishes overhead=0 and does not
-  raise.
-- Add a regression test that normal non-None values still produce the correct
-  overhead calculation.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- Distribution cycle completes with zeroed output when grid/battery values are None.
-- No TypeError reaches the outer exception handler for None inputs.
-- Existing allocation behavior for non-None inputs is unchanged.
-
-Manual validation:
-
-- On a GX/Venus OS device, briefly disconnect the grid meter or BMS from D-Bus
-  while SolarOverheadDistributor is active.
-- Confirm the log shows a warning (not CRITICAL exception) and consumers receive
-  0 W allowances during the outage window.
-- Confirm allowances recover when the grid meter reconnects.
-
-Risks and dependencies:
-
-- Publishing overhead=0 during a grid/BMS outage will stop or reduce all
-  consumers; this is the safer behavior, but it should be documented.
-
-Open questions:
-
-- Should the None-grid cycle publish a service message so the user is notified
-  of the missing input?
-
-Done criteria:
-
-- None grid/battery values are explicitly handled before arithmetic.
-- Hardware-free tests cover None inputs.
-- Full unittest suite passes.
-
-### P2 - Fix Missing Lock In SolarOverheadDistributor _persistEnergyStats
-
-Goal:
-
-Prevent a `RuntimeError: dictionary changed size during iteration` crash in the
-5-minute energy-stats persist cycle.
-
-Problem:
-
-`_persistEnergyStats()` iterates `self._knownSolarOverheadConsumers` without
-holding `_knownSolarOverheadConsumersLock`. `onMqttMessage()` adds new
-consumers while holding the lock. If a consumer registration MQTT message
-arrives during the persist pass, CPython raises `RuntimeError`, aborting the
-persist cycle and losing energy data for all consumers after the insertion
-point. The existing `_validateNpcConsumerStates()` correctly acquires the lock
-before iterating the same dict; `_persistEnergyStats()` does not.
-
-Evidence:
-
-- `SolarOverheadDistributor.py` lines 277–282: `_persistEnergyStats()` iterates
-  `self._knownSolarOverheadConsumers` with no lock.
-- `SolarOverheadDistributor.py` `onMqttMessage()`: adds consumers under
-  `self._knownSolarOverheadConsumersLock`.
-- `SolarOverheadDistributor.py` `_validateNpcConsumerStates()`: correctly
-  acquires the lock before iterating.
-
-Implementation:
-
-- Acquire `_knownSolarOverheadConsumersLock` (or a copy of the dict under the
-  lock) at the start of `_persistEnergyStats()`, matching the pattern in
-  `_validateNpcConsumerStates()`.
-- Do not change energy-stat persistence logic or MQTT topic names.
-
-Files to change:
-
-- `SolarOverheadDistributor.py`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add a hardware-free test that registers consumers from one thread while
-  `_persistEnergyStats()` runs concurrently and confirms no RuntimeError.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- `_persistEnergyStats()` holds the lock during iteration.
-- Concurrent consumer registration does not corrupt the persist pass.
-
-Manual validation:
-
-- Tail `/data/log/es-ESS/current.log` with several consumers registered and
-  confirm no RuntimeError in the 5-minute persist window.
-
-Risks and dependencies:
-
-- Lock contention is negligible at the 5-minute persist cadence.
-
-Open questions:
-
-- None.
-
-Done criteria:
-
-- `_persistEnergyStats()` acquires the consumer dict lock before iterating.
-- Lock-pattern is consistent with `_validateNpcConsumerStates()`.
-- Full unittest suite passes.
-
 ### P3 - Fix Duplicate OnKeywordRegex MQTT Subscription In SolarOverheadDistributor
 
 Goal:
@@ -2071,31 +1937,28 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move the finished backlog items to `Completed` and advance the
 queue on the next request.
 
-1. **PR 2 - SolarOverheadDistributor startup safety:** implement the
-   distribution-cycle None guard and `_persistEnergyStats` lock fix, with
-   focused coverage in `tests/test_solar_overhead_distributor.py`.
-2. **PR 3 - Service I/O safety and remaining service coverage:** add bounded
+1. **PR 3 - Service I/O safety and remaining service coverage:** add bounded
    SolarOverheadDistributor HTTP consumer timeouts, guard MqttPVInverter
    zero-feed-in against zero target power, and add the remaining hardware-free
    service tests for `MqttPVInverter`, `Shelly3EMGrid`, `ShellyPMInverter`, and
    `FroniusSmartmeterJSON`.
-3. **PR 4 - MQTT and orchestration reliability:** remove the duplicate
+2. **PR 4 - MQTT and orchestration reliability:** remove the duplicate
    SolarOverheadDistributor `OnKeywordRegex` subscription, fix local MQTT
    reconnect resubscription routing, call the main MQTT client's
    `is_connected()` method correctly, and add the associated orchestration and
    fake-client tests.
-4. **PR 5 - Security hardening:** replace the `MinBatteryCharge` `eval()` path
+3. **PR 5 - Security hardening:** replace the `MinBatteryCharge` `eval()` path
    with a constrained AST evaluator and replace `getUserTime()` shell
    interpolation with a structured subprocess call, with malformed-input and
    compatibility tests for both changes.
-5. **PR 6 - Dormant service alignment:** reconcile README, sample config,
+4. **PR 6 - Dormant service alignment:** reconcile README, sample config,
    service inventory, and runtime intent for dormant or missing services. Keep
    this documentation/configuration alignment separate from active-service
    behavior changes.
-6. **PR 7 - Startup config value validation:** add bounded, cross-field config
+5. **PR 7 - Startup config value validation:** add bounded, cross-field config
    validation with tests for valid production values and clean startup failure
    for invalid values.
-7. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
+6. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
    `dispatchControlState()` side-effect bodies into named controller methods,
    add isolated characterization tests for the non-trivial handlers, and prove
    delegation for every control state without changing state selection,

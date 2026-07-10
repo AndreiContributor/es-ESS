@@ -275,11 +275,12 @@ class SolarOverheadDistributor(esESSService):
       return True
 
    def _persistEnergyStats(self):
-      for consumerKey in self._knownSolarOverheadConsumers:
-         consumer = self._knownSolarOverheadConsumers[consumerKey]
-   
-         if (consumer.isInitialized):
-            consumer._persistEnergyStats()
+      with self._knownSolarOverheadConsumersLock:
+         for consumerKey in self._knownSolarOverheadConsumers:
+            consumer = self._knownSolarOverheadConsumers[consumerKey]
+      
+            if (consumer.isInitialized):
+               consumer._persistEnergyStats()
    
    def dumpReservationBms(self):
       #dump main bms information as well. 
@@ -331,10 +332,51 @@ class SolarOverheadDistributor(esESSService):
          #Special Case: When the battery charge is positive as well as Grid, the system 
          #May be charging the battery. So, battery consumption cannot be used as indicator for available overhead. 
          #Hence, Feedin can be negative as well, representig grid-pull which is to be deducted from available overhead. 
-         feedIn = (l1Power + l2Power + l3Power) * -1
          batPower = self.batteryPower.value
          batSoc = self.batterySoc.value
          assignedConsumption = 0
+
+         missingInputs = []
+         if (l1Power is None):
+            missingInputs.append("grid L1")
+         if (l2Power is None):
+            missingInputs.append("grid L2")
+         if (l3Power is None):
+            missingInputs.append("grid L3")
+         if (batPower is None):
+            missingInputs.append("battery power")
+
+         if (len(missingInputs) > 0):
+            warning = "Solar overhead distribution input missing: {0}. Publishing zero allowance.".format(", ".join(missingInputs))
+            w(self, warning)
+            self.publishServiceMessage(self, warning, Globals.ServiceMessageType.Warning)
+
+            self.Publish("/Calculations/Grid/L1/Power", 0 if l1Power is None else l1Power)
+            self.Publish("/Calculations/Grid/L2/Power", 0 if l2Power is None else l2Power)
+            self.Publish("/Calculations/Grid/L3/Power", 0 if l3Power is None else l3Power)
+            self.Publish("/Calculations/Grid/TotalFeedIn", 0)
+            self.Publish("/Calculations/Battery/Power", 0)
+            self.Publish("/Calculations/Battery/Soc", 0 if batSoc is None else batSoc)
+            self.Publish("/Calculations/Battery/Reservation", 0)
+            self.Publish("/Calculations/OverheadAvailable", 0)
+
+            overheadAssigned = 0
+            for consumerKey in self._knownSolarOverheadConsumers:
+               consumer = self._knownSolarOverheadConsumers[consumerKey]
+               if (consumer.isInitialized):
+                  consumer.updateAllowance(0, self)
+                  overheadAssigned += consumer.allowance
+
+            self.Publish("/Calculations/OverheadAssigned", overheadAssigned)
+            self.Publish("/Calculations/OverheadRemaining", 0)
+            self.publishServiceMessage(self,  "Assigned: {0}W; Unassigned: 0W".format(overheadAssigned))
+
+            self.lastUpdate = time.time()
+            self.Publish('/LastUpdateTime', self.lastUpdate)
+            self.Publish('/LastUpdateDateTime', str(datetime.datetime.now()))
+            return True
+
+         feedIn = (l1Power + l2Power + l3Power) * -1
 
          self.Publish("/Calculations/Grid/L1/Power", l1Power)
          self.Publish("/Calculations/Grid/L2/Power", l2Power)
