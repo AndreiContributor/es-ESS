@@ -1,7 +1,7 @@
 
 from builtins import int
 from enum import Enum
-from math import ceil, floor, isfinite
+from math import isfinite
 import os
 import platform
 import sys
@@ -18,6 +18,7 @@ import Globals
 import Helper
 from Helper import i, c, d, w, e, t,  dbusConnection
 import WattpilotDecisionInputs as DecisionInputs
+import WattpilotPhaseDecisions as PhaseDecisions
 import WattpilotSafetyDecisions as SafetyDecisions
 from Wattpilot import Wattpilot
 from enums import WattpilotModelStatus, WattpilotStartStop, WattpilotControlMode, VrmEvChargerControlMode, VrmEvChargerStatus, VrmEvChargerStartStop
@@ -1342,8 +1343,8 @@ class FroniusWattpilot (esESSService):
 
     def phaseUpThresholdW(self):
         """Return the PV allocation required before changing to three phases."""
-        return max(
-            float(self.threePhasePvSurplusStartW),
+        return PhaseDecisions.phase_up_threshold_w(
+            self.threePhasePvSurplusStartW,
             self.threePhaseMinimumPower(),
         )
 
@@ -1358,23 +1359,15 @@ class FroniusWattpilot (esESSService):
         not reserve unused power for five minutes.
         """
         maxCurrent = self.getEffectiveMaxCurrent()
-        if maxCurrent < self.minCurrentPerPhase:
-            return 0
-
-        onePhaseMaximum = maxCurrent * self.onePhaseVoltage()
-
-        if self.currentPhaseMode == 2:
-            return maxCurrent * self.threePhaseVoltage()
-
-        if self.getPhaseSwitchCooldownSeconds() > 0:
-            return onePhaseMaximum
-        
-        allocationStep = max(1.0, self.onePhaseVoltage())
-        phaseUpProbe = ceil(
-            self.phaseUpThresholdW() / allocationStep
-        ) * allocationStep
-
-        return max(onePhaseMaximum, phaseUpProbe)
+        return PhaseDecisions.maximum_request_for_distributor_w(
+            self.currentPhaseMode,
+            maxCurrent,
+            self.minCurrentPerPhase,
+            self.onePhaseVoltage(),
+            self.threePhaseVoltage(),
+            self.phaseUpThresholdW(),
+            self.getPhaseSwitchCooldownSeconds(),
+        )
 
     def maxRequestVoltageForCurrentPhase(self):
         """Return the electrical voltage of the active phase mode.
@@ -1393,34 +1386,23 @@ class FroniusWattpilot (esESSService):
         # Hysteresis: phase-up requires the configured higher threshold, while
         # phase-down happens below the configured lower threshold. Both are
         # clamped to the electrical three-phase 6 A minimum.
-        phaseStart = self.phaseUpThresholdW()
-        phaseStop = max(
-            float(self.threePhasePvSurplusStopW),
-            self.threePhaseMinimumPower()
+        return PhaseDecisions.desired_phase_mode(
+            self.currentPhaseMode,
+            self.allowance,
+            self.phaseUpThresholdW(),
+            self.phaseDownThresholdW(),
         )
-
-        if self.currentPhaseMode == 2:
-            return 2 if self.allowance >= phaseStop else 1
-
-        return 2 if self.allowance >= phaseStart else 1
 
     def targetCurrentForPhase(self, phaseMode, allowance):
         maxCurrent = self.getEffectiveMaxCurrent()
-
-        if maxCurrent < self.minCurrentPerPhase:
-            return 0
-
-        voltage = (
-            self.threePhaseVoltage()
-            if phaseMode == 2
-            else self.onePhaseVoltage()
+        return PhaseDecisions.target_current_for_phase(
+            phaseMode,
+            allowance,
+            self.onePhaseVoltage(),
+            self.threePhaseVoltage(),
+            self.minCurrentPerPhase,
+            maxCurrent,
         )
-        target = int(floor(max(0, allowance) / voltage))
-
-        if target < self.minCurrentPerPhase:
-            return 0
-
-        return min(maxCurrent, target)
 
     def currentChargeDemandPower(self):
         actualPower = (
@@ -1711,14 +1693,6 @@ class FroniusWattpilot (esESSService):
             self.effectiveCarConnected = False
             return False
 
-        if self.wattpilotReportsActiveCharge():
-            d(
-                self,
-                "Ignoring transient carConnected=false while Wattpilot reports an active charge or transition."
-            )
-            self.effectiveCarConnected = True
-            return True
-
         if self.carDisconnectedSince == 0:
             self.carDisconnectedSince = time.time()
             self.publishServiceMessage(
@@ -1732,9 +1706,22 @@ class FroniusWattpilot (esESSService):
             time.time() - self.carDisconnectedSince
             < self.carDisconnectConfirmSeconds
         ):
+            if self.wattpilotReportsActiveCharge():
+                d(
+                    self,
+                    "Ignoring transient carConnected=false while Wattpilot reports an active charge or transition."
+                )
             self.effectiveCarConnected = True
             return True
 
+        if self.wattpilotReportsActiveCharge():
+            self.publishServiceMessage(
+                self,
+                "Wattpilot car disconnect confirmed despite stale active charge status."
+            )
+
+        self.lastConfirmedCarConnected = False
+        self.carDisconnectedSince = 0
         self.effectiveCarConnected = False
         return False
 
@@ -1838,9 +1825,9 @@ class FroniusWattpilot (esESSService):
         )
 
     def phaseDownThresholdW(self):
-        return max(
-            float(self.threePhasePvSurplusStopW),
-            self.threePhaseMinimumPower()
+        return PhaseDecisions.phase_down_threshold_w(
+            self.threePhasePvSurplusStopW,
+            self.threePhaseMinimumPower(),
         )
 
     def shouldPhaseDownForPvDip(self):
@@ -2366,25 +2353,6 @@ class FroniusWattpilot (esESSService):
         self.phaseSwitchCandidateMode = 0
         self.phaseSwitchCandidateSince = 0
 
-    def getStablePhaseSwitchSeconds(self, targetPhaseMode):
-        if self.phaseSwitchDelaySeconds <= 0:
-            return self.phaseSwitchDelaySeconds
-
-        now = time.time()
-        if self.phaseSwitchCandidateMode != targetPhaseMode:
-            self.phaseSwitchCandidateMode = targetPhaseMode
-            self.phaseSwitchCandidateSince = now
-            self.publishServiceMessage(
-                self,
-                "PV threshold supports {0}-phase. Waiting {1}s before phase switching.".format(
-                    3 if targetPhaseMode == 2 else 1,
-                    self.phaseSwitchDelaySeconds,
-                ),
-            )
-            return 0
-
-        return now - self.phaseSwitchCandidateSince
-
     def adjustChargeForPvAllowance(self):
         desiredPhaseMode = self.desiredPhaseModeForPvAllowance()
         enteringPhaseMode = self.currentPhaseMode
@@ -2400,22 +2368,43 @@ class FroniusWattpilot (esESSService):
         # Phase-up is allowed only by real PV surplus and respects the phase
         # switch cooldown. While waiting, one-phase charging is capped at 16 A.
         if desiredPhaseMode == 2 and enteringPhaseMode != 2:
-            stableSeconds = self.getStablePhaseSwitchSeconds(2)
-            if stableSeconds < self.phaseSwitchDelaySeconds:
+            phaseUpDecision = PhaseDecisions.evaluate_phase_up_timing(
+                self.phaseSwitchCandidateMode,
+                self.phaseSwitchCandidateSince,
+                2,
+                self.phaseSwitchDelaySeconds,
+                self.getPhaseSwitchCooldownSeconds(),
+                time.time(),
+            )
+
+            if (
+                phaseUpDecision.next_candidate_mode != self.phaseSwitchCandidateMode
+                or phaseUpDecision.next_candidate_since != self.phaseSwitchCandidateSince
+            ):
+                self.phaseSwitchCandidateMode = phaseUpDecision.next_candidate_mode
+                self.phaseSwitchCandidateSince = phaseUpDecision.next_candidate_since
+                self.publishServiceMessage(
+                    self,
+                    "PV threshold supports {0}-phase. Waiting {1}s before phase switching.".format(
+                        3,
+                        self.phaseSwitchDelaySeconds,
+                    ),
+                )
+
+            if phaseUpDecision.action == PhaseDecisions.PHASE_UP_WAIT_STABLE:
                 targetAmps = self.targetCurrentForPhase(1, self.allowance)
                 self.currentPhaseMode = 1
                 self.wattpilot.set_power(targetAmps)
                 d(
                     self,
                     "3-phase PV threshold reached; waiting for stable phase-up allowance ({0:.0f}/{1}s).".format(
-                        stableSeconds,
+                        phaseUpDecision.stable_seconds,
                         self.phaseSwitchDelaySeconds,
                     ),
                 )
                 return VrmEvChargerStatus.Charging
 
-            cooldown = self.getPhaseSwitchCooldownSeconds()
-            if cooldown <= 0:
+            if phaseUpDecision.action == PhaseDecisions.PHASE_UP_SWITCH:
                 targetAmps = self.targetCurrentForPhase(2, self.allowance)
                 i(self, "PV surplus supports 3-phase charging. Switching to 3-phase.")
                 self.publishServiceMessage(
@@ -2436,7 +2425,7 @@ class FroniusWattpilot (esESSService):
             d(
                 self,
                 "3-phase PV threshold reached; phase-up cooldown active for {0:.0f}s.".format(
-                    cooldown
+                    phaseUpDecision.cooldown_seconds
                 )
             )
             return VrmEvChargerStatus.Charging

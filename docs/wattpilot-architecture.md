@@ -69,7 +69,9 @@ It owns:
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
-- One-phase and three-phase switching decisions and timing guards.
+- One-phase and three-phase switching orchestration, delegating pure thresholds,
+  target-current, distributor-request, and phase-up timing decisions to
+  `WattpilotPhaseDecisions.py`.
 - Wattpilot command issuing through the `Wattpilot` client.
 - Wattpilot shutdown behavior during es-ESS termination.
 
@@ -129,6 +131,37 @@ The controller still stores mutable timestamps such as `gridImportSince`,
 messages, and issues Wattpilot commands. This helper only evaluates supplied
 snapshots and returns the next controller-owned timer values.
 
+### `WattpilotPhaseDecisions.py`
+
+`WattpilotPhaseDecisions.py` owns pure decision helpers for one-phase and
+three-phase Auto/Eco decisions.
+
+It owns:
+
+- Phase-up and phase-down PV threshold clamping against the electrical
+  three-phase minimum.
+- Desired phase-mode selection from assigned PV allowance and hysteresis.
+- Target current calculation bounded by configured minimum/maximum current and
+  the Wattpilot-reported effective maximum.
+- SolarOverheadDistributor maximum-request sizing, including the limited
+  one-phase phase-up probe and cooldown suppression.
+- Phase-up stability-delay and cooldown decisions, returning the next
+  controller-owned candidate timer values.
+
+It must not own:
+
+- Wattpilot command issuing.
+- D-Bus or MQTT publication.
+- Service messages.
+- Raw-overhead freshness checks or phase-down fallback authorization.
+- Pending phase-switch confirmation from live Wattpilot telemetry.
+- Manual versus Auto/Eco command-boundary policy.
+
+The controller still stores mutable phase-switch timers, publishes
+user-visible messages, starts transition grace, confirms pending phase
+switches from live telemetry, and issues `set_phases()` / `set_power()`
+commands.
+
 ### `WattpilotRuntimeStatus.py`
 
 `WattpilotRuntimeStatus.py` owns the separate runtime-status contract for
@@ -178,6 +211,9 @@ Future Wattpilot changes must preserve these invariants:
   phases.
 - Fresh grid telemetry and fresh allowance data are required for no-grid
   Auto/Eco decisions.
+- A confirmed physical vehicle disconnect must stop Auto/Eco current and phase
+  control even if Wattpilot briefly continues to report a stale active charging
+  model status.
 - Raw overhead may help with a safe three-to-one fallback, but must not start
   charging or authorize a phase-up.
 - Immediately after a confirmed one-to-three-phase switch, a low raw-overhead
