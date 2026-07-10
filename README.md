@@ -1087,6 +1087,14 @@ time on both the older project paths and the current Venus session paths:
 `/Ac/Energy/Forward` mirrors `/Session/Energy`, and `/ChargingTime` mirrors
 `/Session/Time`.
 
+EVCS precision, unit display, and charging-time text are formatted by the
+selected Victron UI surface. Current `gui-v2` overview, list, and detail pages
+use different compact labels and quantity-table components, so the same
+truthful D-Bus values can appear with different rounding or time text. es-ESS
+does not round these numeric paths or publish display strings to force visual
+alignment; if exact cross-surface formatting is important, handle it as a
+Victron UI change rather than an es-ESS data-contract change.
+
 The following D-Bus values are published on the existing
 `com.victronenergy.evcharger.*_FroniusWattpilot` service:
 
