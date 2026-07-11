@@ -36,7 +36,7 @@ system for at least 10ish years, there will be plenty of updates and/or bugfixes
 - [SolarOverheadDistributor](#solaroverheaddistributor) - Utility to manage and distribute available solar overhead between various consumers.
   - [Scripted-SolarOverheadConsumer](#scripted-solaroverheadconsumer) - Consumers managed by external scripts can to be more complex and join the solar overhead pool.
   - [NPC-SolarOverheadConsumer](#npc-solaroverheadconsumer) - Manage consumers on a simple on/off level, based on available overhead. No programming required.
-- [ChargeCurrentReducer](#chargecurrentreducer) - Reduce the battery charge current to your *feel-well-value* without the need to disable DC-Feedin.
+- [Dormant service modules](#dormant-service-modules) - Legacy code that is retained for reference but is not available for configuration.
 - [This and that](#this-and-that) - Various information that doesn't fit elsewhere.
 - [F.A.Q](#faq) - Frequently Asked Questions
 
@@ -53,6 +53,13 @@ GitHub Actions CI is defined in
 and on pushes to `main`, using Python 3.12 to syntax-check the repository,
 validate the `config.sample.ini` contract, and run the hardware-free unittest
 suite.
+
+`MqttDC`, `ChargeCurrentReducer`, and `FroniusSmartmeterRS485` are dormant
+legacy modules: the runtime does not initialize them and the maintained sample
+does not expose service flags for them. `Grid2Bat` is unavailable because no
+module exists in this checkout. Legacy user configuration flags for these names
+are left untouched for compatibility but are ignored; do not add or enable
+them in new configurations.
 
 # Setup
 Your system needs to match the following requirements in order to use es-ESS:
@@ -121,7 +128,7 @@ have to mind adding / remove values as you enable or disable certain services.
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
 | [Common]                 | BatteryMaxChargeInWh | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
 | [Common]                 | DefaultPowerSetPoint | Default Power Setpoint (W), when using features that manipulte the set point programmatically.         | Integer       | -10                          |
-| [Common]                 | HttpRequestTimeout   | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers and legacy FroniusSmartmeterRS485 polling. | Double        | 5                            |
+| [Common]                 | HttpRequestTimeout   | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers.                       | Double        | 5                            |
 | [Mqtt]                   | Host                 | Hostname / IP of your main-mqtt to work with.                                                          | String        | mqtt.ad.equinox-solutions.de |
 | [Mqtt]                   | User                 | Username to connect to your main-mqtt.                                                                 | String        | user                         |
 | [Mqtt]                   | Password             | Password to connect to your main-mqtt.                                                                 | String        | secure123!                   |
@@ -130,13 +137,14 @@ have to mind adding / remove values as you enable or disable certain services.
 | [Mqtt]                   | LocalSslEnabled      | Flag, if your local / venus-Mqtt is SSL or plain.                                                      | Boolean       | true                         |
 | [Services]               | SolarOverheadDistributor  | Flag, if [SolarOverheadDistributor](#solaroverheaddistributor) is enabled.                        | Boolean       | true                         |
 | [Services]               | TimeToGoCalculator        | Flag, if [TimeToGoCalculator](#timetogocalculator) is enabled.                                    | Boolean       | true                         |
+| [Services]               | FroniusSmartmeterJSON     | Flag, if the Fronius JSON smart-meter integration is enabled.                                     | Boolean       | true                         |
 | [Services]               | FroniusWattpilot          | Flag, if [FroniusWattpilot](#FroniusWattpilot) is enabled.                                        | Boolean       | true                         |
-| [Services]               | ChargeCurrentReducer      | Flag, if [ChargeCurrentReducer](#chargecurrentreducer) is enabled.                                | Boolean       | true                         |
 | [Services]               | MqttExporter              | Flag, if [MqttExporter](#mqttexporter) is enabled.                                                | Boolean       | true                         |
 | [Services]               | MqttTemperature           | Flag, if [MqttTemperatures](#mqtttemperatures) is enabled.                                        | Boolean       | true                         |
 | [Services]               | NoBatToEV                 | Flag, if [NoBatToEV](#nobattoev) is enabled.                                                      | Boolean       | true                         |
 | [Services]               | Shelly3EMGrid                 | Flag, if [Shelly3EMGrid](#shelly3emgrid) is enabled.                                                      | Boolean       | true                         |
 | [Services]               | ShellyPMInverter                 | Flag, if [ShellyPMInverter](#shellypminverter) is enabled.                                                      | Boolean       | true                         |
+| [Services]               | MqttPVInverter            | Flag, if [MqttPvInverter](#mqttpvinverter) is enabled.                                            | Boolean       | true                         |
 
 > :warning: NOTE: I recommend to enable one service after each other and finalize configuration, before enabling another one. Else configuration may become a bit clumsy and error-prone.
 
@@ -987,38 +995,18 @@ of 200 Watts, ending at my 11kW EV-Charging station:
 
 </div>
 
-# ChargeCurrentReducer
+# Dormant service modules
 
-> :red_circle: Work-in-progress, beta: Feature is a beta, may have bugs or not work at all. Only use if you are a dev and want to contribute.
+The repository retains legacy source modules for `MqttDC`,
+`ChargeCurrentReducer`, and `FroniusSmartmeterRS485`, but `es-ESS.py` does not
+load them. They are not supported configuration options and are intentionally
+absent from `config.sample.ini`. `Grid2Bat` is also unavailable; its runtime
+hook is disabled and no implementation module exists in this checkout.
 
-#### Overview
-When you are using DC-Coupled Solar-Chargers, DVCC can be used to limit the charge-current of the batteries. If you however
-decide to enable Feed-In from DC-Chargers, that limit has no effect. Reason is, that the MPPTs ofc. won't obey the limit anymore, 
-because you opted to feed-in excess power, which in turn means the MPPTs have to produce at 100% whenever possible. 
-
-Before any feed-in is happening, the attached batteries will crank up their charge current to consume what's possible. 
-
-Therefore, we designed the ChargeCurrentReducer, which helps to reduce the battery charge current to your *feel-well-value*.
-This is achieved by observing the charge current and as soon as the desired charge current is exceeded, the multiplus will be instructed
-to start feed-in to the grid in order to reduce the available power on the dc-side and take load away from the batteries.
-
-When the charge current drops bellow the desired value, grid-feedin will be reduced again to leave more power to the batteries. 
-
-> :warning: I am using the wording "Reducer" on purpose. This is __NO__ Limiter. Your batteries, fusing and/or wiring should always be able to withstand
-any incoming current from the MPPTs upto their technical limit!
-
-The ChargeCurrentReducer __only__ works in positive directions. If your current solar production can't sustain a desired charge current of 50A, no additional
-power will be consumed from grid. The battery will then charge with what is available.
-
-#### Configuration
-
-ChargeCurrentReducer requires a few variables to be set in `/data/es-ESS/config.ini`: 
-
-| Section    | Value name |  Descripion | Type | Example Value|
-| ---------- | ---------|---- | ------------- |--|
-| [Common]    | VRMPortalID |  Your portal ID to access values on mqtt / dbus |String | VRM0815 |
-| [Services]    | ChargeCurrentReducer | Flag, if the service should be enabled or not | Boolean | true |
-| [ChargeCurrentReducer]  | DesiredChargeAmps |  Desired Charge Current in Amps. Your *feel-well-value*.<br /><br />Beside a fixed value, you can use a equation based on SoC as well. The example will reduce the charge current desired by 1A per SoC-Percent, but minimum 30A<br /><br />*This equation is evaluated through pythons eval() function. You can use any complex arithmetic you like.* | String  | max(100 - SOC, 30) |
+Do not enable these names in `[Services]`. In particular,
+`ChargeCurrentReducer` must not be reactivated without first moving its direct
+grid-setpoint writes behind the shared request combiner and completing a
+separate implementation, safety review, documentation, and test task.
 
 
 # This and that
@@ -1052,7 +1040,7 @@ Additionally there are the following configuration options available:
 | [Common]    | NumberOfThreads |  Number of threads, es-ESS should use. | int | 5 |
 | [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 50 |
 | [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 9 |
-| [Common]    | HttpRequestTimeout | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers and legacy FroniusSmartmeterRS485 polling. | double | 5 |
+| [Common]    | HttpRequestTimeout | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers. | double | 5 |
 
 ### Service Messages
 es-ESS also publishes Operational-Messages as well as Errors, Warnings and Critical failures under the `service`-Topic of the serivce. Check these from time to time to ensure proper functionality
