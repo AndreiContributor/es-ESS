@@ -1,0 +1,2 @@
+*.sh text eol=lf
+service/run text eol=lf

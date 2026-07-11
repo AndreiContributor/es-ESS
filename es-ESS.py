@@ -46,7 +46,8 @@ class esESS:
             #if not, upgrade to most recent version, save changes and reload configuration file. 
             self._validateConfiguration()
             
-            self._sigTermInvoked=False   
+            self._sigTermInvoked=False
+            self._shutdownMqttDisconnectsLogged = set()
             self.mainMqttClient:mqtt.Client = None
             self.localMqttClient:mqtt.Client = None
             self.mainMqttClientConnected = False
@@ -188,7 +189,22 @@ class esESS:
         else:
             e(self, "Failed to connect, return code %d\n", rc)
 
+    def _logShutdownMqttDisconnect(self, clientName):
+        loggedClients = getattr(self, "_shutdownMqttDisconnectsLogged", set())
+        if (clientName in loggedClients):
+            return
+
+        # Record before logging so an asynchronous callback cannot duplicate it.
+        loggedClients.add(clientName)
+        self._shutdownMqttDisconnectsLogged = loggedClients
+        i(self, "{0} MQTT disconnect during graceful shutdown.".format(clientName))
+        i(self, "{0} MQTT automatic reconnect is disabled during graceful shutdown.".format(clientName))
+
     def onMainMqttDisconnect(self, client, userdata, rc):
+        if (self._sigTermInvoked):
+            self._logShutdownMqttDisconnect("Main")
+            return
+
         w(self, "Mqtt Disconnect.")
 
         if (self.mainMqttClient.reconnect):
@@ -197,6 +213,10 @@ class esESS:
             w(self, "Automatic reconnect is disabled.")
 
     def onLocalMqttDisconnect(self, client, userdata, rc):
+        if (self._sigTermInvoked):
+            self._logShutdownMqttDisconnect("Local")
+            return
+
         w(self, "Mqtt Disconnect.")
 
         if (self.localMqttClient.reconnect):
@@ -688,10 +708,13 @@ class esESS:
             nextOne = 1
 
     def handleSigterm(self, signum, frame):
-        self.publishServiceMessage(self, "SIGTERM received. Shuting down services gracefully.")
+        if (self._sigTermInvoked):
+            i(self, "Shutdown already in progress.")
+            return
 
-        #set flag, so dbus handler stops forwarding new messages, threads are no longer started, etc.
+        # Set this before any cleanup so a repeated signal cannot re-enter it.
         self._sigTermInvoked=True
+        self.publishServiceMessage(self, "SIGTERM received. Shuting down services gracefully.")
 
         #restore default grid set point
         i(self, "Restoring default power set point of {0}W due to SIGTERM received.".format(self._gridSetPointDefault))
@@ -720,19 +743,19 @@ class esESS:
         #disconnect from mqtts
         self.mainMqttClient.reconnect = False
         self.localMqttClient.reconnect = False
+        self._logShutdownMqttDisconnect("Main")
+        self._logShutdownMqttDisconnect("Local")
         self.mainMqttClient.disconnect()
         self.localMqttClient.disconnect()   
 
         i(self, "Cleaned up. Bye.")
+        self._terminateProcess()
 
-        #some things may throw exceptions on exit. so, keep trying until we can exit.
-        while True:
-            try:
-                sys.exit(0)       
-            except Exception:
-                w(self, "Failed to exit. Retrying in 50ms")
-                time.sleep(0.05)
-                pass
+    def _terminateProcess(self):
+        # SystemExit can be swallowed by a D-Bus callback dispatcher. Flush all
+        # handlers after cleanup, then terminate without Python stack unwinding.
+        logging.shutdown()
+        os._exit(0)
 
 def configureLogging(config):
 

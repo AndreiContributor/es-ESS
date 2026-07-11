@@ -118,6 +118,43 @@ Open questions:
 
 ## Completed
 
+### Completed 2026-07-11 - PR 4A Graceful Shutdown Reliability
+
+Completion note:
+
+- Made SIGTERM cleanup idempotent while preserving grid-setpoint restoration,
+  MQTT unsubscribe, service cleanup, and disconnect ordering.
+- Replaced the swallowable `SystemExit` path with explicit log flushing and
+  `os._exit(0)` after all safety cleanup has completed.
+- Changed `service/run` to exec Python directly so daemontools supervises the
+  application process rather than an intermediate shell.
+- Added a 10-second graceful wait to `restart.sh`, followed by SIGKILL only
+  for original PIDs whose command and `/proc` start time still match.
+- Downgraded expected main/local MQTT shutdown disconnect messages to INFO
+  while preserving warnings for unexpected runtime disconnects.
+- Extended hardware-free orchestration coverage for idempotent cleanup,
+  shutdown ordering, process termination, MQTT log severity, and lifecycle
+  script safeguards.
+- Verified 14 focused tests, all 182 hardware-free tests, repository Python
+  compilation, lifecycle shell syntax, and `git diff --check`.
+- Completed repeated GX log-only validation with the EV disconnected: three
+  graceful restarts each exited the original PID, started a new directly
+  supervised Python PID, ran cleanup once, and recovered MQTT, Wattpilot,
+  consumer initialization, and non-zero worker heartbeats without `SystemExit`,
+  traceback, timeout, SIGKILL fallback, or an inert process.
+- Production deployment exposed CRLF in a copied `service/run`, which prevented
+  daemontools from resolving its shebang. Added repository LF attributes for
+  shell scripts and `service/run` after normalizing the deployed file.
+- Made intentional main/local MQTT shutdown INFO messages synchronous and
+  deduplicated because production showed the asynchronous disconnect callbacks
+  can arrive late or not run before `os._exit(0)`. A follow-up GX restart
+  confirmed each main/local disconnect and reconnect-disabled message appeared
+  exactly once before `Cleaned up. Bye.`, followed by full service recovery.
+- Kept the change limited to lifecycle reliability, tests, README, and backlog;
+  Wattpilot Manual/Auto behavior, charging policy, D-Bus/MQTT contracts, and
+  configuration were not changed.
+
+
 ### Completed 2026-07-11 - PR 4 MQTT And Orchestration Reliability
 
 Completion note:
@@ -712,180 +749,6 @@ Completion note:
 
 ## Backlog
 
-### P2 - Make Graceful Shutdown And Supervisor Restart Reliable
-
-Goal:
-
-Guarantee that a completed SIGTERM cleanup is followed by actual process exit
-and daemontools restart, even when the signal interrupts an active D-Bus/GLib
-callback.
-
-Problem:
-
-The production GX validation of PR 4 exposed a shutdown race. SIGTERM arrived
-while the main thread was inside a D-Bus callback. `handleSigterm()` completed
-its safety cleanup, disconnected MQTT, stopped worker scheduling, and then
-called `sys.exit(0)`. The resulting `SystemExit` propagated through the D-Bus
-callback stack, where the D-Bus dispatcher logged it as a handler exception
-and swallowed it. The Python process therefore remained alive but inert:
-daemontools still reported es-ESS as up, MQTT reconnect was disabled, and the
-worker heartbeat fell to zero executions.
-
-Because `service/run` starts Python as a child of its shell instead of replacing
-the shell, daemontools supervises the waiting shell rather than the Python
-process directly. `restart.sh` only sends SIGTERM and does not verify that the
-target PID exits, so it reports no failure and provides no bounded fallback.
-
-Evidence:
-
-- `es-ESS.py` lines 690-735: `handleSigterm()` performs cleanup and then loops
-  around `sys.exit(0)`. `SystemExit` inherits from `BaseException`, not
-  `Exception`, so the retry block does not catch it; an outer D-Bus dispatcher
-  can catch and suppress it instead.
-- `es-ESS.py` lines 782-798: the signal handler runs on the same main thread as
-  the GLib/D-Bus main loop, so SIGTERM can interrupt an active D-Bus callback.
-- `service/run` invokes `python /data/es-ESS/es-ESS.py` without `exec`, leaving
-  an extra shell process between daemontools and Python.
-- `restart.sh` sends signal 15 to matching Python PIDs but does not wait for
-  exit, confirm PID turnover, or apply a bounded fallback.
-- Production incident on 2026-07-10 at 21:56:57 UTC: logs recorded
-  `Cleaned up. Bye.`, followed by `ERROR Exception in handler for D-Bus signal`
-  with `SystemExit: 0`. The same Python PID remained present, and later
-  heartbeats reported 17 and then 0 worker executions. Killing only that inert
-  Python child caused daemontools to start a new shell/Python pair, after which
-  initialization, MQTT, Wattpilot telemetry, and normal worker execution
-  recovered.
-- The same intentional shutdown logged `Mqtt Disconnect.` and `Automatic
-  reconnect is disabled.` as warnings for both MQTT clients even though
-  `handleSigterm()` deliberately disables reconnect before disconnecting them.
-  Those warnings are expected shutdown state, not runtime MQTT failures.
-
-Implementation:
-
-- Make `esESS.handleSigterm()` idempotent so repeated or overlapping shutdown
-  requests cannot run service cleanup, allowance revocation, Wattpilot stop,
-  MQTT unsubscribe, or grid-setpoint restoration more than once.
-- Separate safety cleanup from the final process-termination mechanism. After
-  cleanup has completed and `Cleaned up. Bye.` is logged/flushed, use a
-  termination path that cannot be swallowed by the active D-Bus callback
-  dispatcher. Evaluate a controlled GLib main-loop quit versus `os._exit(0)`;
-  if `os._exit(0)` is selected, call it only after all existing safety cleanup
-  and log flushing have completed.
-- Change `service/run` to replace the shell with Python (`exec python ...`) so
-  daemontools directly supervises the application process and reports the
-  actual es-ESS PID.
-- Make `restart.sh` wait a bounded period for every signaled PID to exit. If a
-  confirmed original PID remains after completed graceful cleanup, log the
-  timeout and apply a narrowly targeted SIGKILL fallback before returning.
-  Never kill a replacement PID, an unverified process, or another Python
-  service.
-- Make `onMainMqttDisconnect()` and `onLocalMqttDisconnect()` shutdown-aware:
-  when `_sigTermInvoked=True`, log the intentional disconnect and disabled
-  reconnect state at INFO level; retain WARNING severity for unexpected
-  runtime disconnects and disabled automatic reconnect outside shutdown.
-- Preserve the existing shutdown order: stop new worker dispatch, restore the
-  default grid setpoint, unsubscribe MQTT callbacks, revoke consumer
-  allowances, invoke service cleanup (including Wattpilot Auto/Eco stop), then
-  disconnect MQTT and terminate.
-- Do not change Wattpilot Manual-mode ownership, Auto/Eco charging policy,
-  grid-import behavior, D-Bus/MQTT contracts, configuration, or normal startup
-  behavior.
-
-Files to change:
-
-- `es-ESS.py`
-- `service/run`
-- `restart.sh`
-- `README.md` only if lifecycle-command behavior or timeout/fallback guidance
-  needs clarification.
-
-Files to add:
-
-- `tests/test_es_ess_shutdown.py` (preferred), or extend the existing
-  orchestration test file if the shutdown fixture remains small.
-
-Tests:
-
-- Add a hardware-free test proving shutdown cleanup runs exactly once when
-  `handleSigterm()` is invoked repeatedly.
-- Add a test proving the final termination hook runs only after grid-setpoint
-  restoration, service cleanup, MQTT disconnect, and the final log call.
-- Add tests proving intentional main/local MQTT shutdown disconnects log at
-  INFO without warning, while unexpected runtime disconnects continue to log
-  warnings and wait for automatic reconnect when enabled.
-- Simulate a termination hook that raises `SystemExit` inside an outer callback
-  catcher and prove the selected production mechanism cannot leave the runtime
-  in `_sigTermInvoked=True` without terminating.
-- Add lifecycle-script coverage or static assertions proving `service/run`
-  uses `exec` and `restart.sh` targets only the original matching PIDs during
-  its bounded fallback.
-- Run `bash -n install.sh restart.sh kill_me.sh uninstall.sh service/run`.
-- Run `python -m py_compile es-ESS.py tests/test_es_ess_shutdown.py`.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- A SIGTERM delivered during a D-Bus/GLib callback cannot leave es-ESS alive
-  with MQTT disconnected and worker scheduling disabled.
-- Shutdown cleanup is idempotent and preserves all existing fail-safe actions.
-- Intentional shutdown disconnects are distinguishable from unexpected MQTT
-  outages by log severity for both main and local clients.
-- Daemontools supervises the Python process directly.
-- Restart fallback cannot kill an unrelated or newly started process.
-
-Manual validation:
-
-Log-only (safe in production during a low-risk window, with the EV disconnected
-or confirmed not charging).
-
-Manual test steps:
-
-1. Record `svstat /service/es-ESS`, the Python PID, and the current log line.
-2. Run `/data/es-ESS/restart.sh` several times while normal D-Bus updates are
-   active.
-3. For each restart, confirm `Cleaned up. Bye.` appears once, the old PID exits,
-   daemontools starts a new Python PID, and initialization completes.
-4. Confirm main/local MQTT reconnect, Wattpilot consumer initialization, and a
-   non-zero worker heartbeat after each restart.
-5. Confirm intentional main/local MQTT disconnect messages appear at INFO,
-   while no shutdown-only MQTT warning, `SystemExit` D-Bus handler traceback,
-   inert old PID, duplicate cleanup, or unrelated process termination appears.
-
-Risks and dependencies:
-
-- A forced exit before cleanup completes could skip grid-setpoint restoration,
-  allowance revocation, or the Auto/Eco shutdown stop; the implementation must
-  make the cleanup/termination boundary explicit and tested.
-- A broad SIGKILL fallback could terminate the wrong process after PID
-  turnover; fallback must retain and verify only the original matched PIDs.
-- `os._exit(0)` bypasses Python interpreter teardown and buffered I/O, so it is
-  acceptable only after explicit cleanup and log-handler flushing.
-- No other backlog item is a prerequisite. Keep this lifecycle fix isolated
-  from PR 5 security changes and Wattpilot control refactors.
-
-Open questions:
-
-- Should final termination use a controlled GLib main-loop quit with a bounded
-  watchdog, or explicit `os._exit(0)` after cleanup and log flushing?
-- What bounded graceful-exit timeout should `restart.sh` use before its
-  narrowly targeted fallback (for example, 10 seconds)?
-
-Done criteria:
-
-- SIGTERM during an active D-Bus callback always leads to process exit and
-  supervisor-managed restart.
-- Shutdown safety actions run once and in the existing order.
-- `service/run` directly execs the Python process.
-- `restart.sh` detects a stuck original PID and recovers it without targeting a
-  replacement or unrelated process.
-- Intentional main/local MQTT shutdown disconnects log at INFO; unexpected
-  runtime MQTT disconnects retain WARNING severity.
-- Hardware-free shutdown and lifecycle tests pass.
-- Repeated GX log-only restart validation passes without an inert process or
-  D-Bus `SystemExit` traceback.
-- Full unittest suite passes.
-
-### P3 - Align Dormant Service Docs, Sample Config, And Runtime Intent
 
 Goal:
 
@@ -1045,86 +908,6 @@ Done criteria:
   observed grid-import or stale-telemetry branch.
 - If those branches still do not occur naturally, the item records that result
   without forcing unsafe or unrealistic system behavior.
-
-### P2 - Guard NoBatToEV Worker Against None D-Bus Values
-
-Goal:
-
-Prevent `NoBatToEV._update()` from crashing with `TypeError` every two seconds
-during the startup window before D-Bus paths deliver their first values.
-
-Problem:
-
-`NoBatToEV._update()` reads twelve D-Bus subscription values and two Wattpilot
-per-phase power values, then immediately sums them with no None guard. Every
-`DbusSubscription` starts with `value = None` and stays `None` until the backing
-D-Bus path publishes. Because the worker fires every 2 seconds and `_update()`
-has no try/except, the `TypeError` propagates to the GLib scheduler, which can
-suppress the worker silently or log an unhandled exception on every tick until
-all paths are populated.
-
-There is an existing guard on `noPhasesDbus.value` (the outer `if` on line 77),
-but it only protects the `numberOfPhases` check, not the arithmetic blocks inside.
-
-Evidence:
-
-- `NoBatToEV.py` line 82: `evPower = (Globals.esESS._services["FroniusWattpilot"].wattpilot.power1 + wattpilot.power2 + wattpilot.power3) * 1000` — `power1/2/3` initialize to `None` in `Wattpilot.py`.
-- `NoBatToEV.py` lines 84–88: twelve `.value` reads summed directly with no None guard.
-- `esESSService.py` registers `DbusSubscription` with `self.value = None` as the initial state.
-
-Implementation:
-
-- Add a None guard before the arithmetic blocks in `_update()`. Either return
-  early if any required value is None, or substitute 0 for non-critical
-  per-phase PV paths that may be absent on single-phase systems.
-- For the Wattpilot power path (line 82), guard against `power1/2/3` being None
-  before the multiplication; returning early or substituting 0 is both correct.
-- Do not change the grid-setpoint logic, the relay-enable check, or the
-  `FroniusWattpilot` service lookup.
-
-Files to change:
-
-- `NoBatToEV.py`
-
-Files to add:
-
-- None expected. Tests for `NoBatToEV` may be added if a test file is created.
-
-Tests:
-
-- Add hardware-free tests with None-valued dbus stubs that confirm `_update()`
-  returns without raising when values are None.
-- Add a test that confirms the grid-setpoint calculation is correct once all
-  values are non-None.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- No TypeError during the startup window before D-Bus paths deliver values.
-- Correct grid-setpoint behavior once all values are available.
-
-Manual validation:
-
-- Restart es-ESS with NoBatToEV enabled and monitor
-  `/data/log/es-ESS/current.log` for the first 30 seconds after startup.
-- Confirm no TypeError exceptions appear from the NoBatToEV worker.
-
-Risks and dependencies:
-
-- Substituting 0 for missing per-phase PV values may suppress a grid-setpoint
-  request during the startup grace window; this is acceptable since no EV charge
-  is present at that point.
-
-Open questions:
-
-- Should missing Wattpilot power values skip the setpoint calculation entirely
-  (return early) or treat them as 0 W EV power?
-
-Done criteria:
-
-- `NoBatToEV._update()` does not raise `TypeError` when any D-Bus value is None.
-- Startup window behavior is covered by hardware-free tests.
-- Full unittest suite passes.
 
 ### P3 - Replace eval() With Safe Expression In MinBatteryCharge Config
 
@@ -1550,23 +1333,18 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move the finished backlog items to `Completed` and advance the
 queue on the next request.
 
-1. **PR 4A - Graceful shutdown reliability:** make SIGTERM cleanup idempotent,
-   guarantee process exit when a D-Bus callback swallows `SystemExit`, directly
-   supervise Python through `service/run`, and add bounded stuck-PID recovery
-   plus shutdown-aware MQTT log severity, with hardware-free and repeated GX
-   restart validation.
-2. **PR 5 - Security hardening:** replace the `MinBatteryCharge` `eval()` path
+1. **PR 5 - Security hardening:** replace the `MinBatteryCharge` `eval()` path
    with a constrained AST evaluator and replace `getUserTime()` shell
    interpolation with a structured subprocess call, with malformed-input and
    compatibility tests for both changes.
-3. **PR 6 - Dormant service alignment:** reconcile README, sample config,
+2. **PR 6 - Dormant service alignment:** reconcile README, sample config,
    service inventory, and runtime intent for dormant or missing services. Keep
    this documentation/configuration alignment separate from active-service
    behavior changes.
-4. **PR 7 - Startup config value validation:** add bounded, cross-field config
+3. **PR 7 - Startup config value validation:** add bounded, cross-field config
    validation with tests for valid production values and clean startup failure
    for invalid values.
-5. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
+4. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
    `dispatchControlState()` side-effect bodies into named controller methods,
    add isolated characterization tests for the non-trivial handlers, and prove
    delegation for every control state without changing state selection,

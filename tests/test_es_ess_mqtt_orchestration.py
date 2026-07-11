@@ -101,11 +101,16 @@ def _load_es_ess_module():
 
 
 class FakeMqttClient:
-    def __init__(self, connected=True):
+    def __init__(self, connected=True, events=None, name="mqtt"):
         self.connected = connected
+        self.reconnect = True
         self.subscriptions = []
         self.callbacks = []
         self.publishes = []
+        self.unsubscriptions = []
+        self.disconnects = 0
+        self.events = events
+        self.name = name
 
     def is_connected(self):
         return self.connected
@@ -118,6 +123,16 @@ class FakeMqttClient:
 
     def publish(self, topic, payload, qos, retain):
         self.publishes.append((topic, payload, qos, retain))
+
+    def unsubscribe(self, topic):
+        self.unsubscriptions.append(topic)
+        if self.events is not None:
+            self.events.append("{0}-unsubscribe".format(self.name))
+
+    def disconnect(self):
+        self.disconnects += 1
+        if self.events is not None:
+            self.events.append("{0}-disconnect".format(self.name))
 
 
 class FakeBooleanConnectedClient(FakeMqttClient):
@@ -138,7 +153,10 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         app.localMqttClient = FakeMqttClient(local_connected)
         app.mainMqttClientConnected = False
         app.localMqttClientConnected = False
+        app._sigTermInvoked = False
+        app._shutdownMqttDisconnectsLogged = set()
         app._mqttSubscriptions = {}
+        app._services = {}
         app._serviceMessageIndex = {}
         app.mqttThrottlePeriod = 0
         app.config = {"Common": {"ServiceMessageCount": "3"}}
@@ -258,6 +276,165 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         app.publishServiceMessage("UnitService", "hello")
 
         self.assertEqual(len(app.mainMqttClient.publishes), 1)
+
+    def test_shutdown_disconnects_log_at_info_only(self):
+        app = self._app()
+        app._sigTermInvoked = True
+
+        with patch.object(self.es_ess, "i") as info_log, patch.object(
+            self.es_ess, "w"
+        ) as warning_log:
+            app.onMainMqttDisconnect(None, None, 0)
+            app.onLocalMqttDisconnect(None, None, 0)
+
+        self.assertEqual(info_log.call_count, 4)
+        warning_log.assert_not_called()
+        self.assertTrue(
+            all(
+                "graceful shutdown" in call.args[1]
+                for call in info_log.call_args_list
+            )
+        )
+
+    def test_shutdown_disconnect_logging_is_deduplicated(self):
+        app = self._app()
+        app._sigTermInvoked = True
+
+        with patch.object(self.es_ess, "i") as info_log:
+            app._logShutdownMqttDisconnect("Main")
+            app.onMainMqttDisconnect(None, None, 0)
+            app._logShutdownMqttDisconnect("Local")
+            app.onLocalMqttDisconnect(None, None, 0)
+
+        self.assertEqual(info_log.call_count, 4)
+        self.assertEqual(app._shutdownMqttDisconnectsLogged, {"Main", "Local"})
+
+    def test_unexpected_disconnects_keep_warning_severity(self):
+        app = self._app()
+
+        with patch.object(self.es_ess, "i") as info_log, patch.object(
+            self.es_ess, "w"
+        ) as warning_log:
+            app.onMainMqttDisconnect(None, None, 1)
+            app.onLocalMqttDisconnect(None, None, 1)
+
+        self.assertEqual(warning_log.call_count, 2)
+        self.assertEqual(info_log.call_count, 2)
+        self.assertTrue(
+            all(
+                "Waiting for automatic reconnect." in call.args[1]
+                for call in info_log.call_args_list
+            )
+        )
+
+    def test_disabled_reconnect_outside_shutdown_logs_warnings(self):
+        app = self._app()
+        app.mainMqttClient.reconnect = False
+        app.localMqttClient.reconnect = False
+
+        with patch.object(self.es_ess, "i") as info_log, patch.object(
+            self.es_ess, "w"
+        ) as warning_log:
+            app.onMainMqttDisconnect(None, None, 1)
+            app.onLocalMqttDisconnect(None, None, 1)
+
+        self.assertEqual(warning_log.call_count, 4)
+        info_log.assert_not_called()
+
+    def test_shutdown_cleanup_is_idempotent_and_termination_is_last(self):
+        events = []
+        app = self._app()
+        app.mainMqttClient = FakeMqttClient(events=events, name="main")
+        app.localMqttClient = FakeMqttClient(events=events, name="local")
+        app._gridSetPointDefault = 10
+        app.config = {
+            "Common": {
+                "ServiceMessageCount": "3",
+                "VRMPortalID": "portal-id",
+            }
+        }
+        app.publishServiceMessage = lambda *_args, **_kwargs: events.append(
+            "message"
+        )
+        app.publishLocalMqtt = lambda *_args, **_kwargs: events.append(
+            "grid-restore"
+        )
+
+        subscription = self._subscription(
+            "es-ESS/main", self.es_ess.MqttSubscriptionType.Main
+        )
+        app._mqttSubscriptions = {subscription.valueKey: [subscription]}
+
+        service = SimpleNamespace(
+            handleSigterm=lambda: events.append("service-cleanup")
+        )
+        app._services = {"service": service}
+        app._terminateProcess = lambda: events.append("terminate")
+
+        def record_info(_module, message, **_kwargs):
+            if message == "Main MQTT disconnect during graceful shutdown.":
+                events.append("main-shutdown-info")
+            elif message == "Local MQTT disconnect during graceful shutdown.":
+                events.append("local-shutdown-info")
+            elif message == "Cleaned up. Bye.":
+                events.append("final-log")
+
+        with patch.object(self.es_ess, "i", side_effect=record_info):
+            app.handleSigterm(None, None)
+            app.handleSigterm(None, None)
+
+        self.assertEqual(events.count("grid-restore"), 1)
+        self.assertEqual(events.count("main-unsubscribe"), 1)
+        self.assertEqual(events.count("service-cleanup"), 1)
+        self.assertEqual(events.count("main-disconnect"), 1)
+        self.assertEqual(events.count("local-disconnect"), 1)
+        self.assertEqual(events.count("main-shutdown-info"), 1)
+        self.assertEqual(events.count("local-shutdown-info"), 1)
+        self.assertEqual(events.count("terminate"), 1)
+        self.assertLess(events.index("grid-restore"), events.index("service-cleanup"))
+        self.assertLess(
+            events.index("service-cleanup"), events.index("main-disconnect")
+        )
+        self.assertLess(
+            events.index("main-shutdown-info"), events.index("main-disconnect")
+        )
+        self.assertLess(
+            events.index("local-shutdown-info"), events.index("local-disconnect")
+        )
+        self.assertLess(events.index("local-disconnect"), events.index("final-log"))
+        self.assertLess(events.index("final-log"), events.index("terminate"))
+
+    def test_termination_uses_uninterceptable_process_exit_after_log_flush(self):
+        app = self._app()
+
+        with patch.object(self.es_ess.logging, "shutdown") as shutdown, patch.object(
+            self.es_ess.os, "_exit"
+        ) as process_exit:
+            app._terminateProcess()
+
+        shutdown.assert_called_once_with()
+        process_exit.assert_called_once_with(0)
+
+    def test_lifecycle_scripts_supervise_and_verify_the_original_process(self):
+        attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+        service_run = (ROOT / "service" / "run").read_text(encoding="utf-8")
+        restart_script = (ROOT / "restart.sh").read_text(encoding="utf-8")
+
+        self.assertIn("*.sh text eol=lf", attributes)
+        self.assertIn("service/run text eol=lf", attributes)
+        for script in (
+            "install.sh",
+            "restart.sh",
+            "kill_me.sh",
+            "uninstall.sh",
+            "service/run",
+        ):
+            self.assertNotIn(b"\r", (ROOT / script).read_bytes())
+        self.assertIn("exec python /data/es-ESS/es-ESS.py", service_run)
+        self.assertIn("GRACEFUL_TIMEOUT_SECONDS=10", restart_script)
+        self.assertIn('/proc/$pid/stat', restart_script)
+        self.assertIn('/proc/$pid/cmdline', restart_script)
+        self.assertIn('kill -s 9 "$pid"', restart_script)
 
 
 if __name__ == "__main__":
