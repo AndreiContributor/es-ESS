@@ -118,6 +118,31 @@ Open questions:
 
 ## Completed
 
+### Completed 2026-07-11 - PR 5 Security Hardening
+
+Completion note:
+
+- Replaced the `MinBatteryCharge` `eval()` path in
+  `SolarOverheadDistributor.py` with a constrained AST evaluator that supports
+  numeric literals, `SOC`, `min()`/`max()`, parentheses, and `+`, `-`, `*`,
+  `/`.
+- Added an explicit `batterySoc=None` fallback that logs a warning and uses
+  `MinBatteryCharge=0` for the current distribution cycle instead of relying on
+  a swallowed `NameError`.
+- Replaced `Globals.getUserTime()` shell interpolation through `os.popen()`
+  with `subprocess.run()` using explicit argv and a `TZ` environment variable.
+- Added timezone validation so shell metacharacters and malformed timezone
+  values are rejected before subprocess invocation.
+- Documented the supported `MinBatteryCharge` expression grammar in
+  `README.md` and `config.sample.ini`.
+- Added hardware-free tests for safe `MinBatteryCharge` expressions,
+  unavailable SOC fallback, malicious/invalid expression rejection, structured
+  time subprocess invocation, and malformed timezone rejection.
+- Kept the change limited to security hardening, documentation, tests, and
+  backlog; no Wattpilot Manual/Auto control behavior, D-Bus path names, MQTT
+  topics, service initialization boundaries, or configuration defaults were
+  changed.
+
 ### Completed 2026-07-11 - PR 4A Graceful Shutdown Reliability
 
 Completion note:
@@ -909,195 +934,6 @@ Done criteria:
 - If those branches still do not occur naturally, the item records that result
   without forcing unsafe or unrealistic system behavior.
 
-### P3 - Replace eval() With Safe Expression In MinBatteryCharge Config
-
-Goal:
-
-Remove the `eval()` call on the user-controlled `MinBatteryCharge` config value
-and replace it with a safe arithmetic parser.
-
-Problem:
-
-`SolarOverheadDistributor.updateDistribution()` evaluates the raw
-`MinBatteryCharge` config string with `eval()` after substituting the current
-battery SOC. This executes arbitrary Python from `config.ini`. On a Venus OS
-device where `config.ini` is writable by a local user or remotely via VRM, a
-crafted `MinBatteryCharge` value such as
-`__import__('os').system('reboot')` would execute with the process's privileges
-on every distribution cycle. Even without a threat actor, a typo in the
-equation can produce unexpected behavior that the broad `except Exception`
-handler silently swallows.
-
-Additionally, when `batterySoc.value` is None, `str(None)` substitutes the
-literal string `"None"`, causing a `NameError` inside `eval()`. The handler
-then silently uses `minBatCharge=0`, removing the battery reservation without
-any warning beyond a logged exception.
-
-Evidence:
-
-- `SolarOverheadDistributor.py` lines 369–371:
-  ```python
-  equation = self.config["SolarOverheadDistributor"]["MinBatteryCharge"]
-  equation = equation.replace("SOC", str(batSoc))
-  minBatCharge = round(eval(equation))
-  ```
-- The `MinBatteryCharge` value in `config.sample.ini` is a simple arithmetic
-  expression like `max(0, (80-SOC)*100)`.
-- `batterySoc.value` is `None` at startup and when BMS is unavailable.
-
-Implementation:
-
-- Replace `eval()` with a purpose-built safe evaluator that supports only the
-  operations documented in `config.sample.ini`: numeric literals, `SOC`
-  substitution, `max()`/`min()`, and basic arithmetic operators (`+`, `-`, `*`,
-  `/`).
-- A simple approach: parse the substituted string with `ast.literal_eval` after
-  confirming it only contains numeric tokens and known functions; or pre-parse
-  the expression into a lambda at config-load time using only the `ast` module.
-- When `batSoc` is None, emit a warning and use `minBatCharge=0` explicitly
-  (the same fallback as today but intentional and logged clearly).
-- Keep the `ZeroDivisionError` and general `except Exception` handlers for
-  unexpected arithmetic errors.
-- Do not change the overhead calculation or consumer-priority logic.
-
-Files to change:
-
-- `SolarOverheadDistributor.py`
-- `README.md` and `config.sample.ini` if supported expression syntax is clarified.
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add hardware-free tests for valid `MinBatteryCharge` expressions with known
-  SOC values and confirm correct `minBatCharge` output.
-- Add a test with `batSoc=None` and confirm `minBatCharge=0` with a warning log
-  and no exception.
-- Add a test with an invalid/malicious expression and confirm it is rejected
-  without executing.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- `MinBatteryCharge` evaluation cannot execute arbitrary Python.
-- None SOC produces explicit fallback, not a silent swallowed exception.
-
-Manual validation:
-
-- Set `MinBatteryCharge=max(0,(80-SOC)*100)` in config and confirm correct
-  reservation at known SOC values.
-- Temporarily break the expression to confirm a clear error log.
-
-Risks and dependencies:
-
-- The safe parser must support all expression forms users currently rely on.
-  If a user has a more complex expression, document the supported subset.
-
-Open questions:
-
-- Should the supported expression grammar be documented explicitly in
-  `config.sample.ini` and README?
-
-Done criteria:
-
-- `MinBatteryCharge` is evaluated without `eval()`.
-- Arbitrary Python in config cannot execute.
-- Hardware-free tests cover valid expressions, None SOC, and invalid expressions.
-- Full unittest suite passes.
-
-### P3 - Replace os.popen Shell Interpolation In getUserTime
-
-Goal:
-
-Remove the shell-injection risk in `Globals.getUserTime()` by replacing
-`os.popen()` string interpolation with `subprocess.run()` and explicit
-argument passing.
-
-Problem:
-
-`Globals.getUserTime()` constructs a shell command by formatting `userTimezone`
-directly into a string passed to `os.popen()`. If `userTimezone` contains
-shell metacharacters (e.g., a value such as `UTC"; reboot; echo "` from
-`config.ini`), they are executed verbatim by the shell. On a GX device running
-as root this is a full privilege-escalation path from config file to shell. The
-risk is mitigated by the fact that `config.ini` requires local write access,
-but the pattern is unsafe by default and `os.popen()` is deprecated since
-Python 3.0.
-
-Evidence:
-
-- `Globals.py` line 23:
-  ```python
-  usertime = os.popen('TZ=":{0}" date +"%Y-%m-%d %H:%M:%S"'.format(userTimezone)).read()
-  ```
-- `userTimezone` is read from the `[Common]` section of `config.ini` at
-  startup. No sanitization is applied before the substitution.
-- `os.popen()` passes the full string to `/bin/sh -c`, which interprets
-  metacharacters.
-
-Implementation:
-
-- Replace `os.popen()` with `subprocess.run()` passing `TZ` as an environment
-  variable and `date` arguments as a list, eliminating shell interpolation:
-  ```python
-  import subprocess, os
-  env = {**os.environ, "TZ": ":" + userTimezone}
-  result = subprocess.run(["date", '+%Y-%m-%d %H:%M:%S'], env=env,
-                          capture_output=True, text=True, timeout=3)
-  usertime = result.stdout.strip()
-  ```
-- Add a basic validation of `userTimezone` before use (e.g., allow only
-  printable non-whitespace characters with no shell metacharacters).
-- Keep the return value and call sites unchanged.
-
-Files to change:
-
-- `Globals.py`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add a hardware-free test confirming `getUserTime()` calls `subprocess.run()`
-  with `TZ` in the environment and not as a shell-interpolated string.
-- Add a test with a timezone string containing a shell metacharacter and confirm
-  it is rejected or sanitized before subprocess invocation.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- `getUserTime()` does not pass user config values to a shell.
-- Timezone validation rejects malformed values before subprocess invocation.
-
-Manual validation:
-
-- On a GX/Venus OS device, confirm `getUserTime()` returns the correct local
-  time for the configured timezone.
-
-Risks and dependencies:
-
-- `date` command behavior and TZ prefix (`":"`) must be verified on Venus OS's
-  embedded shell.
-- If the GX device's `date` binary does not support TZ override via environment,
-  an alternative (Python `datetime`/`pytz`/`zoneinfo`) should be evaluated.
-
-Open questions:
-
-- Should `getUserTime()` be replaced entirely with Python's `datetime`/`zoneinfo`
-  to eliminate the subprocess dependency?
-
-Done criteria:
-
-- `getUserTime()` does not interpolate `userTimezone` into a shell command.
-- Shell metacharacters in the timezone config value cannot execute arbitrary
-  commands.
-- Hardware-free tests cover normal and malformed timezone values.
-- Full unittest suite passes.
-
 ### P3 - Extract Wattpilot Dispatch Handlers To Named Methods
 
 Goal:
@@ -1333,18 +1169,14 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move the finished backlog items to `Completed` and advance the
 queue on the next request.
 
-1. **PR 5 - Security hardening:** replace the `MinBatteryCharge` `eval()` path
-   with a constrained AST evaluator and replace `getUserTime()` shell
-   interpolation with a structured subprocess call, with malformed-input and
-   compatibility tests for both changes.
-2. **PR 6 - Dormant service alignment:** reconcile README, sample config,
+1. **PR 6 - Dormant service alignment:** reconcile README, sample config,
    service inventory, and runtime intent for dormant or missing services. Keep
    this documentation/configuration alignment separate from active-service
    behavior changes.
-3. **PR 7 - Startup config value validation:** add bounded, cross-field config
+2. **PR 7 - Startup config value validation:** add bounded, cross-field config
    validation with tests for valid production values and clean startup failure
    for invalid values.
-4. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
+3. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
    `dispatchControlState()` side-effect bodies into named controller methods,
    add isolated characterization tests for the non-trivial handlers, and prove
    delegation for every control state without changing state selection,

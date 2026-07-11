@@ -1,4 +1,5 @@
 from builtins import int
+import ast
 import configparser
 import datetime
 import logging
@@ -22,6 +23,20 @@ from Helper import i, c, d, w, e, t, dbusConnection
 from esESSService import esESSService
 
 DEFAULT_HTTP_REQUEST_TIMEOUT_SECONDS = 5.0
+_MIN_BATTERY_CHARGE_FUNCTIONS = {
+   "max": max,
+   "min": min,
+}
+_MIN_BATTERY_CHARGE_BINOPS = {
+   ast.Add: lambda left, right: left + right,
+   ast.Sub: lambda left, right: left - right,
+   ast.Mult: lambda left, right: left * right,
+   ast.Div: lambda left, right: left / right,
+}
+_MIN_BATTERY_CHARGE_UNARYOPS = {
+   ast.UAdd: lambda value: value,
+   ast.USub: lambda value: -value,
+}
 
 
 def _positiveFloatOrDefault(value, default):
@@ -33,6 +48,47 @@ def _positiveFloatOrDefault(value, default):
       pass
 
    return default
+
+
+def _evaluateMinBatteryChargeExpression(expression, soc):
+   tree = ast.parse(expression, mode="eval")
+
+   def evaluate(node):
+      if (isinstance(node, ast.Expression)):
+         return evaluate(node.body)
+
+      if (
+         isinstance(node, ast.Constant)
+         and isinstance(node.value, (int, float))
+         and not isinstance(node.value, bool)
+      ):
+         return node.value
+
+      if (isinstance(node, ast.BinOp) and type(node.op) in _MIN_BATTERY_CHARGE_BINOPS):
+         return _MIN_BATTERY_CHARGE_BINOPS[type(node.op)](
+            evaluate(node.left),
+            evaluate(node.right),
+         )
+
+      if (isinstance(node, ast.UnaryOp) and type(node.op) in _MIN_BATTERY_CHARGE_UNARYOPS):
+         return _MIN_BATTERY_CHARGE_UNARYOPS[type(node.op)](evaluate(node.operand))
+
+      if (isinstance(node, ast.Name) and node.id == "SOC"):
+         return soc
+
+      if (
+         isinstance(node, ast.Call)
+         and isinstance(node.func, ast.Name)
+         and node.func.id in _MIN_BATTERY_CHARGE_FUNCTIONS
+         and len(node.keywords) == 0
+      ):
+         return _MIN_BATTERY_CHARGE_FUNCTIONS[node.func.id](
+            *[evaluate(argument) for argument in node.args]
+         )
+
+      raise ValueError("Unsupported MinBatteryCharge expression element: {0}".format(type(node).__name__))
+
+   return evaluate(tree)
 
 
 class SolarOverheadDistributor(esESSService):
@@ -425,9 +481,11 @@ class SolarOverheadDistributor(esESSService):
 
          minBatCharge = 0    
          try:
-            equation = self.config["SolarOverheadDistributor"]["MinBatteryCharge"]
-            equation = equation.replace("SOC", str(batSoc))
-            minBatCharge = round(eval(equation))
+            if (batSoc is None):
+               w(self, "Battery SOC is unavailable. Using MinBatteryCharge=0.")
+            else:
+               equation = self.config["SolarOverheadDistributor"]["MinBatteryCharge"]
+               minBatCharge = round(_evaluateMinBatteryChargeExpression(equation, batSoc))
          except ZeroDivisionError as ex:
             e(self, "Error ZeroDivisionError on MinBatteryCharge-Equation. Using MinBatteryCharge=0.", exc_info=ex)
          except Exception as ex:
