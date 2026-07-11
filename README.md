@@ -146,6 +146,26 @@ have to mind adding / remove values as you enable or disable certain services.
 | [Services]               | ShellyPMInverter                 | Flag, if [ShellyPMInverter](#shellypminverter) is enabled.                                                      | Boolean       | true                         |
 | [Services]               | MqttPVInverter            | Flag, if [MqttPvInverter](#mqttpvinverter) is enabled.                                            | Boolean       | true                         |
 
+#### Startup value validation
+
+After applying configuration migrations, es-ESS validates safety-sensitive
+numeric values before MQTT, D-Bus, or any service is initialized. All detected
+configuration errors are logged at CRITICAL level and startup exits with status
+1 so the operator can correct `config.ini`.
+
+- Wattpilot `MinCurrentPerPhase` and `MaxCurrentPerPhase` must both be within
+  `6..32 A`, with the maximum greater than or equal to the minimum.
+- `ThreePhasePvSurplusStartW` must be greater than
+  `ThreePhasePvSurplusStopW` so phase-switch hysteresis is not inverted.
+- `BatteryAssistSocMin` must be within `0..100`. When battery assist is enabled,
+  `BatteryAssistMaxSeconds` must be greater than `0`.
+- `AllowanceDropGraceSeconds`, `SurplusDropGraceSeconds`,
+  `CarDisconnectConfirmSeconds`, and `StartupGraceSeconds` must be `0` or
+  greater. Existing controller-side minimums still apply where defined.
+- `TimeToGoCalculator` and `SolarOverheadDistributor` `UpdateInterval` values,
+  plus `FroniusSmartmeterJSON`, `Shelly3EMGrid`, and every
+  `ShellyPMInverter:*` `PollFrequencyMs`, must be greater than `0` milliseconds.
+
 > :warning: NOTE: I recommend to enable one service after each other and finalize configuration, before enabling another one. Else configuration may become a bit clumsy and error-prone.
 
 # TimeToGoCalculator 
@@ -175,7 +195,7 @@ TimeToGoCalculator requires a few variables to be set in `/data/es-ESS/config.in
 | [Common]  | BatteryCapacityInWh  | Your batteries capacity in Wh.  | Integer| 28000 |
 | [Mqtt]     | LocalSslEnabled | Flag, if local Mqtt is SSL or plain. | Boolean | true |
 | [Services]    | TimeToGoCalculator | Flag, if the service should be enabled or not | Boolean | true |
-| [TimeToGoCalculator]  | UpdateInterval |  Time in milliseconds for TimeToGo Calculations. Sometimes the BMS are sending `null` values, so a small value helps to reduce flickering on VRM. But don't exagerate for looking at the dashboard for 10 minutes a day ;-)| Integer  | 1000 |
+| [TimeToGoCalculator]  | UpdateInterval | Time in milliseconds for TimeToGo calculations. Must be greater than `0`; smaller values reduce flickering when a BMS sends `null`, but also run the calculation more frequently. | Integer  | 1000 |
 
 # MqttTemperatures
 > :white_check_mark: Production Ready
@@ -479,15 +499,15 @@ charging under Wattpilot app/user control.
 | [FroniusWattpilot]  | Host | hostname / ip of Wattpilot | String  | 10.10.20.47 |
 | [FroniusWattpilot]  | Password | Password of Wattpilot | String  | password |
 | [FroniusWattpilot]  | HibernateMode | When the car is disconnected, es-ESS will switch into idle mode, stop doing heavy lifting. Connection to wattpilot remains established and VRM control enabled. <br /><br />With hibernate enabled, wattpilot will also be disconnected, and connected every 5 minutes for a car-state-check. This greatly reduces the number of incoming socket messages from wattpilot by about 95% per day, but causes an delay of up to 5 minutes when the car is connected.<br /><br />You can force a wakeup by switching to *Scheduled charging* in VRM at any time. | Boolean  | false |
-| [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. The controller enforces at least 6 A. | Integer (A) | 6 |
-| [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. The controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
-| [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. | Integer (W) | 4700 |
-| [FroniusWattpilot] | ThreePhasePvSurplusStopW | PV threshold below which Auto/Eco falls back from 3 phases to 1 phase when one-phase charging is still supportable. | Integer (W) | 4300 |
+| [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. Must be within `6..32 A`. | Integer (A) | 6 |
+| [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. Must be within `6..32 A` and at least `MinCurrentPerPhase`; the controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
+| [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. Must be greater than `ThreePhasePvSurplusStopW`. | Integer (W) | 5000 |
+| [FroniusWattpilot] | ThreePhasePvSurplusStopW | PV threshold below which Auto/Eco falls back from 3 phases to 1 phase when one-phase charging is still supportable. Must be lower than `ThreePhasePvSurplusStartW`. | Integer (W) | 4100 |
 | [FroniusWattpilot] | EvPriorityOverBatteryCharge | Lets Wattpilot use real PV that would otherwise charge the battery while the car is connected in Auto mode. This does not allow battery-to-EV charging from a stopped state. | Boolean | true |
 | [FroniusWattpilot] | EvPriorityMinSoc | Minimum battery SOC required before EV priority over battery charging is allowed. | Number (%) | 60 |
 | [FroniusWattpilot] | BatteryAssistEnabled | Enables the optional short battery bridge for an already-running Auto/Eco charge. | Boolean | true |
-| [FroniusWattpilot] | BatteryAssistSocMin | Minimum battery SOC required before battery assist can be used. | Number (%) | 60 |
-| [FroniusWattpilot] | BatteryAssistMaxSeconds | Maximum duration for one battery-assist window. | Integer (seconds) | 300 |
+| [FroniusWattpilot] | BatteryAssistSocMin | Minimum battery SOC required before battery assist can be used. Must be within `0..100`. | Number (%) | 50 |
+| [FroniusWattpilot] | BatteryAssistMaxSeconds | Maximum duration for one battery-assist window. Must be greater than `0` when battery assist is enabled. | Integer (seconds) | 240 |
 | [FroniusWattpilot] | BatteryAssistMaxShortfallW | Maximum PV shortfall that battery assist may bridge for an already-running charge. | Number (W) | 3000 |
 | [FroniusWattpilot] | BatteryAssistRecoverySeconds | Sustained PV-recovery time required before battery assist can be used again after lockout. | Integer (seconds) | 60 |
 | [FroniusWattpilot] | AllowGridCharging | Allows Auto/Eco to continue despite grid import. Recommended no-grid mode is `false`. | Boolean | false |
@@ -496,10 +516,10 @@ charging under Wattpilot app/user control.
 | [FroniusWattpilot] | GridImportStopSeconds | Duration grid import must exceed `GridImportStopW` before Auto/Eco is stopped. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | AllowanceFreshSeconds | Maximum age of the assigned SolarOverheadDistributor Wattpilot allowance. Missing, malformed, or stale allowance is treated as insufficient. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | GridTelemetryFreshSeconds | Maximum age of each required grid-power value (L1, L2, and L3) while no-grid Auto/Eco control is enabled. | Integer (seconds) | 15 |
-| [FroniusWattpilot] | AllowanceDropGraceSeconds | Grace period before an already-running Auto/Eco session is stopped for insufficient or stale allowance. | Integer (seconds) | 15 |
-| [FroniusWattpilot] | CarDisconnectConfirmSeconds | Time a disconnected car-state reading must remain stable before es-ESS accepts it as a disconnect. | Integer (seconds) | 15 |
-| [FroniusWattpilot] | SurplusDropGraceSeconds | Grace period before continuous low surplus resets the Auto/Eco surplus confirmation timer. | Integer (seconds) | 20 |
-| [FroniusWattpilot] | StartupGraceSeconds | Time after a start or phase switch where commanded EV demand may be reported while Wattpilot telemetry catches up. | Integer (seconds) | 60 |
+| [FroniusWattpilot] | AllowanceDropGraceSeconds | Non-negative grace period before an already-running Auto/Eco session is stopped for insufficient or stale allowance. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | CarDisconnectConfirmSeconds | Non-negative time a disconnected car-state reading must remain stable before es-ESS accepts it as a disconnect. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | SurplusDropGraceSeconds | Non-negative grace period before continuous low surplus resets the Auto/Eco surplus confirmation timer. | Integer (seconds) | 20 |
+| [FroniusWattpilot] | StartupGraceSeconds | Non-negative time after a start or phase switch where commanded EV demand may be reported while Wattpilot telemetry catches up. | Integer (seconds) | 60 |
 | [FroniusWattpilot] | StartupTelemetryRatio | Fraction of commanded demand that Wattpilot telemetry must reach before startup grace is considered satisfied. | Number | 0.80 |
 | [FroniusWattpilot] | RawOverheadFreshSeconds | Maximum age of raw distributor overhead used only for safe 3-to-1 fallback decisions. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | ChargeCompletePowerThresholdW | Sustained low EV power treated as charge-complete hold instead of restarting Auto/Eco PV control. | Number (W) | 100 |
@@ -680,7 +700,7 @@ Shelly3EMGrid requires a few variables to be set in `/data/es-ESS/config.ini`:
 | [Services]    | Shelly3EMGrid   | Flag, if the service should be enabled or not | Boolean | true |
 | [Shelly3EMGrid]     | VRMInstanceID |  InstanceID the Meter should get in VRM | Integer | 47 |
 | [Shelly3EMGrid]     | CustomName |  Display Name of the device in VRM | String | Shelly 3EM (Grid) |
-| [Shelly3EMGrid]     | PollFrequencyMs |  Intervall in ms to query the Shellies JSON-API | int | 1000 |
+| [Shelly3EMGrid]     | PollFrequencyMs | Interval in milliseconds to query the Shelly JSON API. Must be greater than `0`. | int | 1000 |
 | [Shelly3EMGrid]     | Username |  Username of the Shelly | String | User |
 | [Shelly3EMGrid]     | Password |  Password of the Shelly | String | JG372FDr |
 | [Shelly3EMGrid]     | Host |  IP / Hostname of the Shelly | String | 192.168.136.87 |
@@ -732,7 +752,7 @@ each config Section needs to match the pattern `[ShellyPMInverter:aUniqueKey]` a
 | ---------- | ---------|---- | ------------- |--|
 | [ShellyPMInverter:aUniqueKey]     | VRMInstanceID |  InstanceID the Meter should get in VRM | Integer | 1008 |
 | [ShellyPMInverter:aUniqueKey]     | CustomName |  Display Name of the device in VRM | String | HMS-Garage |
-| [ShellyPMInverter:aUniqueKey]     | PollFrequencyMs |  Intervall in ms to query the Shellies JSON-API | int | 1000 |
+| [ShellyPMInverter:aUniqueKey]     | PollFrequencyMs | Interval in milliseconds to query the Shelly JSON API. Must be greater than `0`. | int | 1000 |
 | [ShellyPMInverter:aUniqueKey]     | Username |  Username of the Shelly | String | User |
 | [ShellyPMInverter:aUniqueKey]     | Password |  Password of the Shelly | String | JG372FDr |
 | [ShellyPMInverter:aUniqueKey]     | Host |  IP / Hostname of the Shelly | String | 192.168.136.87 |
@@ -908,6 +928,7 @@ SolarOverheadDistributer requires a few variables to be set in `/data/es-ESS/con
 | [SolarOverheadDistributor]  | VRMInstanceID |  VRMInstanceId to be used on dbus | Integer  | 1000 |
 | [SolarOverheadDistributor]  | VRMInstanceID_ReservationMonitor |  VRMInstanceId to be used on dbus (for the injected Fake-BMS of the active battery reservation) | Integer  | 1001 |
 | [SolarOverheadDistributor]  | MinBatteryCharge |  Equation to determine the active battery reservation. Use SOC as keyword to adjust. Supported syntax is numeric literals, `SOC`, `min()`/`max()`, parentheses, and `+`, `-`, `*`, `/`. If SOC is unavailable or the expression is invalid, es-ESS logs the issue and uses `0` for that cycle. | String  | 5000 - 40 * SOC |
+| [SolarOverheadDistributor]  | UpdateInterval | Worker interval in milliseconds. Must be greater than `0`. | Integer | 5000 |
 
 In order to have the FAKE-BMS visible in VRM, you need to go to *Settings -> System Setup -> Battery Measurement* and set the ones you'd like to see to *Visible*:
 
