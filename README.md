@@ -77,7 +77,10 @@ is not working at the end, it may become hard to find the error without starting
 
 Handy commands to use during configuration and in generall: 
 
-Restart es-ESS (gracefully - config changes require restart!):
+Restart es-ESS (gracefully - config changes require restart!). The script waits
+up to 10 seconds for the original process to exit and applies a narrowly
+targeted SIGKILL only if that verified process remains stuck:
+
 ```
 /data/es-ESS/restart.sh
 ```
