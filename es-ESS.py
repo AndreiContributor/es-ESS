@@ -349,6 +349,7 @@ class esESS:
                 )
 
             for key, default in (
+                ("MinPhaseSwitchSeconds", 600),
                 ("AllowanceDropGraceSeconds", 15),
                 ("SurplusDropGraceSeconds", 20),
                 ("CarDisconnectConfirmSeconds", 15),
@@ -464,6 +465,19 @@ class esESS:
 
             #Shared timeout for bounded HTTP consumer/device requests.
             self._setConfigDefault("Common", "HttpRequestTimeout", "5")
+
+        version = 10
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+
+            #MinPhaseSwitchSeconds now owns stability timing in both phase
+            #directions as well as the minimum phase-command interval.
+            if (self.config.has_section("FroniusWattpilot")):
+                self.config.remove_option(
+                    "FroniusWattpilot", "PhaseSwitchDelaySeconds"
+                )
 
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 
         if (loadedVersion < int(self.config["Common"]["ConfigVersion"])):

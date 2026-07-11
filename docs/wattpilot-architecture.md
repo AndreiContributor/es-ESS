@@ -70,8 +70,13 @@ It owns:
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
 - One-phase and three-phase switching orchestration, delegating pure thresholds,
-  target-current, distributor-request, and phase-up timing decisions to
+  target-current, distributor-request, and shared bidirectional phase timing
+  decisions to
   `WattpilotPhaseDecisions.py`.
+- Continuation-only grid fallback when `AllowGridCharging=true`. This can hold
+  an already-running Auto/Eco charge through insufficient PV, but cannot start
+  a new grid-only session. Victron ESS, not the Wattpilot controller, determines
+  whether the physical shortfall comes from battery or grid.
 - Explicit control-state dispatch through `WattpilotControlState.py`.
   The selector owns the `_update()` branch choice, while the controller still
   owns command side effects, D-Bus/MQTT publication, service messages, and
@@ -149,8 +154,8 @@ It owns:
   the Wattpilot-reported effective maximum.
 - SolarOverheadDistributor maximum-request sizing, including the limited
   one-phase phase-up probe and cooldown suppression.
-- Phase-up stability-delay and cooldown decisions, returning the next
-  controller-owned candidate timer values.
+- Shared one-to-three and three-to-one stability/cooldown decisions, returning
+  the next controller-owned candidate timer values.
 
 It must not own:
 
@@ -238,6 +243,9 @@ Future Wattpilot changes must preserve these invariants:
   fail closed. `/Mode` selection is a separate explicit mode-change path.
 - Auto/Eco mode is PV-surplus driven and must not intentionally use grid power
   when `AllowGridCharging=false`.
+- `AllowGridCharging=true` may continue an already-running Auto/Eco charge
+  despite import, but must not authorize a new grid-only start. The controller
+  does not claim to select battery versus grid as the physical energy source.
 - Battery assist may only bridge a short PV dip during an already-running
   charge and must remain bounded by SOC, duration, shortfall, and recovery
   settings.
@@ -250,10 +258,17 @@ Future Wattpilot changes must preserve these invariants:
   model status.
 - Raw overhead may help with a safe three-to-one fallback, but must not start
   charging or authorize a phase-up.
-- Immediately after a confirmed one-to-three-phase switch, a low raw-overhead
-  sample may be debounced briefly to let ESS/battery telemetry settle. The
-  grid-import guard and telemetry freshness checks still run before that
-  debounce.
+- Assigned Wattpilot allowance is authoritative for whether the consumer owns
+  enough PV to remain on three phases. Raw overhead may estimate the physical
+  shortfall and support a safer one-phase fallback, but must not override an
+  insufficient assigned three-phase allowance or mutate controller phase state
+  without a matching Wattpilot phase command.
+- `MinPhaseSwitchSeconds` is the single normal stability/cooldown timer for
+  both phase directions. A no-grid session may reduce phase or stop before the
+  timer expires when bounded battery assist cannot safely bridge the deficit.
+- During a sustained three-phase PV deficit, bounded battery assist or
+  explicitly allowed grid fallback may hold the running phase/current. Once
+  the shared timer expires, one-phase PV availability authorizes the reduction.
 - Current limits must respect configured per-phase bounds and the
   Wattpilot-reported effective limit.
 - Public D-Bus and MQTT runtime-status paths are compatibility contracts.

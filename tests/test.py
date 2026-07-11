@@ -109,7 +109,6 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.maxCurrentPerPhase = 16
         controller.threePhasePvSurplusStartW = 4200
         controller.threePhasePvSurplusStopW = 4140
-        controller.phaseSwitchDelaySeconds = 0
         controller.phaseSwitchCandidateMode = 0
         controller.phaseSwitchCandidateSince = 0
         controller.minimumPhaseSwitchSeconds = 0
@@ -538,10 +537,11 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.wattpilot.set_phases.assert_not_called()
         controller.wattpilot.set_power.assert_called_once_with(16)
 
-    def test_phase_up_waits_for_stable_phase_switch_delay(self):
+    def test_phase_up_waits_for_shared_phase_switch_timer(self):
         controller = self._controller()
         controller.allowance = 5000
-        controller.phaseSwitchDelaySeconds = 120
+        controller.minimumPhaseSwitchSeconds = 120
+        controller.lastPhaseSwitchTime = -120
 
         with patch.object(self.fwp.time, "time", return_value=100):
             status = controller.adjustChargeForPvAllowance()

@@ -130,7 +130,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "9")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["NoBatToEV"]["UseRelay"], "4")
         self.assertEqual(migrated["MqttPvInverter"]["EnableZeroFeedin"], "true")
@@ -140,7 +140,12 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertEqual(migrated["MqttPvInverter"]["ZeroFeedinStartSoc"], "100")
         self.assertEqual(
             backups,
-            ["config.ini.v6.backup", "config.ini.v7.backup", "config.ini.v8.backup"],
+            [
+                "config.ini.v6.backup",
+                "config.ini.v7.backup",
+                "config.ini.v8.backup",
+                "config.ini.v9.backup",
+            ],
         )
 
     def test_missing_later_sections_are_added_with_defaults(self):
@@ -154,7 +159,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "9")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["NoBatToEV"]["UseRelay"], "-1")
         self.assertEqual(migrated["MqttPvInverter"]["EnableZeroFeedin"], "false")
@@ -183,7 +188,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "9")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["Services"]["Shelly3EMGrid"], "true")
         self.assertEqual(migrated["Services"]["ShellyPMInverter"], "true")
@@ -206,8 +211,30 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "9")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "12")
+
+    def test_version_10_removes_obsolete_phase_switch_delay(self):
+        migrated, backups = self._run_migration(
+            """
+            [Common]
+            ConfigVersion=9
+            HttpRequestTimeout=5
+
+            [FroniusWattpilot]
+            MinPhaseSwitchSeconds=600
+            PhaseSwitchDelaySeconds=120
+            """
+        )
+
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "10")
+        self.assertEqual(
+            migrated["FroniusWattpilot"]["MinPhaseSwitchSeconds"], "600"
+        )
+        self.assertFalse(
+            migrated.has_option("FroniusWattpilot", "PhaseSwitchDelaySeconds")
+        )
+        self.assertEqual(backups, ["config.ini.v9.backup"])
 
 
 class ConfigValueValidationTests(unittest.TestCase):
@@ -236,6 +263,7 @@ class ConfigValueValidationTests(unittest.TestCase):
         wattpilot["ThreePhasePvSurplusStopW"] = "4100"
         wattpilot["BatteryAssistSocMin"] = "0"
         wattpilot["BatteryAssistMaxSeconds"] = "1"
+        wattpilot["MinPhaseSwitchSeconds"] = "0"
         wattpilot["AllowanceDropGraceSeconds"] = "0"
         wattpilot["SurplusDropGraceSeconds"] = "0"
         wattpilot["CarDisconnectConfirmSeconds"] = "0"
@@ -267,6 +295,7 @@ class ConfigValueValidationTests(unittest.TestCase):
             ("FroniusWattpilot", "BatteryAssistSocMin", "-1"),
             ("FroniusWattpilot", "BatteryAssistSocMin", "101"),
             ("FroniusWattpilot", "BatteryAssistMaxSeconds", "0"),
+            ("FroniusWattpilot", "MinPhaseSwitchSeconds", "-1"),
             ("FroniusWattpilot", "AllowanceDropGraceSeconds", "-1"),
             ("FroniusWattpilot", "SurplusDropGraceSeconds", "-1"),
             ("FroniusWattpilot", "CarDisconnectConfirmSeconds", "-1"),

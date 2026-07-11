@@ -123,7 +123,7 @@ have to mind adding / remove values as you enable or disable certain services.
 | [Common]                 | LogLevel             | LogLevel to use. See [Logging](#logging) use `INFO` if you are unsure.                                 | String        | INFO                         |  
 | [Common]                 | NumberOfThreads      | Number of Threads to use. 3-XX depending on enabled service count.                                     | Integer       | 5                            |
 | [Common]                 | ServiceMessageCount  | Number of ServiceMessages to publish on Mqtt. See [Service Messages](#service-messages)                | Integer       | 50                           |
-| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 9                            |
+| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 10                           |
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
 | [Common]                 | BatteryMaxChargeInWh | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
@@ -159,7 +159,7 @@ configuration errors are logged at CRITICAL level and startup exits with status
   `ThreePhasePvSurplusStopW` so phase-switch hysteresis is not inverted.
 - `BatteryAssistSocMin` must be within `0..100`. When battery assist is enabled,
   `BatteryAssistMaxSeconds` must be greater than `0`.
-- `AllowanceDropGraceSeconds`, `SurplusDropGraceSeconds`,
+- `MinPhaseSwitchSeconds`, `AllowanceDropGraceSeconds`, `SurplusDropGraceSeconds`,
   `CarDisconnectConfirmSeconds`, and `StartupGraceSeconds` must be `0` or
   greater. Existing controller-side minimums still apply where defined.
 - `TimeToGoCalculator` and `SolarOverheadDistributor` `UpdateInterval` values,
@@ -490,8 +490,7 @@ charging under Wattpilot app/user control.
 | [Services]    | FroniusWattpilot | Flag, if the service should be enabled or not | Boolean | true |
 | [FroniusWattpilot]  | VRMInstanceID |  VRMInstanceId to be used on dbus | Integer  | 1007 |
 | [FroniusWattpilot]  | VRMInstanceID_OverheadRequest |  VRMInstanceId to be used on dbus for the FAKE-BMS | Integer  | 1006 |
-| [FroniusWattpilot]  | MinPhaseSwitchSeconds  | Minimum seconds between es-ESS phase-switching commands. Use `600` to match a 10 minute Wattpilot phase switch interval.  | Integer | 600 |
-| [FroniusWattpilot]  | PhaseSwitchDelaySeconds  | Seconds the 3-phase PV threshold must remain continuously available before es-ESS switches from 1 phase to 3 phases. Use `120` to match a 2 minute Wattpilot phase switch delay.  | Integer | 120 |
+| [FroniusWattpilot]  | MinPhaseSwitchSeconds  | Shared continuous-condition timer for both 1-to-3 and 3-to-1 changes, and minimum interval between phase commands. During a 3-to-1 wait, only bounded battery assist or explicitly permitted grid fallback may hold the running charge. | Integer (seconds) | 600 |
 | [FroniusWattpilot]  | MinOnOffSeconds | Seconds between starting/stopping charging. | Integer | 60 |
 | [FroniusWattpilot]  | OverheadPriority | SolarOverheadDistributor priority used for Wattpilot allowance requests. | Integer | 35 |
 | [FroniusWattpilot]  | ResetChargedEnergyCounter |  Define when the counters *Charge Time* and *Charged Energy* in VRM should reset. Options: OnDisconnect, OnConnect| String  | OnDisconnect |
@@ -507,10 +506,10 @@ charging under Wattpilot app/user control.
 | [FroniusWattpilot] | EvPriorityMinSoc | Minimum battery SOC required before EV priority over battery charging is allowed. | Number (%) | 60 |
 | [FroniusWattpilot] | BatteryAssistEnabled | Enables the optional short battery bridge for an already-running Auto/Eco charge. | Boolean | true |
 | [FroniusWattpilot] | BatteryAssistSocMin | Minimum battery SOC required before battery assist can be used. Must be within `0..100`. | Number (%) | 50 |
-| [FroniusWattpilot] | BatteryAssistMaxSeconds | Maximum duration for one battery-assist window. Must be greater than `0` when battery assist is enabled. | Integer (seconds) | 240 |
-| [FroniusWattpilot] | BatteryAssistMaxShortfallW | Maximum PV shortfall that battery assist may bridge for an already-running charge. | Number (W) | 3000 |
-| [FroniusWattpilot] | BatteryAssistRecoverySeconds | Sustained PV-recovery time required before battery assist can be used again after lockout. | Integer (seconds) | 60 |
-| [FroniusWattpilot] | AllowGridCharging | Allows Auto/Eco to continue despite grid import. Recommended no-grid mode is `false`. | Boolean | false |
+| [FroniusWattpilot] | BatteryAssistMaxSeconds | Maximum duration for one battery-assist window. Use at least `MinPhaseSwitchSeconds` when battery should be able to bridge the full phase-down waiting interval. Must be greater than `0` when enabled. | Integer (seconds) | 600 |
+| [FroniusWattpilot] | BatteryAssistMaxShortfallW | Maximum PV shortfall that battery assist may bridge for an already-running charge. | Number (W) | 2500 |
+| [FroniusWattpilot] | BatteryAssistRecoverySeconds | Sustained PV-recovery time required before battery assist can be used again after lockout. | Integer (seconds) | 120 |
+| [FroniusWattpilot] | AllowGridCharging | Allows an already-running Auto/Eco charge to continue despite grid import when PV/battery assistance is insufficient. It never permits a new grid-only start. Victron ESS determines the actual battery/grid energy source. Recommended no-grid mode is `false`. | Boolean | false |
 | [FroniusWattpilot] | GridImportPositive | Site grid-power sign convention. `true` means positive grid power is import. | Boolean | true |
 | [FroniusWattpilot] | GridImportStopW | Sustained grid-import power threshold that stops Auto/Eco when grid charging is disabled. | Number (W) | 300 |
 | [FroniusWattpilot] | GridImportStopSeconds | Duration grid import must exceed `GridImportStopW` before Auto/Eco is stopped. | Integer (seconds) | 15 |
@@ -529,14 +528,17 @@ charging under Wattpilot app/user control.
 
 ### Eco/PV policy
 
-In `Auto` / Wattpilot `ECO` mode, es-ESS follows this PV-only policy:
+In `Auto` / Wattpilot `ECO` mode, es-ESS follows this PV-start policy with an
+optional running-session grid fallback:
 
 - A new charge starts only after a fresh, distributor-assigned **real PV allowance** has continuously met the one-phase minimum for `MinOnOffSeconds`. It starts on one phase when that minimum is available.
-- A one-to-three-phase change requires a fresh real PV allowance at or above `ThreePhasePvSurplusStartW` (and the electrical three-phase minimum) continuously for `PhaseSwitchDelaySeconds`. Battery assist and raw-overhead data never start a charge and never cause a phase-up.
-- A three-to-one-phase fallback happens when PV no longer supports three-phase charging but still supports one-phase charging. This safety reduction bypasses `MinPhaseSwitchSeconds`; immediately after a confirmed one-to-three-phase switch, a low-PV sample is debounced for `AllowanceDropGraceSeconds` so short ESS/battery settling transients do not cause an unnecessary fallback.
-- Battery assist is optional and may only bridge a short cloud for an **already-running** charge. It is limited by its configured SOC, shortfall-power, duration, and PV-recovery settings; it cannot create a new charging session.
+- Both one-to-three and three-to-one phase changes require their respective PV condition to remain continuous for `MinPhaseSwitchSeconds`. The same value also enforces the minimum interval between phase commands, reducing phase oscillation during variable cloud cover.
+- During the three-to-one waiting interval, bounded battery assist may hold the existing phase/current. When `AllowGridCharging=true`, an already-running charge may instead continue despite grid import. Neither fallback can start a session or authorize a phase-up.
+- With `AllowGridCharging=false`, loss of an eligible battery bridge causes an immediate reduction to one phase when fresh PV supports the one-phase minimum; otherwise Auto/Eco stops. This safety response may end the normal phase timer early.
+- After a sustained phase-down interval, es-ESS changes to one phase when fresh PV supports it. If PV is below the one-phase minimum, bounded battery assist or allowed grid fallback may keep the running charge active; without either source, charging stops.
+- Battery assist is optional and may only bridge a short cloud for an **already-running** charge. It is limited by its configured SOC, shortfall-power, duration, and PV-recovery settings; it cannot create a new charging session. To cover the full phase waiting interval, `BatteryAssistMaxSeconds` must be at least `MinPhaseSwitchSeconds`.
 - Auto/Eco stops when sustained grid import exceeds `GridImportStopW` for `GridImportStopSeconds`. With `AllowGridCharging=false`, Auto/Eco therefore does not intentionally use grid power. Very short transients can still appear before the guard threshold and timer are reached.
-- `MinOnOffSeconds` applies to starts and stops, `PhaseSwitchDelaySeconds` debounces one-to-three-phase changes, and `MinPhaseSwitchSeconds` sets the minimum interval between phase-switching commands. A safety three-to-one-phase reduction is allowed when PV no longer supports three phases but still supports one phase, with only the short post-phase-up settling debounce described above.
+- `MinOnOffSeconds` applies to normal starts and stops. `MinPhaseSwitchSeconds` is the single shared stability and cooldown setting for both phase directions; no-grid safety may still reduce phase or stop earlier when a running deficit cannot be bridged.
 - Normal Wattpilot `Manual` mode remains under the user's control and is not changed by this Auto/Eco policy.
 
 ### Auto/Eco telemetry fail-safe
@@ -580,18 +582,17 @@ BatteryAssistEnabled=false
 AllowGridCharging=false
 MinOnOffSeconds=60
 MinPhaseSwitchSeconds=600
-PhaseSwitchDelaySeconds=120
 ```
 
-PV charging with a 300-second cloud bridge for an already-running session:
+PV charging with a 600-second cloud bridge for an already-running session:
 
 ```ini
 [FroniusWattpilot]
 BatteryAssistEnabled=true
 BatteryAssistSocMin=60
-BatteryAssistMaxSeconds=300
-BatteryAssistMaxShortfallW=3000
-BatteryAssistRecoverySeconds=60
+BatteryAssistMaxSeconds=600
+BatteryAssistMaxShortfallW=2500
+BatteryAssistRecoverySeconds=120
 AllowGridCharging=false
 ```
 
@@ -600,7 +601,6 @@ Conservative five-minute start and phase confirmation timers:
 ```ini
 [FroniusWattpilot]
 MinOnOffSeconds=300
-PhaseSwitchDelaySeconds=300
 MinPhaseSwitchSeconds=600
 AllowGridCharging=false
 ```
@@ -1060,7 +1060,7 @@ Additionally there are the following configuration options available:
 | ---------- | ---------|---- | ------------- |--|
 | [Common]    | NumberOfThreads |  Number of threads, es-ESS should use. | int | 5 |
 | [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 50 |
-| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 9 |
+| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 10 |
 | [Common]    | HttpRequestTimeout | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers. | double | 5 |
 
 ### Service Messages
