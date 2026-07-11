@@ -40,9 +40,6 @@ class FroniusWattpilot (esESSService):
         settings = self.config["FroniusWattpilot"]
         self.minimumOnOffSeconds = int(settings["MinOnOffSeconds"])
         self.minimumPhaseSwitchSeconds = int(settings["MinPhaseSwitchSeconds"])
-        self.phaseSwitchDelaySeconds = max(
-            0, int(settings.get("PhaseSwitchDelaySeconds", 120))
-        )
 
         # Explicit EV limits. Wattpilot's AMA value can be higher than the
         # vehicle or installation limit, therefore it is only an upper bound.
@@ -159,8 +156,6 @@ class FroniusWattpilot (esESSService):
         self.lastConfirmedCarConnected = False
         self.effectiveCarConnected = False
         self.lastPhaseSwitchTime = 0
-        self.lastThreePhaseConfirmedAt = 0
-        self.phaseDownCandidateSince = 0
         self.phaseSwitchCandidateMode = 0
         self.phaseSwitchCandidateSince = 0
         self.lastOnOffTime = 0
@@ -517,7 +512,6 @@ class FroniusWattpilot (esESSService):
         self.clearPowerTransitionGrace()
         self.clearPendingPhaseSwitch()
         self.clearPhaseSwitchCandidate()
-        self.phaseDownCandidateSince = 0
         self.currentPhaseMode = 0
 
         self.publishServiceMessage(
@@ -1158,12 +1152,14 @@ class FroniusWattpilot (esESSService):
             )
             return VrmEvChargerStatus.Charging
 
-        # The distributor correctly assigns 0 W to a three-phase consumer when
-        # available PV falls below the three-phase 6 A minimum. That does not
-        # mean PV is gone: it may still be enough for one-phase charging. Step
-        # down before evaluating battery assist or issuing a strict stop.
-        if self.shouldPhaseDownForPvDip():
-            return self.switchToOnePhaseForPvDip()
+        # Use one shared stability interval for both phase directions. During
+        # a sustained three-phase PV deficit, keep the existing phase command
+        # only while bounded battery assist is eligible or grid fallback is
+        # explicitly allowed. A no-grid session that cannot bridge safely
+        # reduces to one phase immediately when possible, otherwise it stops.
+        phaseDownStatus = self.controlThreePhasePvDeficit()
+        if phaseDownStatus is not None:
+            return phaseDownStatus
 
         pvAllowance = max(0, self.allowance)
         activeDemandW = self.currentChargeDemandPower()
@@ -1186,6 +1182,14 @@ class FroniusWattpilot (esESSService):
             return VrmEvChargerStatus.Charging
 
         self.clearBatteryAssist()
+
+        # Grid fallback is continuation-only. New Auto/Eco starts still pass
+        # through startFromPvAllowance() and therefore require real PV. For an
+        # already-running charge, hold the existing phase/current rather than
+        # stopping when the configured site explicitly permits grid import.
+        if self.allowGridCharging and shortfallW > 0:
+            self.allowanceBelowMinimumSince = 0
+            return VrmEvChargerStatus.Charging
 
         if self.hasMinimumAllowance():
             self.allowanceBelowMinimumSince = 0
@@ -1624,10 +1628,6 @@ class FroniusWattpilot (esESSService):
                     3 if pending == 2 else 1
                 )
             )
-            if pending == 2:
-                self.lastThreePhaseConfirmedAt = time.time()
-            else:
-                self.phaseDownCandidateSince = 0
             self.clearPendingPhaseSwitch()
             return None
 
@@ -1893,6 +1893,18 @@ class FroniusWattpilot (esESSService):
         if self.hasMinimumAllowance():
             return None
 
+        # A 3-to-1 reduction may be driven by fresh raw PV overhead because
+        # the distributor can gate the three-phase assigned allowance to 0 W.
+        # Permit only that already-running reduction; starts and phase-up still
+        # require a fresh assigned PV allowance.
+        if getattr(self, "pendingPhaseSwitchMode", 0) == 1:
+            rawOverhead = self.rawPvOverheadW()
+            if (
+                rawOverhead is not None
+                and rawOverhead >= self.minimumChargePower()
+            ):
+                return None
+
         self.clearBatteryAssist()
         if self.allowanceStopGraceActive():
             return transitionStatus
@@ -1980,7 +1992,7 @@ class FroniusWattpilot (esESSService):
         # A valid 3φ-sized allocation always wins over a possibly stale raw
         # overhead subscription.
         if assignedAllowance >= threePhaseThreshold:
-            self.phaseDownCandidateSince = 0
+            self.clearPhaseSwitchCandidate()
             d(
                 self,
                 "Keeping 3-phase: assigned allowance {0:.0f}W is above "
@@ -1992,7 +2004,7 @@ class FroniusWattpilot (esESSService):
 
         rawOverhead = self.rawPvOverheadW()
         if rawOverhead is None:
-            self.phaseDownCandidateSince = 0
+            self.clearPhaseSwitchCandidate()
             d(
                 self,
                 "Raw PV overhead is unavailable; not phase-down switching "
@@ -2002,7 +2014,7 @@ class FroniusWattpilot (esESSService):
 
         onePhaseMinimum = self.minimumChargePower()
         if rawOverhead < onePhaseMinimum:
-            self.phaseDownCandidateSince = 0
+            self.clearPhaseSwitchCandidate()
             d(
                 self,
                 "Raw PV overhead {0:.0f}W is below the one-phase minimum "
@@ -2013,48 +2025,91 @@ class FroniusWattpilot (esESSService):
             return False
 
         if rawOverhead >= threePhaseThreshold:
-            self.phaseDownCandidateSince = 0
+            self.clearPhaseSwitchCandidate()
             return False
-
-        if self.phaseDownSettleGraceActive():
-            return False
-
-        self.phaseDownCandidateSince = 0
         return True
 
-    def phaseDownSettleGraceActive(self):
-        """Debounce a low-PV sample just after a successful phase-up.
+    def controlThreePhasePvDeficit(self):
+        """Control an already-running three-phase charge through a PV dip.
 
-        A 1-to-3 switch causes short-lived ESS/battery telemetry movement. If
-        the first refreshed distributor sample briefly gates the three-phase
-        request to 0 W, hold the confirmed 3-phase state for the normal
-        allowance-drop grace. The grid-import guard runs before this helper
-        and can still stop Auto/Eco charging for sustained import.
+        The same MinPhaseSwitchSeconds stability timer used for phase-up is
+        used for phase-down. Battery assist may bridge the waiting interval
+        only within its existing SOC, shortfall, grid-import, duration, and
+        recovery limits. If grid fallback is allowed, the running charge may
+        wait on grid power. Neither source can start a new charge or phase-up.
         """
-        now = time.time()
-        confirmedAt = getattr(self, "lastThreePhaseConfirmedAt", 0)
-        candidateSince = getattr(self, "phaseDownCandidateSince", 0)
-        phaseUpStillSettling = (
-            confirmedAt > 0
-            and now - confirmedAt < self.startupGraceSeconds
-        )
+        if self.currentPhaseMode != 2 or not self.allowanceIsFresh():
+            return None
 
-        if not phaseUpStillSettling and candidateSince == 0:
-            return False
+        assignedAllowance = max(0.0, float(self.allowance))
+        threePhaseThreshold = self.phaseDownThresholdW()
+        if assignedAllowance >= threePhaseThreshold:
+            if self.phaseSwitchCandidateMode == 1:
+                self.clearPhaseSwitchCandidate()
+            return None
 
-        if candidateSince == 0:
-            self.phaseDownCandidateSince = now
+        rawOverhead = self.rawPvOverheadW()
+        if rawOverhead is None:
+            if assignedAllowance <= 0:
+                if self.phaseSwitchCandidateMode == 1:
+                    self.clearPhaseSwitchCandidate()
+                return None
+            rawOverhead = assignedAllowance
+
+        availablePvW = max(assignedAllowance, rawOverhead)
+        if availablePvW >= threePhaseThreshold:
+            if self.phaseSwitchCandidateMode == 1:
+                self.clearPhaseSwitchCandidate()
+            return None
+
+        shortfallW = max(0.0, self.currentChargeDemandPower() - availablePvW)
+        self.updateBatteryAssistLockoutRecovery(shortfallW)
+        batteryBridgeActive = self.startOrContinueBatteryAssist(shortfallW)
+        fallbackAvailable = batteryBridgeActive or self.allowGridCharging
+
+        if not fallbackAvailable:
+            self.clearBatteryAssist()
+            self.clearPhaseSwitchCandidate()
+            if availablePvW >= self.minimumChargePower():
+                return self.switchToOnePhaseForPvDip()
+
             self.publishServiceMessage(
                 self,
-                "PV allowance dipped after a confirmed 3-phase switch. "
-                "Waiting up to {0}s for ESS telemetry to settle before "
-                "falling back to 1-phase.".format(
-                    self.allowanceDropGraceSeconds
-                )
+                "Three-phase PV deficit cannot be bridged safely and PV is "
+                "below the one-phase minimum. Stopping Auto/Eco charging."
             )
-            return True
+            self.forceStopForNoAllowance()
+            return VrmEvChargerStatus.StopCharging
 
-        return now - candidateSince < self.allowanceDropGraceSeconds
+        phaseDownDecision = PhaseDecisions.evaluate_phase_switch_timing(
+            self.phaseSwitchCandidateMode,
+            self.phaseSwitchCandidateSince,
+            1,
+            self.minimumPhaseSwitchSeconds,
+            self.getPhaseSwitchCooldownSeconds(),
+            time.time(),
+        )
+
+        if (
+            phaseDownDecision.next_candidate_mode != self.phaseSwitchCandidateMode
+            or phaseDownDecision.next_candidate_since != self.phaseSwitchCandidateSince
+        ):
+            self.phaseSwitchCandidateMode = phaseDownDecision.next_candidate_mode
+            self.phaseSwitchCandidateSince = phaseDownDecision.next_candidate_since
+            self.publishServiceMessage(
+                self,
+                "PV no longer supports three-phase charging. Waiting {0}s "
+                "before switching to one phase while the running charge is "
+                "safely bridged.".format(self.minimumPhaseSwitchSeconds),
+            )
+
+        if (
+            phaseDownDecision.action == PhaseDecisions.PHASE_SWITCH_READY
+            and availablePvW >= self.minimumChargePower()
+        ):
+            return self.switchToOnePhaseForPvDip()
+
+        return VrmEvChargerStatus.Charging
 
     def switchToOnePhaseForPvDip(self):
         if not self.allowanceIsFresh():
@@ -2076,7 +2131,6 @@ class FroniusWattpilot (esESSService):
             "PV allowance dropped below the three-phase threshold. "
             "Switching to 1-phase before applying battery-assist or stop logic."
         )
-        self.phaseDownCandidateSince = 0
         self.clearPhaseSwitchCandidate()
         self.lastPhaseSwitchTime = time.time()
         self.beginPhaseSwitchConfirmation(1)
@@ -2482,19 +2536,22 @@ class FroniusWattpilot (esESSService):
         if enteringPhaseMode == 0:
             enteringPhaseMode = 1
 
-        # A phase-down is safety-critical when PV-only allowance can no longer
-        # sustain three-phase 6 A. It is therefore never delayed by cooldown.
+        # Both phase directions use the same stability/cooldown setting. The
+        # controller may still reduce or stop immediately when a no-grid
+        # session cannot safely bridge a three-phase PV deficit.
         if desiredPhaseMode == 1 and enteringPhaseMode == 2:
-            return self.switchToOnePhaseForPvDip()
+            phaseDownStatus = self.controlThreePhasePvDeficit()
+            if phaseDownStatus is not None:
+                return phaseDownStatus
 
         # Phase-up is allowed only by real PV surplus and respects the phase
         # switch cooldown. While waiting, one-phase charging is capped at 16 A.
         if desiredPhaseMode == 2 and enteringPhaseMode != 2:
-            phaseUpDecision = PhaseDecisions.evaluate_phase_up_timing(
+            phaseUpDecision = PhaseDecisions.evaluate_phase_switch_timing(
                 self.phaseSwitchCandidateMode,
                 self.phaseSwitchCandidateSince,
                 2,
-                self.phaseSwitchDelaySeconds,
+                self.minimumPhaseSwitchSeconds,
                 self.getPhaseSwitchCooldownSeconds(),
                 time.time(),
             )
@@ -2509,11 +2566,11 @@ class FroniusWattpilot (esESSService):
                     self,
                     "PV threshold supports {0}-phase. Waiting {1}s before phase switching.".format(
                         3,
-                        self.phaseSwitchDelaySeconds,
+                        self.minimumPhaseSwitchSeconds,
                     ),
                 )
 
-            if phaseUpDecision.action == PhaseDecisions.PHASE_UP_WAIT_STABLE:
+            if phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_WAIT_STABLE:
                 targetAmps = self.targetCurrentForPhase(1, self.allowance)
                 self.currentPhaseMode = 1
                 self.wattpilot.set_power(targetAmps)
@@ -2521,12 +2578,12 @@ class FroniusWattpilot (esESSService):
                     self,
                     "3-phase PV threshold reached; waiting for stable phase-up allowance ({0:.0f}/{1}s).".format(
                         phaseUpDecision.stable_seconds,
-                        self.phaseSwitchDelaySeconds,
+                        self.minimumPhaseSwitchSeconds,
                     ),
                 )
                 return VrmEvChargerStatus.Charging
 
-            if phaseUpDecision.action == PhaseDecisions.PHASE_UP_SWITCH:
+            if phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_READY:
                 targetAmps = self.targetCurrentForPhase(2, self.allowance)
                 i(self, "PV surplus supports 3-phase charging. Switching to 3-phase.")
                 self.publishServiceMessage(

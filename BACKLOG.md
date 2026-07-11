@@ -118,6 +118,34 @@ Open questions:
 
 ## Completed
 
+### Completed 2026-07-11 - PR 9 Wattpilot Phase Anti-Flapping And Running Grid Fallback
+
+Completion note:
+
+- Replaced the separate one-to-three phase delay with
+  `MinPhaseSwitchSeconds` as the single continuous-condition timer and minimum
+  command interval for both phase directions.
+- Added a three-phase PV-deficit path that holds the existing phase/current
+  only while bounded battery assist is eligible or
+  `AllowGridCharging=true`; recovery of three-phase PV resets the candidate
+  timer.
+- Preserved the no-grid fail-safe: when battery assistance cannot safely bridge
+  the deficit, Auto/Eco immediately reduces to one phase when fresh PV supports
+  it, otherwise stops without waiting for the normal phase timer.
+- Made allowed grid fallback continuation-only for an already-running Auto/Eco
+  session. New starts and phase-up still require fresh, sufficient assigned PV,
+  and Victron ESS remains responsible for the physical battery/grid source.
+- Added configuration v10 migration to remove obsolete
+  `PhaseSwitchDelaySeconds`, documented the shared timer and fallback policy,
+  and aligned maintained battery-assist examples with the 600-second phase
+  interval.
+- Added hardware-free coverage for shared bidirectional timing, PV-recovery
+  timer reset, bounded battery bridging, early no-grid phase-down/stop,
+  continuation-only grid fallback, and configuration migration.
+- Kept normal Manual mode, command ownership, D-Bus/MQTT runtime-status paths,
+  current limits, and the prohibition on battery/grid-assisted starts and
+  phase-up unchanged.
+
 ### Completed 2026-07-11 - PR 8 Wattpilot Dispatch Handler Extraction
 
 Completion note:

@@ -2,13 +2,20 @@ from dataclasses import dataclass
 from math import ceil, floor
 
 
-PHASE_UP_WAIT_STABLE = "wait_stable"
-PHASE_UP_WAIT_COOLDOWN = "wait_cooldown"
-PHASE_UP_SWITCH = "switch"
+PHASE_SWITCH_WAIT_STABLE = "wait_stable"
+PHASE_SWITCH_WAIT_COOLDOWN = "wait_cooldown"
+PHASE_SWITCH_READY = "switch"
+
+# Compatibility aliases for existing callers and diagnostics. New code uses
+# the direction-neutral names because the same timing decision now controls
+# both 1-to-3 and 3-to-1 changes.
+PHASE_UP_WAIT_STABLE = PHASE_SWITCH_WAIT_STABLE
+PHASE_UP_WAIT_COOLDOWN = PHASE_SWITCH_WAIT_COOLDOWN
+PHASE_UP_SWITCH = PHASE_SWITCH_READY
 
 
 @dataclass(frozen=True)
-class PhaseUpTimingDecision:
+class PhaseSwitchTimingDecision:
     action: str
     next_candidate_mode: int
     next_candidate_since: float
@@ -86,7 +93,7 @@ def maximum_request_for_distributor_w(
     return max(one_phase_maximum, phase_up_probe)
 
 
-def evaluate_phase_up_timing(
+def evaluate_phase_switch_timing(
     candidate_mode,
     candidate_since,
     target_phase_mode,
@@ -94,15 +101,15 @@ def evaluate_phase_up_timing(
     cooldown_seconds,
     now,
 ):
-    """Evaluate phase-up stability and cooldown without mutating controller state."""
+    """Evaluate shared phase-change stability and cooldown timing."""
     if delay_seconds <= 0:
         stable_seconds = delay_seconds
         action = (
-            PHASE_UP_SWITCH
+            PHASE_SWITCH_READY
             if cooldown_seconds <= 0
-            else PHASE_UP_WAIT_COOLDOWN
+            else PHASE_SWITCH_WAIT_COOLDOWN
         )
-        return PhaseUpTimingDecision(
+        return PhaseSwitchTimingDecision(
             action,
             candidate_mode,
             candidate_since,
@@ -111,8 +118,8 @@ def evaluate_phase_up_timing(
         )
 
     if candidate_mode != target_phase_mode:
-        return PhaseUpTimingDecision(
-            PHASE_UP_WAIT_STABLE,
+        return PhaseSwitchTimingDecision(
+            PHASE_SWITCH_WAIT_STABLE,
             target_phase_mode,
             now,
             0,
@@ -121,8 +128,8 @@ def evaluate_phase_up_timing(
 
     stable_seconds = now - candidate_since
     if stable_seconds < delay_seconds:
-        return PhaseUpTimingDecision(
-            PHASE_UP_WAIT_STABLE,
+        return PhaseSwitchTimingDecision(
+            PHASE_SWITCH_WAIT_STABLE,
             candidate_mode,
             candidate_since,
             stable_seconds,
@@ -130,14 +137,33 @@ def evaluate_phase_up_timing(
         )
 
     action = (
-        PHASE_UP_SWITCH
+        PHASE_SWITCH_READY
         if cooldown_seconds <= 0
-        else PHASE_UP_WAIT_COOLDOWN
+        else PHASE_SWITCH_WAIT_COOLDOWN
     )
-    return PhaseUpTimingDecision(
+    return PhaseSwitchTimingDecision(
         action,
         candidate_mode,
         candidate_since,
         stable_seconds,
         cooldown_seconds,
+    )
+
+
+def evaluate_phase_up_timing(
+    candidate_mode,
+    candidate_since,
+    target_phase_mode,
+    delay_seconds,
+    cooldown_seconds,
+    now,
+):
+    """Compatibility wrapper for the former phase-up-only helper."""
+    return evaluate_phase_switch_timing(
+        candidate_mode,
+        candidate_since,
+        target_phase_mode,
+        delay_seconds,
+        cooldown_seconds,
+        now,
     )

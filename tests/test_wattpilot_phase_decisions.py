@@ -80,8 +80,8 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
             0,
         )
 
-    def test_phase_up_timing_waits_for_stability_then_cooldown_then_switch(self):
-        first = decisions.evaluate_phase_up_timing(
+    def test_shared_phase_timing_waits_for_stability_then_cooldown_then_switch(self):
+        first = decisions.evaluate_phase_switch_timing(
             candidate_mode=0,
             candidate_since=0,
             target_phase_mode=2,
@@ -89,12 +89,12 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
             cooldown_seconds=0,
             now=100,
         )
-        self.assertEqual(first.action, decisions.PHASE_UP_WAIT_STABLE)
+        self.assertEqual(first.action, decisions.PHASE_SWITCH_WAIT_STABLE)
         self.assertEqual(first.next_candidate_mode, 2)
         self.assertEqual(first.next_candidate_since, 100)
         self.assertEqual(first.stable_seconds, 0)
 
-        stable = decisions.evaluate_phase_up_timing(
+        stable = decisions.evaluate_phase_switch_timing(
             candidate_mode=2,
             candidate_since=100,
             target_phase_mode=2,
@@ -102,11 +102,11 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
             cooldown_seconds=30,
             now=220,
         )
-        self.assertEqual(stable.action, decisions.PHASE_UP_WAIT_COOLDOWN)
+        self.assertEqual(stable.action, decisions.PHASE_SWITCH_WAIT_COOLDOWN)
         self.assertEqual(stable.stable_seconds, 120)
         self.assertEqual(stable.cooldown_seconds, 30)
 
-        ready = decisions.evaluate_phase_up_timing(
+        ready = decisions.evaluate_phase_switch_timing(
             candidate_mode=2,
             candidate_since=100,
             target_phase_mode=2,
@@ -114,12 +114,34 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
             cooldown_seconds=0,
             now=220,
         )
-        self.assertEqual(ready.action, decisions.PHASE_UP_SWITCH)
+        self.assertEqual(ready.action, decisions.PHASE_SWITCH_READY)
         self.assertEqual(ready.next_candidate_mode, 2)
         self.assertEqual(ready.next_candidate_since, 100)
 
-    def test_phase_up_timing_allows_immediate_switch_when_delay_is_disabled(self):
-        ready = decisions.evaluate_phase_up_timing(
+    def test_shared_phase_timing_applies_to_phase_down(self):
+        waiting = decisions.evaluate_phase_switch_timing(
+            candidate_mode=0,
+            candidate_since=0,
+            target_phase_mode=1,
+            delay_seconds=600,
+            cooldown_seconds=0,
+            now=100,
+        )
+        self.assertEqual(waiting.action, decisions.PHASE_SWITCH_WAIT_STABLE)
+        self.assertEqual(waiting.next_candidate_mode, 1)
+
+        ready = decisions.evaluate_phase_switch_timing(
+            candidate_mode=1,
+            candidate_since=100,
+            target_phase_mode=1,
+            delay_seconds=600,
+            cooldown_seconds=0,
+            now=700,
+        )
+        self.assertEqual(ready.action, decisions.PHASE_SWITCH_READY)
+
+    def test_shared_phase_timing_allows_immediate_switch_when_delay_is_disabled(self):
+        ready = decisions.evaluate_phase_switch_timing(
             candidate_mode=0,
             candidate_since=0,
             target_phase_mode=2,
@@ -127,7 +149,7 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
             cooldown_seconds=0,
             now=100,
         )
-        self.assertEqual(ready.action, decisions.PHASE_UP_SWITCH)
+        self.assertEqual(ready.action, decisions.PHASE_SWITCH_READY)
         self.assertEqual(ready.stable_seconds, 0)
 
 
