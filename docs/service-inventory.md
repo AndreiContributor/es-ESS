@@ -66,10 +66,10 @@ adds config, docs, and tests for the new active behavior.
 
 | Service | Module | Observed behavior if re-enabled | Current runtime status |
 | --- | --- | --- | --- |
-| `MqttDC` | `MqttDC.py` | Reads `MqttDC:*` sections, subscribes to MQTT power, voltage, and current topics, and publishes `com.victronenergy.dcsystem` D-Bus services. | Commented out in `es-ESS.py`; no `[Services]` flag in `config.sample.ini`. |
-| `ChargeCurrentReducer` | `ChargeCurrentReducer.py` | Reads battery and grid D-Bus values and writes local Venus MQTT grid-setpoint commands to reduce battery charge current. | Commented out in `es-ESS.py`; README still documents it, but `config.sample.ini` does not include a `[Services]` flag or `[ChargeCurrentReducer]` section. |
-| `FroniusSmartmeterRS485` | `FroniusSmartmeterRS485.py` | Creates a grid-meter D-Bus service and has experimental Modbus RTU setup in `initFinalize()`; its worker is commented out. | Commented out in `es-ESS.py`; no `[Services]` flag or config section in `config.sample.ini`. |
-| `Grid2Bat` | none in this checkout | No module is present in this checkout. | Commented out in `es-ESS.py`; `config.sample.ini` includes `Grid2Bat=false`, making it config-only at present. |
+| `MqttDC` | `MqttDC.py` | Reads `MqttDC:*` sections, subscribes to MQTT power, voltage, and current topics, and publishes `com.victronenergy.dcsystem` D-Bus services. | Intentionally unavailable: commented out in `es-ESS.py` and absent from the maintained sample and active-service README table. Legacy user flags are ignored and preserved for compatibility. |
+| `ChargeCurrentReducer` | `ChargeCurrentReducer.py` | Reads battery and grid D-Bus values and writes local Venus MQTT grid-setpoint commands to reduce battery charge current. | Intentionally unavailable: commented out in `es-ESS.py` and absent from the maintained sample and active-service README table. It requires a separate safety and shared-setpoint-ownership implementation before reactivation. |
+| `FroniusSmartmeterRS485` | `FroniusSmartmeterRS485.py` | Creates a grid-meter D-Bus service and has experimental Modbus RTU setup in `initFinalize()`; its worker is commented out. | Intentionally unavailable: commented out in `es-ESS.py` and absent from the maintained sample and active-service README table. Legacy user flags are ignored and preserved for compatibility. |
+| `Grid2Bat` | none in this checkout | No module is present in this checkout. | Unavailable: its commented runtime hook is retained as historical context, but the stale sample flag was removed. Legacy user flags are ignored and preserved for compatibility. |
 
 ## Shared Integration Patterns
 
@@ -159,14 +159,13 @@ with shared setpoint ownership without a focused review.
 
 ## Follow-Up Gaps
 
-These are inventory observations, not changes made by this note:
+Dormant service intent is now explicit: dormant and missing services remain
+unavailable unless a separate implementation task reactivates them with config,
+documentation, tests, and manual validation. Legacy flags in existing user
+configurations remain harmless ignored compatibility data.
 
-- README still documents `ChargeCurrentReducer` even though the runtime hook is
-  commented out and the sample config does not expose it.
-- `config.sample.ini` contains `Grid2Bat=false`, but no `Grid2Bat.py` module is
-  present and runtime initialization is commented out.
-- Dormant service intent is not stated: `MqttDC`, `ChargeCurrentReducer`, and
-  `FroniusSmartmeterRS485` could be legacy, internal, or future-supported.
+Remaining inventory observation:
+
 - Some service names and config section casing differ, such as
   `[MqttPvInverter]` for global settings and `MqttPVInverter:*` for instances.
   Preserve compatibility unless a migration task explicitly changes it.

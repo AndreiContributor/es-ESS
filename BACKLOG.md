@@ -118,6 +118,27 @@ Open questions:
 
 ## Completed
 
+### Completed 2026-07-11 - PR 6 Dormant Service Alignment
+
+Completion note:
+
+- Removed the unavailable `Grid2Bat` flag from `config.sample.ini`; no module
+  exists and its runtime hook remains disabled.
+- Removed `ChargeCurrentReducer` from the README active-service configuration
+  table and replaced its obsolete enablement instructions with explicit
+  dormant-service guidance covering `MqttDC`, `ChargeCurrentReducer`,
+  `FroniusSmartmeterRS485`, and `Grid2Bat`.
+- Added the active `FroniusSmartmeterJSON` and `MqttPVInverter` flags that were
+  missing from the README global service table.
+- Updated the service inventory to record dormant services as intentionally
+  unavailable while preserving ignored legacy user flags for compatibility.
+- Added a config contract proving runtime `_checkAndEnable()` calls, maintained
+  sample flags, and the README active-service table contain the same services.
+- Extended migration coverage to prove legacy dormant-service flags remain
+  unchanged and do not require a config-version bump.
+- Kept all dormant runtime hooks disabled and made no service behavior,
+  grid-setpoint, D-Bus, MQTT, or Wattpilot control changes.
+
 ### Completed 2026-07-11 - PR 5 Security Hardening
 
 Completion note:
@@ -774,105 +795,6 @@ Completion note:
 
 ## Backlog
 
-
-Goal:
-
-Make README, `config.sample.ini`, service inventory, and runtime service
-loading agree about dormant and config-only services.
-
-Problem:
-
-The repository currently presents some dormant or missing services as if they
-are configurable active services. This can lead users to enable settings that
-the runtime never loads, and it can mislead future implementation work around
-grid-setpoint ownership.
-
-Evidence:
-
-- README lists `ChargeCurrentReducer` in the `[Services]` configuration table.
-- README includes a full `ChargeCurrentReducer` configuration section.
-- `es-ESS.py` has `ChargeCurrentReducer`, `MqttDC`, `FroniusSmartmeterRS485`,
-  and `Grid2Bat` runtime initialization commented out.
-- `config.sample.ini` does not include `ChargeCurrentReducer`, `MqttDC`, or
-  `FroniusSmartmeterRS485` service flags, but it does include `Grid2Bat=false`
-  even though no `Grid2Bat.py` exists in this checkout.
-- `docs/service-inventory.md` already marks these as dormant/config-only
-  follow-up gaps.
-
-Implementation:
-
-- Decide whether each dormant service is supported, intentionally hidden, or
-  obsolete.
-- For unsupported dormant services, remove or clearly mark user-facing README
-  configuration as dormant/unavailable.
-- For config-only `Grid2Bat`, either remove it through a config migration or
-  document it as reserved/obsolete with a compatibility reason.
-- Do not reactivate any dormant service without a separate implementation task,
-  tests, service-inventory update, and manual validation plan.
-- Keep grid-setpoint ownership explicit: dormant `ChargeCurrentReducer` must
-  not be reintroduced while writing `/Settings/CGwacs/AcPowerSetPoint`
-  directly outside the shared request combiner.
-
-Files to change:
-
-- `README.md`
-- `config.sample.ini`
-- `docs/service-inventory.md`
-- Possibly `es-ESS.py` only if a config migration removes obsolete flags.
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Update or add config contract tests that assert documented active service
-  flags match `config.sample.ini` and runtime `_checkAndEnable()` calls.
-- Add config migration tests if any obsolete flag is removed or migrated.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- Active service docs, sample config, and runtime loading agree.
-- Dormant services are clearly marked or removed from user-facing config.
-- Grid-setpoint ownership remains centralized for active services.
-
-Manual validation:
-
-- Review an upgraded user config that contains legacy dormant-service flags and
-  confirm es-ESS starts cleanly.
-- Confirm README no longer tells users to enable a service that the runtime
-  cannot start.
-
-Manual test steps:
-
-1. Prepare a legacy `config.ini` containing `ChargeCurrentReducer=true`,
-   `MqttDC=true`, `FroniusSmartmeterRS485=true`, and `Grid2Bat=false`.
-2. Run configuration migration in a hardware-free test or staging checkout.
-3. Confirm the migrated config is valid and startup does not fail on missing or
-   dormant services.
-4. Compare README, `config.sample.ini`, and `docs/service-inventory.md` for
-   matching active/dormant service status.
-
-Risks and dependencies:
-
-- Removing sample keys may surprise users who have legacy configs.
-- Reactivating dormant services would be higher risk than documenting/removing
-  stale user-facing configuration because some dormant code paths write device
-  controls directly.
-
-Open questions:
-
-- Should `Grid2Bat=false` be retained as a compatibility placeholder or removed
-  in the next config migration?
-- Are any dormant services intended for near-term revival?
-
-Done criteria:
-
-- README, sample config, runtime service loading, and service inventory agree.
-- Any config migration is covered by tests.
-- No dormant service is reactivated accidentally.
-
 ### P4 - Winter Validate Wattpilot Grid-Import Dispatch Branches
 
 Goal:
@@ -1169,14 +1091,10 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move the finished backlog items to `Completed` and advance the
 queue on the next request.
 
-1. **PR 6 - Dormant service alignment:** reconcile README, sample config,
-   service inventory, and runtime intent for dormant or missing services. Keep
-   this documentation/configuration alignment separate from active-service
-   behavior changes.
-2. **PR 7 - Startup config value validation:** add bounded, cross-field config
+1. **PR 7 - Startup config value validation:** add bounded, cross-field config
    validation with tests for valid production values and clean startup failure
    for invalid values.
-3. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
+2. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
    `dispatchControlState()` side-effect bodies into named controller methods,
    add isolated characterization tests for the non-trivial handlers, and prove
    delegation for every control state without changing state selection,

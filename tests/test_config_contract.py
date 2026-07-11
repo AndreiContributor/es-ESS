@@ -2,11 +2,18 @@
 
 import ast
 import configparser
+import re
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DORMANT_SERVICES = {
+    "ChargeCurrentReducer",
+    "FroniusSmartmeterRS485",
+    "Grid2Bat",
+    "MqttDC",
+}
 
 
 class _WattpilotConfigKeyVisitor(ast.NodeVisitor):
@@ -72,6 +79,44 @@ def _sample_wattpilot_config_keys():
     return set(config._sections["FroniusWattpilot"].keys()) - {"__name__"}
 
 
+def _runtime_service_names():
+    source = (ROOT / "es-ESS.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    initialize_services = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_initializeServices"
+    )
+    return {
+        call.args[0].value
+        for call in ast.walk(initialize_services)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "_checkAndEnable"
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+        and isinstance(call.args[0].value, str)
+    }
+
+
+def _sample_service_names():
+    config = configparser.ConfigParser()
+    config.optionxform = str
+    config.read(ROOT / "config.sample.ini", encoding="utf-8")
+    return set(config._sections["Services"].keys()) - {"__name__"}
+
+
+def _readme_active_service_names():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    global_config = readme.split("#### Global Configuration", 1)[1].split(
+        "> :warning:", 1
+    )[0]
+    return set(
+        re.findall(r"^\| \[Services\]\s*\|\s*([^|\s]+)\s*\|", global_config, re.M)
+    )
+
+
 class ConfigContractTests(unittest.TestCase):
     def test_wattpilot_sample_matches_active_config_keys(self):
         active_keys = _active_wattpilot_config_keys()
@@ -87,6 +132,17 @@ class ConfigContractTests(unittest.TestCase):
             [],
             "Unknown FroniusWattpilot settings in config.sample.ini",
         )
+
+    def test_active_service_flags_match_runtime_sample_and_readme(self):
+        runtime_services = _runtime_service_names()
+
+        self.assertEqual(_sample_service_names(), runtime_services)
+        self.assertEqual(_readme_active_service_names(), runtime_services)
+
+    def test_dormant_services_are_not_exposed_as_active(self):
+        self.assertTrue(DORMANT_SERVICES.isdisjoint(_runtime_service_names()))
+        self.assertTrue(DORMANT_SERVICES.isdisjoint(_sample_service_names()))
+        self.assertTrue(DORMANT_SERVICES.isdisjoint(_readme_active_service_names()))
 
 
 if __name__ == "__main__":

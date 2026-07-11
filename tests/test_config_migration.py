@@ -173,6 +173,9 @@ class ConfigMigrationTests(unittest.TestCase):
             Shelly3EMGrid=true
             ShellyPMInverter=true
             MqttDC=true
+            ChargeCurrentReducer=true
+            FroniusSmartmeterRS485=true
+            Grid2Bat=false
             MqttPVInverter=true
 
             [SolarOverheadDistributor]
@@ -185,6 +188,9 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertEqual(migrated["Services"]["Shelly3EMGrid"], "true")
         self.assertEqual(migrated["Services"]["ShellyPMInverter"], "true")
         self.assertEqual(migrated["Services"]["MqttDC"], "true")
+        self.assertEqual(migrated["Services"]["ChargeCurrentReducer"], "true")
+        self.assertEqual(migrated["Services"]["FroniusSmartmeterRS485"], "true")
+        self.assertEqual(migrated["Services"]["Grid2Bat"], "false")
         self.assertEqual(migrated["Services"]["MqttPVInverter"], "true")
         self.assertFalse(migrated.has_option("SolarOverheadDistributor", "Strategy"))
 
