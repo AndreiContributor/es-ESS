@@ -899,7 +899,7 @@ SolarOverheadDistributer requires a few variables to be set in `/data/es-ESS/con
 | [Services]    | SolarOverheadDistributor | Flag, if the service should be enabled or not | Boolean | true |
 | [SolarOverheadDistributor]  | VRMInstanceID |  VRMInstanceId to be used on dbus | Integer  | 1000 |
 | [SolarOverheadDistributor]  | VRMInstanceID_ReservationMonitor |  VRMInstanceId to be used on dbus (for the injected Fake-BMS of the active battery reservation) | Integer  | 1001 |
-| [SolarOverheadDistributor]  | MinBatteryCharge |  Equation to determine the active battery reservation. Use SOC as keyword to adjust. <br /><br />*You can use any complex arithmetic you like, see example graphs bellow for 3 typical curves* | String  | 5000 - 40 * SOC |
+| [SolarOverheadDistributor]  | MinBatteryCharge |  Equation to determine the active battery reservation. Use SOC as keyword to adjust. Supported syntax is numeric literals, `SOC`, `min()`/`max()`, parentheses, and `+`, `-`, `*`, `/`. If SOC is unavailable or the expression is invalid, es-ESS logs the issue and uses `0` for that cycle. | String  | 5000 - 40 * SOC |
 
 In order to have the FAKE-BMS visible in VRM, you need to go to *Settings -> System Setup -> Battery Measurement* and set the ones you'd like to see to *Visible*:
 

@@ -7,7 +7,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,6 +104,8 @@ class SolarOverheadDistributorTests(unittest.TestCase):
 
     def setUp(self):
         self.sod.c = Mock()
+        self.sod.e = Mock()
+        self.sod.w = Mock()
         self.sod.Globals.esESS = SimpleNamespace(_sigTermInvoked=False)
 
     @staticmethod
@@ -187,6 +189,76 @@ class SolarOverheadDistributorTests(unittest.TestCase):
         self.assertEqual(service.dbusService["/Calculations/OverheadAvailable"], 200)
         self.assertEqual(service.dbusService["/Calculations/OverheadAssigned"], 0)
         self.assertEqual(service.dbusService["/Calculations/OverheadRemaining"], 200)
+
+    def test_min_battery_charge_expression_supports_safe_soc_arithmetic(self):
+        service = self._service(
+            grid=(-2000, -2000, -2000),
+            battery_power=0,
+            battery_soc=50,
+        )
+        service.config = {
+            "SolarOverheadDistributor": {
+                "MinBatteryCharge": "max(0, (80 - SOC) * 100)"
+            }
+        }
+
+        service.updateDistribution()
+
+        self.sod.c.assert_not_called()
+        self.sod.e.assert_not_called()
+        self.assertEqual(service.dbusService["/Calculations/Battery/Reservation"], 3000)
+
+    def test_min_battery_charge_none_soc_falls_back_to_zero_with_warning(self):
+        service = self._service(
+            grid=(-100, -100, -100),
+            battery_power=0,
+            battery_soc=None,
+        )
+        service.config = {
+            "SolarOverheadDistributor": {"MinBatteryCharge": "SOC * 100"}
+        }
+
+        service.updateDistribution()
+
+        self.sod.c.assert_not_called()
+        self.sod.e.assert_not_called()
+        self.sod.w.assert_any_call(
+            service,
+            "Battery SOC is unavailable. Using MinBatteryCharge=0.",
+        )
+        self.assertEqual(service.dbusService["/Calculations/Battery/Reservation"], 0)
+
+    def test_min_battery_charge_malicious_expression_is_rejected(self):
+        with patch.object(self.sod.os, "system") as system_mock:
+            with self.assertRaises(ValueError):
+                self.sod._evaluateMinBatteryChargeExpression(
+                    "__import__('os').system('echo unsafe')",
+                    80,
+                )
+
+            system_mock.assert_not_called()
+
+    def test_min_battery_charge_boolean_literal_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.sod._evaluateMinBatteryChargeExpression("True + 1", 80)
+
+    def test_min_battery_charge_invalid_expression_falls_back_to_zero(self):
+        service = self._service(
+            grid=(-100, -100, -100),
+            battery_power=0,
+            battery_soc=80,
+        )
+        service.config = {
+            "SolarOverheadDistributor": {
+                "MinBatteryCharge": "__import__('os').system('echo unsafe')"
+            }
+        }
+
+        service.updateDistribution()
+
+        self.sod.c.assert_not_called()
+        self.sod.e.assert_called()
+        self.assertEqual(service.dbusService["/Calculations/Battery/Reservation"], 0)
 
     def test_persist_energy_stats_holds_consumer_lock_during_iteration(self):
         service = self._service()
