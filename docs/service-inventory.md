@@ -24,6 +24,13 @@ imported by module/class name, created, and then initialized through the common
 - `initWorkerThreads()`
 - `initFinalize()`
 
+Before MQTT, D-Bus, or service initialization, `_validateConfiguration()`
+applies version migrations and validates bounded/cross-field Wattpilot values,
+positive service update intervals, and positive device polling intervals. Any
+invalid configured values are logged together at CRITICAL level and startup
+exits with status 1; optional sections and settings that already have runtime
+defaults remain compatible when absent.
+
 The runtime also owns the shared D-Bus monitor, main MQTT client, local Venus
 MQTT client, worker scheduling, service messages, and combined grid-setpoint
 requests.

@@ -10,6 +10,7 @@ import os
 import logging
 import threading
 import json
+import math
 import time
 from builtins import Exception, int, str
 from concurrent.futures import ThreadPoolExecutor
@@ -245,6 +246,139 @@ class esESS:
         if (not self.config.has_option(section, option)):
             self.config[section][option] = value
 
+    def _validateConfigValues(self):
+        errors = []
+
+        def invalid(section, key, rule, value):
+            errors.append(
+                "[{0}] {1} {2}; got {3!r}".format(section, key, rule, value)
+            )
+
+        def integer(section, key, default=None):
+            if (not self.config.has_section(section)):
+                return None
+
+            if (not self.config.has_option(section, key)):
+                if (default is None):
+                    return None
+                value = default
+            else:
+                value = self.config[section][key]
+
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                invalid(section, key, "must be an integer", value)
+                return None
+
+        def number(section, key, default=None):
+            if (not self.config.has_section(section)):
+                return None
+
+            if (not self.config.has_option(section, key)):
+                if (default is None):
+                    return None
+                value = default
+            else:
+                value = self.config[section][key]
+
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                invalid(section, key, "must be a number", value)
+                return None
+
+            if (not math.isfinite(parsed)):
+                invalid(section, key, "must be a finite number", value)
+                return None
+            return parsed
+
+        if (self.config.has_section("FroniusWattpilot")):
+            section = "FroniusWattpilot"
+            min_current = integer(section, "MinCurrentPerPhase", 6)
+            max_current = integer(section, "MaxCurrentPerPhase", 16)
+
+            if (min_current is not None and not 6 <= min_current <= 32):
+                invalid(section, "MinCurrentPerPhase", "must be between 6 and 32 A", min_current)
+            if (max_current is not None and not 6 <= max_current <= 32):
+                invalid(section, "MaxCurrentPerPhase", "must be between 6 and 32 A", max_current)
+            if (
+                min_current is not None
+                and max_current is not None
+                and max_current < min_current
+            ):
+                invalid(
+                    section,
+                    "MaxCurrentPerPhase",
+                    "must be greater than or equal to MinCurrentPerPhase",
+                    max_current,
+                )
+
+            phase_start = integer(section, "ThreePhasePvSurplusStartW", 4200)
+            phase_stop = integer(section, "ThreePhasePvSurplusStopW", 4140)
+            if (
+                phase_start is not None
+                and phase_stop is not None
+                and phase_start <= phase_stop
+            ):
+                invalid(
+                    section,
+                    "ThreePhasePvSurplusStartW",
+                    "must be greater than ThreePhasePvSurplusStopW",
+                    phase_start,
+                )
+
+            assist_soc = number(section, "BatteryAssistSocMin", 60)
+            if (assist_soc is not None and not 0 <= assist_soc <= 100):
+                invalid(section, "BatteryAssistSocMin", "must be between 0 and 100", assist_soc)
+
+            assist_enabled = self.config[section].get(
+                "BatteryAssistEnabled", "false"
+            ).lower() == "true"
+            assist_seconds = integer(section, "BatteryAssistMaxSeconds", 300)
+            if (
+                assist_enabled
+                and assist_seconds is not None
+                and assist_seconds <= 0
+            ):
+                invalid(
+                    section,
+                    "BatteryAssistMaxSeconds",
+                    "must be greater than 0 when BatteryAssistEnabled=true",
+                    assist_seconds,
+                )
+
+            for key, default in (
+                ("AllowanceDropGraceSeconds", 15),
+                ("SurplusDropGraceSeconds", 20),
+                ("CarDisconnectConfirmSeconds", 15),
+                ("StartupGraceSeconds", 60),
+            ):
+                value = integer(section, key, default)
+                if (value is not None and value < 0):
+                    invalid(section, key, "must be greater than or equal to 0", value)
+
+        for section, key in (
+            ("SolarOverheadDistributor", "UpdateInterval"),
+            ("TimeToGoCalculator", "UpdateInterval"),
+            ("FroniusSmartmeterJSON", "PollFrequencyMs"),
+            ("Shelly3EMGrid", "PollFrequencyMs"),
+        ):
+            value = integer(section, key)
+            if (value is not None and value <= 0):
+                invalid(section, key, "must be greater than 0", value)
+
+        for section in self.config.sections():
+            if (section.startswith("ShellyPMInverter:")):
+                value = integer(section, "PollFrequencyMs")
+                if (value is not None and value <= 0):
+                    invalid(section, "PollFrequencyMs", "must be greater than 0", value)
+
+        if (errors):
+            for error in errors:
+                c(self, "Invalid configuration: {0}".format(error))
+            raise SystemExit(1)
+
     def _validateConfiguration(self):
         self.config = configparser.ConfigParser()
         self.config.optionxform = str
@@ -338,6 +472,8 @@ class esESS:
             
         else:
             i(self, "Running on most recent configuration file version: v{0}".format(loadedVersion))
+
+        self._validateConfigValues()
 
     def _backupConfig(self):
         i(self, "Creating configuration v{0} backup file.".format(self.config["Common"]["ConfigVersion"]))

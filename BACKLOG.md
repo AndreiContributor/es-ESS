@@ -118,6 +118,30 @@ Open questions:
 
 ## Completed
 
+### Completed 2026-07-11 - PR 7 Startup Config Value Validation
+
+Completion note:
+
+- Added startup validation after configuration migration for Wattpilot current
+  bounds, phase-threshold ordering, battery-assist limits, non-negative timing
+  guards, positive worker intervals, and positive device polling intervals.
+- Included every configured `ShellyPMInverter:*` section in polling validation
+  alongside Fronius JSON and Shelly 3EM devices.
+- Collected and logged every invalid section/key/rule at CRITICAL level before
+  exiting with status 1, while preserving optional missing settings that use
+  existing runtime defaults.
+- Documented supported ranges in `README.md` and `config.sample.ini`, including
+  the IEC 61851/Wattpilot `6..32 A` current range and the intentional allowance
+  of zero-valued debounce delays.
+- Added hardware-free coverage for every invalid rule, valid boundary values,
+  the maintained sample, aggregate diagnostics, non-numeric values, optional
+  device sections, and startup invocation.
+- Verified changed-file compilation, focused configuration tests, config
+  contracts, all 200 hardware-free tests, and `git diff --check`.
+- Kept configuration defaults, migration versions, Wattpilot Manual/Auto
+  behavior, command ownership, D-Bus/MQTT contracts, and service initialization
+  boundaries unchanged.
+
 ### Completed 2026-07-11 - PR 6 Dormant Service Alignment
 
 Completion note:
@@ -953,134 +977,6 @@ Done criteria:
 - New characterization tests cover at least two handlers in isolation.
 - Full unittest suite passes.
 
-### P3 - Add Startup Config Value Validation
-
-Goal:
-
-Reject obviously invalid `config.ini` values at startup with a clear error
-message rather than silently producing wrong behavior or crashing mid-cycle.
-
-Problem:
-
-`_validateConfiguration()` handles version migration correctly but performs no
-semantic validation of the loaded values. A misconfigured `config.ini` — for
-example a negative `UpdateInterval`, a current outside `[6, 32]` A, a
-`PollFrequencyMs` of 0, or an inverted phase threshold pair — causes no startup
-error. The bad value propagates silently until it triggers a `TypeError`,
-`ZeroDivisionError`, or a physical mismatch that is hard to trace back to the
-config file.
-
-Evidence:
-
-- `FroniusWattpilot.py` reads `MinCurrentPerPhase` and `MaxCurrentPerPhase`
-  directly as integers with no range check; inverted values (min > max) cause
-  the target current calculation to behave incorrectly.
-- `ThreePhasePvSurplusStartW` < `ThreePhasePvSurplusStopW` inverts the
-  hysteresis and causes repeated phase oscillation.
-- `UpdateInterval=0` in `[TimeToGoCalculator]` or `[SolarOverheadDistributor]`
-  causes a GLib `timeout_add(0, ...)` — fires as fast as the event loop allows
-  and can starve other workers.
-- `PollFrequencyMs=0` in `[FroniusSmartmeterJSON]`, `[Shelly3EMGrid]`, or
-  `[ShellyPMInverter]` causes the same runaway-poll effect.
-- `AllowanceDropGraceSeconds`, `SurplusDropGraceSeconds`, and
-  `CarDisconnectConfirmSeconds` of 0 disables intentional debounce windows that
-  the Wattpilot policy relies on for stability.
-- `BatteryAssistSocMin` outside `[0, 100]` produces mathematically incorrect
-  eligibility checks.
-- `BatteryAssistMaxSeconds=0` removes the battery-assist time limit, potentially
-  allowing unlimited battery discharge during a charge.
-- `StartupGraceSeconds=0` disables the Wattpilot startup window and can trigger
-  No-allowance stops before the first PV reading arrives.
-
-Implementation:
-
-- Add a `_validateConfigValues()` method called from `_validateConfiguration()`
-  after the version migration is applied and the final config is saved.
-- Validation rules (minimum viable set; expand as needed):
-
-  | Section | Key | Rule |
-  |---|---|---|
-  | `[FroniusWattpilot]` | `MinCurrentPerPhase` | `>= 6` (IEC 61851 minimum) |
-  | `[FroniusWattpilot]` | `MaxCurrentPerPhase` | `<= 32`, `>= MinCurrentPerPhase` |
-  | `[FroniusWattpilot]` | `ThreePhasePvSurplusStartW` | `> ThreePhasePvSurplusStopW` |
-  | `[FroniusWattpilot]` | `BatteryAssistSocMin` | `0..100` |
-  | `[FroniusWattpilot]` | `BatteryAssistMaxSeconds` | `> 0` if `BatteryAssistEnabled=true` |
-  | `[FroniusWattpilot]` | `AllowanceDropGraceSeconds` | `>= 0` |
-  | `[FroniusWattpilot]` | `SurplusDropGraceSeconds` | `>= 0` |
-  | `[FroniusWattpilot]` | `CarDisconnectConfirmSeconds` | `>= 0` |
-  | `[FroniusWattpilot]` | `StartupGraceSeconds` | `>= 0` |
-  | `[SolarOverheadDistributor]` | `UpdateInterval` | `> 0` |
-  | `[TimeToGoCalculator]` | `UpdateInterval` | `> 0` |
-  | `[FroniusSmartmeterJSON]` | `PollFrequencyMs` | `> 0` (if section present) |
-  | `[Shelly3EMGrid]` | `PollFrequencyMs` | `> 0` (if section present) |
-
-- On validation failure, log a CRITICAL-level error naming the section, key, and
-  violated rule, then raise `SystemExit(1)` so the daemontools supervisor logs
-  the failure and backs off before restarting.
-- Keep validation as a separate method so it can be unit-tested independently
-  of the full `esESS` constructor.
-- Do not change the migration logic or any config defaults.
-
-Files to change:
-
-- `es-ESS.py`
-- `README.md` if the valid range for any key is not already documented.
-
-Files to add:
-
-- None expected; add validation tests to `tests/test_config_migration.py` or a
-  new `tests/test_config_validation.py`.
-
-Tests:
-
-- Add hardware-free tests that construct a config with each invalid value in
-  turn and assert `SystemExit` is raised with a message naming the offending key.
-- Add a test with a fully valid config that confirms `_validateConfigValues()`
-  does not raise.
-- Add a test for the inverted phase-threshold pair
-  (`ThreePhasePvSurplusStartW < ThreePhasePvSurplusStopW`) specifically.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- Every validated key has at least one invalid-value test and one boundary-valid
-  test.
-- A valid production config passes without raising.
-- Startup failure is explicit and logged before the D-Bus/MQTT loop starts.
-
-Manual validation:
-
-- Set `MinCurrentPerPhase=20` and `MaxCurrentPerPhase=10` in `config.ini`.
-- Start es-ESS and confirm a CRITICAL log entry and clean exit before any
-  service is initialized.
-- Correct the values and confirm normal startup resumes.
-
-Risks and dependencies:
-
-- `SystemExit` at startup will cause daemontools to restart the service
-  repeatedly if the config is not corrected; this is intentional, but the
-  operator must have access to the log to diagnose the failure.
-- The minimum current rule (`>= 6 A`) is the IEC 61851 floor, but some
-  Wattpilot hardware or firmware versions may advertise a different effective
-  minimum; document the assumed floor in `config.sample.ini` comments.
-- Do not validate `MinBatteryCharge` expression syntax here; that belongs in
-  the `eval()` replacement item (P3).
-
-Open questions:
-
-- Should validation errors be collected and reported all at once, or fail on
-  the first invalid key?
-- Should `PollFrequencyMs` lower bounds be enforced only when the service is
-  enabled (`=true` in `[Services]`)?
-
-Done criteria:
-
-- `_validateConfigValues()` is called during startup after migration.
-- Every rule in the table above is implemented and tested.
-- Invalid values cause a CRITICAL log and `SystemExit(1)` before services start.
-- Valid production configs pass without raising.
-- Full unittest suite passes.
-
 ## PR Execution Queue
 
 Use this queue as the implementation order. Each numbered entry is one
@@ -1091,10 +987,7 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move the finished backlog items to `Completed` and advance the
 queue on the next request.
 
-1. **PR 7 - Startup config value validation:** add bounded, cross-field config
-   validation with tests for valid production values and clean startup failure
-   for invalid values.
-2. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
+1. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
    `dispatchControlState()` side-effect bodies into named controller methods,
    add isolated characterization tests for the non-trivial handlers, and prove
    delegation for every control state without changing state selection,
