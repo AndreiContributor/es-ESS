@@ -118,6 +118,29 @@ Open questions:
 
 ## Completed
 
+### Completed 2026-07-11 - PR 8 Wattpilot Dispatch Handler Extraction
+
+Completion note:
+
+- Added pre-refactor characterization coverage for every control state's
+  dispatch return semantics plus the stale-grid-telemetry and disconnect
+  side-effect branches.
+- Extracted the inline dispatch bodies into named controller handlers while
+  keeping state selection, safety ordering, service messages, VRM status
+  publication, Wattpilot commands, mutable resets, and return behavior
+  unchanged.
+- Kept `EXTERNAL_LOW_PRICE` separate from ordinary external charging so its
+  Auto/no-grid guard remains explicit, and preserved the existing unavailable
+  and unknown-state fallback behavior through named handlers.
+- Added isolated handler tests for stale grid telemetry and disconnect cleanup,
+  plus all-state delegation coverage for the thin dispatcher.
+- Verified the characterization tests before refactoring, 94 focused Wattpilot
+  policy and command-boundary tests afterward, changed-file compilation, and
+  all 204 hardware-free tests.
+- Kept the change structural: no Manual/Auto behavior, charging policy,
+  selector ordering, command ownership, D-Bus/MQTT contract, configuration,
+  documentation boundary, or public setting changed.
+
 ### Completed 2026-07-11 - PR 7 Startup Config Value Validation
 
 Completion note:
@@ -880,103 +903,6 @@ Done criteria:
 - If those branches still do not occur naturally, the item records that result
   without forcing unsafe or unrealistic system behavior.
 
-### P3 - Extract Wattpilot Dispatch Handlers To Named Methods
-
-Goal:
-
-Make each control-state handler in `FroniusWattpilot.dispatchControlState()` a
-named method so the dispatch table is a thin router, each branch is individually
-testable, and the call site documents intent without requiring inline reading.
-
-Problem:
-
-`dispatchControlState()` is a flat `if`-chain where every control state has its
-side-effect body written inline. After `WattpilotControlState` took ownership of
-branch selection, the dispatch method became the natural next extraction target.
-Each branch is currently 3–15 lines of service messages, VRM-status updates, and
-controller resets, making the method hard to scan and impossible to unit-test a
-single handler without exercising all the state-selection machinery.
-
-Evidence:
-
-- `FroniusWattpilot.py` `dispatchControlState()` contains inline bodies for:
-  `GRID_TELEMETRY_UNSAFE`, `GRID_IMPORT_PHASE_DOWN`, `GRID_IMPORT_STOP`,
-  `PENDING_PHASE_SWITCH`, `DISCONNECTED`, `CHARGING`, `NOT_CHARGING`,
-  `EXTERNAL_LOW_PRICE`, and `PHASE_SWITCHING`.
-- `handleChargingState()` and `handleNotChargingState()` already exist as named
-  methods called from the `CHARGING` and `NOT_CHARGING` branches, confirming the
-  pattern is established.
-- The safety ordering (transport outage → stale telemetry → grid import →
-  pending phase switch → disconnect/model-status) must be preserved through
-  extraction.
-
-Implementation:
-
-- Extract each unnamed inline body to a private method such as
-  `_handleGridTelemetryUnsafe()`, `_handleGridImportPhaseDown()`,
-  `_handleGridImportStop()`, `_handlePendingPhaseSwitch()`,
-  `_handleDisconnected()`, `_handleExternalLowPrice()`, and
-  `_handlePhaseSwitching()`.
-- Keep `handleChargingState()` and `handleNotChargingState()` as-is; their
-  existing names already follow the pattern.
-- Keep `dispatchControlState()` as a thin router that delegates to the named
-  methods and returns their result.
-- Keep all Wattpilot commands, D-Bus/MQTT publication, service messages, and
-  mutable timer resets inside `FroniusWattpilot.py`; do not move them to helper
-  modules.
-- Do not change the safety-sensitive evaluation order in `_update()` or the
-  `WattpilotControlState` selector.
-
-Files to change:
-
-- `FroniusWattpilot.py`
-- `docs/wattpilot-architecture.md` if the dispatch-handler boundary is worth
-  documenting.
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Add characterization tests for at least the two non-trivial renamed handlers
-  (`_handleGridTelemetryUnsafe` and `_handleDisconnected`) that confirm the
-  expected service messages, VRM-status values, and controller resets without
-  going through the full state-selection machinery.
-- Confirm the existing Wattpilot policy regression tests still pass without
-  modification.
-- Run the full unittest suite.
-
-Expected coverage:
-
-- Each named handler is callable in isolation from a unit test.
-- `dispatchControlState()` delegates correctly for every control state.
-- Existing charging policy and safety ordering are unchanged.
-
-Manual validation:
-
-- Restart es-ESS and confirm normal Auto/Eco charge cycles, grid-import stops,
-  and disconnect events produce the same service messages as before.
-
-Risks and dependencies:
-
-- Purely structural; no command or policy behavior changes.
-- Existing policy tests act as the behavioral safety net — they must pass before
-  and after without modification.
-
-Open questions:
-
-- Should the `EXTERNAL_LOW_PRICE` handler be folded into `handleExternalChargingState()`
-  or remain separate given the Auto-mode guard?
-
-Done criteria:
-
-- `dispatchControlState()` is a thin router with no inline side-effect bodies.
-- Each state has a named private handler method.
-- Existing regression tests pass unchanged.
-- New characterization tests cover at least two handlers in isolation.
-- Full unittest suite passes.
-
 ## PR Execution Queue
 
 Use this queue as the implementation order. Each numbered entry is one
@@ -987,31 +913,17 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move the finished backlog items to `Completed` and advance the
 queue on the next request.
 
-1. **PR 8 - Wattpilot dispatch handler extraction:** extract the existing
-   `dispatchControlState()` side-effect bodies into named controller methods,
-   add isolated characterization tests for the non-trivial handlers, and prove
-   delegation for every control state without changing state selection,
-   command ownership, Manual behavior, or Auto/Eco policy.
+There are currently no unfinished code PRs in the execution queue.
 
 The P4 winter grid-import dispatch validation is an observation task, not a
 code PR, and remains open independently of this queue. Complete it only under
 natural suitable low-PV conditions; do not force production grid import or
 disconnect critical telemetry to satisfy it.
 
-Hardware validation scope for this queue:
+Hardware validation scope for the remaining backlog:
 
-- PR 4A requires repeated log-only restart validation on GX with the EV
-  disconnected or confirmed not charging. It does not require an active charge.
-- PRs 5-7 do not require a connected car for their acceptance criteria.
-  A real or simulated EV load adds end-to-end confidence for NoBatToEV grid-
-  setpoint math, but is not required to verify the None guard.
-- PR 8 uses focused characterization, all-state delegation, and the full
-  hardware-free suite as its merge gate. A short normal GX/Wattpilot smoke test
-  is recommended before production deployment, but the previously validated
-  Manual/Auto, phase-switch, transport-reconnect, and car-debounce matrices do
-  not need to be repeated when the change remains purely structural.
-- The separate P4 winter validation requires an active Auto/Eco charging
-  session to observe real grid-import phase-down or stop behavior.
+- The P4 winter validation requires an active Auto/Eco charging session to
+  observe real grid-import phase-down or stop behavior.
 
 ## Verification Plan
 
