@@ -2044,25 +2044,23 @@ class FroniusWattpilot (esESSService):
         assignedAllowance = max(0.0, float(self.allowance))
         threePhaseThreshold = self.phaseDownThresholdW()
         if assignedAllowance >= threePhaseThreshold:
-            if self.phaseSwitchCandidateMode == 1:
-                self.clearPhaseSwitchCandidate()
+            self.clearPhaseSwitchCandidate()
             return None
 
+        # Assigned allowance is authoritative for deciding whether the
+        # Wattpilot owns enough PV to remain on three phases. Raw overhead may
+        # be slightly out of sync or include power not assigned to this
+        # consumer, so it can support only the safer one-phase fallback.
         rawOverhead = self.rawPvOverheadW()
-        if rawOverhead is None:
-            if assignedAllowance <= 0:
-                if self.phaseSwitchCandidateMode == 1:
-                    self.clearPhaseSwitchCandidate()
-                return None
-            rawOverhead = assignedAllowance
+        onePhasePvW = (
+            assignedAllowance
+            if rawOverhead is None
+            else max(assignedAllowance, rawOverhead)
+        )
 
-        availablePvW = max(assignedAllowance, rawOverhead)
-        if availablePvW >= threePhaseThreshold:
-            if self.phaseSwitchCandidateMode == 1:
-                self.clearPhaseSwitchCandidate()
-            return None
-
-        shortfallW = max(0.0, self.currentChargeDemandPower() - availablePvW)
+        shortfallW = max(
+            0.0, self.currentChargeDemandPower() - onePhasePvW
+        )
         self.updateBatteryAssistLockoutRecovery(shortfallW)
         batteryBridgeActive = self.startOrContinueBatteryAssist(shortfallW)
         fallbackAvailable = batteryBridgeActive or self.allowGridCharging
@@ -2070,7 +2068,7 @@ class FroniusWattpilot (esESSService):
         if not fallbackAvailable:
             self.clearBatteryAssist()
             self.clearPhaseSwitchCandidate()
-            if availablePvW >= self.minimumChargePower():
+            if onePhasePvW >= self.minimumChargePower():
                 return self.switchToOnePhaseForPvDip()
 
             self.publishServiceMessage(
@@ -2105,7 +2103,7 @@ class FroniusWattpilot (esESSService):
 
         if (
             phaseDownDecision.action == PhaseDecisions.PHASE_SWITCH_READY
-            and availablePvW >= self.minimumChargePower()
+            and onePhasePvW >= self.minimumChargePower()
         ):
             return self.switchToOnePhaseForPvDip()
 
@@ -2119,11 +2117,17 @@ class FroniusWattpilot (esESSService):
             return VrmEvChargerStatus.StopCharging
 
         rawOverhead = self.rawPvOverheadW()
-        usablePv = (
-            rawOverhead
-            if rawOverhead is not None
-            else max(0.0, float(self.allowance))
-        )
+        assignedAllowance = max(0.0, float(self.allowance))
+        # Prefer the consumer's assigned allowance whenever it can support a
+        # one-phase charge. Raw overhead is only the fallback for the known
+        # distributor case where a three-phase request is gated to 0 W even
+        # though total PV can still sustain the one-phase minimum.
+        usablePv = assignedAllowance
+        if (
+            assignedAllowance < self.minimumChargePower()
+            and rawOverhead is not None
+        ):
+            usablePv = rawOverhead
         targetAmps = self.targetCurrentForPhase(1, usablePv)
 
         self.publishServiceMessage(
@@ -2536,13 +2540,16 @@ class FroniusWattpilot (esESSService):
         if enteringPhaseMode == 0:
             enteringPhaseMode = 1
 
-        # Both phase directions use the same stability/cooldown setting. The
-        # controller may still reduce or stop immediately when a no-grid
-        # session cannot safely bridge a three-phase PV deficit.
+        # Phase-down decisions are owned by controlAutomaticCharging() before
+        # current adjustment. Never change the remembered phase mode here
+        # without issuing and confirming a matching phase command.
         if desiredPhaseMode == 1 and enteringPhaseMode == 2:
-            phaseDownStatus = self.controlThreePhasePvDeficit()
-            if phaseDownStatus is not None:
-                return phaseDownStatus
+            d(
+                self,
+                "Holding three-phase state until the phase-deficit controller "
+                "issues a confirmed phase command.",
+            )
+            return VrmEvChargerStatus.Charging
 
         # Phase-up is allowed only by real PV surplus and respects the phase
         # switch cooldown. While waiting, one-phase charging is capped at 16 A.

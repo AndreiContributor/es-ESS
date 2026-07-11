@@ -142,6 +142,14 @@ Completion note:
 - Added hardware-free coverage for shared bidirectional timing, PV-recovery
   timer reset, bounded battery bridging, early no-grid phase-down/stop,
   continuation-only grid fallback, and configuration migration.
+- Follow-up review found and fixed a stale-high raw-overhead path that could
+  record one-phase controller state and send a one-phase current target without
+  issuing the matching Wattpilot phase command. Assigned allowance now remains
+  authoritative for three-phase sufficiency, raw overhead is limited to
+  shortfall/fallback support, and phase-down ownership stays in the automatic
+  control path.
+- Added regression coverage proving stale-high raw overhead cannot desynchronize
+  controller and charger phase mode or start a spurious battery bridge.
 - Kept normal Manual mode, command ownership, D-Bus/MQTT runtime-status paths,
   current limits, and the prohibition on battery/grid-assisted starts and
   phase-up unchanged.

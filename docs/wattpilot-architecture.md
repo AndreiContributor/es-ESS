@@ -258,6 +258,11 @@ Future Wattpilot changes must preserve these invariants:
   model status.
 - Raw overhead may help with a safe three-to-one fallback, but must not start
   charging or authorize a phase-up.
+- Assigned Wattpilot allowance is authoritative for whether the consumer owns
+  enough PV to remain on three phases. Raw overhead may estimate the physical
+  shortfall and support a safer one-phase fallback, but must not override an
+  insufficient assigned three-phase allowance or mutate controller phase state
+  without a matching Wattpilot phase command.
 - `MinPhaseSwitchSeconds` is the single normal stability/cooldown timer for
   both phase directions. A no-grid session may reduce phase or stop before the
   timer expires when bounded battery assist cannot safely bridge the deficit.
