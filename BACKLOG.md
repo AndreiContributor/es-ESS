@@ -150,6 +150,11 @@ Completion note:
   control path.
 - Added regression coverage proving stale-high raw overhead cannot desynchronize
   controller and charger phase mode or start a spurious battery bridge.
+- Production disconnect validation found that the internal battery-assist
+  lockout cleared immediately while its detailed D-Bus mirror could remain
+  stale during five-minute idle polling. The confirmed-disconnect handler now
+  republishes cleared safety telemetry in the same duty cycle, with regression
+  coverage for the internal and published values.
 - Kept normal Manual mode, command ownership, D-Bus/MQTT runtime-status paths,
   current limits, and the prohibition on battery/grid-assisted starts and
   phase-up unchanged.

@@ -794,6 +794,34 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         self.assertFalse(controller.batteryAssistLockedOut)
 
+    def test_confirmed_disconnect_immediately_publishes_cleared_assist_lockout(self):
+        controller = self._controller()
+        controller.batteryAssistActive = True
+        controller.batteryAssistSince = 100
+        controller.batteryAssistShortfallW = 800
+        controller.batteryAssistLockedOut = True
+        controller.batteryAssistLockoutSince = 100
+        controller.batteryAssistRecoverySince = 120
+        controller.dbusService["/BatteryAssist/Active"] = 1
+        controller.dbusService["/BatteryAssist/Elapsed"] = 500
+        controller.dbusService["/BatteryAssist/Shortfall"] = 800
+        controller.dbusService["/BatteryAssist/LockedOut"] = 1
+        controller.dbusService["/BatteryAssist/RecoveryElapsed"] = 480
+
+        with patch.object(self.fwp.time, "time", return_value=600):
+            result = controller._handleDisconnected()
+
+        self.assertFalse(result)
+        self.assertFalse(controller.batteryAssistActive)
+        self.assertFalse(controller.batteryAssistLockedOut)
+        self.assertEqual(controller.dbusService["/BatteryAssist/Active"], 0)
+        self.assertEqual(controller.dbusService["/BatteryAssist/Elapsed"], 0)
+        self.assertEqual(controller.dbusService["/BatteryAssist/Shortfall"], 0)
+        self.assertEqual(controller.dbusService["/BatteryAssist/LockedOut"], 0)
+        self.assertEqual(
+            controller.dbusService["/BatteryAssist/RecoveryElapsed"], 0
+        )
+
     def test_grid_import_guard_timer_resets_when_import_drops_below_threshold(self):
         controller = self._controller()
         controller.gridL1Dbus.value = 200
