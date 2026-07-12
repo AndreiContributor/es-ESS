@@ -170,6 +170,7 @@ class FroniusWattpilot (esESSService):
         self.lastPhaseSwitchTime = 0
         self.phaseSwitchCandidateMode = 0
         self.phaseSwitchCandidateSince = 0
+        self.phaseSwitchBelowThresholdSince = 0
         self.lastOnOffTime = 0
         self.lastVarDump = 0
         self.chargingTime = 0
@@ -2588,6 +2589,48 @@ class FroniusWattpilot (esESSService):
     def clearPhaseSwitchCandidate(self):
         self.phaseSwitchCandidateMode = 0
         self.phaseSwitchCandidateSince = 0
+        self.phaseSwitchBelowThresholdSince = 0
+
+    def preservePhaseUpCandidateThroughShortDip(self):
+        """Keep phase-up timing through a brief, electrically safe PV dip."""
+        decision = PhaseDecisions.evaluate_phase_up_drop_grace(
+            self.phaseSwitchCandidateMode,
+            max(0.0, float(self.allowance)),
+            self.phaseUpThresholdW(),
+            self.phaseDownThresholdW(),
+            getattr(self, "phaseSwitchBelowThresholdSince", 0),
+            self.surplusDropGraceSeconds,
+            time.time(),
+        )
+        self.phaseSwitchBelowThresholdSince = (
+            decision.next_below_threshold_since
+        )
+
+        if decision.reason == PhaseDecisions.PHASE_UP_DROP_GRACE_STARTED:
+            self.publishServiceMessage(
+                self,
+                "Phase-up allowance dipped below {0:.0f}W but remains above "
+                "the effective three-phase floor. Preserving the candidate for up to "
+                "{1}s.".format(
+                    self.phaseUpThresholdW(), self.surplusDropGraceSeconds
+                ),
+            )
+        elif decision.reason == PhaseDecisions.PHASE_UP_DROP_GRACE_EXPIRED:
+            self.publishServiceMessage(
+                self,
+                "Phase-up allowance stayed below {0:.0f}W for {1:.0f}s. "
+                "Resetting the phase-up timer.".format(
+                    self.phaseUpThresholdW(), decision.drop_seconds
+                ),
+            )
+        elif decision.reason == PhaseDecisions.PHASE_UP_DROP_BELOW_MINIMUM:
+            self.publishServiceMessage(
+                self,
+                "Phase-up allowance fell below the effective three-phase "
+                "floor. Resetting the phase-up timer.",
+            )
+
+        return decision.preserve_candidate
 
     def adjustChargeForPvAllowance(self):
         desiredPhaseMode = self.desiredPhaseModeForPvAllowance()
@@ -2595,6 +2638,20 @@ class FroniusWattpilot (esESSService):
 
         if enteringPhaseMode == 0:
             enteringPhaseMode = 1
+
+        # A one-phase phase-up candidate may survive a short allocation dip,
+        # but only while assigned PV remains electrically capable of supporting
+        # the effective three-phase-capable floor. The full phase-up threshold is still
+        # required again at the command boundary.
+        phaseUpDropGraceActive = False
+        if desiredPhaseMode == 2:
+            self.phaseSwitchBelowThresholdSince = 0
+        elif enteringPhaseMode != 2:
+            phaseUpDropGraceActive = (
+                self.preservePhaseUpCandidateThroughShortDip()
+            )
+            if phaseUpDropGraceActive:
+                desiredPhaseMode = 2
 
         # Phase-down decisions are owned by controlAutomaticCharging() before
         # current adjustment. Never change the remembered phase mode here
@@ -2637,16 +2694,29 @@ class FroniusWattpilot (esESSService):
                 targetAmps = self.targetCurrentForPhase(1, self.allowance)
                 self.currentPhaseMode = 1
                 self.wattpilot.set_power(targetAmps)
-                d(
-                    self,
-                    "3-phase PV threshold reached; waiting for stable phase-up allowance ({0:.0f}/{1}s).".format(
-                        phaseUpDecision.stable_seconds,
-                        self.minimumPhaseSwitchSeconds,
-                    ),
-                )
+                if phaseUpDropGraceActive:
+                    d(
+                        self,
+                        "Preserving phase-up candidate through a short PV dip "
+                        "({0:.0f}/{1}s stable).".format(
+                            phaseUpDecision.stable_seconds,
+                            self.minimumPhaseSwitchSeconds,
+                        ),
+                    )
+                else:
+                    d(
+                        self,
+                        "3-phase PV threshold reached; waiting for stable phase-up allowance ({0:.0f}/{1}s).".format(
+                            phaseUpDecision.stable_seconds,
+                            self.minimumPhaseSwitchSeconds,
+                        ),
+                    )
                 return VrmEvChargerStatus.Charging
 
-            if phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_READY:
+            if (
+                phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_READY
+                and self.allowance >= self.phaseUpThresholdW()
+            ):
                 targetAmps = self.targetCurrentForPhase(2, self.allowance)
                 i(self, "PV surplus supports 3-phase charging. Switching to 3-phase.")
                 self.publishServiceMessage(
@@ -2660,6 +2730,19 @@ class FroniusWattpilot (esESSService):
                 self.clearPhaseSwitchCandidate()
                 self.wattpilot.set_power(targetAmps)
                 return VrmEvChargerStatus.SwitchingTo3Phase
+
+            if phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_READY:
+                targetAmps = self.targetCurrentForPhase(1, self.allowance)
+                self.currentPhaseMode = 1
+                self.wattpilot.set_power(targetAmps)
+                d(
+                    self,
+                    "Phase-up timer is mature; waiting for assigned allowance "
+                    "to recover to {0:.0f}W before switching.".format(
+                        self.phaseUpThresholdW()
+                    ),
+                )
+                return VrmEvChargerStatus.Charging
 
             targetAmps = self.targetCurrentForPhase(1, self.allowance)
             self.currentPhaseMode = 1

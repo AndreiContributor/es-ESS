@@ -152,6 +152,73 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
         self.assertEqual(ready.action, decisions.PHASE_SWITCH_READY)
         self.assertEqual(ready.stable_seconds, 0)
 
+    def test_phase_up_drop_grace_preserves_only_short_three_phase_capable_dips(self):
+        started = decisions.evaluate_phase_up_drop_grace(
+            candidate_mode=2,
+            allowance_w=4180,
+            phase_up_threshold=4200,
+            phase_down_threshold=4140,
+            below_threshold_since=0,
+            grace_seconds=20,
+            now=100,
+        )
+        self.assertTrue(started.preserve_candidate)
+        self.assertEqual(started.next_below_threshold_since, 100)
+        self.assertEqual(started.reason, decisions.PHASE_UP_DROP_GRACE_STARTED)
+
+        active = decisions.evaluate_phase_up_drop_grace(
+            candidate_mode=2,
+            allowance_w=4180,
+            phase_up_threshold=4200,
+            phase_down_threshold=4140,
+            below_threshold_since=100,
+            grace_seconds=20,
+            now=119,
+        )
+        self.assertTrue(active.preserve_candidate)
+        self.assertEqual(active.reason, decisions.PHASE_UP_DROP_GRACE_ACTIVE)
+
+        expired = decisions.evaluate_phase_up_drop_grace(
+            candidate_mode=2,
+            allowance_w=4180,
+            phase_up_threshold=4200,
+            phase_down_threshold=4140,
+            below_threshold_since=100,
+            grace_seconds=20,
+            now=120,
+        )
+        self.assertFalse(expired.preserve_candidate)
+        self.assertEqual(expired.reason, decisions.PHASE_UP_DROP_GRACE_EXPIRED)
+
+        below_minimum = decisions.evaluate_phase_up_drop_grace(
+            candidate_mode=2,
+            allowance_w=4139,
+            phase_up_threshold=4200,
+            phase_down_threshold=4140,
+            below_threshold_since=0,
+            grace_seconds=20,
+            now=100,
+        )
+        self.assertFalse(below_minimum.preserve_candidate)
+        self.assertEqual(
+            below_minimum.reason,
+            decisions.PHASE_UP_DROP_BELOW_MINIMUM,
+        )
+
+    def test_phase_up_drop_grace_clears_when_full_threshold_recovers(self):
+        recovered = decisions.evaluate_phase_up_drop_grace(
+            candidate_mode=2,
+            allowance_w=4200,
+            phase_up_threshold=4200,
+            phase_down_threshold=4140,
+            below_threshold_since=100,
+            grace_seconds=20,
+            now=110,
+        )
+        self.assertFalse(recovered.preserve_candidate)
+        self.assertEqual(recovered.next_below_threshold_since, 0)
+        self.assertEqual(recovered.reason, decisions.PHASE_UP_DROP_RECOVERED)
+
 
 if __name__ == "__main__":
     unittest.main()

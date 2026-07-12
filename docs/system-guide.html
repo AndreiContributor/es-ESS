@@ -99,10 +99,54 @@
       font-weight: 700;
     }
 
-    .toc-shell { position: sticky; top: 0; z-index: 20; background: rgba(244,245,242,.92); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
-    .toc { display: flex; gap: 4px; padding: 10px 0; overflow-x: auto; scrollbar-width: thin; }
-    .toc a { flex: 0 0 auto; padding: 7px 10px; border-radius: 9px; color: var(--muted); font-size: .82rem; font-weight: 750; text-decoration: none; }
-    .toc a:hover { color: var(--navy); background: var(--surface); }
+    .toc-shell { position: sticky; top: 0; z-index: 20; background: rgba(244,245,242,.94); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+    .toc { padding: 9px 0; }
+    .toc-menu { position: relative; margin: 0; border: 0; background: transparent; }
+    .toc-summary {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 42px;
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 11px;
+      color: var(--navy);
+      font-weight: 800;
+      list-style: none;
+    }
+    .toc-summary::-webkit-details-marker { display: none; }
+    .toc-summary::after { content: "+"; font-size: 1.25rem; font-weight: 500; line-height: 1; }
+    .toc-menu[open] .toc-summary { border-color: var(--line); background: var(--surface); }
+    .toc-menu[open] .toc-summary::after { content: "−"; }
+    .toc-count { margin-left: auto; color: var(--muted); font-size: .78rem; font-weight: 700; }
+    .toc-grid {
+      counter-reset: guide-sections;
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0;
+      right: 0;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 5px;
+      max-height: min(70vh, 520px);
+      padding: 12px;
+      overflow-y: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,.98);
+      box-shadow: var(--shadow);
+    }
+    .toc-grid a { display: flex; gap: 9px; padding: 9px 11px; border-radius: 9px; color: var(--muted); font-size: .84rem; font-weight: 750; text-decoration: none; }
+    .toc-grid a::before {
+      counter-increment: guide-sections;
+      content: counter(guide-sections, decimal-leading-zero);
+      flex: 0 0 1.7rem;
+      color: var(--blue);
+      font-size: .72rem;
+      font-weight: 850;
+      letter-spacing: .06em;
+    }
+    .toc-grid a:hover, .toc-grid a:focus-visible { color: var(--navy); background: var(--blue-soft); outline: none; }
 
     main { padding: 26px 0 90px; }
     section { scroll-margin-top: 76px; padding: 58px 0; }
@@ -228,6 +272,7 @@
     @media (max-width: 900px) {
       .grid-3, .grid-4 { grid-template-columns: repeat(2, minmax(0,1fr)); }
       .adapt-grid { grid-template-columns: 1fr; }
+      .toc-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
     }
     @media (max-width: 680px) {
       .hero { padding-top: 46px; }
@@ -236,6 +281,7 @@
       .compare { display: block; overflow-x: auto; font-size: .85rem; }
       .sources { columns: 1; }
       .adapt-item { grid-template-columns: 1fr; }
+      .toc-grid { grid-template-columns: 1fr; }
     }
     @media print {
       body { background: #fff; font-size: 10.5pt; }
@@ -266,20 +312,28 @@
   </header>
 
   <div class="toc-shell">
-    <nav class="toc wrap" aria-label="Page sections">
-      <a href="#overview">Overview</a>
-      <a href="#architecture">Architecture</a>
-      <a href="#problem">The problem</a>
-      <a href="#controller">es-ESS control</a>
-      <a href="#modes">Charging modes</a>
-      <a href="#assist">Battery assist</a>
-      <a href="#setpoint">Grid setpoint</a>
-      <a href="#configure">Configuration</a>
-      <a href="#deploy">Deployment</a>
-      <a href="#commission">Commissioning</a>
-      <a href="#adapt">Adapt it</a>
-      <a href="#sources">Sources</a>
-    </nav>
+    <div class="toc wrap">
+      <details class="toc-menu">
+        <summary class="toc-summary">
+          <span>Guide contents</span>
+          <span class="toc-count">12 sections</span>
+        </summary>
+        <nav class="toc-grid" aria-label="Page sections">
+          <a href="#overview">Overview</a>
+          <a href="#architecture">Architecture</a>
+          <a href="#problem">The problem</a>
+          <a href="#controller">es-ESS control</a>
+          <a href="#modes">Charging modes</a>
+          <a href="#assist">Battery assist</a>
+          <a href="#setpoint">Grid setpoint</a>
+          <a href="#configure">Configuration</a>
+          <a href="#deploy">Deployment</a>
+          <a href="#commission">Commissioning</a>
+          <a href="#adapt">Adapt it</a>
+          <a href="#sources">Sources</a>
+        </nav>
+      </details>
+    </div>
   </div>
 
   <main class="wrap">
@@ -752,6 +806,26 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
         </article>
       </div>
 
+      <article class="card control" style="margin-top:22px" aria-labelledby="worked-charging-example">
+        <p class="card-kicker">Worked behavior example</p>
+        <h3 id="worked-charging-example">One-phase start, three-phase operation and a cloudy PV dip</h3>
+        <p>This timeline uses the parameter values in the recommended adaptable starting point above. Wattage values are approximate because the electrical minimum follows live phase voltage. The fresh SolarOverheadDistributor allowance assigned to Wattpilot—not total PV generation or raw grid export—is authoritative.</p>
+        <ol class="steps">
+          <li><strong>Below the one-phase minimum: wait.</strong><br>At 6 A and about 230 V, one-phase charging needs approximately 1.38 kW of assigned PV. Below that level Auto/Eco remains stopped. Battery assist cannot create a new charging session.</li>
+          <li><strong>Hold enough PV for 60 seconds: start on one phase.</strong><br>When the fresh assigned allowance meets the one-phase electrical minimum for <code>MinOnOffSeconds=60</code>, charging starts on one phase at a bounded current.</li>
+          <li><strong>If a cloud passes on one phase: bridge, reduce or stop.</strong><br>For an already-running charge, eligible battery assist may hold the existing one-phase current for up to <code>BatteryAssistMaxSeconds=600</code> when SOC is at least 50%, shortfall is no greater than 2,500 W, grid import remains within the safety limit, and telemetry is fresh. If PV recovers, assist clears and one-phase charging continues. If the deficit persists but assigned PV still supports approximately 1.38 kW, charging reduces to a PV-supported current; below that minimum it stops after <code>AllowanceDropGraceSeconds=15</code>. An assist timeout remains locked out until PV fully covers EV demand for 120 seconds or the car disconnects. A later restart again requires sufficient assigned PV for 60 seconds.</li>
+          <li><strong>Hold 5,000 W for 10 minutes: switch to three phases.</strong><br>Once assigned allowance reaches <code>ThreePhasePvSurplusStartW=5000</code>, the shared <code>MinPhaseSwitchSeconds=600</code> stability timer begins. A dip shorter than <code>SurplusDropGraceSeconds=20</code> preserves the candidate only while allowance remains above the effective three-phase floor; a deeper or longer dip resets it. The full 5,000 W must be available again when the controller commands and confirms physical three-phase mode. Battery assist cannot authorize or preserve this phase-up.</li>
+          <li><strong>With sufficient PV: stay on three phases.</strong><br>There is no maximum three-phase duration. Charging can remain in that mode indefinitely while assigned PV stays above the effective phase-down threshold.</li>
+          <li><strong>A cloud lowers PV: bridge the running charge when safe.</strong><br>The configured stop threshold is <code>ThreePhasePvSurplusStopW=4100</code>, but the effective threshold is the greater of 4,100 W and the three-phase electrical minimum—about 4.14 kW at 230 V and 6 A. With battery SOC at least <code>BatteryAssistSocMin=50</code> and shortfall no greater than <code>BatteryAssistMaxShortfallW=2500</code>, battery assist may bridge the already-running charge for at most <code>BatteryAssistMaxSeconds=600</code>.</li>
+          <li><strong>PV recovers during the bridge: remain on three phases.</strong><br>The phase-down candidate is cancelled when assigned PV again supports three phases. Full PV coverage for <code>BatteryAssistRecoverySeconds=120</code> satisfies the configured assist-recovery condition.</li>
+          <li><strong>The deficit persists: reduce phase or stop.</strong><br>After the shared phase timer, the controller switches to one phase when fresh allowance can support it; otherwise it stops. If SOC falls below 50%, the shortfall exceeds 2,500 W, assist times out, or telemetry becomes unsafe, no-grid protection may reduce phase or stop before the normal 10-minute wait completes.</li>
+          <li><strong>Later phase-up requires stability again.</strong><br>A return to at least 5,000 W does not cause immediate oscillation back to three phases: the same 600-second stability and cooldown setting applies before another phase change, with only the bounded 20-second, three-phase-capable dip grace described above.</li>
+        </ol>
+        <div class="callout success">
+          <p><strong>Energy-source boundary:</strong> with <code>AllowGridCharging=false</code>, es-ESS does not intentionally use grid power as fallback. During an eligible bridge, Victron ESS determines the physical battery/grid power flow; Wattpilot control only decides whether the already-running EV session may continue.</p>
+        </div>
+      </article>
+
       <div class="callout warning">
         <p><strong>Fake battery monitors:</strong> SolarOverheadDistributor exposes reservation/consumer information as battery-like D-Bus services for VRM visibility. Manually select the actual managed battery/BMS under GX System Setup → Battery Monitor. Do not leave automatic selection where a fake monitor could be chosen.</p>
       </div>
@@ -908,5 +982,29 @@ tail -f -n 50 /data/log/es-ESS/current.log</pre>
   <footer>
     <div class="wrap">Generic system guide for es-ESS · English edition · Inline diagrams are original and intentionally model-adaptable.</div>
   </footer>
+  <script>
+    (() => {
+      const menu = document.querySelector(".toc-menu");
+      if (!menu) return;
+
+      const closeMenu = () => menu.removeAttribute("open");
+
+      menu.querySelectorAll("a").forEach((link) => {
+        link.addEventListener("click", closeMenu);
+      });
+
+      document.addEventListener("click", (event) => {
+        if (menu.open && !menu.contains(event.target)) closeMenu();
+      });
+
+      window.addEventListener("scroll", closeMenu, { passive: true });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && menu.open) {
+          closeMenu();
+          menu.querySelector("summary").focus();
+        }
+      });
+    })();
+  </script>
 </body>
 </html>

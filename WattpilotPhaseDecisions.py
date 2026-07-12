@@ -6,6 +6,14 @@ PHASE_SWITCH_WAIT_STABLE = "wait_stable"
 PHASE_SWITCH_WAIT_COOLDOWN = "wait_cooldown"
 PHASE_SWITCH_READY = "switch"
 
+PHASE_UP_DROP_NOT_APPLICABLE = "not_applicable"
+PHASE_UP_DROP_RECOVERED = "recovered"
+PHASE_UP_DROP_BELOW_MINIMUM = "below_minimum"
+PHASE_UP_DROP_GRACE_DISABLED = "grace_disabled"
+PHASE_UP_DROP_GRACE_STARTED = "grace_started"
+PHASE_UP_DROP_GRACE_ACTIVE = "grace_active"
+PHASE_UP_DROP_GRACE_EXPIRED = "grace_expired"
+
 # Compatibility aliases for existing callers and diagnostics. New code uses
 # the direction-neutral names because the same timing decision now controls
 # both 1-to-3 and 3-to-1 changes.
@@ -21,6 +29,14 @@ class PhaseSwitchTimingDecision:
     next_candidate_since: float
     stable_seconds: float
     cooldown_seconds: float
+
+
+@dataclass(frozen=True)
+class PhaseUpDropGraceDecision:
+    preserve_candidate: bool
+    next_below_threshold_since: float
+    drop_seconds: float
+    reason: str
 
 
 def phase_up_threshold_w(three_phase_start_w, three_phase_minimum_power):
@@ -147,6 +163,60 @@ def evaluate_phase_switch_timing(
         candidate_since,
         stable_seconds,
         cooldown_seconds,
+    )
+
+
+def evaluate_phase_up_drop_grace(
+    candidate_mode,
+    allowance_w,
+    phase_up_threshold,
+    phase_down_threshold,
+    below_threshold_since,
+    grace_seconds,
+    now,
+):
+    """Preserve a phase-up candidate through a short, safe PV dip.
+
+    A candidate can only be preserved while assigned allowance remains at or
+    above the effective three-phase-capable floor. The controller must still
+    require the full phase-up threshold again before issuing a phase command.
+    """
+    if candidate_mode != 2:
+        return PhaseUpDropGraceDecision(
+            False, 0, 0, PHASE_UP_DROP_NOT_APPLICABLE
+        )
+
+    if allowance_w >= phase_up_threshold:
+        return PhaseUpDropGraceDecision(
+            False, 0, 0, PHASE_UP_DROP_RECOVERED
+        )
+
+    if allowance_w < phase_down_threshold:
+        return PhaseUpDropGraceDecision(
+            False, 0, 0, PHASE_UP_DROP_BELOW_MINIMUM
+        )
+
+    if grace_seconds <= 0:
+        return PhaseUpDropGraceDecision(
+            False, 0, 0, PHASE_UP_DROP_GRACE_DISABLED
+        )
+
+    if below_threshold_since <= 0:
+        return PhaseUpDropGraceDecision(
+            True, now, 0, PHASE_UP_DROP_GRACE_STARTED
+        )
+
+    drop_seconds = max(0, now - below_threshold_since)
+    if drop_seconds < grace_seconds:
+        return PhaseUpDropGraceDecision(
+            True,
+            below_threshold_since,
+            drop_seconds,
+            PHASE_UP_DROP_GRACE_ACTIVE,
+        )
+
+    return PhaseUpDropGraceDecision(
+        False, 0, drop_seconds, PHASE_UP_DROP_GRACE_EXPIRED
     )
 
 

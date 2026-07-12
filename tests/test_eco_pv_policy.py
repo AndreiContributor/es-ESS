@@ -126,6 +126,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.threePhasePvSurplusStopW = 4140
         controller.phaseSwitchCandidateMode = 0
         controller.phaseSwitchCandidateSince = 0
+        controller.phaseSwitchBelowThresholdSince = 0
         controller.minimumOnOffSeconds = 300
         controller.minimumPhaseSwitchSeconds = 300
         controller.lastOnOffTime = 0
@@ -444,6 +445,96 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(controller.phaseSwitchCandidateMode, 0)
         controller.wattpilot.set_phases.assert_called_once_with(2)
         controller.wattpilot.set_power.assert_called_once_with(7)
+
+    def test_short_safe_phase_up_dip_preserves_candidate_timer(self):
+        controller = self._controller()
+        controller.minimumPhaseSwitchSeconds = 120
+        controller.lastPhaseSwitchTime = -120
+        self._set_allowance(controller, 4200, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.adjustChargeForPvAllowance()
+
+        self._set_allowance(controller, 4180, 150)
+        with patch.object(self.fwp.time, "time", return_value=150):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 2)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 100)
+        self.assertEqual(controller.phaseSwitchBelowThresholdSince, 150)
+        controller.wattpilot.set_phases.assert_not_called()
+
+        self._set_allowance(controller, 4200, 220)
+        with patch.object(self.fwp.time, "time", return_value=220):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo3Phase)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+
+    def test_mature_phase_up_candidate_waits_for_full_threshold_recovery(self):
+        controller = self._controller()
+        controller.minimumPhaseSwitchSeconds = 120
+        controller.lastPhaseSwitchTime = -120
+        self._set_allowance(controller, 4200, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.adjustChargeForPvAllowance()
+
+        self._set_allowance(controller, 4180, 220)
+        with patch.object(self.fwp.time, "time", return_value=220):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 1)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 100)
+        controller.wattpilot.set_phases.assert_not_called()
+
+        self._set_allowance(controller, 4200, 225)
+        with patch.object(self.fwp.time, "time", return_value=225):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo3Phase)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+
+    def test_phase_up_drop_grace_expiry_resets_candidate_timer(self):
+        controller = self._controller()
+        controller.minimumPhaseSwitchSeconds = 120
+        controller.lastPhaseSwitchTime = -120
+        self._set_allowance(controller, 4200, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.adjustChargeForPvAllowance()
+
+        self._set_allowance(controller, 4180, 150)
+        with patch.object(self.fwp.time, "time", return_value=150):
+            controller.adjustChargeForPvAllowance()
+
+        self._set_allowance(controller, 4180, 170)
+        with patch.object(self.fwp.time, "time", return_value=170):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 0)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 0)
+        controller.wattpilot.set_phases.assert_not_called()
+
+    def test_phase_up_dip_below_electrical_minimum_resets_immediately(self):
+        controller = self._controller()
+        controller.minimumPhaseSwitchSeconds = 120
+        controller.lastPhaseSwitchTime = -120
+        self._set_allowance(controller, 4200, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.adjustChargeForPvAllowance()
+
+        self._set_allowance(controller, 4139, 105)
+        with patch.object(self.fwp.time, "time", return_value=105):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 0)
+        controller.wattpilot.set_phases.assert_not_called()
 
     def test_real_pv_below_three_phase_threshold_keeps_one_phase(self):
         controller = self._controller()

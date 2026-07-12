@@ -111,6 +111,7 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.threePhasePvSurplusStopW = 4140
         controller.phaseSwitchCandidateMode = 0
         controller.phaseSwitchCandidateSince = 0
+        controller.phaseSwitchBelowThresholdSince = 0
         controller.minimumPhaseSwitchSeconds = 0
         controller.minimumOnOffSeconds = 300
         controller.lastPhaseSwitchTime = 0

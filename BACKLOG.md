@@ -155,6 +155,13 @@ Completion note:
   stale during five-minute idle polling. The confirmed-disconnect handler now
   republishes cleared safety telemetry in the same duty cycle, with regression
   coverage for the internal and published values.
+- Production phase-up validation confirmed an exact final 600-second interval
+  and synchronized Wattpilot phase telemetry, but several isolated five-second
+  allowance dips from about 5.1 kW to 4.68-4.89 kW repeatedly discarded valid
+  progress. Phase-up candidates now reuse `SurplusDropGraceSeconds` to tolerate
+  only short dips that remain above the electrical three-phase minimum. Longer
+  or deeper dips still reset timing, and fresh assigned allowance must recover
+  to the full phase-up threshold before a command can be issued.
 - Kept normal Manual mode, command ownership, D-Bus/MQTT runtime-status paths,
   current limits, and the prohibition on battery/grid-assisted starts and
   phase-up unchanged.
