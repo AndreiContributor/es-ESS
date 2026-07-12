@@ -84,6 +84,10 @@ safety-sensitive.
   module responsibilities, command boundaries, safety invariants, or the public
   D-Bus/MQTT runtime-status contract.
 - Do not add shared 16 A cable/current-limiting logic.
+- Preserve the validated runtime baseline in `RuntimeCompatibility.py`: Venus
+  OS `v3.73`, Wattpilot firmware `42.5`, and operator-verified Solar.wattpilot
+  app `2.1.0`. Do not add or approve a version without explicit integration
+  validation and matching tests.
 
 ## Backlog And Review Workflow
 

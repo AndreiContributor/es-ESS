@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
+import RuntimeCompatibility
+
 
 CONTROL_STATE_STOPPED = 0
 CONTROL_STATE_WAITING_FOR_PV = 1
@@ -61,6 +63,13 @@ RUNTIME_STATUS_DBUS_DEFAULTS = {
     "/BatteryAssistActive": 0,
     "/GridImportGuardActive": 0,
     "/TelemetryHealthy": 0,
+    "/CompatibilityOk": 0,
+    "/CompatibilityLiteral": "Unverified",
+    "/ExpectedVenusOsVersion": RuntimeCompatibility.VALIDATED_VENUS_OS_VERSION,
+    "/ActualVenusOsVersion": "Unavailable",
+    "/ExpectedWattpilotFirmware": RuntimeCompatibility.VALIDATED_WATTPILOT_FIRMWARE,
+    "/ActualWattpilotFirmware": "Unavailable",
+    "/ValidatedWattpilotAppVersion": RuntimeCompatibility.VALIDATED_WATTPILOT_APP_VERSION,
 }
 
 RUNTIME_STATUS_TOPIC_SUFFIXES = {
@@ -71,6 +80,13 @@ RUNTIME_STATUS_TOPIC_SUFFIXES = {
     "/BatteryAssistActive": "BatteryAssistActive",
     "/GridImportGuardActive": "GridImportGuardActive",
     "/TelemetryHealthy": "TelemetryHealthy",
+    "/CompatibilityOk": "CompatibilityOk",
+    "/CompatibilityLiteral": "CompatibilityLiteral",
+    "/ExpectedVenusOsVersion": "ExpectedVenusOsVersion",
+    "/ActualVenusOsVersion": "ActualVenusOsVersion",
+    "/ExpectedWattpilotFirmware": "ExpectedWattpilotFirmware",
+    "/ActualWattpilotFirmware": "ActualWattpilotFirmware",
+    "/ValidatedWattpilotAppVersion": "ValidatedWattpilotAppVersion",
 }
 
 _LOG = logging.getLogger(__name__)
@@ -87,6 +103,13 @@ class RuntimeStatusSnapshot:
     battery_assist_active: int
     grid_import_guard_active: int
     telemetry_healthy: int
+    compatibility_ok: int
+    compatibility_literal: str
+    expected_venus_os_version: str
+    actual_venus_os_version: str
+    expected_wattpilot_firmware: str
+    actual_wattpilot_firmware: str
+    validated_wattpilot_app_version: str
 
     def as_dbus_values(self) -> Dict[str, Any]:
         return {
@@ -97,6 +120,13 @@ class RuntimeStatusSnapshot:
             "/BatteryAssistActive": self.battery_assist_active,
             "/GridImportGuardActive": self.grid_import_guard_active,
             "/TelemetryHealthy": self.telemetry_healthy,
+            "/CompatibilityOk": self.compatibility_ok,
+            "/CompatibilityLiteral": self.compatibility_literal,
+            "/ExpectedVenusOsVersion": self.expected_venus_os_version,
+            "/ActualVenusOsVersion": self.actual_venus_os_version,
+            "/ExpectedWattpilotFirmware": self.expected_wattpilot_firmware,
+            "/ActualWattpilotFirmware": self.actual_wattpilot_firmware,
+            "/ValidatedWattpilotAppVersion": self.validated_wattpilot_app_version,
         }
 
 
@@ -468,6 +498,13 @@ class WattpilotRuntimeStatusReporter:
             battery_assist_active=0,
             grid_import_guard_active=0,
             telemetry_healthy=0,
+            compatibility_ok=0,
+            compatibility_literal="Unverified",
+            expected_venus_os_version=RuntimeCompatibility.VALIDATED_VENUS_OS_VERSION,
+            actual_venus_os_version="Unavailable",
+            expected_wattpilot_firmware=RuntimeCompatibility.VALIDATED_WATTPILOT_FIRMWARE,
+            actual_wattpilot_firmware="Unavailable",
+            validated_wattpilot_app_version=RuntimeCompatibility.VALIDATED_WATTPILOT_APP_VERSION,
         )
 
     def _publish_mqtt(self, dbus_path: str, value: Any) -> None:
@@ -487,7 +524,10 @@ class WattpilotRuntimeStatusReporter:
 
     def snapshot(self) -> RuntimeStatusSnapshot:
         phase_mode, phase_literal = self._phase_mode()
-        telemetry_healthy = int(self._telemetry_healthy())
+        compatibility_ok = int(self._compatibility_ok())
+        telemetry_healthy = int(
+            self._telemetry_healthy() and bool(compatibility_ok)
+        )
         grid_guard = int(self._grid_import_guard_active())
         battery_assist = int(bool(getattr(self.controller, "batteryAssistActive", False)))
         control_state = self._control_state(
@@ -518,6 +558,40 @@ class WattpilotRuntimeStatusReporter:
             battery_assist_active=battery_assist,
             grid_import_guard_active=grid_guard,
             telemetry_healthy=telemetry_healthy,
+            compatibility_ok=compatibility_ok,
+            compatibility_literal=(
+                "Validated" if compatibility_ok else "Blocked: version mismatch or unavailable"
+            ),
+            expected_venus_os_version=str(
+                getattr(
+                    self.controller,
+                    "validatedVenusOsVersion",
+                    RuntimeCompatibility.VALIDATED_VENUS_OS_VERSION,
+                )
+            ),
+            actual_venus_os_version=str(
+                getattr(self.controller, "actualVenusOsVersion", None)
+                or "Unavailable"
+            ),
+            expected_wattpilot_firmware=str(
+                getattr(
+                    self.controller,
+                    "validatedWattpilotFirmware",
+                    RuntimeCompatibility.VALIDATED_WATTPILOT_FIRMWARE,
+                )
+            ),
+            actual_wattpilot_firmware=str(
+                getattr(self.controller, "actualWattpilotFirmware", None)
+                or getattr(getattr(self.controller, "wattpilot", None), "firmware", None)
+                or "Unavailable"
+            ),
+            validated_wattpilot_app_version=str(
+                getattr(
+                    self.controller,
+                    "validatedWattpilotAppVersion",
+                    RuntimeCompatibility.VALIDATED_WATTPILOT_APP_VERSION,
+                )
+            ),
         )
 
     def _control_state(
@@ -527,6 +601,8 @@ class WattpilotRuntimeStatusReporter:
         grid_guard: bool,
         battery_assist: bool,
     ) -> int:
+        if not self._compatibility_ok():
+            return CONTROL_STATE_FAULT
         if self.fault_active:
             return CONTROL_STATE_FAULT
         if not self.runtime_state_ready:
@@ -615,6 +691,12 @@ class WattpilotRuntimeStatusReporter:
     def _wattpilot_connected(self) -> bool:
         wattpilot = getattr(self.controller, "wattpilot", None)
         return bool(wattpilot is not None and getattr(wattpilot, "connected", False))
+
+    def _compatibility_ok(self) -> bool:
+        """Default legacy/test controllers to compatible; real controller is explicit."""
+        if hasattr(self.controller, "wattpilotFirmwareCompatible"):
+            return bool(getattr(self.controller, "wattpilotFirmwareCompatible"))
+        return True
 
     def _telemetry_healthy(self) -> bool:
         if not self.runtime_state_ready or not self._wattpilot_connected():

@@ -429,6 +429,15 @@ class Wattpilot(object):
             self._event_handler[event_type] = []
         self._event_handler[event_type].append(callback_fn)
 
+    def set_command_guard(self, callback_fn):
+        """Install a controller-owned guard for all state-changing updates.
+
+        Status requests and authentication remain available so the controller
+        can learn the firmware version.  Only ``setValue`` commands pass
+        through this guard.
+        """
+        self._command_guard = callback_fn
+
     def remove_event_handler(self,event_type,callback_fn):
         if event_type in self._event_handler and callback_fn in self._event_handler[event_type]:
             self._event_handler[event_type].remove(callback_fn)
@@ -462,6 +471,24 @@ class Wattpilot(object):
         self.send_update("lmo", mode.value)
 
     def send_update(self,name,value):
+        if self._command_guard is not None:
+            try:
+                allowed = bool(self._command_guard(name, value))
+            except Exception as ex:
+                allowed = False
+                c(
+                    self,
+                    "Wattpilot command guard failed; blocking {0}.".format(name),
+                    exc_info=ex,
+                )
+            if not allowed:
+                w(
+                    self,
+                    "Blocked Wattpilot setValue {0}={1}: runtime firmware "
+                    "compatibility is not confirmed.".format(name, value),
+                )
+                return False
+
         message = {}
         message["type"]="setValue"
         self.__requestid = self.__requestid+1
@@ -475,6 +502,7 @@ class Wattpilot(object):
                 self.__send(message)
         else:
             self.__send(message)
+        return True
     
     def request_full_status(self):
         self._carStateReady = False
@@ -773,6 +801,7 @@ class Wattpilot(object):
         self._amp = None
         self._AccessState = None
         self._firmware = None
+        self._command_guard = None
         self._WifiSSID = None
         self._AllowCharging = None
         self._mode=None

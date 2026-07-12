@@ -21,6 +21,7 @@ import WattpilotControlState as ControlStates
 import WattpilotDecisionInputs as DecisionInputs
 import WattpilotPhaseDecisions as PhaseDecisions
 import WattpilotSafetyDecisions as SafetyDecisions
+import RuntimeCompatibility
 from Wattpilot import Wattpilot
 from enums import WattpilotModelStatus, WattpilotStartStop, WattpilotControlMode, VrmEvChargerControlMode, VrmEvChargerStatus, VrmEvChargerStartStop
 from esESSService import esESSService
@@ -38,6 +39,17 @@ class FroniusWattpilot (esESSService):
         self.serviceName = self.serviceType + "." + Globals.esEssTagService + "_FroniusWattpilot"
 
         settings = self.config["FroniusWattpilot"]
+        self.validatedVenusOsVersion = RuntimeCompatibility.VALIDATED_VENUS_OS_VERSION
+        self.validatedWattpilotFirmware = (
+            RuntimeCompatibility.VALIDATED_WATTPILOT_FIRMWARE
+        )
+        self.validatedWattpilotAppVersion = (
+            RuntimeCompatibility.VALIDATED_WATTPILOT_APP_VERSION
+        )
+        self.actualVenusOsVersion = RuntimeCompatibility.read_venus_os_version()
+        self.actualWattpilotFirmware = None
+        self.wattpilotFirmwareCompatible = False
+        self._lastWattpilotCompatibilityState = None
         self.minimumOnOffSeconds = int(settings["MinOnOffSeconds"])
         self.minimumPhaseSwitchSeconds = int(settings["MinPhaseSwitchSeconds"])
 
@@ -383,6 +395,7 @@ class FroniusWattpilot (esESSService):
     def initFinalize(self):
         #Create the Wattpilot object and connect. 
         self.wattpilot = Wattpilot(self.config["FroniusWattpilot"]["Host"], self.config["FroniusWattpilot"]["Password"])
+        self.wattpilot.set_command_guard(self.allowWattpilotCommand)
         self.wattpilot._auto_reconnect = True
         self.wattpilot._reconnect_interval = 30
         self.wattpilot.connect()
@@ -406,6 +419,8 @@ class FroniusWattpilot (esESSService):
            )
 
         Helper.waitTimeout(lambda: self.wattpilot.mode is not None, 30)
+        Helper.waitTimeout(lambda: self.wattpilot.firmware is not None, 30)
+        self.refreshWattpilotFirmwareCompatibility()
 
         #determine current modes.
         if (self.wattpilot.mode == WattpilotControlMode.ECO):
@@ -784,10 +799,47 @@ class FroniusWattpilot (esESSService):
         )
         return False
 
+    def refreshWattpilotFirmwareCompatibility(self):
+        actual = None
+        if self.wattpilot is not None:
+            actual = getattr(self.wattpilot, "firmware", None)
+        self.actualWattpilotFirmware = actual
+        compatible = RuntimeCompatibility.wattpilot_firmware_is_validated(actual)
+        self.wattpilotFirmwareCompatible = compatible
+
+        state = (compatible, str(actual) if actual is not None else None)
+        if state != self._lastWattpilotCompatibilityState:
+            if compatible:
+                message = (
+                    "Wattpilot firmware compatibility confirmed: {0}."
+                ).format(actual)
+            else:
+                message = (
+                    "Wattpilot firmware compatibility not confirmed. Expected "
+                    "{0}, received {1}. All es-ESS Wattpilot commands are blocked."
+                ).format(
+                    self.validatedWattpilotFirmware,
+                    actual if actual is not None else "<unavailable>",
+                )
+            self.publishServiceMessage(self, message)
+            if compatible:
+                i(self, message)
+            else:
+                w(self, message)
+            self._lastWattpilotCompatibilityState = state
+        return compatible
+
+    def allowWattpilotCommand(self, _name=None, _value=None):
+        """Authorize commands only after exact ``fwv`` validation."""
+        return self.refreshWattpilotFirmwareCompatibility()
+
     def _update(self):
         try:
             if self.updateWattpilotTransportDashboardStatus():
                 return
+
+            if not self.refreshWattpilotFirmwareCompatibility():
+                return False
 
             effectiveCarConnected = self.updateEffectiveCarConnection()
 
