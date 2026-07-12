@@ -1,900 +1,379 @@
 # es-ESS Backlog
 
-This backlog was created from the requested Wattpilot PR roadmap and a
-safety-focused review of the current application state in this checkout.
+This is the implementation backlog for es-ESS. It preserves completed design
+and validation decisions while keeping active work easy to find.
 
 ## Current App Analysis
 
-es-ESS is a Python service bundle for Victron Venus OS / GX devices. The app is
-structured as independent services that are enabled from `config.ini`.
+es-ESS is a Python service bundle for Victron Venus OS / GX devices. The
+`service/run` entry point starts `es-ESS.py`, which loads and migrates
+configuration, validates runtime compatibility, initializes enabled services,
+connects main/local MQTT, creates the GLib/D-Bus loop, schedules workers,
+combines grid-setpoint requests, publishes service messages, and handles
+shutdown. `esESSService.py` provides the shared service lifecycle and
+registration helpers.
 
-Runtime entry points and orchestration:
+Current integration boundaries:
 
-- `service/run` starts `python /data/es-ESS/es-ESS.py`.
-- `es-ESS.py` loads and upgrades configuration, configures MQTT, starts the
-  GLib/D-Bus loop, initializes enabled services, dispatches D-Bus and MQTT
-  subscriptions, schedules worker callbacks, publishes service messages, and
-  handles SIGTERM cleanup.
-- `esESSService.py` is the base class used by services to register D-Bus paths,
-  D-Bus subscriptions, MQTT subscriptions, worker threads, service messages,
-  and grid-setpoint requests.
+- Wattpilot control is centered in `FroniusWattpilot.py`; `Wattpilot.py` owns
+  WebSocket transport, `WattpilotRuntimeStatus.py` publishes observer status,
+  and the decision/state helpers remain pure and command-free.
+- `SolarOverheadDistributor.py` allocates PV surplus and battery reservation.
+  Other active services integrate MQTT inverters/exporters/temperature,
+  Fronius and Shelly HTTP devices, D-Bus, and local/main MQTT.
+- Active and dormant service status is authoritative in
+  `docs/service-inventory.md`. Wattpilot command ownership and safety
+  invariants are authoritative in `docs/wattpilot-architecture.md`.
+- Hardware-free regression tests under `tests/` cover Wattpilot policy,
+  runtime status, command boundaries, configuration, orchestration, and active
+  service safety paths. CI runs Python 3.12 syntax, configuration-contract, and
+  unittest checks.
 
-Major services and integrations:
+Current validated state:
 
-- Wattpilot support is centered in `FroniusWattpilot.py`.
-- The Wattpilot WebSocket client lives in `Wattpilot.py`.
-- Runtime status for dashboards, Cerbo extensions, MQTT consumers, and
-  diagnostics lives in `WattpilotRuntimeStatus.py`.
-- Wattpilot decision helpers live in `WattpilotDecisionInputs.py`,
-  `WattpilotSafetyDecisions.py`, and `WattpilotPhaseDecisions.py`.
-- PV allowance and battery-reservation coordination come from
-  `SolarOverheadDistributor.py`.
-- Other integrations include MQTT inverter/export services, Shelly grid and PV
-  devices, Fronius smart meters, temperature publishing, D-Bus paths on Venus
-  OS, and local/main MQTT brokers.
+- Venus OS `v3.73`, Wattpilot firmware `42.5`, and operator-verified
+  Solar.wattpilot app `2.1.0` are the only approved runtime baseline.
+- Auto/Eco PV-only control, no-grid protection, bounded running-session battery
+  assist, telemetry freshness, phase switching, reconnect handling, runtime
+  status, configuration migration/validation, and graceful shutdown are
+  implemented and tested.
+- Manual charging remains user-controlled. Direct current/start/stop writes
+  fail closed unless Wattpilot telemetry confirms ECO mode; a one-time release
+  of stale Auto/Eco limits on entry to Manual is the sole approved exception.
+- The remaining Wattpilot live-validation gap is natural winter observation of
+  grid-import and stale-grid-telemetry dispatch. The remaining implementation
+  item is deterministic provenance for `velib_python`.
 
-Current Wattpilot state:
+Deployment information still not established:
 
-- Auto/Eco PV-only control, no-grid protection, battery assist, telemetry
-  freshness, startup grace, raw-overhead freshness, and runtime status reporting
-  are already present in code and tests.
-- Manual-mode reporting is present, and writable EV-charger command paths are
-  guarded so direct current/start/stop/phase commands are accepted only when
-  Wattpilot mode telemetry confirms ECO mode.
-- The Wattpilot EV-charger service publishes both legacy project energy/time
-  paths and the standard Venus `/Session/Energy` and `/Session/Time` paths.
-- `config.sample.ini` and the production config are intended to match. The
-  project uses `config.sample.ini` as the single configuration artifact, and
-  the Wattpilot sample keys are covered by a config contract test.
-- The unused Wattpilot `Username` setting has been removed from the maintained
-  sample and README; `Wattpilot.py` authenticates with password only.
-- README now points setup and config-comment source links at the maintained
-  repository and documents the current Wattpilot Auto/Eco policy, examples, and
-  runtime-status contract.
-- Wattpilot WebSocket reconnect handling is now owned by one bounded worker
-  loop in `Wattpilot.py`; close callbacks no longer recursively call
-  `run_forever()`.
-- Configuration migration uses idempotent helpers so legacy user configs with
-  existing later sections can upgrade without duplicate-section crashes.
-- A GitHub Actions CI workflow now runs hardware-free Python 3.12 syntax,
-  config-contract, and unittest checks on pull requests and pushes to `main`.
-- Tests cover many Wattpilot control decisions and now include a config
-  contract test for undocumented or unknown Wattpilot config keys.
+- Whether Venus OS / GX releases beyond the validated `v3.73` must be
+  supported.
+- What additional live-device, MQTT, D-Bus, or hardware-in-the-loop facilities
+  will be available for future work.
 
-Current test strategy:
-
-- Hardware-free regression tests live under `tests/`.
-- Existing tests stub Victron/D-Bus/MQTT/Wattpilot dependencies and exercise
-  Wattpilot PV-control policy, runtime status, grid guards, phase switching,
-  stale telemetry, battery assist, charge-complete hold, and several Manual
-  mode safety cases.
-- The remaining known validation gap is winter live validation of grid-import /
-  stale-telemetry control branches under natural low-PV conditions.
-
-Unclear deployment details:
-
-- The checked GX/Venus OS device reported Python 3.12.13. The oldest supported
-  Venus OS / GX Python version is still not explicitly stated in README.
-- Available live-device, MQTT, D-Bus, or hardware-in-the-loop validation is not
-  known.
-- Firmware behavior across Wattpilot revisions is not described beyond the
-  current WebSocket client assumptions.
-
-Global delivery rules:
-
-- Implement only the task described in the active PR.
-- Keep normal Wattpilot Manual mode unchanged. Reporting status is allowed;
-  controlling Manual charging is not.
-- In Auto/Eco mode, do not intentionally use grid power when
-  `AllowGridCharging=false`.
-- Battery assist remains an optional, time-limited bridge for an already-running
-  charge only.
-- Add or update unit tests for every behavior change.
-- Run syntax checks and the full test suite before opening a PR.
-- Update README and config documentation whenever a new setting or behavior is
-  introduced.
-- Do not add shared 16 A cable/current-limiting logic.
+Global delivery and safety rules remain in `AGENTS.md`; this backlog does not
+override them.
 
 ## Review Questions And Assumptions
 
 Assumptions:
 
-- The review is for production hardening and implementation planning, not for a
-  single active bug fix.
-- Hardware access is not available in this checkout, so live Wattpilot, D-Bus,
-  MQTT, and Venus OS validation must be documented as manual validation.
-- The user's configuration decision is accepted: use `config.sample.ini` as the
-  only checked-in config example.
+- The backlog supports production hardening and PR-sized implementation work.
+- Hardware-dependent checks are recorded as manual validation when the required
+  device or operating condition is unavailable.
+- `config.sample.ini` remains the only maintained checked-in configuration
+  example.
 
-Open questions:
+Resolved decisions retained for history:
 
-- Which Venus OS / GX versions, beyond the checked Python 3.12.13 device, must
-  CI target?
-- Should VRM/D-Bus writes to `/Mode` remain allowed to switch between Auto and
-  Manual, while `/SetCurrent` and `/StartStop` are blocked whenever Wattpilot is
-  already in Manual?
-- Should uninstall behavior keep a dated backup of `/data/es-ESS/config.ini`
-  before removing the deployed directory?
+- VRM/D-Bus `/Mode` may intentionally select Auto or Manual. `/SetCurrent` and
+  `/StartStop` remain blocked unless Wattpilot telemetry confirms ECO mode.
+- Uninstall preserves a dated `config.ini` backup under
+  `/data/es-ESS-backups/` before removing the deployed directory.
+
+Open question:
+
+- Which Venus OS / GX versions, if any, must be supported beyond `v3.73`?
 
 ## Completed
 
+All completed entries below retain their original identity and durable result.
+Unless an entry explicitly says otherwise, the work preserved Manual-mode
+ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
+Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
+compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
 ### Completed 2026-07-11 - PR 9 Wattpilot Phase Anti-Flapping And Running Grid Fallback
 
-Completion note:
-
-- Replaced the separate one-to-three phase delay with
-  `MinPhaseSwitchSeconds` as the single continuous-condition timer and minimum
-  command interval for both phase directions.
-- Added a three-phase PV-deficit path that holds the existing phase/current
-  only while bounded battery assist is eligible or
-  `AllowGridCharging=true`; recovery of three-phase PV resets the candidate
-  timer.
-- Preserved the no-grid fail-safe: when battery assistance cannot safely bridge
-  the deficit, Auto/Eco immediately reduces to one phase when fresh PV supports
-  it, otherwise stops without waiting for the normal phase timer.
-- Made allowed grid fallback continuation-only for an already-running Auto/Eco
-  session. New starts and phase-up still require fresh, sufficient assigned PV,
-  and Victron ESS remains responsible for the physical battery/grid source.
-- Added configuration v10 migration to remove obsolete
-  `PhaseSwitchDelaySeconds`, documented the shared timer and fallback policy,
-  and aligned maintained battery-assist examples with the 600-second phase
-  interval.
-- Added hardware-free coverage for shared bidirectional timing, PV-recovery
-  timer reset, bounded battery bridging, early no-grid phase-down/stop,
-  continuation-only grid fallback, and configuration migration.
-- Follow-up review found and fixed a stale-high raw-overhead path that could
-  record one-phase controller state and send a one-phase current target without
-  issuing the matching Wattpilot phase command. Assigned allowance now remains
-  authoritative for three-phase sufficiency, raw overhead is limited to
-  shortfall/fallback support, and phase-down ownership stays in the automatic
-  control path.
-- Added regression coverage proving stale-high raw overhead cannot desynchronize
-  controller and charger phase mode or start a spurious battery bridge.
-- Production disconnect validation found that the internal battery-assist
-  lockout cleared immediately while its detailed D-Bus mirror could remain
-  stale during five-minute idle polling. The confirmed-disconnect handler now
-  republishes cleared safety telemetry in the same duty cycle, with regression
-  coverage for the internal and published values.
-- Production phase-up validation confirmed an exact final 600-second interval
-  and synchronized Wattpilot phase telemetry, but several isolated five-second
-  allowance dips from about 5.1 kW to 4.68-4.89 kW repeatedly discarded valid
-  progress. Phase-up candidates now reuse `SurplusDropGraceSeconds` on the
-  normal adjustment path to tolerate short dips that remain above the
-  electrical three-phase minimum; deeper or longer normally evaluated dips
-  reset timing.
-- Follow-up production logs showed that eligible battery assist returns before
-  normal phase-up dip evaluation and therefore leaves an already-existing
-  candidate timer running through its bounded bridge, including a deeper cloud
-  dip. This was explicitly accepted as intended operation: assist cannot create
-  a candidate or issue a phase command, and fresh assigned allowance must
-  recover to the full phase-up threshold before switching. A stopped session
-  may also start directly on three phases when its fresh start allowance already
-  meets that threshold, matching normal Wattpilot behavior.
-- Kept normal Manual mode, command ownership, D-Bus/MQTT runtime-status paths,
-  current limits, and the prohibition on battery/grid-assisted starts and
-  phase-up unchanged.
+- Made `MinPhaseSwitchSeconds` the continuous-condition timer and minimum
+  command interval for both phase directions; configuration v10 removed the
+  obsolete `PhaseSwitchDelaySeconds`.
+- Added three-phase deficit handling: bounded battery assist or permitted grid
+  fallback may hold an already-running charge, while no-grid operation reduces
+  early to one phase or stops when the deficit cannot be bridged. Starts and
+  phase-up still require fresh assigned PV.
+- Fixed stale-high raw overhead so assigned allowance remains authoritative and
+  controller phase state cannot change without the matching Wattpilot command.
+- Production disconnect validation led to same-cycle publication of cleared
+  battery-assist safety state instead of waiting for idle polling.
+- Production phase-up validation confirmed the 600-second interval and led to
+  short-drop grace above the electrical three-phase floor. Deeper/longer normal
+  dips reset timing; an eligible assist may preserve, but never create, an
+  existing candidate, and full fresh allowance is still required to switch.
+- Added regression coverage for timing, recovery resets, bridging, early
+  phase-down/stop, continuation-only grid fallback, stale raw overhead,
+  disconnect publication, short dips, and migration.
 
 ### Completed 2026-07-11 - PR 8 Wattpilot Dispatch Handler Extraction
 
-Completion note:
-
-- Added pre-refactor characterization coverage for every control state's
-  dispatch return semantics plus the stale-grid-telemetry and disconnect
-  side-effect branches.
-- Extracted the inline dispatch bodies into named controller handlers while
-  keeping state selection, safety ordering, service messages, VRM status
-  publication, Wattpilot commands, mutable resets, and return behavior
-  unchanged.
-- Kept `EXTERNAL_LOW_PRICE` separate from ordinary external charging so its
-  Auto/no-grid guard remains explicit, and preserved the existing unavailable
-  and unknown-state fallback behavior through named handlers.
-- Added isolated handler tests for stale grid telemetry and disconnect cleanup,
-  plus all-state delegation coverage for the thin dispatcher.
-- Verified the characterization tests before refactoring, 94 focused Wattpilot
-  policy and command-boundary tests afterward, changed-file compilation, and
-  all 204 hardware-free tests.
-- Kept the change structural: no Manual/Auto behavior, charging policy,
-  selector ordering, command ownership, D-Bus/MQTT contract, configuration,
-  documentation boundary, or public setting changed.
+- Characterized every control-state return and the stale-grid/disconnect side
+  effects, then extracted named controller handlers without changing selector
+  ordering or behavior.
+- Kept `EXTERNAL_LOW_PRICE` separate so its Auto/no-grid guard remains explicit
+  and preserved unavailable/unknown fallback behavior.
+- Added isolated handler and all-state delegation tests; verified 94 focused
+  Wattpilot tests and all 204 hardware-free tests.
 
 ### Completed 2026-07-11 - PR 7 Startup Config Value Validation
 
-Completion note:
-
-- Added startup validation after configuration migration for Wattpilot current
-  bounds, phase-threshold ordering, battery-assist limits, non-negative timing
-  guards, positive worker intervals, and positive device polling intervals.
-- Included every configured `ShellyPMInverter:*` section in polling validation
-  alongside Fronius JSON and Shelly 3EM devices.
-- Collected and logged every invalid section/key/rule at CRITICAL level before
-  exiting with status 1, while preserving optional missing settings that use
-  existing runtime defaults.
-- Documented supported ranges in `README.md` and `config.sample.ini`, including
-  the IEC 61851/Wattpilot `6..32 A` current range and the intentional allowance
-  of zero-valued debounce delays.
-- Added hardware-free coverage for every invalid rule, valid boundary values,
-  the maintained sample, aggregate diagnostics, non-numeric values, optional
-  device sections, and startup invocation.
-- Verified changed-file compilation, focused configuration tests, config
-  contracts, all 200 hardware-free tests, and `git diff --check`.
-- Kept configuration defaults, migration versions, Wattpilot Manual/Auto
-  behavior, command ownership, D-Bus/MQTT contracts, and service initialization
-  boundaries unchanged.
+- Added aggregate fail-fast startup validation for Wattpilot current/threshold/
+  timing/assist bounds and positive worker/device polling intervals, including
+  every `ShellyPMInverter:*` section.
+- Preserved optional missing settings that use runtime defaults and documented
+  ranges in README and `config.sample.ini`, including `6..32 A` and permitted
+  zero-valued debounce delays.
+- Added invalid-rule, boundary, sample, aggregate-diagnostic, non-numeric,
+  optional-section, and startup-invocation tests; all 200 tests passed.
 
 ### Completed 2026-07-11 - PR 6 Dormant Service Alignment
 
-Completion note:
-
-- Removed the unavailable `Grid2Bat` flag from `config.sample.ini`; no module
-  exists and its runtime hook remains disabled.
-- Removed `ChargeCurrentReducer` from the README active-service configuration
-  table and replaced its obsolete enablement instructions with explicit
-  dormant-service guidance covering `MqttDC`, `ChargeCurrentReducer`,
-  `FroniusSmartmeterRS485`, and `Grid2Bat`.
-- Added the active `FroniusSmartmeterJSON` and `MqttPVInverter` flags that were
-  missing from the README global service table.
-- Updated the service inventory to record dormant services as intentionally
-  unavailable while preserving ignored legacy user flags for compatibility.
-- Added a config contract proving runtime `_checkAndEnable()` calls, maintained
-  sample flags, and the README active-service table contain the same services.
-- Extended migration coverage to prove legacy dormant-service flags remain
-  unchanged and do not require a config-version bump.
-- Kept all dormant runtime hooks disabled and made no service behavior,
-  grid-setpoint, D-Bus, MQTT, or Wattpilot control changes.
+- Removed the nonexistent `Grid2Bat` sample flag and aligned README/sample/
+  inventory active services while documenting `MqttDC`,
+  `ChargeCurrentReducer`, `FroniusSmartmeterRS485`, and `Grid2Bat` as dormant or
+  unavailable.
+- Preserved ignored legacy flags for compatibility and kept all dormant runtime
+  hooks disabled.
+- Added a contract across `_checkAndEnable()`, sample flags, and the README
+  active-service table plus migration coverage for legacy flags.
 
 ### Completed 2026-07-11 - PR 5 Security Hardening
 
-Completion note:
-
-- Replaced the `MinBatteryCharge` `eval()` path in
-  `SolarOverheadDistributor.py` with a constrained AST evaluator that supports
-  numeric literals, `SOC`, `min()`/`max()`, parentheses, and `+`, `-`, `*`,
-  `/`.
-- Added an explicit `batterySoc=None` fallback that logs a warning and uses
-  `MinBatteryCharge=0` for the current distribution cycle instead of relying on
-  a swallowed `NameError`.
-- Replaced `Globals.getUserTime()` shell interpolation through `os.popen()`
-  with `subprocess.run()` using explicit argv and a `TZ` environment variable.
-- Added timezone validation so shell metacharacters and malformed timezone
-  values are rejected before subprocess invocation.
-- Documented the supported `MinBatteryCharge` expression grammar in
-  `README.md` and `config.sample.ini`.
-- Added hardware-free tests for safe `MinBatteryCharge` expressions,
-  unavailable SOC fallback, malicious/invalid expression rejection, structured
-  time subprocess invocation, and malformed timezone rejection.
-- Kept the change limited to security hardening, documentation, tests, and
-  backlog; no Wattpilot Manual/Auto control behavior, D-Bus path names, MQTT
-  topics, service initialization boundaries, or configuration defaults were
-  changed.
+- Replaced `MinBatteryCharge` `eval()` with a constrained AST evaluator for
+  numeric literals, `SOC`, `min()`/`max()`, parentheses, and arithmetic; missing
+  SOC now warns and uses zero for that cycle.
+- Replaced interpolated `os.popen()` time lookup with argv-based
+  `subprocess.run()` and validated timezone input.
+- Documented the expression grammar and added tests for valid, missing-SOC,
+  malicious/invalid, structured-subprocess, and invalid-timezone cases.
 
 ### Completed 2026-07-11 - PR 4A Graceful Shutdown Reliability
 
-Completion note:
-
-- Made SIGTERM cleanup idempotent while preserving grid-setpoint restoration,
-  MQTT unsubscribe, service cleanup, and disconnect ordering.
-- Replaced the swallowable `SystemExit` path with explicit log flushing and
-  `os._exit(0)` after all safety cleanup has completed.
-- Changed `service/run` to exec Python directly so daemontools supervises the
-  application process rather than an intermediate shell.
-- Added a 10-second graceful wait to `restart.sh`, followed by SIGKILL only
-  for original PIDs whose command and `/proc` start time still match.
-- Downgraded expected main/local MQTT shutdown disconnect messages to INFO
-  while preserving warnings for unexpected runtime disconnects.
-- Extended hardware-free orchestration coverage for idempotent cleanup,
-  shutdown ordering, process termination, MQTT log severity, and lifecycle
-  script safeguards.
-- Verified 14 focused tests, all 182 hardware-free tests, repository Python
-  compilation, lifecycle shell syntax, and `git diff --check`.
-- Completed repeated GX log-only validation with the EV disconnected: three
-  graceful restarts each exited the original PID, started a new directly
-  supervised Python PID, ran cleanup once, and recovered MQTT, Wattpilot,
-  consumer initialization, and non-zero worker heartbeats without `SystemExit`,
-  traceback, timeout, SIGKILL fallback, or an inert process.
-- Production deployment exposed CRLF in a copied `service/run`, which prevented
-  daemontools from resolving its shebang. Added repository LF attributes for
-  shell scripts and `service/run` after normalizing the deployed file.
-- Made intentional main/local MQTT shutdown INFO messages synchronous and
-  deduplicated because production showed the asynchronous disconnect callbacks
-  can arrive late or not run before `os._exit(0)`. A follow-up GX restart
-  confirmed each main/local disconnect and reconnect-disabled message appeared
-  exactly once before `Cleaned up. Bye.`, followed by full service recovery.
-- Kept the change limited to lifecycle reliability, tests, README, and backlog;
-  Wattpilot Manual/Auto behavior, charging policy, D-Bus/MQTT contracts, and
-  configuration were not changed.
-
+- Made SIGTERM cleanup idempotent, preserved safety cleanup ordering, flushed
+  logs, and used `os._exit(0)` only after cleanup; `service/run` now directly
+  execs Python.
+- Added a bounded graceful restart with verified-PID/start-time SIGKILL fallback
+  and classified expected MQTT shutdown disconnects as synchronous,
+  deduplicated INFO messages.
+- GX validation across repeated restarts confirmed new supervised PIDs, one
+  cleanup, complete service recovery, and no swallowed exit, traceback,
+  timeout, SIGKILL fallback, or inert process.
+- Production exposed CRLF shebang failure; shell/service files were normalized
+  to LF and repository attributes now enforce it. Follow-up validation confirmed
+  each shutdown message once before `Cleaned up. Bye.`
+- Verified focused shutdown/orchestration tests, all 182 tests, repository
+  compilation, shell syntax, and whitespace checks.
 
 ### Completed 2026-07-11 - PR 4 MQTT And Orchestration Reliability
 
-Completion note:
-
-- Fixed local MQTT reconnect restoration in `es-ESS.py` so
-  `onLocalMqttConnect()` re-subscribes local topics and callbacks on
-  `localMqttClient` instead of `mainMqttClient`.
-- Fixed `publishServiceMessage()` to test the actual main MQTT connection
-  state, including compatibility for clients that expose `is_connected` as a
-  method or as a boolean attribute.
-- Removed the duplicate SolarOverheadDistributor `OnKeywordRegex` MQTT
-  subscription while preserving the original basic-property registration and
-  all other consumer registration topics.
-- Added hardware-free fake-client orchestration tests for reconnect routing,
-  initial MQTT subscription routing, connected/disconnected service-message
-  publication, and boolean `is_connected` compatibility.
-- Added SolarOverheadDistributor subscription coverage proving
-  `OnKeywordRegex` is registered exactly once.
-- Kept the change limited to MQTT/orchestration reliability, tests, and
-  backlog; no Wattpilot charging behavior, D-Bus path names, MQTT topic names,
-  configuration defaults, README guidance, or service-inventory contracts were
-  changed.
+- Corrected local reconnect subscriptions to use `localMqttClient`, made service
+  publication check the real main-client connection state for method/boolean
+  APIs, and removed the duplicate distributor `OnKeywordRegex` subscription.
+- Added fake-client initial/reconnect routing, connected-state, compatibility,
+  and subscription-count tests without changing topic contracts.
 
 ### Completed 2026-07-10 - SolarOverheadDistributor Startup Safety
 
-Completion note:
-
-- Added explicit startup/grid-loss telemetry guards to
-  `SolarOverheadDistributor.updateDistribution()` so missing grid L1/L2/L3 or
-  battery-power values publish fail-safe zero overhead instead of falling into
-  the generic CRITICAL exception path.
-- Published zero consumer allowances, zero assigned/remaining overhead, and a
-  warning service message when required distribution inputs are unavailable.
-- Preserved existing allocation behavior when all grid and battery telemetry is
-  present.
-- Wrapped `SolarOverheadDistributor._persistEnergyStats()` with
-  `_knownSolarOverheadConsumersLock` so concurrent consumer registration cannot
-  mutate the consumer dictionary during the persist pass.
-- Added `tests/test_solar_overhead_distributor.py` with hardware-free coverage
-  for missing grid telemetry, missing battery power, normal overhead
-  calculation, and lock behavior during concurrent persist/registration.
-- Verified with `py_compile`, the focused SolarOverheadDistributor unittest
-  file, and the full hardware-free unittest suite through
-  `uv --cache-dir .uv-cache run --no-project python`.
-- Kept the change limited to SolarOverheadDistributor startup safety, tests,
-  and backlog; no Wattpilot behavior, D-Bus path names, MQTT topic names,
-  configuration defaults, service initialization boundaries, architecture
-  contracts, or README guidance were changed.
+- Missing grid phases or battery power now publish fail-safe zero overhead,
+  zero allowances, and a warning instead of reaching the generic critical path.
+- Protected energy-stat iteration with the consumer-dictionary lock.
+- Added hardware-free missing-input, normal-calculation, and concurrent-lock
+  coverage; syntax, focused, and full tests passed.
 
 ### Completed 2026-07-10 - NoBatToEV Startup Safety
 
-Completion note:
-
-- Added startup telemetry guards to `NoBatToEV._update()` so missing Wattpilot
-  phase power, external EV charger power, consumption, or PV D-Bus values
-  revoke the shared grid-setpoint request instead of raising `TypeError`.
-- Preserved existing NoBatToEV setpoint behavior once all telemetry is present,
-  including EV-load delta calculation, zero-EV revocation, relay-disabled
-  revocation, and grid-loss revocation.
-- Added `tests/test_nobattoev.py` with hardware-free coverage for missing
-  Wattpilot power, missing D-Bus consumption/PV values, populated setpoint
-  delta calculation, zero EV power, and relay-disabled behavior.
-- Verified with `py_compile`, the focused NoBatToEV unittest file, and the full
-  hardware-free unittest suite through `uv --cache-dir .uv-cache run
-  --no-project python`.
-- Kept the change limited to NoBatToEV startup safety, tests, and backlog; no
-  Wattpilot Manual/Auto control behavior, D-Bus path names, MQTT topics,
-  configuration defaults, or service initialization boundaries were changed.
+- Missing Wattpilot phase power, external EV power, consumption, or PV data now
+  revokes the shared grid-setpoint request instead of raising `TypeError`.
+- Preserved normal setpoint delta, zero-EV, relay-disabled, and grid-loss
+  behavior and added hardware-free coverage for each branch.
 
 ### Completed 2026-07-08 - Rebuild Wattpilot Configuration Around `config.sample.ini`
 
-Completion note:
-
-- Added the missing charge-complete hold settings to `[FroniusWattpilot]` in
-  `config.sample.ini`.
-- Removed the unused Wattpilot `Username` sample/README entry because the
-  Wattpilot client authenticates with password only.
-- Updated README to name `config.sample.ini` as the maintained reference,
-  corrected `BatteryMaxChargeInWh`, and documented every active Wattpilot
-  setting from the sample.
-- Added `tests/test_config_contract.py`, which parses
-  `FroniusWattpilot.py` and fails if active Wattpilot keys are missing from
-  `config.sample.ini` or if the sample contains unknown Wattpilot keys.
-- Verified with `py_compile`, the config contract test, and the full unittest
-  suite.
-- Kept the change config/docs/tests-only; no production control behavior,
-  D-Bus paths, MQTT topics, or architecture boundaries were changed.
+- Added missing charge-complete keys, removed unused `Username`, corrected
+  `BatteryMaxChargeInWh`, and documented every active Wattpilot setting.
+- Added `tests/test_config_contract.py` so missing active keys and unknown
+  sample keys fail automatically; syntax, contract, and full tests passed.
 
 ### Completed 2026-07-08 - Make Configuration Upgrades Idempotent And Section-Safe
 
-Completion note:
-
-- Added idempotent config migration helpers in `es-ESS.py`.
-- Updated existing migration defaults so user-provided service flags,
-  `[NoBatToEV]`, and `[MqttPvInverter]` values are preserved.
-- Added hardware-free regression tests in `tests/test_config_migration.py` for
-  existing later sections, missing later sections, and preserved legacy service
-  flags.
-- Verified with `py_compile` and the full unittest suite.
-- Manual validation confirmed a v7 config with existing `[MqttPvInverter]`
-  upgraded to v8, preserved custom values, added missing defaults, and started
-  without the duplicate-section crash.
+- Added idempotent migration helpers that preserve user service flags and
+  existing `[NoBatToEV]` / `[MqttPvInverter]` values.
+- Added migration tests for existing/missing later sections and legacy flags.
+  Live v7-to-v8 validation preserved values, added defaults, and avoided the
+  duplicate-section crash.
 
 ### Completed 2026-07-08 - Document Wattpilot Architecture Boundaries
 
-Completion note:
-
-- Added `docs/wattpilot-architecture.md` with current Wattpilot module
-  boundaries and safety invariants.
-- Documented `Wattpilot.py` as the transport/client boundary, not a PV/no-grid
-  policy module.
-- Documented `FroniusWattpilot.py` as the current controller and command
-  side-effect boundary until smaller decision helpers are extracted.
-- Documented `WattpilotRuntimeStatus.py` as an observer/status publisher that
-  must not issue charger commands.
-- Linked the architecture note from `README.md` and added it to `AGENTS.md`
-  implementation guidance.
-- Added the architecture note to the es-ESS code-review skill inspection list
-  and update rules.
-- Kept the change documentation-only; no production code, config defaults,
-  D-Bus paths, MQTT topics, or tests were changed.
+- Added `docs/wattpilot-architecture.md`, defining transport, controller-command,
+  runtime-observer, decision-helper, and safety boundaries.
+- Linked it from README/AGENTS and incorporated it into the review workflow;
+  this was documentation-only.
 
 ### Completed 2026-07-08 - Document App-Wide Service Inventory And Integration Boundaries
 
-Completion note:
-
-- Added `docs/service-inventory.md` with active initialized services, dormant
-  and config-only entries, shared integration patterns, and follow-up gaps.
-- Documented D-Bus publishers/readers, MQTT boundaries, HTTP/device polling,
-  SolarOverheadDistributor consumers, and grid-setpoint ownership.
-- Added `docs/service-inventory.md` to `AGENTS.md` inspection and maintenance
-  guidance.
-- Added the service inventory to the es-ESS code-review skill inspection list
-  and update rules.
-- Kept the change documentation-only; no production code, config defaults,
-  D-Bus paths, MQTT topics, or tests were changed.
+- Added `docs/service-inventory.md` covering active/dormant services, D-Bus,
+  MQTT, HTTP, distributor consumers, and grid-setpoint ownership.
+- Added the inventory to AGENTS and the review workflow; this was
+  documentation-only.
 
 ### Completed 2026-07-08 - Harden Service Lifecycle Scripts
 
-Completion note:
-
-- Made `install.sh` strict and idempotent for script permissions, service
-  symlink creation/repair, `rc.local` registration, and first-install config
-  creation.
-- Made `restart.sh` and `kill_me.sh` tolerate an already-stopped service
-  without passing an empty PID list to `kill`.
-- Narrowed process matching for lifecycle scripts to the expected
-  `/data/es-ESS/es-ESS.py` command.
-- Updated `uninstall.sh` to stop gracefully before SIGKILL fallback, remove the
-  service symlink, preserve `config.ini` under `/data/es-ESS-backups/`, remove
-  `/data/es-ESS`, and rewrite `rc.local` through a temp file.
-- Updated README lifecycle-command text to document emergency-stop and uninstall
-  config-backup behavior.
-- Verified shell syntax with Git Bash `bash -n` and ran the full hardware-free
-  unittest suite with `uv --cache-dir .uv-cache run --no-project python -m
-  unittest discover -s tests`.
+- Made install strict/idempotent, narrowed restart/kill process matching, and
+  tolerated already-stopped services.
+- Uninstall now stops gracefully, removes service/startup entries, backs up
+  `config.ini`, removes the deployment, and safely rewrites `rc.local`.
+- Updated README and verified shell syntax and the full unittest suite.
 
 ### Completed 2026-07-09 - Rewrite Wattpilot README And Correct Installation Source
 
-Completion note:
-
-- Updated README setup commands to download from
-  `AndreiContributor/es-ESS`.
-- Clarified that `config.sample.ini` is the complete maintained sample and that
-  production config should keep the same supported keys.
-- Rewrote the Wattpilot overview/configuration guidance around current
-  Auto/Eco PV control, Manual-mode ownership, no-grid guard behavior,
-  telemetry freshness, one-phase starts, three-phase switching, timer
-  differences, battery-assist limits, and runtime-status D-Bus/MQTT values.
-- Added PV-only, 300-second cloud-bridge, and conservative timer example
-  snippets.
-- Added deployment verification commands for syntax checks, the hardware-free
-  unittest suite, service restart, and log monitoring.
-- Updated the stale README link comment in `config.sample.ini`.
-- Kept the change documentation/config-comment/backlog-only; no production
-  code, config defaults, D-Bus paths, MQTT topics, or Wattpilot control
-  behavior were changed.
+- Corrected installation to `AndreiContributor/es-ESS` and made
+  `config.sample.ini` the maintained configuration reference.
+- Rewrote Wattpilot guidance for Auto/Eco, Manual ownership, no-grid/freshness,
+  phases, timers, battery assist, runtime status, examples, and deployment
+  verification without changing behavior.
 
 ### Completed 2026-07-09 - Add Wattpilot Decision Characterization Tests Before Refactoring
 
-Completion note:
-
-- Added hardware-free characterization tests for current Wattpilot allowance
-  freshness, raw-overhead phase-down boundaries, grid-import debounce reset,
-  battery-assist grid-import rejection, and pending one-phase confirmation
-  safety behavior.
-- Reused the existing `tests/test_eco_pv_policy.py` controller fixture so the
-  tests describe observable controller decisions and Wattpilot command calls.
-- Kept the change tests/backlog-only; no production code, configuration
-  defaults, D-Bus paths, MQTT topics, architecture boundaries, or charging
-  behavior were changed.
+- Added controller-level tests for allowance freshness, raw-overhead fallback,
+  grid-import debounce reset, assist rejection during import, and pending
+  one-phase confirmation before refactoring; production behavior was unchanged.
 
 ### Completed 2026-07-09 - Add Automated Checks With GitHub Actions
 
-Completion note:
-
-- Added `.github/workflows/ci.yml`.
-- Configured CI to run on pull requests and pushes to `main`.
-- Set CI to Python 3.12, matching the checked GX/Venus OS device Python
-  3.12.13 runtime.
-- Added hardware-free checks for repository Python syntax via `compileall`,
-  the `config.sample.ini` contract test, and the full unittest suite.
-- Documented the workflow path and triggers in README Developer Notes.
-- Kept the change CI/docs/backlog-only; no production code, configuration
-  defaults, D-Bus paths, MQTT topics, architecture boundaries, or charging
-  behavior were changed.
+- Added `.github/workflows/ci.yml` for pull requests and `main` pushes using
+  Python 3.12, repository syntax, config-contract, and full unittest checks.
+- Documented CI in README; no runtime behavior changed.
 
 ### Completed 2026-07-09 - Clean Up Wattpilot Startup Deferred State And Logs
 
-Completion note:
-
-- Initialized `Wattpilot._energyCounterSinceStart` to `None` during client
-  construction so early runtime-status publication can read the property before
-  the first Wattpilot status update.
-- Reworded the Wattpilot client startup log from `Wattpilot connected` to
-  `Wattpilot WebSocket worker started`, matching the actual lifecycle point.
-- Downgraded expected deferred Wattpilot startup readiness messages in
-  `FroniusWattpilot.initFinalize()` from error logging to warning logging and
-  removed misleading `within 30 seconds` hard-failure wording.
-- Added hardware-free startup hygiene tests for the early energy-counter field,
-  WebSocket worker log wording, and deferred-start warning behavior.
-- Verified with `py_compile`, targeted Wattpilot startup/runtime-status tests,
-  and the full hardware-free unittest suite.
-- Kept the change limited to initialization/logging/tests/backlog; no Manual
-  mode, Auto/Eco control decisions, reconnect-loop ownership, D-Bus paths, MQTT
-  topics, or configuration defaults were changed.
+- Initialized the early energy counter, corrected the worker-start log, and
+  changed expected deferred readiness errors into accurate warnings.
+- Added startup hygiene tests and verified focused and full suites without
+  changing control or reconnect ownership.
 
 ### Completed 2026-07-09 - Publish Wattpilot Transport Outage Status To Victron Dashboard
 
-Completion note:
-
-- Added controller-owned Wattpilot transport dashboard reporting in
-  `FroniusWattpilot.py`.
-- Extended runtime-status transport observation to record `WS_ERROR` as well as
-  `WS_CLOSE`, while keeping raw WebSocket callbacks side-effect-free.
-- Set standard Victron EV-charger paths to `/Connected=0`,
-  `/Status=Disconnected`, and `/StatusLiteral="Wattpilot not accessible"` when
-  the Wattpilot transport is unavailable, and restored `/Connected=1` on
-  recovery.
-- Added a visible naming hint for EV-charger detail views, D-Bus inspection,
-  MQTT consumers, and SolarOverheadDistributor messages by setting
-  `/CustomName` and the SolarOverheadDistributor Wattpilot custom-name topic to
-  `Wattpilot not reachable` during transport outages, then restoring the normal
-  Wattpilot name on recovery.
-- Published one outage service message and one recovery service message per
-  outage/recovery cycle.
-- Preserved intentional hibernate idle disconnects as normal idle behavior, not
-  dashboard transport outages.
-- Added hardware-free tests for WebSocket close/error outage reporting,
-  visible custom-name publication, recovery, message de-duplication, no
-  Wattpilot command side effects, and the direct Fronius dashboard hook.
-- Verified with targeted Wattpilot startup/runtime-status tests and the full
-  hardware-free unittest suite.
-- Kept the change limited to dashboard/status publication, runtime transport
-  observation, README, tests, and backlog; no Manual mode, Auto/Eco charge
-  policy, reconnect-loop ownership, configuration defaults, D-Bus path names,
-  or MQTT topic names were changed.
+- Controller-owned outage reporting now publishes `/Connected=0`, truthful
+  disconnected status/literal, temporary `Wattpilot not reachable` naming, and
+  one outage/recovery service message; recovery restores normal values.
+- Runtime observation records close and error events while callbacks remain
+  command-free. Intentional hibernate idle remains normal rather than an outage.
+- Added outage/recovery, naming, deduplication, no-command, and dashboard-hook
+  tests.
 
 ### Completed 2026-07-09 - Investigate Venus EVCS Overview Tile Outage Text
 
-Completion note:
-
-- Investigated the current upstream Victron `gui-v2` EVCS overview tile source.
-- Confirmed `components/widgets/EvcsWidget.qml` renders the overview tile title
-  from a fixed translated `EVCS` label and reads single-charger detail text from
-  standard `/Status`, `/Mode`, `/Session/Energy`, and `/Session/Time` values.
-- Confirmed the overview tile does not read the EV-charger service
-  `/CustomName` or `/StatusLiteral`, so there is no safe es-ESS-only
-  tile-title path to show `Wattpilot not reachable` there without changing
-  truthful `/Status` or `/Mode` values or patching Venus GUI behavior.
-- Updated README to document the Venus/GX overview-tile limitation and to point
-  users to the EV-charger detail view, D-Bus, MQTT runtime status, es-ESS
-  service messages, and SolarOverheadDistributor messages for specific
-  Wattpilot transport-outage text.
-- Kept the change documentation/backlog-only; no production code, tests,
-  configuration defaults, D-Bus path names, MQTT topic names, Manual mode, or
-  Auto/Eco charging behavior were changed.
+- Confirmed upstream `gui-v2` uses fixed `EVCS` title and standard status/mode/
+  session paths, not `/CustomName` or `/StatusLiteral`.
+- Chose truthful es-ESS values and documented detail-view, D-Bus, MQTT, service,
+  and distributor messages as the supported outage route rather than a local UI
+  patch or synthetic charger state.
 
 ### Completed 2026-07-09 - Replace Wattpilot Recursive Reconnect With A Bounded Connection Loop
 
-Completion note:
-
-- Replaced recursive `run_forever()` calls from the Wattpilot WebSocket close
-  callback with a single daemon connection worker loop in `Wattpilot.py`.
-- Added an idempotent `connect()` guard so repeated wake-up/start calls do not
-  create duplicate live WebSocket worker threads.
-- Updated `disconnect(auto_reconnect=False)` to set a stop event, close the
-  WebSocket once, and prevent further reconnect attempts.
-- Preserved existing Wattpilot event callbacks used by
-  `WattpilotRuntimeStatus.py`; close callbacks now only update transport state
-  and emit `WS_CLOSE`.
-- Added `tests/test_wattpilot_client.py` with fake-WebSocket coverage for
-  idempotent connect behavior, non-recursive close handling, worker-loop
-  reconnect, and clean disconnect stopping.
-- Updated README, `docs/wattpilot-architecture.md`, and
-  `docs/service-inventory.md` to document the connection-worker ownership and
-  manual outage/recovery validation path.
-- Live GX/Wattpilot validation confirmed baseline reachability, outage
-  publication (`/Connected=0`, `Wattpilot not accessible`, `Wattpilot not
-  reachable`, `TelemetryHealthy=0`), recovery publication
-  (`/Connected=1`, normal custom name, `TelemetryHealthy=1`), and repeated
-  outage/recovery without duplicate WebSocket workers or worker-loop
-  exceptions.
-- Kept the change limited to Wattpilot client lifecycle, tests, and docs; no
-  Manual mode, Auto/Eco charge policy, phase switching, grid guards,
-  configuration defaults, D-Bus path names, or MQTT topic names were changed.
+- Replaced recursive close-callback reconnect with one daemon worker loop,
+  idempotent `connect()`, and clean stop-event-driven `disconnect()`.
+- Added fake-WebSocket tests for duplicate prevention, non-recursive close,
+  reconnect, and shutdown and updated architecture/inventory/README.
+- Repeated live outages confirmed correct dashboard/runtime health transitions,
+  recovery, and no duplicate workers or unbounded exceptions.
 
 ### Completed 2026-07-09 - Guard Manual Wattpilot Mode From D-Bus/VRM Control Writes
 
-Completion note:
-
-- Added a conservative Wattpilot command-boundary helper in
-  `FroniusWattpilot.py` that accepts direct `/SetCurrent` and `/StartStop`
-  writes only when Wattpilot mode telemetry confirms ECO mode.
-- Rejected direct current, phase, start, and stop commands when Wattpilot
-  reports Manual/default mode or mode telemetry is unavailable.
-- Kept `/Mode` handling separate so VRM/D-Bus can still intentionally switch
-  between Manual and Auto/ECO.
-- Published an operational service message and refreshed charger info when a
-  direct command write is rejected.
-- Added `tests/test_wattpilot_command_boundary.py` coverage for blocked
-  Manual/default writes, fail-closed missing mode telemetry, preserved ECO
-  command behavior, and preserved `/Mode` switching.
-- Updated README to clarify that direct VRM current and start/stop controls are
-  accepted only while Wattpilot telemetry confirms ECO mode.
-- Updated `docs/wattpilot-architecture.md` to document the writable command
-  boundary and fail-closed Manual/default telemetry rule.
-- Kept the change limited to the D-Bus/VRM command boundary, tests, README,
-  architecture docs, and backlog; no Auto/Eco PV policy, phase thresholds, grid
-  guards, MQTT topic names, D-Bus path names, or configuration defaults were
-  changed.
+- `/SetCurrent` and `/StartStop` commands now require confirmed ECO telemetry;
+  Manual/default or missing telemetry fails closed with an operational message.
+- `/Mode` remains the separate intentional Auto/Manual selector.
+- Added Manual/missing/ECO/mode-switch tests and documented the boundary.
 
 ### Completed 2026-07-09 - Publish Venus EVCS Session Energy And Time Paths
 
-Completion note:
-
-- Added `/Session/Energy` and `/Session/Time` to the FroniusWattpilot
-  EV-charger D-Bus service for Venus/GX EVCS overview compatibility.
-- Kept existing `/Ac/Energy/Forward` and `/ChargingTime` paths unchanged and
-  mirrored the same values to the new session paths.
-- Preserved the existing charged-energy reset policy so both energy paths reset
-  together and both time paths publish the same `chargingTime` value.
-- Added hardware-free tests in `tests/test_wattpilot_session_paths.py` for path
-  registration, valid session energy, `onconnect` reset-policy preservation,
-  reset clearing, and charging-time mirroring.
-- Updated README, `docs/wattpilot-architecture.md`, and
-  `docs/service-inventory.md` to document the standard EV-charger session path
-  compatibility.
-- Kept the change limited to additive D-Bus/MQTT path publication, tests, docs,
-  and backlog; no Wattpilot commands, Auto/Eco policy, Manual mode, phase
-  switching, grid guards, MQTT topic names, or configuration defaults were
-  changed.
+- Added `/Session/Energy` and `/Session/Time` mirrors while preserving legacy
+  paths and shared reset/time semantics.
+- Added registration, value, reset, and mirroring tests and documented the
+  additive D-Bus compatibility contract.
 
 ### Completed 2026-07-09 - Document Supported Wattpilot Unavailable Indicator Route
 
-Completion note:
-
-- Selected the supported es-ESS visibility route for Wattpilot transport
-  outages: EV-charger detail view fields, D-Bus inspection, retained MQTT
-  runtime status, es-ESS service messages, and SolarOverheadDistributor
-  consumer messages.
-- Documented that es-ESS will not publish a synthetic charger fault or change
-  `/Status` or `/Mode` only to force outage-specific text into the standard
-  Venus/GX EVCS overview tile.
-- Kept the standard EV-charger contract truthful during wallbox transport
-  outages: `/Connected=0`, `/Status=Disconnected`, and the selected mode such
-  as `/Mode=Auto` can remain simultaneously correct.
-- Left custom GX dashboard extension work and upstream Victron `gui-v2`
-  changes as future explicit product decisions rather than introducing an
-  unproven local UI artifact in this task.
-- Kept the change documentation/backlog-only; no production code, tests,
-  configuration defaults, D-Bus path names, MQTT topic names, Manual mode, or
-  Auto/Eco charging behavior were changed.
+- Selected truthful detail-view, D-Bus, retained MQTT, service-message, and
+  distributor-message outage visibility.
+- Rejected synthetic status/mode values; custom dashboard or upstream UI work
+  remains a separate future product decision.
 
 ### Completed 2026-07-09 - Extract Wattpilot Telemetry And Allowance Evaluation Helpers
 
-Completion note:
-
-- Added `WattpilotDecisionInputs.py` for pure Wattpilot decision-input
-  evaluation: finite numeric parsing, grid telemetry freshness, assigned
-  allowance freshness, minimum-allowance checks, and fresh raw-overhead checks.
-- Updated `FroniusWattpilot.py` to delegate telemetry/allowance evaluation to
-  the helper while keeping MQTT callbacks, D-Bus publication, service messages,
-  Wattpilot command issuing, and mutable controller state in the controller.
-- Added focused helper tests in `tests/test_wattpilot_decision_inputs.py`,
-  including freshness cutoff behavior and stale/non-finite input rejection.
-- Updated `docs/wattpilot-architecture.md` to document the new helper boundary
-  and preserve the controller as the command side-effect owner.
-- Verified with `py_compile`, focused helper tests, existing Wattpilot
-  policy/runtime/startup/session/command-boundary/client tests, and the full
-  hardware-free unittest suite.
-- Kept the change extraction-only; no Manual mode, Auto/Eco control policy,
-  phase thresholds, grid-guard behavior, battery-assist behavior, D-Bus path
-  names, MQTT topic names, or configuration defaults were changed.
+- Added pure `WattpilotDecisionInputs.py` helpers for finite parsing, grid and
+  allowance freshness, minimum allowance, and raw-overhead freshness.
+- Kept live state, publication, messages, and commands in the controller; added
+  focused cutoff/non-finite tests and updated architecture documentation.
 
 ### Completed 2026-07-09 - Extract Wattpilot Grid-Guard And Battery-Assist Decisions
 
-Completion note:
-
-- Added `WattpilotSafetyDecisions.py` for pure grid-import guard and
-  battery-assist decisions.
-- Updated `FroniusWattpilot.py` to delegate grid-import debounce, battery-assist
-  eligibility, timeout lockout, and recovery timing decisions to the helper.
-- Kept Wattpilot commands, mutable controller timestamps, D-Bus/MQTT
-  publication, and service messages in `FroniusWattpilot.py`.
-- Added focused helper tests in `tests/test_wattpilot_safety_decisions.py`.
-- Updated `docs/wattpilot-architecture.md` to document the new helper boundary.
-- Kept the change extraction-only; no Manual mode, Auto/Eco charging policy,
-  phase thresholds, D-Bus path names, MQTT topic names, configuration defaults,
-  or Wattpilot command side effects were changed.
+- Added pure `WattpilotSafetyDecisions.py` helpers for grid-import debounce and
+  bounded running-session battery-assist eligibility/timeout/recovery.
+- Kept timestamps, publication, messages, and commands in the controller and
+  added focused helper tests/documentation.
 
 ### Completed 2026-07-10 - Extract Wattpilot Phase-Switching Decisions
 
-Completion note:
-
-- Added `WattpilotPhaseDecisions.py` for pure phase threshold, desired phase,
-  target-current, distributor-request, and phase-up timing decisions.
-- Updated `FroniusWattpilot.py` to delegate those calculations while keeping
-  `set_phases()`, `set_power()`, pending confirmation, D-Bus/MQTT publication,
-  service messages, and mutable controller timers in the controller.
-- Added focused helper tests in `tests/test_wattpilot_phase_decisions.py`.
-- Updated `docs/wattpilot-architecture.md` to document the new helper boundary.
-- Verified with `py_compile`, focused phase helper tests, existing Wattpilot
-  Eco/PV policy tests, and the full hardware-free unittest suite.
-- Kept the change extraction-only; no Manual mode, Auto/Eco charging policy,
-  phase thresholds, D-Bus path names, MQTT topic names, configuration defaults,
-  or Wattpilot command side effects were changed.
+- Added pure `WattpilotPhaseDecisions.py` helpers for thresholds, desired phase,
+  current, distributor requests, and phase timing.
+- Kept commands, confirmation, publication, messages, and timers in the
+  controller; focused and full tests passed.
 
 ### Completed 2026-07-10 - Stop Auto Control After Confirmed Wattpilot Disconnect
 
-Completion note:
-
-- Fixed the Wattpilot car-disconnect debounce so a stale active Wattpilot model
-  status can only hold `carConnected=false` during the configured confirmation
-  window.
-- After `CarDisconnectConfirmSeconds`, a physical disconnect now wins, clears
-  the effective connected state, reports `Disconnected`, and prevents Auto/Eco
-  current or phase control from continuing until the car is connected again.
-- Added regression tests for the short transient disconnect window, the stale
-  charging-status disconnect field case, and the full `_update()` path.
-- Updated `docs/wattpilot-architecture.md` with the confirmed-disconnect safety
-  invariant.
-- Kept the change limited to disconnect handling; no Manual mode command
-  ownership, grid policy, battery-assist thresholds, phase thresholds, D-Bus
-  path names, MQTT topic names, or configuration defaults were changed.
+- After `CarDisconnectConfirmSeconds`, physical disconnect now overrides stale
+  active model status, publishes disconnected state, and stops Auto/Eco current
+  and phase control until reconnection.
+- Added transient, stale-status, and full-update regression tests and documented
+  the invariant.
 
 ### Completed 2026-07-10 - Add Wattpilot Control-State Shadow Selector
 
-Completion note:
-
-- Added `WattpilotControlState.py` with explicit pure state names and selection
-  order for the existing `FroniusWattpilot._update()` branch routing.
-- Added `tests/test_wattpilot_control_state.py` before implementation and used
-  it to lock safety ordering: transport outage, stale grid telemetry, grid
-  import phase-down/stop, pending phase switch, confirmed disconnect, charging,
-  not-charging, external low-price, phase-switching, and unknown model states.
-- Wired `FroniusWattpilot.py` to run the selector as a passive shadow check
-  beside the existing branch flow. Matching cycles stay quiet; mismatches are
-  logged as warnings with the relevant input snapshot.
-- Kept existing Wattpilot command dispatch, D-Bus/MQTT publication, service
-  messages, timers, and Auto/Eco policy in the controller. The selector does
-  not issue commands or publish state.
-- Updated `docs/wattpilot-architecture.md` to document the new helper boundary
-  and the production-validation stage before the selector owns dispatch.
-- Verified with the new selector tests, existing Wattpilot policy regression
-  tests, syntax checks, and the full hardware-free unittest suite.
-- Kept the change behavior-preserving except for diagnostic warning logs on a
-  shadow-selector mismatch; no Manual mode, Auto/Eco charging policy, phase
-  thresholds, D-Bus path names, MQTT topic names, or configuration defaults
-  were changed.
+- Added pure `WattpilotControlState.py` with characterized safety ordering and a
+  passive shadow comparison beside the existing branch flow.
+- Mismatches logged input snapshots; commands, state, and publication stayed in
+  the controller. Selector, policy, syntax, and full tests passed.
 
 ### Completed 2026-07-10 - Complete Wattpilot Control State-Machine Dispatch
 
-Completion note:
-
-- Updated `FroniusWattpilot._update()` so `WattpilotControlState` now owns the
-  explicit branch selection for each duty cycle.
-- Preserved the safety-sensitive evaluation order: stale no-grid telemetry
-  short-circuits before grid-import checks, grid import is evaluated before
-  pending phase-switch reconciliation, and pending phase-switch reconciliation
-  is evaluated before disconnect/model-status routing.
-- Moved the existing side-effect bodies behind explicit controller dispatch
-  handlers while keeping Wattpilot commands, D-Bus/MQTT publication, service
-  messages, timers, and mutable Auto/Eco state in `FroniusWattpilot.py`.
-- Added a dispatch-ownership regression test proving `_update()` follows the
-  selected control state rather than falling back to the old model-status
-  ladder.
-- Updated `docs/wattpilot-architecture.md` to document selector-owned dispatch
-  and the preserved command boundary.
-- Verified with selector tests, Wattpilot policy/runtime regression tests,
-  syntax checks, and the full hardware-free unittest suite.
-- Kept the change behavior-preserving; no Manual mode command ownership,
-  Auto/Eco charging policy, phase thresholds, D-Bus path names, MQTT topic
-  names, or configuration defaults were changed.
+- Made the selector own branch choice while preserving stale-grid-before-import,
+  import-before-pending-switch, and pending-switch-before-model routing.
+- Existing side effects moved behind controller handlers; a dispatch-ownership
+  regression test proved `_update()` follows the selected state.
 
 ### Completed 2026-07-10 - Release Auto/Eco Limits When Entering Manual Mode
 
-Completion note:
-
-- Investigated live logs showing a charge that started in Auto/Eco one-phase
-  mode, then moved to Manual/default mode while Wattpilot remained constrained
-  to one phase.
-- Added a one-time Manual-entry release path for both explicit VRM `/Mode`
-  Auto-to-Manual writes and observed Wattpilot ECO-to-Default transitions.
-- The release clears Auto/Eco transition state, sets Wattpilot phase selection
-  back to automatic/unrestricted mode, and restores the configured effective
-  maximum current without sending a Manual start or stop command.
-- Added regression tests proving Manual entry releases stale Auto/Eco phase and
-  current limits once and does not repeat those commands while Manual remains
-  active.
-- Updated README and `docs/wattpilot-architecture.md` to document the approved
-  Manual-mode exception: es-ESS does not control normal Manual charging, but it
-  may release its own stale Auto/Eco constraints when Manual is selected.
-- Kept normal Manual `/SetCurrent` and `/StartStop` command rejection unchanged.
+- Added a one-time release for explicit or observed Auto/Eco-to-Manual entry:
+  clear transition state, restore automatic phase selection, and restore the
+  effective maximum current without starting or stopping Manual charging.
+- Added once-only/non-repetition tests and documented this approved exception;
+  normal Manual current/start/stop rejection remains unchanged.
 
 ### Completed 2026-07-10 - Evaluate Fronius Module Packaging
 
-Completion note:
-
-- Inventoried the Fronius and Wattpilot root modules and their current import
-  assumptions.
-- Confirmed active services are loaded from `es-ESS.py` by root module/class
-  name through `_checkAndEnable()`, so service names such as
-  `FroniusWattpilot` and `FroniusSmartmeterJSON` currently double as import
-  contracts.
-- Confirmed `FroniusWattpilot.py`, `esESSService.py`, and the hardware-free
-  tests still use direct root imports or direct root file loading for
-  `Wattpilot.py`, `WattpilotRuntimeStatus.py`, and Wattpilot decision helpers.
-- Confirmed Venus OS deployment runs `/data/es-ESS/es-ESS.py` directly through
-  `service/run`, making root-module imports the lowest-risk layout for the
-  current service bundle.
-- Decided to keep the flat root service-module layout for now. A future
-  `fronius` or `integrations/fronius` package move should be a standalone
-  compatibility refactor with root wrappers or service-loader changes, explicit
-  import tests, and live startup validation.
-- Updated `docs/service-inventory.md` with the module-layout decision and the
-  rule not to combine package refactors with Wattpilot control, safety,
-  phase-switching, or runtime-status changes.
-- Kept the change documentation/backlog-only; no production code, tests,
-  imports, configuration defaults, D-Bus paths, MQTT topics, Manual mode, or
-  Auto/Eco charging behavior were changed.
+- Confirmed root module/class names are runtime import contracts for the service
+  loader, tests, and `/data/es-ESS/es-ESS.py` deployment.
+- Chose to retain the flat layout. Any package move requires a standalone
+  compatibility refactor with wrappers or loader changes, import tests, and live
+  startup validation, separate from Wattpilot behavior.
+- Recorded the decision in the service inventory; no code/import changed.
 
 ### Completed 2026-07-10 - Investigate EVCS UI Formatting Alignment
 
-Completion note:
-
-- Confirmed es-ESS publishes truthful numeric Wattpilot EVCS values:
-  `/Session/Energy` mirrors `/Ac/Energy/Forward`, and `/Session/Time` mirrors
-  `/ChargingTime`.
-- Inspected current upstream Victron `gui-v2` sources for the EVCS overview,
-  list, and detail surfaces.
-- Confirmed `components/widgets/EvcsWidget.qml` reads `/Session/Energy` as
-  kWh through a compact quantity label and formats `/Session/Time` with
-  `HH:MM` once the value reaches 60 seconds, otherwise `HH:MM:SS`.
-- Confirmed `pages/evcs/EvChargerPage.qml` uses `QuantityTableSummary` for the
-  detail page and formats charging time through `Utils.formatAsHHMM(...)`.
-- Confirmed `pages/evcs/EvChargerListPage.qml` summarizes EVCS power and
-  energy through the standard quantity-table model.
-- Decided not to change es-ESS numeric D-Bus values, not to round or publish
-  display strings for UI alignment, and not to maintain a local GX/Venus UI
-  patch for this cosmetic difference.
-- Documented in README that EVCS precision, unit display, and charging-time
-  text are controlled by Victron UI components and may differ between
-  overview, list, and detail surfaces even when the underlying D-Bus values are
-  correct.
-- Kept the change documentation/backlog-only; no production code, tests,
-  configuration defaults, D-Bus paths, MQTT topics, Manual mode, or Auto/Eco
-  charging behavior were changed.
+- Confirmed es-ESS publishes truthful mirrored numeric session values and that
+  upstream overview/list/detail UI components independently format precision,
+  units, and time.
+- Chose not to publish display strings, alter numeric data, or maintain a local
+  UI patch; documented the UI-owned formatting distinction.
 
 ### Completed 2026-07-11 - PR 3 Service I/O Safety And Remaining Service Coverage
 
-Completion note:
-
-- Added `[Common] HttpRequestTimeout=5` with a v9 config migration and
-  documentation in `config.sample.ini`, README, and the service inventory.
-- Applied the shared timeout to SolarOverheadDistributor HTTP consumer on,
-  off, status, and power requests, preserving existing exception logging and
-  allocation behavior.
-- Wired dormant `FroniusSmartmeterRS485` HTTP polling to the same shared
-  timeout setting if it is re-enabled.
-- Guarded `MqttPVInverter._dtuZeroFeedin()` so zero-target cycles publish an
-  explicit `0%` OpenDTU throttle for producing controllable inverters instead
-  of dividing by zero.
-- Added hardware-free coverage for `MqttPVInverter`, `Shelly3EMGrid`,
-  `ShellyPMInverter`, and `FroniusSmartmeterJSON`, and extended
-  SolarOverheadDistributor/config-migration regression tests for the new
-  timeout behavior.
-- Verified with focused PR 3 tests, `py_compile` on changed Python files, and
-  the full hardware-free unittest suite through `uv --cache-dir .uv-cache run
-  --no-project python`.
-- Kept PR 4 MQTT/orchestration reliability items open and out of this PR.
+- Added `[Common] HttpRequestTimeout=5` with v9 migration/docs and applied it to
+  distributor HTTP consumers and dormant RS485 polling if re-enabled.
+- Prevented zero-target inverter division by publishing explicit `0%` OpenDTU
+  throttle for producing controllable inverters.
+- Added active-service and timeout/migration tests; focused, compilation, and
+  full tests passed. MQTT/orchestration reliability remained separate in PR 4.
 
 ## Backlog
 
@@ -1087,7 +566,7 @@ Done criteria:
   unchanged.
 - Full unittest suite passes.
 
-## PR Execution Queue
+## Suggested Implementation Order / PR Execution Queue
 
 Use this queue as the implementation order. Each numbered entry is one
 PR-sized batch. Do not pull later items into the active PR. When the user says
@@ -1118,35 +597,27 @@ Hardware validation scope for the remaining backlog:
 
 For backlog-only changes:
 
-- Review `BACKLOG.md` for structure, preserved context, and duplicate items.
-- Confirm no code, config, or docs besides `BACKLOG.md` were changed.
+- Confirm every open and completed item identity remains present, resolved
+  decisions remain recorded, active-item templates and queue content are
+  preserved, and no file besides `BACKLOG.md` changes.
 
 For implementation PRs:
 
-- Run `python -m py_compile` on changed Python files.
-- Run the full unittest suite.
-- Run focused Wattpilot tests for any Wattpilot behavior change.
-- Run config migration tests for any `_validateConfiguration()` change.
-- Run config contract tests for any config/sample/README change.
-- Run shell syntax checks for lifecycle script changes where available.
-- Document any checks that cannot run without GX/Venus OS, MQTT, D-Bus, or
-  Wattpilot hardware.
+- Syntax-check changed Python files and run focused tests appropriate to the
+  change, followed by `python -m unittest discover -s tests`.
+- Run config migration/contract tests when configuration logic, sample keys, or
+  README configuration contracts change; run shell syntax checks for lifecycle
+  scripts.
+- Record any GX/Venus OS, MQTT, D-Bus, Wattpilot, or natural-condition checks
+  that remain manual.
 
-## User Manual Test Checklist
+## Outstanding Manual Validation
 
-- Confirm production `config.ini` matches the maintained `config.sample.ini`
-  structure after config cleanup.
-- Confirm Wattpilot Manual mode can be reported but is not controlled by es-ESS.
-- Confirm Auto/Eco starts only from fresh PV allowance.
-- Confirm Auto/Eco does not intentionally use grid power when
-  `AllowGridCharging=false`.
-- Confirm stale grid telemetry blocks starts and stops active Auto/Eco charging.
-- Confirm stale or missing allowance blocks starts and stops active Auto/Eco
-  after the configured debounce.
-- Confirm battery assist only bridges an already-running charge and respects
-  SOC, duration, shortfall, and recovery settings.
-- Confirm one-phase and three-phase switching follows configured thresholds and
-  timing guards.
-- Confirm Wattpilot reconnect after outage recovers without duplicate workers.
-- Confirm service install/restart/uninstall behavior on a non-production GX or
-  staging path.
+- **Log-only:** validate the future `velib_python` provenance/import change on
+  Venus OS `v3.73`, including startup, D-Bus registration, MQTT recovery, and
+  absence of unintended Wattpilot commands.
+- **Active charging required:** observe natural winter/low-PV grid-import or
+  stale-grid-telemetry dispatch with `AllowGridCharging=false`; do not force an
+  unsafe import or telemetry outage.
+- The complete operator behavior checklist remains in README and the safety
+  invariants remain in `docs/wattpilot-architecture.md`.

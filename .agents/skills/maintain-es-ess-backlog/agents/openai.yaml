@@ -1,0 +1,7 @@
+interface:
+  display_name: "Maintain es-ESS Backlog"
+  short_description: "Refresh, review, and compact BACKLOG.md"
+  default_prompt: "Use $maintain-es-ess-backlog to refresh, review, and safely compact BACKLOG.md."
+
+policy:
+  allow_implicit_invocation: false
