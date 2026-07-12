@@ -93,6 +93,29 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-12 - PR Group 1 Runtime Fail-Safe Hardening
+
+- Removed the Shelly 3EM debug-only 300 W subtraction so raw phase and total
+  grid power now reach D-Bus and net-metering integration without resetting
+  historically persisted counters.
+- Fixed MQTT automatic-consumer status handling so matching state is recorded,
+  zero allowance can publish the off command, and malformed payload/regex data
+  is visible without overwriting the last valid state.
+- Submitted D-Bus callbacks as callable/argument pairs and routed both D-Bus
+  callback and worker Futures through shared exception reporting without
+  blocking the GLib callback thread.
+- Preserved recurring GLib timers after scheduling errors while retaining
+  one-shot removal and existing worker-overrun skipping.
+- Made NoBatToEV treat a missing Wattpilot client as unavailable telemetry and
+  revoke its shared setpoint request before logging every unexpected update
+  failure.
+- Protected shared grid-setpoint requests with a narrow snapshot lock while
+  preserving additive values, change-only publication, and the existing
+  default fallback; no bounds or clamping were added.
+- Added hardware-free raw-meter, MQTT consumer, D-Bus/worker Future,
+  NoBatToEV failure, and grid-setpoint concurrency regressions. Python syntax,
+  48 focused tests, and all 257 hardware-free tests passed.
+
 ### Completed 2026-07-11 - PR 9 Wattpilot Phase Anti-Flapping And Running Grid Fallback
 
 - Made `MinPhaseSwitchSeconds` the continuous-condition timer and minimum
@@ -387,163 +410,40 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ## Backlog
 
-### P1 - Remove Hard-Coded 300 W Grid Telemetry Falsification
+### P2 - Define Safe Grid-Setpoint Bounds
 
 Goal:
 
-Publish true Shelly grid measurements so ESS control and energy counters use
-real telemetry.
+Prevent unreviewed extreme combined grid setpoints after safe site-independent
+or configured limits are established.
 
 Problem:
 
-`Shelly3EMGrid.queryShelly()` always subtracts 300 W from L2 and total power.
-This production debug residue falsifies D-Bus grid values and permanently
-skews net-metering counters.
+The shared combiner adds every active request to `DefaultPowerSetPoint` without
+minimum or maximum bounds. The repository does not currently establish values
+that are safe for every supported ESS site, so implementing an arbitrary clamp
+could reject legitimate NoBatToEV operation or permit an unsafe range.
 
 Evidence:
 
-- `Shelly3EMGrid.py:136-138` contains the unconditional subtraction.
-- The adjusted values are published and integrated at lines 141-173.
+- `es-ESS.py:696-707` publishes the additive result without bounds.
+- `config.sample.ini` defines `DefaultPowerSetPoint` but no approved combined
+  minimum or maximum.
 
 Implementation:
 
-- Remove only the debug subtraction. Preserve meter signs, paths, polling, and
-  net-metering behavior.
-- Document that existing persisted counters may already contain historical
-  error; do not reset operator data automatically.
-
-Files to change:
-
-- `Shelly3EMGrid.py`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Extend `tests/test_shelly3em_grid.py` with raw L2/total publication and raw
-  net-counter integration cases using the hardware-free stub pattern.
-
-Expected coverage:
-
-- Proves no synthetic offset reaches D-Bus or persistence; existing passing
-  tests remain unchanged.
-
-Manual validation:
-
-Log-only. Compare Cerbo grid power with the Shelly UI during a normal poll.
-
-Manual test steps:
-
-1. Restart es-ESS and compare L2/total values with the Shelly native reading.
-2. Confirm there is no approximately 300 W offset.
-
-Risks and dependencies:
-
-- Removing the offset changes reported production values immediately.
-- No other backlog item must land first.
-
-Open questions:
-
-- Whether the operator wants to reset historically skewed counters; the fix
-  must not do so automatically.
-
-Done criteria:
-
-- Raw Shelly power is published and integrated without an artificial offset.
-- Full unittest suite passes.
-
-### P1 - Fix MQTT-Consumer Off-Control Format-String Crash
-
-Goal:
-
-Allow an MQTT-controlled distributor consumer to be tracked and switched off
-when its allowance falls to zero.
-
-Problem:
-
-The matching-status log formats three fields with two arguments. The eager
-`str.format()` raises before `npcState` becomes true, so the later off-control
-branch cannot run and a consumer may continue drawing battery or grid power.
-
-Evidence:
-
-- `SolarOverheadDistributor.py:950` has the invalid format call.
-- `mqttControl()` gates the off command on `allowance == 0 and npcState`.
-
-Implementation:
-
-- Correct the log arguments and guard the consumer MQTT callback so malformed
-  input is visible without skipping state handling silently.
-- Preserve MQTT topics, payloads, allocation semantics, and HTTP consumers.
-
-Files to change:
-
-- `SolarOverheadDistributor.py`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Extend `tests/test_solar_overhead_distributor.py` with status-match and
-  zero-allowance off-command cases using hardware-free MQTT stubs.
-
-Expected coverage:
-
-- Proves MQTT consumers can transition on and off; existing passing tests
-  remain unchanged.
-
-Manual validation:
-
-Fault simulation in a low-risk window with an MQTT consumer.
-
-Manual test steps:
-
-1. Publish a matching on-status and confirm no `IndexError`.
-2. Reduce allowance to zero and confirm the off command is published.
-
-Risks and dependencies:
-
-- Low and limited to MQTT-controlled distributor consumers.
-- No other backlog item must land first.
-
-Open questions:
-
-- None.
-
-Done criteria:
-
-- Matching status updates `npcState` and zero allowance issues the off command.
-- Full unittest suite passes.
-
-### P1 - Fix D-Bus Value-Change Thread-Pool Dispatch
-
-Goal:
-
-Run D-Bus subscription callbacks on the worker pool and surface their failures.
-
-Problem:
-
-`_dbusValueChanged()` calls the callback inline and submits its return value.
-This can block the GLib/D-Bus thread and leaves a Future attempting to call
-`None`, whose exception is never inspected.
-
-Evidence:
-
-- `es-ESS.py:646` uses `self.threadPool.submit(sub.callback(sub))`.
-
-Implementation:
-
-- Submit `sub.callback` and `sub` separately.
-- Use the shared future-exception reporting introduced by the worker-reliability
-  item; preserve callback signatures and subscription routing.
+- Select bounds from an operator-approved production range or a validated
+  Victron source available on the supported Venus OS `v3.75` baseline.
+- Decide whether the bounds are configured or discovered at runtime.
+- Clamp the final combined value and log every clamp without changing request
+  ownership, additive delta semantics, or change-only publication.
+- Add an idempotent configuration migration and user documentation if new
+  settings are introduced.
 
 Files to change:
 
 - `es-ESS.py`
+- `config.sample.ini` and `README.md` if configured bounds are approved
 
 Files to add:
 
@@ -551,238 +451,44 @@ Files to add:
 
 Tests:
 
-- Extend `tests/test_es_ess_mqtt_orchestration.py` to assert callable/argument
-  submission, once-only invocation, and visible callback exceptions using
-  hardware-free stubs.
+- Extend `tests/test_grid_setpoint.py` with exact lower/upper boundaries,
+  below/above-bound clamps, clamp diagnostics, and unchanged in-range sums
+  using hardware-free MQTT stubs.
+- Extend configuration migration and contract tests if settings are added.
 
 Expected coverage:
 
-- Proves callbacks do not execute inline and failures are observable; existing
-  passing tests remain unchanged.
+- Proves combined requests cannot exceed explicitly approved bounds while
+  legitimate in-range NoBatToEV behavior remains unchanged.
+- Existing passing tests remain unchanged.
 
 Manual validation:
 
-Log-only. Confirm D-Bus-driven services continue reacting after restart.
+Fault simulation in a low-risk NoBatToEV window after bounds are approved.
 
 Manual test steps:
 
-1. Restart es-ESS and observe normal D-Bus subscription updates.
-2. Confirm no `NoneType is not callable` failures occur.
+1. Exercise requests near each approved boundary.
+2. Confirm in-range values remain unchanged and out-of-range values clamp with
+   one clear diagnostic.
+3. Confirm revocation restores the configured default setpoint.
 
 Risks and dependencies:
 
-- A callback that accidentally relied on GLib-thread execution may expose a
-  race and must be tested.
-- Coordinate exception reporting with the next item.
+- Incorrect bounds can break legitimate ESS behavior or fail to constrain an
+  unsafe request.
+- Land the grid-setpoint combiner lock before implementing this item.
 
 Open questions:
 
-- None.
+- What minimum and maximum AC power setpoints are safe for the production ESS?
+- Should the limits be configured or read from a validated Victron source?
 
 Done criteria:
 
-- Callbacks are submitted as callables and callback failures are logged.
-- Full unittest suite passes.
-
-### P2 - Surface Worker Exceptions And Preserve Recurring Timers
-
-Goal:
-
-Make worker failures visible and keep periodic GLib scheduling alive after a
-transient error.
-
-Problem:
-
-Completed Futures are checked only with `done()` and their exceptions are never
-retrieved. An exception inside `_runThread()` also returns a false value
-implicitly, causing GLib to remove a recurring timer.
-
-Evidence:
-
-- `es-ESS.py:661-663` replaces completed Futures without checking exceptions.
-- The exception branch at lines 672-673 has no explicit return.
-
-Implementation:
-
-- Add one reusable Future completion logger.
-- Return true after scheduling-path errors for recurring workers and false for
-  one-shot workers; preserve intervals and overrun skipping.
-
-Files to change:
-
-- `es-ESS.py`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Extend `tests/test_es_ess_mqtt_orchestration.py` for raised worker Futures,
-  recurring callback retention, and one-shot removal using hardware-free stubs.
-
-Expected coverage:
-
-- Proves worker errors are logged and transient scheduling faults do not
-  permanently disable services; existing passing tests remain unchanged.
-
-Manual validation:
-
-Log-only on staging.
-
-Manual test steps:
-
-1. Induce a test worker failure and confirm it is logged.
-2. Confirm later scheduled executions still occur.
-
-Risks and dependencies:
-
-- Repeated deterministic failures may now repeat in logs; diagnostics should
-  identify the worker clearly.
-- No other item must land first.
-
-Open questions:
-
-- None.
-
-Done criteria:
-
-- Future exceptions are visible and recurring timers survive transient errors.
-- Full unittest suite passes.
-
-### P2 - Lock The Grid-Setpoint Combiner And Define Safe Bounds
-
-Goal:
-
-Make shared grid-setpoint requests thread-safe and prevent unreviewed extreme
-setpoints.
-
-Problem:
-
-Worker threads mutate `_gridSetPointRequests` while `_manageGridSetPoint()`
-iterates it. A concurrent size change raises and temporarily restores the
-default. The sum is also unbounded, but this repository does not establish a
-safe site-independent minimum or maximum.
-
-Evidence:
-
-- `es-ESS.py:698` iterates the dictionary without a lock.
-- Lines 722-726 mutate it from service paths without the same lock.
-- Lines 696-707 publish the additive result without bounds.
-
-Implementation:
-
-- Add one lock and take a snapshot under it for combination.
-- Preserve additive delta semantics and change-only publication.
-- Add clamping only after operator-approved bounds or a validated Victron
-  source of bounds is selected; log every clamp.
-
-Files to change:
-
-- `es-ESS.py`
-- `config.sample.ini` and `README.md` only if explicit bounds are approved.
-
-Files to add:
-
-- `tests/test_grid_setpoint.py`
-
-Tests:
-
-- Cover multi-request summation, concurrent mutation, revocation, change-only
-  publication, fallback, and any approved clamp using hardware-free MQTT stubs.
-
-Expected coverage:
-
-- Proves thread-safe combination and, if configured, bounded output; existing
-  passing tests remain unchanged.
-
-Manual validation:
-
-Fault simulation in a low-risk NoBatToEV window.
-
-Manual test steps:
-
-1. Observe request registration/revocation and the combined setpoint.
-2. Confirm no iteration errors or values outside approved bounds.
-
-Risks and dependencies:
-
-- Incorrect bounds could break legitimate NoBatToEV behavior.
-- Locking can land before a clamp decision.
-
-Open questions:
-
-- What minimum and maximum AC power setpoints are safe for the production ESS,
-  and should they be configured or read from a validated Victron source?
-
-Done criteria:
-
-- Request mutation/iteration is race-free.
-- Any clamp uses explicitly approved bounds and is covered by tests.
-- Full unittest suite passes.
-
-### P2 - NoBatToEV Fail-Safe Revoke On Update Errors
-
-Goal:
-
-Ensure unavailable telemetry or an update exception cannot leave a stale
-grid-import request active.
-
-Problem:
-
-Existing None guards revoke cleanly, but `_evPower()` dereferences a missing
-Wattpilot client and `_update()` has no outer fail-safe. An exception can bypass
-revocation and leave the previous delta in the shared combiner.
-
-Evidence:
-
-- `NoBatToEV.py:86-90` assumes the service's `wattpilot` object exists.
-- `_update()` at line 92 has no exception cleanup boundary.
-
-Implementation:
-
-- Return `None` when the Wattpilot client is unavailable.
-- Revoke the request on every unexpected `_update()` error before logging it.
-- Preserve current offload arithmetic and shared-combiner ownership.
-
-Files to change:
-
-- `NoBatToEV.py`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Extend `tests/test_nobattoev.py` for a missing client and an injected update
-  exception, asserting revocation with hardware-free stubs.
-
-Expected coverage:
-
-- Proves stale NoBatToEV requests cannot survive input loss or exceptions;
-  existing passing tests remain unchanged.
-
-Manual validation:
-
-Fault simulation in a low-risk window.
-
-Manual test steps:
-
-1. With NoBatToEV active, interrupt Wattpilot availability.
-2. Confirm the request is revoked and no residual import delta remains.
-
-Risks and dependencies:
-
-- Low; conceptually complements the combiner lock but can land independently.
-
-Open questions:
-
-- None.
-
-Done criteria:
-
-- Missing client and all update failures revoke the setpoint request.
+- The bounds and their source are explicitly approved and documented.
+- Combined setpoints are clamped and every clamp is observable.
+- In-range additive behavior and request ownership remain unchanged.
 - Full unittest suite passes.
 
 ### P2 - Fail Closed On Structural Configuration Errors
@@ -2227,26 +1933,15 @@ Done criteria:
 
 ## Suggested Implementation Order / PR Execution Queue
 
-Use this queue as the implementation order. Each numbered entry is one
-PR-sized batch. Do not pull later items into the active PR. When the user says
-`fix next PR items`, select the first PR below containing unfinished backlog
+Use this queue as the implementation order. Entries carrying the same PR-group
+label form one PR-sized batch; unlabelled entries remain separate PRs. Do not
+pull later items into the active PR. When the user says `fix next PR items`,
+select the first PR group or unlabelled entry containing unfinished backlog
 items, present the required implementation plan, risks, and verification, and
 then follow the repository working agreement for approval and implementation.
-After delivery, move the finished backlog items to `Completed` and advance the
-queue on the next request.
+After delivery, move every finished item in that group to `Completed` and
+advance the queue on the next request.
 
-1. P1 remove hard-coded 300 W grid telemetry falsification — restore truthful
-   grid input before any live no-grid validation or downstream control work.
-2. P1 fix MQTT-consumer off-control format-string crash — prevent automatic
-   consumers remaining on after PV allowance disappears.
-3. P1 fix D-Bus value-change thread-pool dispatch — remove GLib-thread blocking
-   and the submitted-`None` failure affecting all D-Bus callbacks.
-4. P2 surface worker exceptions and preserve recurring timers — make failures
-   observable without permanently unscheduling service workers.
-5. P2 NoBatToEV fail-safe revoke on update errors — prevent stale setpoint
-   requests from continuing unintended import.
-6. P2 lock the grid-setpoint combiner and define safe bounds — fix the confirmed
-   request-dictionary race; add clamping only after bounds are approved.
 7. P2 fail closed on structural configuration errors — prevent partially
    initialized safety-sensitive runtimes.
 8. P2 add freshness guard for battery-assist SOC — fail closed when the SOC
@@ -2283,8 +1978,11 @@ queue on the next request.
 23. P4 make shutdown setpoint restore and early logging reliable — preserve PR
     4A cleanup while proving restore delivery and construction-safe logging.
 24. P4 audit and pin the Victron `velib_python` dependency — establish v3.75
-    provenance and deterministic import ownership as a separate compatibility
-    change.
+   provenance and deterministic import ownership as a separate compatibility
+   change.
+25. P2 define safe grid-setpoint bounds — after the combiner lock lands, obtain
+   approved site-safe limits or a validated Victron source before adding any
+   clamp.
 
 The P4 winter grid-import dispatch validation is an observation task, not a
 code PR, and remains open independently of this queue. Complete it only under

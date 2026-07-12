@@ -929,31 +929,38 @@ class SolarOverheadConsumer:
          sod.registerMqttSubscription(self.statusTopic, 1, callback=self.onMqttMessage)
          sod.registerMqttSubscription(self.powerTopic, 1, callback=self.onMqttMessage)
 
-  def onMqttMessage(self, client, userdata, msg):   
-     message = str(msg.payload)[2:-1]
-
-     if (message == ""):
-        d(self, "Empty message on topic {0}. Ignoring.".format(msg.topic))
-        return
-     
-     if (msg.topic == self.powerTopic):
-        res = re.search(str(self.powerExtractRegex), message)
-        if res is not None:
-           d(self, "powerExtractRegex {0} did match for consumer {1}: {2}".format(self.powerExtractRegex, self.consumerKey, res.group(1)))
-           self.consumption = float(res.group(1))
+  def onMqttMessage(self, client, userdata, msg):
+     try:
+        if isinstance(msg.payload, bytes):
+           message = msg.payload.decode("utf-8")
         else:
-            w(self, "powerExtractRegex {0} did not yield any result for consumer {1}".format(self.powerExtractRegex, self.consumerKey))
+           message = str(msg.payload)
 
-     if (msg.topic == self.statusTopic):
-        res = re.search(str(self.onKeywordRegex), message)
-        if res is not None:
-           d(self, "onKeywordRegex {0} did match for consumer {1}: {2}".format(self.onKeywordRegex, self.consumerKey))
-           self.npcState = True
-        else:
-            d(self, "onKeywordRegex {0} did not yield any result for consumer {1}".format(self.onKeywordRegex, self.consumerKey))
-            self.npcState = False
+        if (message == ""):
+           d(self, "Empty message on topic {0}. Ignoring.".format(msg.topic))
+           return
 
-     i(self, "Consumer Mqtt arrived: " + msg.topic + ": " + message)
+        if (msg.topic == self.powerTopic):
+           res = re.search(str(self.powerExtractRegex), message)
+           if res is not None:
+              matchedPower = res.group(1)
+              d(self, "powerExtractRegex {0} did match for consumer {1}: {2}".format(self.powerExtractRegex, self.consumerKey, matchedPower))
+              self.consumption = float(matchedPower)
+           else:
+              w(self, "powerExtractRegex {0} did not yield any result for consumer {1}".format(self.powerExtractRegex, self.consumerKey))
+
+        if (msg.topic == self.statusTopic):
+           res = re.search(str(self.onKeywordRegex), message)
+           if res is not None:
+              d(self, "onKeywordRegex {0} did match for consumer {1}: {2}".format(self.onKeywordRegex, self.consumerKey, res.group(0)))
+              self.npcState = True
+           else:
+              d(self, "onKeywordRegex {0} did not yield any result for consumer {1}".format(self.onKeywordRegex, self.consumerKey))
+              self.npcState = False
+
+        i(self, "Consumer Mqtt arrived: " + msg.topic + ": " + message)
+     except Exception as ex:
+        e(self, "Invalid MQTT message for consumer {0} on topic {1}. Keeping the last valid state.".format(self.consumerKey, getattr(msg, "topic", "unknown")), exc_info=ex)
 
   def dumpFakeBMS(self):
      try:

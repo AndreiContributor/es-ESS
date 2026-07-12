@@ -6,7 +6,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,7 +122,7 @@ class Shelly3EMGridTests(unittest.TestCase):
         self.module.requests.get = Mock(
             return_value=FakeResponse(
                 {
-                    "total_power": 600,
+                    "total_power": 900,
                     "emeters": [
                         {"voltage": 230, "current": 1, "power": 100, "total": 1000, "total_returned": 50},
                         {"voltage": 231, "current": 2, "power": 500, "total": 2000, "total_returned": 60},
@@ -136,12 +136,39 @@ class Shelly3EMGridTests(unittest.TestCase):
 
         self.assertEqual(service.dbusService["/Connected"], 1)
         self.assertEqual(service.dbusService["/Ac/L1/Power"], 100)
-        self.assertEqual(service.dbusService["/Ac/L2/Power"], 200)
+        self.assertEqual(service.dbusService["/Ac/L2/Power"], 500)
         self.assertEqual(service.dbusService["/Ac/L3/Power"], 300)
-        self.assertEqual(service.dbusService["/Ac/Power"], 300)
+        self.assertEqual(service.dbusService["/Ac/Power"], 900)
         self.module.requests.get.assert_called_once_with(
             url="http://shelly.local/status", timeout=0.5
         )
+
+    def test_net_metering_integrates_raw_total_power(self):
+        service = self._service()
+        service.metering = "Net"
+        service.energyForwarded = 0
+        service.energyReversed = 0
+        service.lastMeasurement = 0
+        self.module.requests.get = Mock(
+            return_value=FakeResponse(
+                {
+                    "total_power": 3600,
+                    "emeters": [
+                        {"voltage": 230, "current": 4, "power": 1000},
+                        {"voltage": 231, "current": 5, "power": 1200},
+                        {"voltage": 232, "current": 6, "power": 1400},
+                    ],
+                }
+            )
+        )
+
+        with patch.object(self.module, "time", return_value=1):
+            service.queryShelly()
+
+        self.assertEqual(service.dbusService["/Ac/L2/Power"], 1200)
+        self.assertEqual(service.dbusService["/Ac/Power"], 3600)
+        self.assertEqual(service.energyForwarded, 1)
+        self.assertEqual(service.energyReversed, 0)
 
     def test_repeated_timeout_sets_disconnected_without_raising(self):
         service = self._service()

@@ -72,6 +72,7 @@ class esESS:
             self._serviceMessageIndex: Dict[str, int] = {}
             self._dbusMonitor: DbusMonitor = None
             self._gridSetPointRequests: Dict[str, float] = {}
+            self._gridSetPointRequestsLock = threading.Lock()
             self._gridSetPointDefault = float(self.config["Common"]["DefaultPowerSetPoint"])
             self._gridSetPointCurrent = -99999 #use a unreal number at first, so es-ESS will detect a change upon restart and guarantee to set default GSP.
             self._threadExecutionsMinute = 0
@@ -631,6 +632,22 @@ class esESS:
         self.publishServiceMessage(self, "Timezone detected as '{0}'".format(sub.value))
         Globals.userTimezone = sub.value
 
+    def _reportFutureException(self, future, operation):
+        try:
+            exception = future.exception()
+            if exception is not None:
+                c(self, "Exception in asynchronous operation {0}".format(operation), exc_info=exception)
+        except Exception as ex:
+            c(self, "Unable to inspect asynchronous operation {0}".format(operation), exc_info=ex)
+
+    def _submitTrackedFuture(self, callback, *args):
+        operation = Helper.formatCallback(callback)
+        future = self.threadPool.submit(callback, *args)
+        future.add_done_callback(
+            lambda completedFuture: self._reportFutureException(completedFuture, operation)
+        )
+        return future
+
     def _dbusValueChanged(self, dbusServiceName, dbusPath, dict, changes, deviceInstance):
         try:
             key = DbusSubscription.buildValueKey(dbusServiceName, dbusPath)
@@ -643,7 +660,7 @@ class esESS:
                         sub.value = changes["Value"]
 
                         if (sub.callback is not None):
-                            self.threadPool.submit(sub.callback(sub))
+                            self._submitTrackedFuture(sub.callback, sub)
 
         except Exception as ex:
             c(self, "Exception", exc_info=ex)
@@ -660,7 +677,7 @@ class esESS:
             t(self, "Running thread: {0}".format(Helper.formatCallback(workerThread.thread)))
             if (workerThread.future is None or workerThread.future.done()):
                 self._threadExecutionsMinute += 1
-                workerThread.future = self.threadPool.submit(workerThread.thread)
+                workerThread.future = self._submitTrackedFuture(workerThread.thread)
             else:
                 w(self, "Thread {0} from {1} is scheduled to run every {2}ms - Future not done, skipping call attempt. Consider lowering the execution-frequency".format(workerThread.thread.__name__,workerThread.service.__class__.__name__, workerThread.interval))
         
@@ -671,6 +688,7 @@ class esESS:
         
         except Exception as ex:
             c(self, "Exception", exc_info=ex)
+            return not workerThread.onlyOnce
     
     def _signOfLive(self):
         self.publishServiceMessage(self, "Executed {0} threads in the past minute.".format(self._threadExecutionsMinute))
@@ -695,7 +713,10 @@ class esESS:
             
             gsp = self._gridSetPointDefault
 
-            for (k,v) in self._gridSetPointRequests.items():
+            with self._gridSetPointRequestsLock:
+                gridSetPointRequests = list(self._gridSetPointRequests.items())
+
+            for (k,v) in gridSetPointRequests:
                 if (v is not None):
                     d(self, "Grid Set Point request of {0} is {1}".format(k,v))
                     gsp += v
@@ -720,7 +741,8 @@ class esESS:
         self._dbusSubscriptions[sub.valueKey].append(sub)
 
     def registerGridSetPointRequest(self, service:esESSService, request:float):
-        self._gridSetPointRequests[service.__class__.__name__] = request
+        with self._gridSetPointRequestsLock:
+            self._gridSetPointRequests[service.__class__.__name__] = request
     
     def revokeGridSetPointRequest(self, service:esESSService):
         self.registerGridSetPointRequest(service, None)
