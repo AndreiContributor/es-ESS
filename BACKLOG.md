@@ -44,9 +44,13 @@ Current validated state:
 - Manual charging remains user-controlled. Direct current/start/stop writes
   fail closed unless Wattpilot telemetry confirms ECO mode; a one-time release
   of stale Auto/Eco limits on entry to Manual is the sole approved exception.
-- The remaining Wattpilot live-validation gap is natural winter observation of
-  grid-import and stale-grid-telemetry dispatch. The remaining implementation
-  item is deterministic provenance for `velib_python`.
+- The remaining Wattpilot live-validation gaps are supervised v3.75 Auto/Eco
+  daylight validation and natural winter observation of grid-import and
+  stale-grid-telemetry dispatch.
+- The 2026-07-12 review confirmed additional crash, device-control, stale-data,
+  persistence, configuration, security, and test-coverage work. Items with
+  site-specific limits or uncertain Wattpilot protocol meaning retain explicit
+  questions and must not be implemented by assumption.
 
 Deployment information still not established:
 
@@ -383,6 +387,1524 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ## Backlog
 
+### P1 - Remove Hard-Coded 300 W Grid Telemetry Falsification
+
+Goal:
+
+Publish true Shelly grid measurements so ESS control and energy counters use
+real telemetry.
+
+Problem:
+
+`Shelly3EMGrid.queryShelly()` always subtracts 300 W from L2 and total power.
+This production debug residue falsifies D-Bus grid values and permanently
+skews net-metering counters.
+
+Evidence:
+
+- `Shelly3EMGrid.py:136-138` contains the unconditional subtraction.
+- The adjusted values are published and integrated at lines 141-173.
+
+Implementation:
+
+- Remove only the debug subtraction. Preserve meter signs, paths, polling, and
+  net-metering behavior.
+- Document that existing persisted counters may already contain historical
+  error; do not reset operator data automatically.
+
+Files to change:
+
+- `Shelly3EMGrid.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_shelly3em_grid.py` with raw L2/total publication and raw
+  net-counter integration cases using the hardware-free stub pattern.
+
+Expected coverage:
+
+- Proves no synthetic offset reaches D-Bus or persistence; existing passing
+  tests remain unchanged.
+
+Manual validation:
+
+Log-only. Compare Cerbo grid power with the Shelly UI during a normal poll.
+
+Manual test steps:
+
+1. Restart es-ESS and compare L2/total values with the Shelly native reading.
+2. Confirm there is no approximately 300 W offset.
+
+Risks and dependencies:
+
+- Removing the offset changes reported production values immediately.
+- No other backlog item must land first.
+
+Open questions:
+
+- Whether the operator wants to reset historically skewed counters; the fix
+  must not do so automatically.
+
+Done criteria:
+
+- Raw Shelly power is published and integrated without an artificial offset.
+- Full unittest suite passes.
+
+### P1 - Fix MQTT-Consumer Off-Control Format-String Crash
+
+Goal:
+
+Allow an MQTT-controlled distributor consumer to be tracked and switched off
+when its allowance falls to zero.
+
+Problem:
+
+The matching-status log formats three fields with two arguments. The eager
+`str.format()` raises before `npcState` becomes true, so the later off-control
+branch cannot run and a consumer may continue drawing battery or grid power.
+
+Evidence:
+
+- `SolarOverheadDistributor.py:950` has the invalid format call.
+- `mqttControl()` gates the off command on `allowance == 0 and npcState`.
+
+Implementation:
+
+- Correct the log arguments and guard the consumer MQTT callback so malformed
+  input is visible without skipping state handling silently.
+- Preserve MQTT topics, payloads, allocation semantics, and HTTP consumers.
+
+Files to change:
+
+- `SolarOverheadDistributor.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_solar_overhead_distributor.py` with status-match and
+  zero-allowance off-command cases using hardware-free MQTT stubs.
+
+Expected coverage:
+
+- Proves MQTT consumers can transition on and off; existing passing tests
+  remain unchanged.
+
+Manual validation:
+
+Fault simulation in a low-risk window with an MQTT consumer.
+
+Manual test steps:
+
+1. Publish a matching on-status and confirm no `IndexError`.
+2. Reduce allowance to zero and confirm the off command is published.
+
+Risks and dependencies:
+
+- Low and limited to MQTT-controlled distributor consumers.
+- No other backlog item must land first.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Matching status updates `npcState` and zero allowance issues the off command.
+- Full unittest suite passes.
+
+### P1 - Fix D-Bus Value-Change Thread-Pool Dispatch
+
+Goal:
+
+Run D-Bus subscription callbacks on the worker pool and surface their failures.
+
+Problem:
+
+`_dbusValueChanged()` calls the callback inline and submits its return value.
+This can block the GLib/D-Bus thread and leaves a Future attempting to call
+`None`, whose exception is never inspected.
+
+Evidence:
+
+- `es-ESS.py:646` uses `self.threadPool.submit(sub.callback(sub))`.
+
+Implementation:
+
+- Submit `sub.callback` and `sub` separately.
+- Use the shared future-exception reporting introduced by the worker-reliability
+  item; preserve callback signatures and subscription routing.
+
+Files to change:
+
+- `es-ESS.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_es_ess_mqtt_orchestration.py` to assert callable/argument
+  submission, once-only invocation, and visible callback exceptions using
+  hardware-free stubs.
+
+Expected coverage:
+
+- Proves callbacks do not execute inline and failures are observable; existing
+  passing tests remain unchanged.
+
+Manual validation:
+
+Log-only. Confirm D-Bus-driven services continue reacting after restart.
+
+Manual test steps:
+
+1. Restart es-ESS and observe normal D-Bus subscription updates.
+2. Confirm no `NoneType is not callable` failures occur.
+
+Risks and dependencies:
+
+- A callback that accidentally relied on GLib-thread execution may expose a
+  race and must be tested.
+- Coordinate exception reporting with the next item.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Callbacks are submitted as callables and callback failures are logged.
+- Full unittest suite passes.
+
+### P2 - Surface Worker Exceptions And Preserve Recurring Timers
+
+Goal:
+
+Make worker failures visible and keep periodic GLib scheduling alive after a
+transient error.
+
+Problem:
+
+Completed Futures are checked only with `done()` and their exceptions are never
+retrieved. An exception inside `_runThread()` also returns a false value
+implicitly, causing GLib to remove a recurring timer.
+
+Evidence:
+
+- `es-ESS.py:661-663` replaces completed Futures without checking exceptions.
+- The exception branch at lines 672-673 has no explicit return.
+
+Implementation:
+
+- Add one reusable Future completion logger.
+- Return true after scheduling-path errors for recurring workers and false for
+  one-shot workers; preserve intervals and overrun skipping.
+
+Files to change:
+
+- `es-ESS.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_es_ess_mqtt_orchestration.py` for raised worker Futures,
+  recurring callback retention, and one-shot removal using hardware-free stubs.
+
+Expected coverage:
+
+- Proves worker errors are logged and transient scheduling faults do not
+  permanently disable services; existing passing tests remain unchanged.
+
+Manual validation:
+
+Log-only on staging.
+
+Manual test steps:
+
+1. Induce a test worker failure and confirm it is logged.
+2. Confirm later scheduled executions still occur.
+
+Risks and dependencies:
+
+- Repeated deterministic failures may now repeat in logs; diagnostics should
+  identify the worker clearly.
+- No other item must land first.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Future exceptions are visible and recurring timers survive transient errors.
+- Full unittest suite passes.
+
+### P2 - Lock The Grid-Setpoint Combiner And Define Safe Bounds
+
+Goal:
+
+Make shared grid-setpoint requests thread-safe and prevent unreviewed extreme
+setpoints.
+
+Problem:
+
+Worker threads mutate `_gridSetPointRequests` while `_manageGridSetPoint()`
+iterates it. A concurrent size change raises and temporarily restores the
+default. The sum is also unbounded, but this repository does not establish a
+safe site-independent minimum or maximum.
+
+Evidence:
+
+- `es-ESS.py:698` iterates the dictionary without a lock.
+- Lines 722-726 mutate it from service paths without the same lock.
+- Lines 696-707 publish the additive result without bounds.
+
+Implementation:
+
+- Add one lock and take a snapshot under it for combination.
+- Preserve additive delta semantics and change-only publication.
+- Add clamping only after operator-approved bounds or a validated Victron
+  source of bounds is selected; log every clamp.
+
+Files to change:
+
+- `es-ESS.py`
+- `config.sample.ini` and `README.md` only if explicit bounds are approved.
+
+Files to add:
+
+- `tests/test_grid_setpoint.py`
+
+Tests:
+
+- Cover multi-request summation, concurrent mutation, revocation, change-only
+  publication, fallback, and any approved clamp using hardware-free MQTT stubs.
+
+Expected coverage:
+
+- Proves thread-safe combination and, if configured, bounded output; existing
+  passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation in a low-risk NoBatToEV window.
+
+Manual test steps:
+
+1. Observe request registration/revocation and the combined setpoint.
+2. Confirm no iteration errors or values outside approved bounds.
+
+Risks and dependencies:
+
+- Incorrect bounds could break legitimate NoBatToEV behavior.
+- Locking can land before a clamp decision.
+
+Open questions:
+
+- What minimum and maximum AC power setpoints are safe for the production ESS,
+  and should they be configured or read from a validated Victron source?
+
+Done criteria:
+
+- Request mutation/iteration is race-free.
+- Any clamp uses explicitly approved bounds and is covered by tests.
+- Full unittest suite passes.
+
+### P2 - NoBatToEV Fail-Safe Revoke On Update Errors
+
+Goal:
+
+Ensure unavailable telemetry or an update exception cannot leave a stale
+grid-import request active.
+
+Problem:
+
+Existing None guards revoke cleanly, but `_evPower()` dereferences a missing
+Wattpilot client and `_update()` has no outer fail-safe. An exception can bypass
+revocation and leave the previous delta in the shared combiner.
+
+Evidence:
+
+- `NoBatToEV.py:86-90` assumes the service's `wattpilot` object exists.
+- `_update()` at line 92 has no exception cleanup boundary.
+
+Implementation:
+
+- Return `None` when the Wattpilot client is unavailable.
+- Revoke the request on every unexpected `_update()` error before logging it.
+- Preserve current offload arithmetic and shared-combiner ownership.
+
+Files to change:
+
+- `NoBatToEV.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_nobattoev.py` for a missing client and an injected update
+  exception, asserting revocation with hardware-free stubs.
+
+Expected coverage:
+
+- Proves stale NoBatToEV requests cannot survive input loss or exceptions;
+  existing passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation in a low-risk window.
+
+Manual test steps:
+
+1. With NoBatToEV active, interrupt Wattpilot availability.
+2. Confirm the request is revoked and no residual import delta remains.
+
+Risks and dependencies:
+
+- Low; conceptually complements the combiner lock but can land independently.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Missing client and all update failures revoke the setpoint request.
+- Full unittest suite passes.
+
+### P2 - Fail Closed On Structural Configuration Errors
+
+Goal:
+
+Exit cleanly before runtime construction when mandatory configuration structure
+or types are invalid.
+
+Problem:
+
+`_validateConfiguration()` reads `[Common] ConfigVersion` before value
+validation, and the broad constructor exception handler can return a partially
+built object. `main()` may then continue into an AttributeError cascade.
+
+Evidence:
+
+- `es-ESS.py:392` indexes the section/key before validation.
+- The constructor catches general exceptions at lines 98-99.
+
+Implementation:
+
+- Validate the mandatory bootstrap structure before conversions.
+- Aggregate clear critical diagnostics and exit with `SystemExit(1)`.
+- Narrow constructor handling so configuration failure cannot be swallowed;
+  preserve optional keys that already have runtime defaults.
+
+Files to change:
+
+- `es-ESS.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_config_migration.py` for missing `[Common]`, missing or
+  malformed `ConfigVersion`, and malformed bootstrap values using the existing
+  hardware-free loading pattern.
+
+Expected coverage:
+
+- Proves structural faults never create a half-initialized runtime; existing
+  valid and legacy configurations remain accepted.
+
+Manual validation:
+
+Hardware not needed; optional log-only staging check.
+
+Manual test steps:
+
+1. Remove `ConfigVersion` in a staging config.
+2. Confirm one clear startup failure and no service/MQTT initialization.
+
+Risks and dependencies:
+
+- Declaring too many keys mandatory would break compatible configurations.
+- No other item must land first.
+
+Open questions:
+
+- Finalize the minimal bootstrap-key list from actual unconditional reads; do
+  not make service-specific optional settings globally mandatory.
+
+Done criteria:
+
+- Missing/malformed bootstrap configuration exits cleanly before side effects.
+- Full unittest suite passes.
+
+### P2 - Add Freshness Guard For Battery-Assist SOC
+
+Goal:
+
+Prevent battery assist and battery-priority bypass from relying on stale SOC.
+
+Problem:
+
+Grid phases are receive-time tracked, but the SOC subscription has no callback
+or timestamp. A retained high SOC can authorize a bounded assist window after
+the real battery has crossed its configured floor.
+
+Evidence:
+
+- `FroniusWattpilot.py:317-320` registers SOC/battery power without callbacks.
+- `batterySoc()` at line 2005 returns the cached value directly.
+- `shouldIgnoreBatteryReservation()` and `startOrContinueBatteryAssist()` use it.
+
+Implementation:
+
+- Track SOC validity and receive time in the controller.
+- Treat missing, invalid, or stale SOC as ineligible for assist and reservation
+  bypass.
+- Keep helpers pure and preserve Manual ownership, continuation-only assist,
+  thresholds, duration, shortfall, recovery, and command boundaries.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `WattpilotDecisionInputs.py` if a generic freshness helper is appropriate
+- `docs/wattpilot-architecture.md`
+- `config.sample.ini` and `README.md` only if a new setting is approved.
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend controller decision tests for fresh, stale, invalid, and missing SOC;
+  confirm stale SOC cannot activate assist or reservation bypass.
+
+Expected coverage:
+
+- Proves SOC-dependent safety decisions fail closed while existing fresh-SOC
+  behavior remains unchanged.
+
+Manual validation:
+
+Fault simulation during a supervised active charge.
+
+Manual test steps:
+
+1. Interrupt SOC updates during an eligible assist scenario.
+2. Confirm assist clears/refuses and Manual charging is untouched.
+
+Risks and dependencies:
+
+- An overly short freshness window may reject normally slow SOC updates.
+- Read and update the Wattpilot architecture contract in the implementation.
+
+Open questions:
+
+- Reuse `GridTelemetryFreshSeconds` or introduce a dedicated SOC freshness
+  setting based on observed GX update cadence?
+
+Done criteria:
+
+- Missing/stale SOC cannot authorize assist or battery-reservation bypass.
+- Full unittest suite passes.
+
+### P2 - Define Safe Control For Unclassified Charging Model Statuses
+
+Goal:
+
+Give Wattpilot model statuses 8-11 and 13-14 an explicit verified controller
+policy instead of silently routing them to `UNKNOWN`.
+
+Problem:
+
+The enum names describe charging conditions, but the control-state sets omit
+them. The `UNKNOWN` handler performs no PV-following or explicit safety action.
+Blindly mapping every status to normal charging is also unsafe without protocol
+or live evidence.
+
+Evidence:
+
+- `WattpilotControlState.py:5-6` omits values 8-11 and 13-14.
+- `enums.py:63-69` names them AutomaticStop/Fallback charging states.
+- `select_control_state()` falls through to `UNKNOWN`.
+
+Implementation:
+
+- Establish each status's observed/protocol meaning for firmware `42.5`.
+- Choose explicit PV-following or fail-safe stop behavior per status.
+- Keep selection pure and side effects in `FroniusWattpilot.py`; preserve Manual
+  ownership and no-grid safety.
+
+Files to change:
+
+- `WattpilotControlState.py`
+- `FroniusWattpilot.py` only if a new explicit handler is required
+- `docs/wattpilot-architecture.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_wattpilot_control_state.py` and dispatch tests for all six
+  statuses in Auto/no-grid and Manual contexts using hardware-free stubs.
+
+Expected coverage:
+
+- Proves every known charging status has deliberate behavior and cannot bypass
+  PV/no-grid policy; existing mappings remain unchanged.
+
+Manual validation:
+
+Active charging only if one of these rare statuses occurs naturally; unit tests
+are the primary verifier.
+
+Manual test steps:
+
+1. Capture firmware `42.5` telemetry/log evidence if a listed status occurs.
+2. Confirm the selected controller state matches the approved policy.
+
+Risks and dependencies:
+
+- Incorrect classification could stop a valid session or permit unintended
+  power use.
+- Protocol/observed evidence must precede implementation.
+
+Open questions:
+
+- Which of statuses 8-11 and 13-14 are safe to PV-follow, and which must stop in
+  Auto/no-grid mode?
+
+Done criteria:
+
+- All six statuses have evidence-backed, tested control-state mappings.
+- Full unittest suite passes.
+
+### P2 - Publish Null And Disconnected On All Meter Failure Modes
+
+Goal:
+
+Prevent failed grid/PV devices from remaining connected with frozen D-Bus
+measurements.
+
+Problem:
+
+Fronius JSON, Shelly 3EM, and Shelly PM route only request timeouts through
+their failure counters. Connection errors and malformed/partial JSON are logged
+without clearing last-known values.
+
+Evidence:
+
+- Generic handlers at `FroniusSmartmeterJSON.py:148`,
+  `Shelly3EMGrid.py:199`, and `ShellyPMInverter.py:170` do not invoke their
+  disconnected/null paths.
+
+Implementation:
+
+- Route all `RequestException` and structural payload failures through each
+  service's existing consecutive-failure policy.
+- Validate required payload structure before indexing.
+- Preserve thresholds and recovery behavior; update `docs/service-inventory.md`
+  if the documented failure contract changes.
+
+Files to change:
+
+- `FroniusSmartmeterJSON.py`
+- `Shelly3EMGrid.py`
+- `ShellyPMInverter.py`
+- `docs/service-inventory.md` if needed
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend the three existing service test files for connection refusal and
+  partial/malformed payloads, retaining hardware-free request/D-Bus stubs.
+
+Expected coverage:
+
+- Proves non-timeout failures eventually publish null and `Connected=0` while
+  single transient failures retain the current debounce.
+
+Manual validation:
+
+Fault simulation in a low-risk window.
+
+Manual test steps:
+
+1. Briefly disconnect each configured device network path.
+2. Confirm null/disconnected publication after the existing threshold and
+   normal recovery after reconnect.
+
+Risks and dependencies:
+
+- Payload validation must not reject legitimate firmware variants without
+  evidence.
+- No other item must land first.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Connection and parse failures use the established disconnected/null policy.
+- Full unittest suite passes.
+
+### P3 - Fix PV Inverter Stale Window And Cached-Power Contribution
+
+Goal:
+
+Detect a silent MQTT PV inverter promptly and exclude its frozen power from
+zero-feed-in control.
+
+Problem:
+
+The stale threshold is ten hours, and `setStale()` nulls D-Bus paths without
+clearing cached phase power. A silent inverter can therefore influence control
+math long after its telemetry is invalid.
+
+Evidence:
+
+- `MqttPVInverter.py:105` uses `10 * 3600` seconds.
+- `setStale()` at line 290 leaves `l1power/l2power/l3power` unchanged.
+- `total_power` continues summing those fields.
+
+Implementation:
+
+- Select a timeout safely above the configured devices' normal publication
+  cadence, fixed or configurable with migration/docs.
+- Clear cached phase power when stale and preserve reconnect recovery, topics,
+  D-Bus paths, and zero-feed-in ownership.
+
+Files to change:
+
+- `MqttPVInverter.py`
+- `config.sample.ini` and `README.md` if configurable
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_mqtt_pv_inverter.py` for threshold boundaries, stale power
+  exclusion, and recovery using hardware-free time/MQTT/D-Bus stubs.
+
+Expected coverage:
+
+- Proves silent inverters become disconnected promptly and contribute zero to
+  control math; existing passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation in a low-risk window.
+
+Manual test steps:
+
+1. Stop one inverter's MQTT publication.
+2. Confirm stale state within the approved window and removal from total power.
+
+Risks and dependencies:
+
+- A timeout shorter than normal publication gaps would create false stale
+  transitions.
+- No other item must land first.
+
+Open questions:
+
+- Use a documented fixed timeout or add a per-service configurable value?
+
+Done criteria:
+
+- Stale detection uses an approved window and stale power contributes zero.
+- Full unittest suite passes.
+
+### P3 - Fix Zero-Feed-In Logger Shadowing And None Telemetry
+
+Goal:
+
+Make zero-feed-in calculation None-safe and preserve its real error diagnostic.
+
+Problem:
+
+The calculation sums consumption values without None guards. Local variable
+`c` shadows the imported critical logger, so the exception handler can raise a
+second error and hide the original failure.
+
+Evidence:
+
+- `MqttPVInverter.py:113` sums three values without checking them.
+- Lines 133-146 assign `c` and later try to call it as the logger.
+
+Implementation:
+
+- Rename local calculation variables.
+- Skip/release the control cycle safely when required consumption telemetry is
+  missing; preserve the experimental algorithm and topic contract otherwise.
+
+Files to change:
+
+- `MqttPVInverter.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_mqtt_pv_inverter.py` for each missing consumption phase and
+  a raised calculation error, using hardware-free stubs.
+
+Expected coverage:
+
+- Proves telemetry gaps do not raise and the original exception is logged;
+  existing passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation in a low-risk zero-feed-in window.
+
+Manual test steps:
+
+1. Briefly remove one consumption path.
+2. Confirm no `TypeError` or logger-shadow error and normal recovery.
+
+Risks and dependencies:
+
+- Preserve the explicit zero-target `0%` behavior completed in PR 3.
+- No other item must land first.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Missing consumption skips safely and exception logging remains callable.
+- Full unittest suite passes.
+
+### P3 - Make Shelly Net-Energy Persistence Robust And Atomic
+
+Goal:
+
+Survive corrupt counter files, avoid partial writes, and prevent outage gaps
+from becoming false energy.
+
+Problem:
+
+Counter reads parse untrusted file content without recovery, writes truncate
+files in place, and net integration applies the latest power across the full
+time since the last successful poll.
+
+Evidence:
+
+- `Shelly3EMGrid.py:41-49` performs unguarded `float()` reads.
+- Lines 218-222 write non-atomically.
+- Lines 164-173 integrate the complete successful-poll gap.
+
+Implementation:
+
+- Recover invalid/missing counters to zero with a clear warning.
+- Write a sibling temporary file, flush/fsync as supported, and `os.replace()`.
+- Reset measurement time on failed attempts or cap the integrated duration to
+  a documented poll-derived maximum.
+
+Files to change:
+
+- `Shelly3EMGrid.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_shelly3em_grid.py` for empty/garbage files, atomic replace,
+  interrupted persistence, and long poll gaps using temporary directories.
+
+Expected coverage:
+
+- Proves startup survives corrupt state and persistence/integration cannot
+  inject a large artificial counter jump; existing passing tests remain.
+
+Manual validation:
+
+Log-only on staging.
+
+Manual test steps:
+
+1. Supply a truncated counter file and restart.
+2. Confirm warning, successful service registration, and valid later writes.
+
+Risks and dependencies:
+
+- Preserve counter units, paths, and existing valid values.
+- No other item must land first.
+
+Open questions:
+
+- Prefer resetting the timestamp on every poll attempt or a documented maximum
+  integration duration derived from `PollFrequencyMs`?
+
+Done criteria:
+
+- Corrupt files recover safely, writes are atomic, and outage gaps are bounded.
+- Full unittest suite passes.
+
+### P3 - Guard TimeToGoCalculator Against Missing Telemetry
+
+Goal:
+
+Avoid repeated critical failures and stale operator output during normal
+battery-telemetry gaps.
+
+Problem:
+
+The calculator handles SOC zero but not missing power, SOC, or active SOC
+limit. Arithmetic raises every update and the broad handler logs critical.
+
+Evidence:
+
+- `TimeToGoCalculator.py:35-56` uses the three values without complete None
+  guards; the handler is at line 68.
+
+Implementation:
+
+- Return early on missing required telemetry with a deduplicated warning or
+  debug diagnostic.
+- Preserve valid charge/discharge calculations and MQTT paths.
+
+Files to change:
+
+- `TimeToGoCalculator.py`
+
+Files to add:
+
+- `tests/test_time_to_go_calculator.py`
+
+Tests:
+
+- Cover each missing input and representative charge/discharge calculations
+  with hardware-free D-Bus/MQTT stubs.
+
+Expected coverage:
+
+- Proves normal gaps are non-critical and valid data resumes publication;
+  existing passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation in a low-risk window.
+
+Manual test steps:
+
+1. Briefly interrupt a battery subscription.
+2. Confirm no critical spam and publication resumes afterward.
+
+Risks and dependencies:
+
+- Low; do not change formula semantics.
+- No other item must land first.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Missing telemetry is handled without exceptions and valid data recovers.
+- Full unittest suite passes.
+
+### P3 - Restrict Config And Backup File Permissions
+
+Goal:
+
+Prevent MQTT and Wattpilot credentials from being world-readable on the GX.
+
+Problem:
+
+Install, migration, versioned backup, and uninstall backup paths rely on the
+process umask. Files containing passwords can therefore be created as `0644`,
+and the external backup directory is not explicitly restricted.
+
+Evidence:
+
+- `install.sh` copies `config.sample.ini` without `chmod`.
+- `es-ESS.py:489-500` writes config and backups without applying mode `0600`.
+- `uninstall.sh:26-27` creates/copies backups without explicit restrictive modes.
+
+Implementation:
+
+- Apply `0600` to config and every backup after creation/update.
+- Create the uninstall backup directory as `0700` and reassert its mode.
+- Preserve ownership and existing install/migration/uninstall behavior.
+
+Files to change:
+
+- `install.sh`
+- `uninstall.sh`
+- `es-ESS.py`
+- `README.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend config-write tests to assert `os.chmod(..., 0o600)`; validate script
+  structure without real GX paths.
+
+Expected coverage:
+
+- Proves Python-created secret files receive restrictive modes; existing
+  passing tests remain unchanged.
+
+Manual validation:
+
+Log-only/shell inspection on staging.
+
+Manual test steps:
+
+1. Install and perform a migration; check `config.ini*` are `0600`.
+2. Verify `/data/es-ESS-backups` is `0700` and backups are `0600`.
+
+Risks and dependencies:
+
+- Confirm root/service ownership still permits runtime access.
+- No other item must land first.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Configs/backups are `0600` and the external backup directory is `0700`.
+- Full unittest suite passes.
+
+### P3 - Make MQTT TLS Certificate Verification The Default
+
+Goal:
+
+Provide certificate and hostname verification whenever MQTT TLS is enabled.
+
+Problem:
+
+Both MQTT clients currently use `CERT_NONE` and `tls_insecure_set(True)`.
+Encryption therefore does not authenticate the broker and cannot prevent a
+man-in-the-middle from receiving credentials.
+
+Evidence:
+
+- `es-ESS.py:122-123` configures insecure main MQTT TLS.
+- Lines 149-150 do the same for local MQTT.
+
+Implementation:
+
+- Use verified TLS by default for enabled TLS connections.
+- Add an explicit, documented compatibility opt-in only if existing self-signed
+  deployments require it, with idempotent migration.
+- Select system trust or a CA path before implementation; never silently fall
+  back to insecure mode.
+
+Files to change:
+
+- `es-ESS.py`
+- `config.sample.ini`
+- `README.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend MQTT orchestration, config migration, and config contract tests for
+  verified default and explicit insecure compatibility behavior.
+
+Expected coverage:
+
+- Proves TLS verification cannot be disabled accidentally and legacy migration
+  is deterministic; existing passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation against test brokers.
+
+Manual test steps:
+
+1. Connect with a trusted certificate and confirm success.
+2. Confirm an untrusted certificate fails unless explicit compatibility mode
+   was deliberately configured.
+
+Risks and dependencies:
+
+- Default verification can break self-signed installations; migration and
+  operator guidance must land together.
+- No other backlog item must land first.
+
+Open questions:
+
+- Rely on the Venus OS trust store, add a CA-file setting, or support both?
+- Should an existing `SslEnabled=true` config migrate to explicit insecure
+  compatibility once, or fail until the operator supplies trust configuration?
+
+Done criteria:
+
+- Verified TLS is the default and any insecure mode is explicit/documented.
+- Full unittest suite passes.
+
+### P3 - Validate Remaining Safety And Operational Values
+
+Goal:
+
+Reject remaining unsafe or nonsensical configured values before side effects.
+
+Problem:
+
+PR 7 already validates current bounds, hysteresis, assist duration/SOC, and
+positive service/device intervals. It does not yet validate several grid guard,
+freshness, assist, startup ratio, zero-feed-in, and `[Common]` operational
+values. The old review claim that update intervals are wholly unvalidated is
+obsolete and must not reopen completed work.
+
+Evidence:
+
+- `es-ESS.py:254-386` lacks rules for `GridImportStopW`,
+  `GridImportStopSeconds`, `GridTelemetryFreshSeconds`,
+  `AllowanceFreshSeconds`, `RawOverheadFreshSeconds`,
+  `BatteryAssistMaxShortfallW`, `BatteryAssistRecoverySeconds`,
+  `StartupTelemetryRatio`, `ZeroFeedin*`, `NumberOfThreads`, and
+  `HttpRequestTimeout`.
+- The same method already validates service update and polling intervals.
+
+Implementation:
+
+- Define evidence-based lower/cross-field bounds; add upper bounds only where
+  product behavior or hardware limits establish them.
+- Extend aggregate fail-fast validation without changing existing defaults.
+- Update README/sample ranges and migration only when needed.
+
+Files to change:
+
+- `es-ESS.py`
+- `config.sample.ini`
+- `README.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_config_migration.py` and `tests/test_config_contract.py`
+  for every new rule, valid boundaries, aggregate diagnostics, and unchanged
+  optional/default behavior.
+
+Expected coverage:
+
+- Proves remaining unsafe values fail before startup while PR 7 validation and
+  compatible configurations remain intact.
+
+Manual validation:
+
+Hardware not needed; optional log-only invalid-config check.
+
+Manual test steps:
+
+1. Supply one invalid remaining value on staging.
+2. Confirm aggregate critical diagnostics and exit before service startup.
+
+Risks and dependencies:
+
+- Arbitrary maximums could reject valid sites; document the basis for each
+  bound.
+- Structural configuration validation should land first or in a separate PR.
+
+Open questions:
+
+- Approve exact bounds after reviewing controller semantics and documented
+  units; do not infer site limits.
+
+Done criteria:
+
+- Every approved remaining rule is documented, migrated if necessary, and
+  enforced before side effects.
+- Full unittest suite passes.
+
+### P3 - Add Hardware-Free Tests For Untested Active Services
+
+Goal:
+
+Add dedicated regression coverage for every currently untested active service.
+
+Problem:
+
+`TimeToGoCalculator`, `MqttExporter`, and `MqttTemperature` have no dedicated
+test files. Their calculation, interval publication, parsing, and D-Bus output
+can regress without focused CI failures.
+
+Evidence:
+
+- `tests/` has no `test_time_to_go_calculator.py`,
+  `test_mqtt_exporter.py`, or `test_mqtt_temperature.py`.
+- All three are active services in `docs/service-inventory.md`.
+
+Implementation:
+
+- Add tests using `types.ModuleType`, `Mock`, and isolated imports; no real
+  hardware, broker, network, or D-Bus.
+- Reuse the TimeToGo test created by its None-guard fix rather than duplicate it.
+
+Files to change:
+
+- None expected.
+
+Files to add:
+
+- `tests/test_time_to_go_calculator.py`
+- `tests/test_mqtt_exporter.py`
+- `tests/test_mqtt_temperature.py`
+
+Tests:
+
+- Cover TimeToGo valid/missing inputs, exporter change and 1/10/60-second
+  publication, and temperature/humidity/pressure topic-to-D-Bus mapping.
+
+Expected coverage:
+
+- `python -m unittest discover -s tests` automatically discovers all files and
+  proves the three active service contracts; existing tests remain unchanged.
+
+Manual validation:
+
+Hardware not needed.
+
+Manual test steps:
+
+1. Run unittest discovery and confirm all three files execute.
+
+Risks and dependencies:
+
+- Land after related behavior fixes so tests encode the corrected contracts.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Each active service has focused, passing hardware-free tests.
+- Full unittest suite passes.
+
+### P4 - Harden Wattpilot Reconnect And Startup None Handling
+
+Goal:
+
+Close the confirmed reconnect race and make startup phase detection safe before
+power telemetry arrives.
+
+Problem:
+
+`connect()` returns when an old worker remains briefly alive even if
+`disconnect()` has set its stop event, so no replacement worker is started.
+Startup also compares `None > 0` when a connected car is known before phase
+power arrives. The prior review's proposed disconnect stop command is excluded:
+it is unproven and an unconditional command could violate Manual ownership.
+
+Evidence:
+
+- `Wattpilot.py:381-388` returns before clearing a set stop event.
+- `FroniusWattpilot.py:440-443` compares phase power without None guards.
+
+Implementation:
+
+- Serialize stop/start handoff and replace or join a stopping worker with a
+  bounded wait; retain one-worker reconnect ownership.
+- Add explicit None guards to startup phase detection.
+- Do not add any stop/current/phase command on disconnect in this item.
+
+Files to change:
+
+- `Wattpilot.py`
+- `FroniusWattpilot.py`
+- `docs/wattpilot-architecture.md` if lifecycle wording changes
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_wattpilot_client.py` for disconnect/connect handoff and
+  single-worker ownership; extend `tests/test_wattpilot_startup.py` for a
+  connected car with missing phase power.
+
+Expected coverage:
+
+- Proves intended reconnect always has a worker and startup is None-safe without
+  changing charger commands; existing passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation in a low-risk window; active charging is not required.
+
+Manual test steps:
+
+1. Rapidly interrupt and restore Wattpilot networking.
+2. Confirm one reconnect worker, status recovery, and no unintended commands.
+
+Risks and dependencies:
+
+- Worker joining must be short/bounded and must not deadlock callbacks.
+- Preserve Manual command-free behavior and the architecture boundary.
+
+Open questions:
+
+- None for the confirmed scope. Any armed-resume claim requires separate live
+  evidence and a separately approved Auto/Eco-only design.
+
+Done criteria:
+
+- Reconnect handoff is deterministic and startup accepts missing phase power.
+- No new disconnect command is introduced.
+- Full unittest suite passes.
+
+### P4 - Remove Distributor Lock-Held I/O And Correct Runtime Data
+
+Goal:
+
+Prevent slow consumer I/O from blocking allocation and fix confirmed consumer
+state/publication defects.
+
+Problem:
+
+HTTP status/control can run while `_knownSolarOverheadConsumersLock` is held,
+blocking all consumers. Consumer lookup is partly unlocked, `energyToday`
+publishes `energyTotal`, and `dbusReportConsumption()` compares request before
+checking for None.
+
+Evidence:
+
+- `_validateNpcConsumerStates()` holds the lock while calling HTTP control.
+- `SolarOverheadDistributor.py:280-289` checks/reads the dictionary outside one
+  consistent lock scope.
+- Line 840 evaluates `request > 0` before the None guard.
+- Line 1000 publishes `energyTotal` on the `energyToday` topic.
+
+Implementation:
+
+- Snapshot required consumer work under the lock and perform bounded I/O after
+  release; keep state updates synchronized.
+- Make lookup atomic, correct the None-guard order, and publish `energyToday`.
+- Preserve request namespace, timeout behavior, and allocation policy.
+
+Files to change:
+
+- `SolarOverheadDistributor.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_solar_overhead_distributor.py` to prove I/O runs outside
+  the lock, lookup is safe, None request does not raise, and energy topics carry
+  the matching values.
+
+Expected coverage:
+
+- Proves one slow endpoint cannot freeze allocation and runtime data is
+  truthful; existing passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation in a low-risk window.
+
+Manual test steps:
+
+1. Point one HTTP consumer at an unreachable endpoint.
+2. Confirm other allowances continue on their normal cadence.
+
+Risks and dependencies:
+
+- Moving I/O can create state races unless the snapshot and result application
+  boundaries are explicit.
+- No other item must land first.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Consumer I/O is outside the shared dictionary lock and listed data defects
+  are corrected.
+- Full unittest suite passes.
+
+### P4 - Fix Automatic NPC Minimum-To-Request Allocation
+
+Goal:
+
+Allow automatic HTTP/MQTT consumers with `0 < Minimum < Request` to reach their
+turn-on request without consuming an unusable partial allowance indefinitely.
+
+Problem:
+
+Automatic NPC parsing forces `StepSize=Request`. Distribution first grants
+`Minimum`, then rejects the next full-request step because it would exceed the
+request. The allowance remains below the control activation threshold.
+
+Evidence:
+
+- `SolarOverheadDistributor.py:244-267` publishes `StepSize=Request` for HTTP
+  and MQTT consumers.
+- Lines 589-606 grant Minimum first and require `assigned + increment <= request`.
+- HTTP/MQTT control turns on only when allowance reaches request.
+
+Implementation:
+
+- For automatic NPC consumers, cap the next increment to the remaining request
+  or treat the eligible start grant atomically, without changing scripted
+  consumer priority shifting.
+- Characterize current allocation ordering before selecting the smaller fix.
+
+Files to change:
+
+- `SolarOverheadDistributor.py`
+- `README.md` if user-visible allocation behavior is clarified
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend distributor tests for `Minimum < Request`, insufficient overhead,
+  exact remaining grant, competing priorities, turn-on, and later turn-off.
+
+Expected coverage:
+
+- Proves an NPC never reserves unusable partial power and scripted allocation
+  remains unchanged.
+
+Manual validation:
+
+Fault simulation with a non-critical automatic consumer.
+
+Manual test steps:
+
+1. Configure `0 < Minimum < Request` with sufficient overhead.
+2. Confirm allowance reaches request and the consumer turns on once.
+
+Risks and dependencies:
+
+- Allocation changes can affect priority fairness; scope strictly to automatic
+  NPC consumers.
+- Land separately from lock/I/O restructuring.
+
+Open questions:
+
+- Prefer a capped remaining increment or a single atomic start grant after
+  reviewing expected Minimum semantics?
+
+Done criteria:
+
+- Eligible NPC consumers reach request without over-allocation or starvation.
+- Full unittest suite passes.
+
+### P4 - Make Shutdown Setpoint Restore And Early Logging Reliable
+
+Goal:
+
+Ensure graceful shutdown transmits the default grid setpoint and early warning/
+error logging works before the global runtime is assigned.
+
+Problem:
+
+The shutdown restore is subject to MQTT throttling and the process disconnects
+and calls `os._exit()` without proving delivery. `Helper.w()` and `Helper.e()`
+also dereference `Globals.esESS` unconditionally during early construction.
+
+Evidence:
+
+- `es-ESS.py:876` publishes the restore without `forceSend=True`; cleanup exits
+  at line 913.
+- `Helper.py:47-65` lacks the guard used by `Helper.c()`.
+
+Implementation:
+
+- Force-send the restore and retain its publish result so QoS completion can be
+  awaited for a short bounded interval before disconnect/exit.
+- Guard service-message publication in `w()`/`e()` while always logging locally.
+- Preserve the completed graceful-shutdown ordering and idempotency.
+
+Files to change:
+
+- `es-ESS.py`
+- `Helper.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend orchestration/shutdown and globals tests for forced restore, bounded
+  completion handling, and warning/error logging with `Globals.esESS=None`.
+
+Expected coverage:
+
+- Proves the restore bypasses throttling and early diagnostics cannot mask the
+  original construction error; existing passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation in a low-risk restart window.
+
+Manual test steps:
+
+1. Gracefully stop es-ESS while a non-default request is active.
+2. Confirm the Victron setting returns to the configured default before exit.
+
+Risks and dependencies:
+
+- The delivery wait must be short and bounded so service supervision cannot
+  hang.
+- Preserve PR 4A cleanup semantics.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Shutdown restore is force-sent with bounded completion handling and early
+  warning/error helpers are None-safe.
+- Full unittest suite passes.
+
 ### P4 - Winter Validate Wattpilot Grid-Import Dispatch Branches
 
 Goal:
@@ -400,6 +1922,15 @@ start, active charging, battery assist, transport outage/recovery,
 disconnect/reconnect, one-to-three phase switching, and three-to-one fallback
 paths. The remaining live coverage gap is the no-grid safety path during real
 sustained import or grid-telemetry outage.
+
+Evidence:
+
+- Hardware-free selector and dispatch tests cover stale telemetry and sustained
+  import ordering, but natural production conditions have not exercised every
+  branch on the supported v3.75 GX/Wattpilot baseline.
+- Completed production notes record Manual, normal Auto/Eco, assist,
+  disconnect/reconnect, and phase-transition validation while retaining this
+  winter observation gap.
 
 Implementation:
 
@@ -420,6 +1951,10 @@ Files to change:
 
 - Possibly `BACKLOG.md` only, when recording the result.
 
+Files to add:
+
+- None expected.
+
 Tests:
 
 - Existing unit tests already cover stale grid telemetry and grid-import guard
@@ -427,7 +1962,17 @@ Tests:
 - No new automated tests are required unless the winter run reveals unexpected
   behavior or unclear diagnostic output.
 
+Expected coverage:
+
+- Adds live evidence for natural conditions that hardware-free tests cannot
+  reproduce; existing passing tests remain unchanged.
+
 Manual validation:
+
+Active charging required only during a naturally suitable, attended low-PV
+window. Do not manufacture grid import or a telemetry outage.
+
+Manual test steps:
 
 1. Run normal winter Auto/Eco charging with `AllowGridCharging=false`.
 2. Search the live log for relevant guard messages:
@@ -437,12 +1982,23 @@ Manual validation:
 4. Confirm the observed decision matches the documented no-grid policy.
 5. Record the result in this backlog item.
 
+Risks and dependencies:
+
+- Weather and household load may not naturally expose the branch.
+- Complete relevant confirmed telemetry/controller fixes before treating a new
+  observation as final validation evidence.
+
+Open questions:
+
+- None. Record an inconclusive natural window rather than forcing the state.
+
 Done criteria:
 
 - Winter or naturally low-PV validation records correct behavior for any
   observed grid-import or stale-telemetry branch.
 - If those branches still do not occur naturally, the item records that result
   without forcing unsafe or unrealistic system behavior.
+- Full unittest suite passes if any code changes result from an observed defect.
 
 ### P4 - Audit And Pin The Victron `velib_python` Dependency
 
@@ -679,11 +2235,56 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move the finished backlog items to `Completed` and advance the
 queue on the next request.
 
-1. P1 live-validate Venus OS v3.75 Auto/Eco PV-surplus operation — complete the
-   remaining daylight active-charging checks before unrelated behavior changes.
-2. P4 audit and pin the Victron `velib_python` dependency — establish
-   provenance and deterministic import ownership before considering any
-   dependency replacement; keep this separate from Wattpilot behavior changes.
+1. P1 remove hard-coded 300 W grid telemetry falsification — restore truthful
+   grid input before any live no-grid validation or downstream control work.
+2. P1 fix MQTT-consumer off-control format-string crash — prevent automatic
+   consumers remaining on after PV allowance disappears.
+3. P1 fix D-Bus value-change thread-pool dispatch — remove GLib-thread blocking
+   and the submitted-`None` failure affecting all D-Bus callbacks.
+4. P2 surface worker exceptions and preserve recurring timers — make failures
+   observable without permanently unscheduling service workers.
+5. P2 NoBatToEV fail-safe revoke on update errors — prevent stale setpoint
+   requests from continuing unintended import.
+6. P2 lock the grid-setpoint combiner and define safe bounds — fix the confirmed
+   request-dictionary race; add clamping only after bounds are approved.
+7. P2 fail closed on structural configuration errors — prevent partially
+   initialized safety-sensitive runtimes.
+8. P2 add freshness guard for battery-assist SOC — fail closed when the SOC
+   used by assist or battery-priority bypass is stale.
+9. P2 define safe control for unclassified charging model statuses — obtain
+   firmware evidence and encode explicit no-grid-safe mappings.
+10. P2 publish null and disconnected on all meter failure modes — stop frozen
+    grid/PV measurements remaining authoritative after non-timeout failures.
+11. P4 harden Wattpilot reconnect and startup None handling — close confirmed
+    lifecycle/None defects without adding a disconnect command.
+12. P1 live-validate Venus OS v3.75 Auto/Eco PV-surplus operation — run the
+    daylight active-charging checks only after relevant telemetry/controller
+    fixes above are deployed and their automated tests pass.
+13. P3 fix zero-feed-in logger shadowing and None telemetry — preserve real
+    diagnostics and avoid experimental-control crashes.
+14. P3 fix PV inverter stale window and cached-power contribution — remove
+    frozen inverter power from zero-feed-in control.
+15. P3 make Shelly net-energy persistence robust and atomic — survive corrupt
+    files and avoid false energy across failed-poll gaps.
+16. P3 guard TimeToGoCalculator against missing telemetry — remove repeated
+    critical failures and add the first focused test coverage.
+17. P3 restrict config and backup file permissions — protect stored MQTT and
+    Wattpilot credentials.
+18. P3 make MQTT TLS certificate verification the default — select and migrate
+    an explicit trust model before changing existing deployments.
+19. P3 validate remaining safety and operational values — extend PR 7 without
+    reopening interval/value rules already completed.
+20. P3 add hardware-free tests for untested active services — cover TimeToGo,
+    MqttExporter, and MqttTemperature after related fixes.
+21. P4 remove distributor lock-held I/O and correct runtime data — prevent one
+    slow endpoint blocking every consumer and correct confirmed publications.
+22. P4 fix automatic NPC minimum-to-request allocation — correct the isolated
+    allocation edge without changing scripted-consumer priority behavior.
+23. P4 make shutdown setpoint restore and early logging reliable — preserve PR
+    4A cleanup while proving restore delivery and construction-safe logging.
+24. P4 audit and pin the Victron `velib_python` dependency — establish v3.75
+    provenance and deterministic import ownership as a separate compatibility
+    change.
 
 The P4 winter grid-import dispatch validation is an observation task, not a
 code PR, and remains open independently of this queue. Complete it only under
@@ -692,6 +2293,11 @@ disconnect critical telemetry to satisfy it.
 
 Hardware validation scope for the remaining backlog:
 
+- Meter, MQTT, and HTTP failure-path items require controlled low-risk fault
+  simulation; they do not require forced grid import.
+- Wattpilot SOC/status behavior changes require focused hardware-free tests and
+  only supervised active-charging validation where the relevant state can occur
+  naturally.
 - The P1 Venus OS Auto/Eco validation requires supervised daylight active
   charging for final PV-surplus verification.
 - The P4 `velib_python` audit requires log-only startup and D-Bus registration
