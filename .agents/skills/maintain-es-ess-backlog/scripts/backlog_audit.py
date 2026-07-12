@@ -18,7 +18,10 @@ REQUIRED_SECTION_PREFIXES = (
     "## Backlog",
     "## Suggested Implementation Order",
     "## Verification Plan",
+    "## Outstanding Manual Validation",
 )
+
+WORD_PATTERN = re.compile(r"\b[\w'-]+\b", flags=re.UNICODE)
 
 
 def _section_sizes(lines: list[str]) -> dict[str, int]:
@@ -32,6 +35,20 @@ def _section_sizes(lines: list[str]) -> dict[str, int]:
         end = headings[position + 1][0] if position + 1 < len(headings) else len(lines)
         sizes[heading] = end - start
     return sizes
+
+
+def _completed_body(lines: list[str]) -> str:
+    body: list[str] = []
+    in_completed = False
+    for line in lines:
+        if line.strip() == "## Completed":
+            in_completed = True
+            continue
+        if in_completed and line.startswith("## "):
+            break
+        if in_completed and not line.startswith("### Completed "):
+            body.append(line)
+    return "\n".join(body)
 
 
 def audit(path: Path) -> dict[str, object]:
@@ -51,11 +68,17 @@ def audit(path: Path) -> dict[str, object]:
         for required in REQUIRED_SECTION_PREFIXES
         if not any(heading.startswith(required) for heading in section_headings)
     ]
+    completed_words = len(WORD_PATTERN.findall(_completed_body(lines)))
+    average_completed_words = (
+        round(completed_words / len(completed), 2) if completed else None
+    )
 
     return {
         "path": str(path),
         "lines": len(lines),
-        "words": len(re.findall(r"\b[\w'-]+\b", text, flags=re.UNICODE)),
+        "words": len(WORD_PATTERN.findall(text)),
+        "completed_words": completed_words,
+        "average_words_per_completed_item": average_completed_words,
         "completed_count": len(completed),
         "open_count": len(open_items),
         "completed_headings": completed,
@@ -70,6 +93,11 @@ def _print_human(result: dict[str, object]) -> None:
     print(f"Backlog: {result['path']}")
     print(f"Lines: {result['lines']}")
     print(f"Words: {result['words']}")
+    print(f"Completed-section words: {result['completed_words']}")
+    print(
+        "Average words per completed item: "
+        f"{result['average_words_per_completed_item']}"
+    )
     print(f"Completed items: {result['completed_count']}")
     print(f"Open items: {result['open_count']}")
     print("Section lines:")

@@ -14,8 +14,9 @@ Read completely, in this order:
 
 1. `AGENTS.md`.
 2. `BACKLOG.md`.
-3. `../es-ess-code-review/SKILL.md` and its directly referenced backlog-format
-   rules.
+3. `../es-ess-code-review/references/backlog-format.md`. If this repository
+   dependency cannot be read, stop and report it instead of guessing the
+   backlog format.
 4. `docs/wattpilot-architecture.md` when any entry touches Wattpilot behavior,
    command ownership, runtime status, or safety invariants.
 5. `docs/service-inventory.md` when any entry touches service state,
@@ -32,8 +33,9 @@ and follow `es-ess-code-review` rather than expanding this maintenance run.
 ### 1. Establish scope and baseline
 
 - Inspect the working tree and preserve unrelated user changes.
-- Run `scripts/backlog_audit.py BACKLOG.md` and retain its before-edit metrics
-  and heading inventory in the turn context.
+- Run `scripts/backlog_audit.py BACKLOG.md --json` and retain the complete
+  before-edit result in the turn context; do not write a baseline file merely
+  for comparison.
 - Classify the requested work as refresh, review, compaction, or a combination.
 - Treat missing product intent, hardware behavior, supported versions, or
   validation availability as an open question when it affects correctness.
@@ -99,8 +101,11 @@ Do not:
 
 Run the audit script again and compare it with the baseline:
 
+- Compare `lines`, `words`, `completed_words`,
+  `average_words_per_completed_item`, `completed_headings`, `open_headings`,
+  `missing_required_sections`, and `duplicate_tracked_headings` explicitly.
 - Every pre-existing open and completed heading remains unless the approved
-  plan explicitly changes its state while retaining its identity.
+  plan explicitly changes its state while retaining its identity and reason.
 - Required sections and the implementation queue remain present.
 - Open-item template content remains implementation-ready.
 - Resolved and obsolete decisions retain their evidence.
@@ -119,8 +124,11 @@ unless the edit exposes or changes a code/config claim needing verification.
 ## Audit Utility
 
 Use `scripts/backlog_audit.py` as a read-only structural check. It reports line
-and word counts, section sizes, open/completed headings, duplicate identities,
-and missing required sections. It never edits the backlog.
+and word counts, completed-section compaction metrics, section sizes,
+open/completed headings, duplicate identities, and missing required sections.
+It never edits the backlog. Treat average completed-item size as information,
+not a hard pass/fail threshold, until repository history establishes a useful
+limit.
 
 Typical invocation from the repository root:
 
@@ -128,10 +136,28 @@ Typical invocation from the repository root:
 uv --cache-dir .uv-cache run --no-project python .agents/skills/maintain-es-ess-backlog/scripts/backlog_audit.py BACKLOG.md
 ```
 
-Use `--json` when machine-readable output helps comparison.
+Use `--json` for both the pre-edit baseline and post-edit result. Retain both
+outputs in the turn context and compare the fields listed in Verify
+preservation; do not rely only on total counts because one removed identity and
+one added identity can cancel each other out.
 
 ## Delivery
 
-Report the changed paths, before/after size, identity counts and preservation,
-items refreshed/resolved/obsolete/compacted, automated checks, outstanding
-questions, manual validation category, and whether `AGENTS.md` needed updating.
+Use this stable summary shape so maintenance runs remain comparable:
+
+```text
+Backlog maintenance result:
+- Changed paths:
+- Size: {before lines/words} -> {after lines/words}
+- Completed identities: {before} -> {after}; preserved: {yes/no with reason}
+- Open identities: {before} -> {after}; preserved: {yes/no with reason}
+- Completed compaction: {before average words} -> {after average words}
+- Refreshed:
+- Resolved:
+- Marked obsolete:
+- Compacted:
+- Automated checks:
+- Outstanding questions:
+- Manual validation: {category and steps}
+- AGENTS.md update: {required/not required and reason}
+```
