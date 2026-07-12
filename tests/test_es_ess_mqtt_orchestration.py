@@ -4,9 +4,10 @@ import importlib.util
 import sys
 import types
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,13 @@ class FakeMqttSubscription:
 
 
 def _install_runtime_stubs():
+    class FakeDbusSubscription:
+        @staticmethod
+        def buildValueKey(service_name, dbus_path):
+            return "{0}{1}".format(
+                ".".join(service_name.split(".")[:3]), dbus_path
+            )
+
     gi = _module("gi")
     gi_repository = _module(
         "gi.repository", GLib=SimpleNamespace(timeout_add=lambda *_args: None)
@@ -83,7 +91,7 @@ def _install_runtime_stubs():
     )
     _module(
         "esESSService",
-        DbusSubscription=object,
+        DbusSubscription=FakeDbusSubscription,
         esESSService=object,
         WorkerThread=object,
         MqttSubscription=FakeMqttSubscription,
@@ -135,6 +143,29 @@ class FakeMqttClient:
             self.events.append("{0}-disconnect".format(self.name))
 
 
+class RecordingExecutor:
+    def __init__(self, submit_error=None):
+        self.calls = []
+        self.pending = []
+        self.submit_error = submit_error
+
+    def submit(self, callback, *args):
+        if self.submit_error is not None:
+            raise self.submit_error
+        future = Future()
+        self.calls.append((callback, args))
+        self.pending.append((future, callback, args))
+        return future
+
+    def run_next(self):
+        future, callback, args = self.pending.pop(0)
+        try:
+            future.set_result(callback(*args))
+        except Exception as ex:
+            future.set_exception(ex)
+        return future
+
+
 class FakeBooleanConnectedClient(FakeMqttClient):
     def __init__(self, connected=True):
         super().__init__(connected)
@@ -156,11 +187,122 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         app._sigTermInvoked = False
         app._shutdownMqttDisconnectsLogged = set()
         app._mqttSubscriptions = {}
+        app._dbusSubscriptions = {}
         app._services = {}
         app._serviceMessageIndex = {}
         app.mqttThrottlePeriod = 0
         app.config = {"Common": {"ServiceMessageCount": "3"}}
         return app
+
+    def test_dbus_callback_is_submitted_without_inline_execution(self):
+        app = self._app()
+        app.threadPool = RecordingExecutor()
+        callback = Mock()
+        subscription = SimpleNamespace(
+            serviceName="com.victronenergy.system",
+            callback=callback,
+            value=None,
+        )
+        key = "com.victronenergy.system/Ac/Grid/L1/Power"
+        app._dbusSubscriptions = {key: [subscription]}
+        with patch.object(
+            self.es_ess.DbusSubscription,
+            "buildValueKey",
+            return_value=key,
+            create=True,
+        ):
+            app._dbusValueChanged(
+                "com.victronenergy.system",
+                "/Ac/Grid/L1/Power",
+                None,
+                {"Value": 123},
+                None,
+            )
+
+        callback.assert_not_called()
+        self.assertEqual(app.threadPool.calls, [(callback, (subscription,))])
+        self.assertEqual(subscription.value, 123)
+
+        app.threadPool.run_next()
+
+        callback.assert_called_once_with(subscription)
+
+    def test_dbus_callback_failure_is_reported(self):
+        app = self._app()
+        app.threadPool = RecordingExecutor()
+        callback = Mock(side_effect=RuntimeError("callback failed"))
+        subscription = SimpleNamespace(
+            serviceName="com.victronenergy.system",
+            callback=callback,
+            value=None,
+        )
+        key = "com.victronenergy.system/Ac/Grid/L1/Power"
+        app._dbusSubscriptions = {key: [subscription]}
+
+        with patch.object(
+            self.es_ess.DbusSubscription,
+            "buildValueKey",
+            return_value=key,
+            create=True,
+        ), patch.object(self.es_ess, "c") as critical_log:
+            app._dbusValueChanged(
+                "com.victronenergy.system",
+                "/Ac/Grid/L1/Power",
+                None,
+                {"Value": 123},
+                None,
+            )
+            app.threadPool.run_next()
+
+        critical_log.assert_called_once()
+        self.assertIn("asynchronous operation", critical_log.call_args.args[1])
+        self.assertIsInstance(
+            critical_log.call_args.kwargs["exc_info"], RuntimeError
+        )
+
+    def test_worker_future_failure_is_reported_and_recurring_timer_remains(self):
+        app = self._app()
+        app.threadPool = RecordingExecutor()
+        app._threadExecutionsMinute = 0
+        worker = SimpleNamespace(
+            thread=Mock(side_effect=RuntimeError("worker failed")),
+            future=None,
+            onlyOnce=False,
+            interval=1000,
+            service=SimpleNamespace(),
+        )
+
+        with patch.object(self.es_ess, "c") as critical_log:
+            self.assertTrue(app._runThread(worker))
+            app.threadPool.run_next()
+
+        critical_log.assert_called_once()
+        self.assertEqual(app._threadExecutionsMinute, 1)
+
+    def test_scheduling_failure_keeps_recurring_timer_and_removes_one_shot(self):
+        app = self._app()
+        app.threadPool = RecordingExecutor(submit_error=RuntimeError("closed"))
+        app._threadExecutionsMinute = 0
+        recurring = SimpleNamespace(
+            thread=Mock(),
+            future=None,
+            onlyOnce=False,
+            interval=1000,
+            service=SimpleNamespace(),
+        )
+        one_shot = SimpleNamespace(
+            thread=Mock(),
+            future=None,
+            onlyOnce=True,
+            interval=1000,
+            service=SimpleNamespace(),
+        )
+
+        with patch.object(self.es_ess, "c") as critical_log:
+            self.assertTrue(app._runThread(recurring))
+            self.assertFalse(app._runThread(one_shot))
+
+        self.assertEqual(critical_log.call_count, 2)
 
     def _subscription(self, topic, type, qos=1):
         return self.es_ess.MqttSubscription(

@@ -83,61 +83,69 @@ class NoBatToEV(esESSService):
         if (not "FroniusWattpilot" in Globals.esESS._services):
             return self.evChargerPowerDbus.value
 
-        wattpilot = Globals.esESS._services["FroniusWattpilot"].wattpilot
+        wattpilotService = Globals.esESS._services["FroniusWattpilot"]
+        wattpilot = getattr(wattpilotService, "wattpilot", None)
+        if wattpilot is None:
+            return None
+
         values = [wattpilot.power1, wattpilot.power2, wattpilot.power3]
         if any(value is None for value in values):
             return None
         return sum(values) * 1000
 
     def _update(self):
-        if (self.noPhasesDbus.value is not None and self.noPhasesDbus.value > 0):
-            if self.enabled():
-                evPower = self._evPower()
-                consumption = self._sumDbusValues(
-                    self.consumptionL1Dbus,
-                    self.consumptionL2Dbus,
-                    self.consumptionL3Dbus,
-                )
-                pvAvailable = self._sumDbusValues(
-                    self.pvOnGensetL1Dbus,
-                    self.pvOnGensetL2Dbus,
-                    self.pvOnGensetL3Dbus,
-                    self.pvOnGridL1Dbus,
-                    self.pvOnGridL2Dbus,
-                    self.pvOnGridL3Dbus,
-                    self.pvOnOutputL1Dbus,
-                    self.pvOnOutputL2Dbus,
-                    self.pvOnOutputL3Dbus,
-                    self.pvOnDcDbus,
-                )
-
-                if (evPower is None or consumption is None or pvAvailable is None):
-                    d(
-                        self,
-                        "NoBatToEV telemetry is incomplete. Revoking grid setpoint request.",
+        try:
+            if (self.noPhasesDbus.value is not None and self.noPhasesDbus.value > 0):
+                if self.enabled():
+                    evPower = self._evPower()
+                    consumption = self._sumDbusValues(
+                        self.consumptionL1Dbus,
+                        self.consumptionL2Dbus,
+                        self.consumptionL3Dbus,
                     )
-                    self.revokeGridSetPointRequest()
-                    return
+                    pvAvailable = self._sumDbusValues(
+                        self.pvOnGensetL1Dbus,
+                        self.pvOnGensetL2Dbus,
+                        self.pvOnGensetL3Dbus,
+                        self.pvOnGridL1Dbus,
+                        self.pvOnGridL2Dbus,
+                        self.pvOnGridL3Dbus,
+                        self.pvOnOutputL1Dbus,
+                        self.pvOnOutputL2Dbus,
+                        self.pvOnOutputL3Dbus,
+                        self.pvOnDcDbus,
+                    )
 
-                d(self, "EV Charge is {ev}W, Consumption is {con}W and available Pv is {pv}W.".format(ev=evPower, con=consumption, pv=pvAvailable))
+                    if (evPower is None or consumption is None or pvAvailable is None):
+                        d(
+                            self,
+                            "NoBatToEV telemetry is incomplete. Revoking grid setpoint request.",
+                        )
+                        self.revokeGridSetPointRequest()
+                        return
 
-                if (evPower > 0):
-                    if (consumption >= pvAvailable):
-                        #offload the share of EV charge that is NOT PV covered to the grid. 
-                        rawConsumption = consumption - evPower
-                        remainingPv = max(0, pvAvailable - rawConsumption)
-                        delta = evPower - remainingPv
+                    d(self, "EV Charge is {ev}W, Consumption is {con}W and available Pv is {pv}W.".format(ev=evPower, con=consumption, pv=pvAvailable))
 
-                        d(self, "So, raw consumption is {0}W, remainingPV is {1}W, we therefore offload {2}W to the grid.".format(rawConsumption, remainingPv, delta))
+                    if (evPower > 0):
+                        if (consumption >= pvAvailable):
+                            #offload the share of EV charge that is NOT PV covered to the grid.
+                            rawConsumption = consumption - evPower
+                            remainingPv = max(0, pvAvailable - rawConsumption)
+                            delta = evPower - remainingPv
 
-                        self.registerGridSetPointRequest(delta)
+                            d(self, "So, raw consumption is {0}W, remainingPV is {1}W, we therefore offload {2}W to the grid.".format(rawConsumption, remainingPv, delta))
+
+                            self.registerGridSetPointRequest(delta)
+                        else:
+                            self.revokeGridSetPointRequest()
                     else:
                         self.revokeGridSetPointRequest()
                 else:
                     self.revokeGridSetPointRequest()
+                    d(self, "NoBatToEV is disabled due to relay state.")
             else:
+                w(self, "Grid-Loss detected. Not doing anything.")
                 self.revokeGridSetPointRequest()
-                d(self, "NoBatToEV is disabled due to relay state.")
-        else:
-            w(self, "Grid-Loss detected. Not doing anything.")
+        except Exception as ex:
             self.revokeGridSetPointRequest()
+            c(self, "NoBatToEV update failed. Revoked grid setpoint request.", exc_info=ex)

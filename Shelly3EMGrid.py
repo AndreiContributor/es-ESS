@@ -133,10 +133,6 @@ class Shelly3EMGrid(esESSService):
                 self.dbusService['/Connected'] = 1
                 self.connectionErrors = 0
 
-                #TODO: Remove after debugging Fake feedin on Phase 2: 
-                meter_data['emeters'][1]['power'] -= 300
-                meter_data['total_power'] -= 300
-
                 #All good, evaluate and publish on dbus. 
                 self.dbusService['/Ac/Power'] = meter_data['total_power']
                 self.dbusService['/Ac/L1/Voltage'] = meter_data['emeters'][0]['voltage']

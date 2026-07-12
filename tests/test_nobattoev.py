@@ -59,6 +59,7 @@ class NoBatToEVTests(unittest.TestCase):
 
     def setUp(self):
         self.nobat.Globals.esESS = SimpleNamespace(_services={})
+        self.nobat.c = Mock()
 
     @staticmethod
     def _dbus(value):
@@ -101,6 +102,28 @@ class NoBatToEVTests(unittest.TestCase):
 
         service.revokeGridSetPointRequest.assert_called_once_with()
         service.registerGridSetPointRequest.assert_not_called()
+
+    def test_update_with_missing_wattpilot_client_revokes_request(self):
+        service = self._service(consumption=(1000, 1000, 1000), pv=(100,) * 10)
+        self.nobat.Globals.esESS._services = {
+            "FroniusWattpilot": SimpleNamespace()
+        }
+
+        service._update()
+
+        service.revokeGridSetPointRequest.assert_called_once_with()
+        service.registerGridSetPointRequest.assert_not_called()
+
+    def test_unexpected_update_error_revokes_request_before_logging(self):
+        service = self._service(consumption=(1000, 1000, 1000), pv=(100,) * 10)
+        service._evPower = Mock(side_effect=RuntimeError("injected failure"))
+
+        service._update()
+
+        service.revokeGridSetPointRequest.assert_called_once_with()
+        service.registerGridSetPointRequest.assert_not_called()
+        self.nobat.c.assert_called_once()
+        self.assertIn("Revoked grid setpoint request", self.nobat.c.call_args.args[1])
 
     def test_update_with_none_dbus_consumption_or_pv_values_does_not_raise(self):
         service = self._service(

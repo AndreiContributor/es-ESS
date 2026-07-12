@@ -328,6 +328,63 @@ class SolarOverheadDistributorTests(unittest.TestCase):
         consumer.httpRequestTimeout = 7.5
         return consumer
 
+    def _mqtt_consumer(self):
+        consumer = self.sod.SolarOverheadConsumer.__new__(
+            self.sod.SolarOverheadConsumer
+        )
+        consumer.consumerKey = "load"
+        consumer.isHttpConsumer = False
+        consumer.isMqttConsumer = True
+        consumer.allowance = 1000
+        consumer.request = 1000
+        consumer.npcState = False
+        consumer.onTopic = "load/set"
+        consumer.onValue = "on"
+        consumer.offTopic = "load/set"
+        consumer.offValue = "off"
+        consumer.statusTopic = "load/status"
+        consumer.powerTopic = "load/power"
+        consumer.onKeywordRegex = "on"
+        consumer.powerExtractRegex = r"power=(\d+)"
+        consumer.consumption = 0
+        return consumer
+
+    def test_mqtt_status_match_updates_state_and_zero_allowance_turns_off(self):
+        consumer = self._mqtt_consumer()
+        self.sod.Globals.esESS.publishMainMqtt = Mock()
+
+        consumer.onMqttMessage(
+            None,
+            None,
+            SimpleNamespace(topic="load/status", payload=b"on"),
+        )
+        self.assertTrue(consumer.npcState)
+        self.sod.e.assert_not_called()
+
+        consumer.allowance = 0
+        consumer.mqttControl()
+
+        self.sod.Globals.esESS.publishMainMqtt.assert_called_once_with(
+            "load/set", "off"
+        )
+
+    def test_malformed_mqtt_power_keeps_last_valid_state_and_is_visible(self):
+        consumer = self._mqtt_consumer()
+        consumer.npcState = True
+        consumer.consumption = 450
+        consumer.powerExtractRegex = r"power=\d+"
+
+        consumer.onMqttMessage(
+            None,
+            None,
+            SimpleNamespace(topic="load/power", payload=b"power=500"),
+        )
+
+        self.assertTrue(consumer.npcState)
+        self.assertEqual(consumer.consumption, 450)
+        self.sod.e.assert_called_once()
+        self.assertIn("Keeping the last valid state", self.sod.e.call_args.args[1])
+
     def test_http_consumer_on_status_and_power_requests_use_configured_timeout(self):
         consumer = self._http_consumer()
         self.sod.requests.get = Mock(
