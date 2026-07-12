@@ -302,6 +302,21 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             self.fwp.WattpilotStartStop.On
         )
 
+    def test_new_charge_starts_directly_on_three_phases_with_full_pv_allowance(self):
+        controller = self._controller()
+        controller.surplusSince = 100
+        self._set_allowance(controller, 4200, 400)
+
+        with patch.object(self.fwp.time, "time", return_value=400):
+            controller.handleNotChargingState()
+
+        self.assertEqual(controller.currentPhaseMode, 2)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+        controller.wattpilot.set_power.assert_called_once_with(6)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.On
+        )
+
     def test_restart_after_a_stop_waits_for_min_on_off_seconds(self):
         controller = self._controller()
         controller.minimumOnOffSeconds = 60
@@ -561,6 +576,45 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertTrue(controller.batteryAssistActive)
         self.assertEqual(controller.currentPhaseMode, 1)
         controller.wattpilot.set_phases.assert_not_called()
+
+    def test_battery_assist_preserves_existing_phase_up_candidate_until_full_pv_recovers(self):
+        controller = self._controller()
+        controller.minimumPhaseSwitchSeconds = 120
+        controller.lastPhaseSwitchTime = -120
+        controller.wattpilot.power = 3.68
+        controller.wattpilot.amp = 16
+        self._set_allowance(controller, 4200, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(controller.phaseSwitchCandidateMode, 2)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 100)
+
+        # A deep cloud dip is bridged by eligible battery assist. The assist
+        # path cannot issue phase-up, but intentionally leaves the already-
+        # existing candidate's wall-clock timer unchanged.
+        self._set_allowance(controller, 1856, 110)
+        with patch.object(self.fwp.time, "time", return_value=110):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertTrue(controller.batteryAssistActive)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 2)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 100)
+        self.assertEqual(controller.phaseSwitchBelowThresholdSince, 0)
+        controller.wattpilot.set_phases.assert_not_called()
+
+        # Once fresh assigned PV recovers to the full threshold, the mature
+        # candidate may switch without beginning a second complete interval.
+        controller.wattpilot.set_power.reset_mock()
+        self._set_allowance(controller, 4200, 220)
+        with patch.object(self.fwp.time, "time", return_value=220):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo3Phase)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+        controller.wattpilot.set_power.assert_called_once_with(6)
 
     def test_battery_assist_requires_active_charge_soc_and_power_limits(self):
         controller = self._controller()

@@ -1227,8 +1227,12 @@ class FroniusWattpilot (esESSService):
         self.updateBatteryAssistLockoutRecovery(shortfallW)
 
         # A battery bridge is allowed only for a currently-running charge. It
-        # holds the existing phase/current and never affects fresh starts or
-        # phase-up decisions.
+        # holds the existing phase/current and cannot create a phase-up
+        # candidate or issue a phase command. When a one-phase candidate
+        # already exists, this continuation path intentionally leaves its
+        # wall-clock timer unchanged through the bounded assist window. Fresh
+        # assigned allowance must still recover to the full phase-up threshold
+        # before adjustChargeForPvAllowance() can issue the command.
         if self.startOrContinueBatteryAssist(shortfallW):
             self.publishServiceMessage(
                 self,
@@ -2592,7 +2596,7 @@ class FroniusWattpilot (esESSService):
         self.phaseSwitchBelowThresholdSince = 0
 
     def preservePhaseUpCandidateThroughShortDip(self):
-        """Keep phase-up timing through a brief, electrically safe PV dip."""
+        """Evaluate normal-path grace for an electrically safe PV dip."""
         decision = PhaseDecisions.evaluate_phase_up_drop_grace(
             self.phaseSwitchCandidateMode,
             max(0.0, float(self.allowance)),
@@ -2639,10 +2643,12 @@ class FroniusWattpilot (esESSService):
         if enteringPhaseMode == 0:
             enteringPhaseMode = 1
 
-        # A one-phase phase-up candidate may survive a short allocation dip,
-        # but only while assigned PV remains electrically capable of supporting
-        # the effective three-phase-capable floor. The full phase-up threshold is still
-        # required again at the command boundary.
+        # On the normal current-adjustment path, a one-phase phase-up candidate
+        # may survive a short allocation dip only while assigned PV remains
+        # above the effective three-phase-capable floor. An eligible battery-
+        # assist continuation returns before this evaluation and intentionally
+        # leaves an existing candidate unchanged. Either path still requires
+        # the full phase-up threshold again at the command boundary.
         phaseUpDropGraceActive = False
         if desiredPhaseMode == 2:
             self.phaseSwitchBelowThresholdSince = 0

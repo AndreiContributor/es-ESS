@@ -158,10 +158,18 @@ Completion note:
 - Production phase-up validation confirmed an exact final 600-second interval
   and synchronized Wattpilot phase telemetry, but several isolated five-second
   allowance dips from about 5.1 kW to 4.68-4.89 kW repeatedly discarded valid
-  progress. Phase-up candidates now reuse `SurplusDropGraceSeconds` to tolerate
-  only short dips that remain above the electrical three-phase minimum. Longer
-  or deeper dips still reset timing, and fresh assigned allowance must recover
-  to the full phase-up threshold before a command can be issued.
+  progress. Phase-up candidates now reuse `SurplusDropGraceSeconds` on the
+  normal adjustment path to tolerate short dips that remain above the
+  electrical three-phase minimum; deeper or longer normally evaluated dips
+  reset timing.
+- Follow-up production logs showed that eligible battery assist returns before
+  normal phase-up dip evaluation and therefore leaves an already-existing
+  candidate timer running through its bounded bridge, including a deeper cloud
+  dip. This was explicitly accepted as intended operation: assist cannot create
+  a candidate or issue a phase command, and fresh assigned allowance must
+  recover to the full phase-up threshold before switching. A stopped session
+  may also start directly on three phases when its fresh start allowance already
+  meets that threshold, matching normal Wattpilot behavior.
 - Kept normal Manual mode, command ownership, D-Bus/MQTT runtime-status paths,
   current limits, and the prohibition on battery/grid-assisted starts and
   phase-up unchanged.
