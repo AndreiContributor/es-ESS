@@ -176,9 +176,9 @@ It owns:
   one-phase phase-up probe and cooldown suppression.
 - Shared one-to-three and three-to-one stability/cooldown decisions, returning
   the next controller-owned candidate timer values.
-- One-to-three short-drop grace eligibility, which may preserve an existing
-  candidate only while assigned allowance remains above the effective
-  three-phase floor.
+- One-to-three short-drop grace eligibility on the normal current-adjustment
+  path, which may preserve an existing candidate only while assigned allowance
+  remains above the effective three-phase floor.
 
 It must not own:
 
@@ -282,8 +282,11 @@ Future Wattpilot changes must preserve these invariants:
 - Battery assist may only bridge a short PV dip during an already-running
   charge and must remain bounded by SOC, duration, shortfall, and recovery
   settings.
-- Battery assist must not start a charge and must not trigger a switch to three
-  phases.
+- Battery assist must not start a charge, create a phase-up candidate, or issue
+  a switch to three phases. An eligible continuation bridge may intentionally
+  leave an already-existing one-to-three candidate timer unchanged; fresh
+  assigned allowance must still meet the full phase-up threshold before the
+  controller can issue the phase command.
 - Fresh grid telemetry and fresh allowance data are required for no-grid
   Auto/Eco decisions.
 - A confirmed physical vehicle disconnect must stop Auto/Eco current and phase
@@ -299,11 +302,16 @@ Future Wattpilot changes must preserve these invariants:
 - `MinPhaseSwitchSeconds` is the single normal stability/cooldown timer for
   both phase directions. A no-grid session may reduce phase or stop before the
   timer expires when bounded battery assist cannot safely bridge the deficit.
-- `SurplusDropGraceSeconds` may preserve an active one-to-three candidate
-  through a shorter-than-grace dip below the phase-up threshold only while
-  fresh assigned allowance remains above the effective three-phase floor.
-  The full phase-up threshold must be present at the command boundary; battery
-  assist and raw overhead cannot satisfy or preserve phase-up eligibility.
+- On the normal current-adjustment path, `SurplusDropGraceSeconds` may preserve
+  an active one-to-three candidate through a shorter-than-grace dip below the
+  phase-up threshold only while fresh assigned allowance remains above the
+  effective three-phase floor. A deeper or longer dip resets the candidate when
+  that path evaluates it. An eligible battery-assist continuation returns while
+  holding the existing one-phase command and may therefore leave an already-
+  existing candidate's wall-clock timer running through the bounded assist
+  window. Battery assist cannot create the candidate or issue phase-up. Raw
+  overhead cannot authorize phase-up, and fresh assigned allowance must meet
+  the full phase-up threshold at the command boundary.
 - During a sustained three-phase PV deficit, bounded battery assist or
   explicitly allowed grid fallback may hold the running phase/current. Once
   the shared timer expires, one-phase PV availability authorizes the reduction.
