@@ -206,10 +206,10 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         controller.evPriorityOverBatteryCharge = False
         controller.evPriorityMinSoc = 0
-        controller.validatedVenusOsVersion = "v3.73"
+        controller.validatedVenusOsVersion = "v3.75"
         controller.validatedWattpilotFirmware = "42.5"
         controller.validatedWattpilotAppVersion = "2.1.0"
-        controller.actualVenusOsVersion = "v3.73"
+        controller.actualVenusOsVersion = "v3.75"
         controller.actualWattpilotFirmware = "42.5"
         controller.wattpilotFirmwareCompatible = True
         controller._lastWattpilotCompatibilityState = (True, "42.5")

@@ -31,10 +31,12 @@ Current integration boundaries:
 
 Current validated state:
 
-- Venus OS `v3.73` and `v3.75`, Wattpilot firmware `42.5`, and
-  operator-verified Solar.wattpilot app `2.1.0` are the approved runtime
-  baseline. The v3.75 code migration is complete; live GX validation remains
-  outstanding until the device is updated in a maintenance window.
+- Venus OS `v3.75`, Wattpilot firmware `42.5`, and operator-verified
+  Solar.wattpilot app `2.1.0` are the approved runtime baseline. The v3.75
+  upgrade, idle/no-vehicle, Manual charging, Manual current-change, and Manual
+  recovery checks passed on the production Cerbo GX. Supervised Auto/Eco
+  PV-surplus live validation remains outstanding until a suitable daylight/PV
+  window.
 - Auto/Eco PV-only control, no-grid protection, bounded running-session battery
   assist, telemetry freshness, phase switching, reconnect handling, runtime
   status, configuration migration/validation, and graceful shutdown are
@@ -73,9 +75,11 @@ Resolved decisions retained for history:
 
 Resolved runtime decision:
 
-- Preserve exact clean-release support for both Venus OS `v3.73` and `v3.75`
-  so stored-firmware rollback remains operational. Continue to reject `v3.74`,
-  qualified builds, and unapproved future releases.
+- Preserve exact clean-release support for Venus OS `v3.75` only in this
+  checkout. Continue to reject qualified builds and unapproved future releases.
+  If firmware rollback boots an older Venus OS release, restore an es-ESS
+  checkout whose runtime baseline explicitly supports that firmware before
+  starting services.
 
 ## Completed
 
@@ -445,7 +449,7 @@ Done criteria:
 Goal:
 
 Make the Victron D-Bus dependency reproducible and auditable while preserving
-the behavior supported on Venus OS `v3.73` and `v3.75`.
+the behavior supported on Venus OS `v3.75`.
 
 Problem:
 
@@ -470,9 +474,9 @@ Evidence:
   importing `VeDbusService`.
 - `velib_python-master` is tracked as normal files rather than a Git submodule
   and contains no upstream commit manifest.
-- `RuntimeCompatibility.py` permits only the clean Venus OS `v3.73` and
-  `v3.75` releases, so dependency selection must be evaluated against both
-  supported runtimes rather than current upstream `master` alone.
+- `RuntimeCompatibility.py` permits only the clean Venus OS `v3.75` release,
+  so dependency selection must be evaluated against that supported runtime
+  rather than current upstream `master` alone.
 
 Implementation:
 
@@ -480,7 +484,7 @@ Implementation:
   files, or record that it cannot be recovered.
 - Compare the bundled `vedbus.py`, `dbusmonitor.py`, `settingsdevice.py`, and
   `ve_utils.py` with both current upstream and the copies shipped by Venus OS
-  `v3.73` and `v3.75`.
+  `v3.75`.
 - Choose one explicit runtime source: a pinned bundled snapshot or the
   validated Venus OS copy. Do not track an unpinned branch such as `master`.
 - Record the chosen source, commit/hash, license, update procedure, and Venus OS
@@ -527,8 +531,8 @@ Expected coverage:
 
 Manual validation:
 
-Log-only (safe in production). Validate on supported Venus OS `v3.73` and
-`v3.75` with no active charging or other controlled transition required.
+Log-only (safe in production). Validate on supported Venus OS `v3.75` with no
+active charging or other controlled transition required.
 
 Manual test steps:
 
@@ -545,7 +549,7 @@ Manual test steps:
 Risks and dependencies:
 
 - A newer upstream snapshot may depend on Venus OS components or D-Bus behavior
-  not present in one of the supported releases.
+  not present in the supported release.
 - Selecting the system copy couples es-ESS behavior to Venus OS packaging;
   selecting a bundled copy requires explicit license/provenance maintenance.
 - Import-order changes can affect every D-Bus-publishing service and therefore
@@ -563,53 +567,47 @@ Done criteria:
 - All runtime imports resolve deterministically to that source.
 - No unpinned download from `master` is used in deployment or maintenance.
 - D-Bus service registration and monitoring pass hardware-free regression
-  tests and log-only GX validation on Venus OS `v3.73` and `v3.75`.
+  tests and log-only GX validation on Venus OS `v3.75`.
 - Wattpilot Manual/Auto safety boundaries and public D-Bus/MQTT contracts are
   unchanged.
 - Full unittest suite passes.
 
-### P1 - Live-Validate Venus OS v3.75 Migration On Cerbo GX
+### P1 - Live-Validate Venus OS v3.75 Auto/Eco PV-Surplus Operation
 
 Goal:
 
-Confirm that the approved dual-version runtime change operates safely on the
-production Cerbo GX after upgrading from Venus OS `v3.73` to `v3.75`, while
-retaining a verified rollback to `v3.73`.
+Complete the remaining live validation for v3.75 by proving supervised
+Auto/Eco PV-surplus behavior under natural daylight/PV conditions.
 
 Problem:
 
-Hardware-free tests prove exact version selection and preserve the es-ESS
-command boundaries, but they cannot prove that the v3.75 image still provides
-the required Python packages, D-Bus services, MQTT behavior, persistent
-`/data` hooks, device paths, or timing on the target GX hardware. Until the
-device is updated, v3.75 remains code-approved but not live-validated.
+The production Cerbo GX has already validated the v3.75 upgrade path,
+configuration persistence, service startup, dependency recovery, idle/no-vehicle
+operation, Manual charging, Manual current changes, and Manual recovery. The
+remaining external behavior that CI and the night-time validation cannot prove
+is live Auto/Eco PV-surplus charging, no-grid protection, and phase-switching
+under naturally sufficient PV.
 
 Evidence:
 
-- `RuntimeCompatibility.py` accepts only clean `v3.73` and `v3.75` releases.
-- `service/run` executes the system `python`, and the Wattpilot integration
-  depends on `websocket-client` being importable after the root filesystem is
-  replaced.
-- `install.sh` relies on persistent `/data/rc.local` to recreate the transient
-  `/service/es-ESS` link after firmware reboot.
-- `docs/cerbo-gx-firmware-upgrade-and-rollback.md` records the approved
-  preparation, upgrade, verification, stored-firmware rollback, and manual
-  `.swu` rollback procedures.
+- `RuntimeCompatibility.py` accepts only clean `v3.75`.
+- v3.75 build `20260624163305` booted successfully on the Cerbo GX.
+- `/data/es-ESS/config.ini` survived unchanged, `/data/rc.local` restored the
+  service link, `python3-pip` and `websocket-client` were restored after the
+  firmware update, and es-ESS ran stably.
+- Manual-mode validation confirmed that es-ESS reports Manual charging but does
+  not issue start, stop, current, phase, or other Wattpilot control commands.
 
 Implementation:
 
-- Do not make further charger-policy changes as part of this validation.
-- Upgrade during a maintenance window with no active EV charge and local
-  recovery access available.
-- Verify the running and stored firmware slots, persistent es-ESS files,
-  service-link restoration, Python imports, D-Bus registration, main/local
-  MQTT, grid telemetry, and SolarOverheadDistributor fail-safe behavior.
-- Confirm Manual mode remains report-only, then perform supervised low-risk
-  Auto/Eco and no-grid checks. Exercise phase switching only under naturally
-  sufficient PV.
-- If any compatibility failure occurs, collect logs and roll back through the
-  verified stored v3.73 slot or the official manual v3.73 `.swu` file before
-  changing application behavior.
+- Do not make charger-policy changes as part of this validation.
+- Perform the test only during an attended daylight/PV window with a vehicle
+  connected and enough surplus for the intended check.
+- Confirm one-phase Auto/Eco start, no-grid behavior when grid charging is
+  disabled, configured current limits, and phase switching only when natural PV
+  satisfies the configured thresholds and timers.
+- If behavior differs from the documented safety contract, stop the test,
+  collect logs, and diagnose before changing application behavior.
 
 Files to change:
 
@@ -624,48 +622,40 @@ Files to add:
 
 Tests:
 
-- Run `tests/test_runtime_compatibility.py` and
-  `tests/test_wattpilot_runtime_status.py` before deployment.
-- Run `python -m unittest discover -s tests` before deployment.
+- Run `python -m unittest discover -s tests` before any code change.
 - Preserve the hardware-free stub pattern and all existing passing tests.
 
 Expected coverage:
 
-- Automated tests prove both clean releases are accepted while v3.74,
-  qualified builds, missing versions, and future unapproved releases fail
-  closed.
-- Live validation proves the external GX integration surfaces that CI cannot
-  emulate.
+- Live validation proves the Auto/Eco GX, Wattpilot, D-Bus, MQTT, and grid
+  telemetry surfaces that CI cannot emulate.
 
 Manual validation:
 
-Log-only first, followed by active charging required for the final supervised
-Auto/Eco behavior checks. Do not force unsafe grid import or a phase transition.
+Active charging is required. Do not force unsafe grid import, do not force a
+phase transition without natural PV surplus, and keep the test attended.
 
 Manual test steps:
 
-1. Follow the pre-upgrade backup and stored-slot checks in the firmware
-   runbook, with the EV disconnected or Wattpilot in Manual mode.
-2. Upgrade to official clean v3.75 and verify that stored backup firmware is
-   v3.73.
-3. Confirm `/data/es-ESS`, `config.ini`, `/data/rc.local`, the service link,
-   Python imports, startup log, D-Bus services, and both MQTT clients.
-4. Confirm fresh three-phase grid telemetry and safe distributor output.
-5. In Manual mode, confirm no es-ESS start, stop, current, or phase command.
-6. Under supervision, validate one-phase Auto/Eco, no-grid protection, and
-   phase switching only if natural PV conditions permit.
-7. Boot stored v3.73, confirm es-ESS recovers there, then return to v3.75 only
-   after the rollback test succeeds.
+1. Confirm v3.75 is running, dependencies import, es-ESS is up, and the latest
+   log has no critical errors.
+2. Confirm the vehicle and Wattpilot are ready, grid telemetry is fresh on all
+   phases, and the actual managed battery remains selected.
+3. Enable Auto/Eco under supervision and validate one-phase start only when
+   configured PV surplus is available.
+4. Confirm current remains inside configured limits and no-grid behavior holds
+   when grid charging is disabled.
+5. Validate phase switching only if natural PV remains above the configured
+   threshold for the configured timing guard.
+6. Stop or return to Manual if unexpected grid use, stale telemetry, or
+   unbounded battery discharge appears.
 
 Risks and dependencies:
 
-- Firmware replacement can remove packages installed outside `/data`.
-- A missing service link or disabled modification hook can leave es-ESS
-  stopped even though its files persist.
-- D-Bus or MQTT packaging changes may affect all active services despite
-  passing hardware-free tests.
-- Active charging checks require a vehicle, sufficient natural PV, and an
-  attended low-risk window.
+- Active charging checks require a vehicle, sufficient natural PV, fresh grid
+  telemetry, and an attended low-risk window.
+- Weather may prevent phase-switch validation; record that result rather than
+  forcing unsafe conditions.
 
 Open questions:
 
@@ -673,12 +663,11 @@ Open questions:
 
 Done criteria:
 
-- Official clean v3.75 boots with v3.73 confirmed as a working rollback.
-- es-ESS startup, dependencies, service link, D-Bus, MQTT, grid telemetry, and
-  distributor behavior are confirmed on v3.75.
-- Manual mode remains command-free and supervised Auto/Eco safety checks pass.
+- One-phase Auto/Eco, no-grid protection, current bounds, and any naturally
+  available phase-switch behavior are validated on v3.75.
+- Manual mode remains command-free throughout the validation window.
 - The observed build and validation date are recorded in Completed.
-- Full unittest suite passes.
+- Full unittest suite passes for any code change made from the results.
 
 ## Suggested Implementation Order / PR Execution Queue
 
@@ -690,8 +679,8 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move the finished backlog items to `Completed` and advance the
 queue on the next request.
 
-1. P1 live-validate Venus OS v3.75 migration — confirm the new GX runtime and
-   working v3.73 rollback before unrelated dependency work.
+1. P1 live-validate Venus OS v3.75 Auto/Eco PV-surplus operation — complete the
+   remaining daylight active-charging checks before unrelated behavior changes.
 2. P4 audit and pin the Victron `velib_python` dependency — establish
    provenance and deterministic import ownership before considering any
    dependency replacement; keep this separate from Wattpilot behavior changes.
@@ -703,11 +692,11 @@ disconnect critical telemetry to satisfy it.
 
 Hardware validation scope for the remaining backlog:
 
-- The P1 Venus OS migration requires log-only startup/D-Bus/MQTT checks first,
-  followed by supervised active charging for final Auto/Eco verification.
+- The P1 Venus OS Auto/Eco validation requires supervised daylight active
+  charging for final PV-surplus verification.
 - The P4 `velib_python` audit requires log-only startup and D-Bus registration
-  validation on both supported Venus OS releases when available; active
-  charging is not required.
+  validation on the supported Venus OS release; active charging is not
+  required.
 - The P4 winter validation requires an active Auto/Eco charging session to
   observe real grid-import phase-down or stop behavior.
 
@@ -731,9 +720,8 @@ For implementation PRs:
 
 ## Outstanding Manual Validation
 
-- **Log-only, then active charging required:** complete the v3.75 Cerbo GX
-  upgrade, integration checks, supervised Auto/Eco validation, and stored v3.73
-  rollback test from the firmware runbook.
+- **Active charging required:** complete supervised v3.75 Auto/Eco PV-surplus,
+  no-grid, current-limit, and naturally available phase-switch validation.
 - **Log-only:** validate the future `velib_python` provenance/import change on
   supported Venus OS releases, including startup, D-Bus registration, MQTT
   recovery, and absence of unintended Wattpilot commands.

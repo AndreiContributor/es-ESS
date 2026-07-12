@@ -15,12 +15,11 @@ from __future__ import annotations
 import os
 
 
-# Keep every release that has an approved rollback path in this explicit set.
+# Keep every approved release in this explicit set.
 # Exact comparison remains intentional: beta/build qualifiers are not accepted.
-VALIDATED_VENUS_OS_VERSION = "v3.73"
+VALIDATED_VENUS_OS_VERSION = "v3.75"
 VALIDATED_VENUS_OS_VERSIONS = (
     VALIDATED_VENUS_OS_VERSION,
-    "v3.75",
 )
 VALIDATED_VENUS_OS_VERSIONS_LITERAL = ", ".join(VALIDATED_VENUS_OS_VERSIONS)
 VALIDATED_WATTPILOT_FIRMWARE = "42.5"

@@ -32,8 +32,8 @@ exits with status 1; optional sections and settings that already have runtime
 defaults remain compatible when absent.
 
 Before constructing the runtime at all, `RuntimeCompatibility.py` also requires
-the GX device to report one of the exact supported clean Venus OS releases,
-`v3.73` or `v3.75`. A missing, qualified, or different version exits with status
+the GX device to report the exact supported clean Venus OS release, `v3.75`. A
+missing, qualified, or different version exits with status
 1 before services, MQTT, or grid-setpoint writes begin. The Wattpilot service
 separately requires firmware `42.5` from
 `fwv` telemetry before its common `setValue` command boundary opens. The

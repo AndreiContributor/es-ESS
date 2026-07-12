@@ -70,12 +70,14 @@ Your system needs to match the following requirements in order to use es-ESS:
 ## Supported runtime versions
 
 This checkout deliberately fails closed outside its explicitly approved runtime
-versions. Venus OS v3.75 is enabled for the approved migration but remains
-pending live GX validation:
+versions. Venus OS v3.75 is the only approved clean Venus OS runtime in this
+checkout. The upgrade, idle/no-vehicle, Manual charging, Manual current-change,
+and Manual recovery checks have passed on a Cerbo GX; Auto/Eco PV-surplus live
+validation still requires a supervised daylight/PV test:
 
 | Component | Approved version | Runtime enforcement |
 | --- | --- | --- |
-| Venus OS on the GX device | `v3.73`, `v3.75` | One of these exact clean releases is required before es-ESS constructs services, connects MQTT, or writes the grid setpoint. A missing or different version exits with status 1. Qualifiers such as `v3.75~1` do not match the clean release. The v3.75 code migration is complete; live GX validation remains required after the device update. |
+| Venus OS on the GX device | `v3.75` | This exact clean release is required before es-ESS constructs services, connects MQTT, or writes the grid setpoint. A missing or different version exits with status 1. Qualifiers such as `v3.75~1` do not match the clean release. |
 | Fronius Wattpilot firmware | `42.5` | Read from Wattpilot `fwv` telemetry. Until it matches exactly, every es-ESS Wattpilot `setValue` command is blocked and Auto/Eco reports a compatibility fault. Other es-ESS services may continue. |
 | Fronius Solar.wattpilot mobile app | `2.1.0` | Commissioning baseline only. The app version is not exposed to es-ESS and cannot be checked automatically. |
 
@@ -90,6 +92,9 @@ change.
 For preparation, online/offline upgrade steps, post-update checks, and both
 stored-firmware and manual rollback procedures, see
 [`docs/cerbo-gx-firmware-upgrade-and-rollback.md`](docs/cerbo-gx-firmware-upgrade-and-rollback.md).
+If a rollback boots an older Venus OS release, restore an es-ESS checkout whose
+`RuntimeCompatibility.py` explicitly supports that firmware before starting
+services.
 
 The `?version=1.2.9` value used by the optional Wattpilot cloud WebSocket URL is
 a protocol/client identifier. It is not the Solar.wattpilot mobile app version
