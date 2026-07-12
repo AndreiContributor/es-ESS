@@ -92,6 +92,8 @@ safety-sensitive.
 ## Backlog And Review Workflow
 
 - Use `.agents/skills/es-ess-code-review/` for architecture-aware code reviews.
+- Use `.agents/skills/maintain-es-ess-backlog/` for manually invoked periodic
+  backlog refresh, evidence review, structural checks, and safe compaction.
 - Keep the implementation backlog in root `BACKLOG.md`.
 - If `BACKLOG.md` exists, update it in place. If it does not exist, create it.
 - Do not create duplicate backlog files unless explicitly requested.
