@@ -176,6 +176,9 @@ It owns:
   one-phase phase-up probe and cooldown suppression.
 - Shared one-to-three and three-to-one stability/cooldown decisions, returning
   the next controller-owned candidate timer values.
+- One-to-three short-drop grace eligibility, which may preserve an existing
+  candidate only while assigned allowance remains above the effective
+  three-phase floor.
 
 It must not own:
 
@@ -296,6 +299,11 @@ Future Wattpilot changes must preserve these invariants:
 - `MinPhaseSwitchSeconds` is the single normal stability/cooldown timer for
   both phase directions. A no-grid session may reduce phase or stop before the
   timer expires when bounded battery assist cannot safely bridge the deficit.
+- `SurplusDropGraceSeconds` may preserve an active one-to-three candidate
+  through a shorter-than-grace dip below the phase-up threshold only while
+  fresh assigned allowance remains above the effective three-phase floor.
+  The full phase-up threshold must be present at the command boundary; battery
+  assist and raw overhead cannot satisfy or preserve phase-up eligibility.
 - During a sustained three-phase PV deficit, bounded battery assist or
   explicitly allowed grid fallback may hold the running phase/current. Once
   the shared timer expires, one-phase PV availability authorizes the reduction.
