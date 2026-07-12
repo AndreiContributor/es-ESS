@@ -25,8 +25,8 @@ freshness checks, and the public D-Bus/MQTT status contract.
 
 It owns:
 
-- Exact Venus OS compatibility (`v3.73`) before the application constructs
-  services, connects MQTT, or writes the Victron grid setpoint.
+- Exact Venus OS compatibility (`v3.75`) before the application
+  constructs services, connects MQTT, or writes the Victron grid setpoint.
 - Exact Wattpilot firmware compatibility (`42.5`) from `fwv` telemetry.
 - The operator-verified Solar.wattpilot mobile app baseline (`2.1.0`), which
   cannot be queried by es-ESS.
@@ -255,8 +255,8 @@ and sufficient for a charge action.
 
 Future Wattpilot changes must preserve these invariants:
 
-- Venus OS must match the validated `v3.73` release before es-ESS starts any
-  service or grid-setpoint side effect.
+- Venus OS must match the explicitly supported clean release (`v3.75`) before
+  es-ESS starts any service or grid-setpoint side effect.
 - Wattpilot commands must remain blocked until `fwv` telemetry exactly matches
   validated firmware `42.5`. Missing telemetry fails closed.
 - Solar.wattpilot app `2.1.0` is a commissioning baseline only; it cannot be

@@ -363,12 +363,16 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
         self.assertTrue(required.issubset(controller.dbusService.paths_at_registration))
         self.assertEqual(controller.dbusService["/Status"], 123)
         self.assertEqual(controller.dbusService["/StatusLiteral"], "Disconnected")
+        self.assertEqual(
+            controller.dbusService["/ExpectedVenusOsVersion"],
+            "v3.75",
+        )
 
     def test_firmware_mismatch_publishes_fault_and_blocks_healthy_status(self):
         controller, _reporter = self.make_controller()
         controller.wattpilotFirmwareCompatible = False
-        controller.validatedVenusOsVersion = "v3.73"
-        controller.actualVenusOsVersion = "v3.73"
+        controller.validatedVenusOsVersion = "v3.75"
+        controller.actualVenusOsVersion = "v3.75"
         controller.validatedWattpilotFirmware = "42.5"
         controller.actualWattpilotFirmware = "42.6"
         controller.validatedWattpilotAppVersion = "2.1.0"
