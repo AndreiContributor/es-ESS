@@ -22,6 +22,10 @@ rejects beta/build-qualified releases such as `v3.75~1`.
   rollback. Those are recovery operations and can erase the `/data` partition.
 - `/data/es-ESS`, `config.ini`, and `/data/rc.local` normally survive a Venus OS
   update. Packages installed into the operating-system root filesystem may not.
+- A Venus OS firmware update can reset the root password because the password
+  is stored on the firmware root filesystem. After the reboot, check
+  **Settings -> Access & Security** on the Cerbo console, enable SSH on LAN if
+  it is off, and set a new root password if password login no longer works.
 
 ## Before The Upgrade
 
@@ -87,13 +91,24 @@ image must be installed.
 
 ## Checks Immediately After The Upgrade
 
-1. Confirm the runtime version:
+1. Restore or confirm SSH access from the Cerbo console:
+
+   - Open **Settings -> Access & Security**.
+   - If required, set the access level to **User and installer** using the
+     installer password.
+   - Enable **Superuser** access.
+   - Check that **SSH on LAN** is enabled.
+   - Set a new root password if the previous password no longer works.
+
+   Do not paste or store the root password in the project documentation.
+
+2. Confirm the runtime version:
 
    ```sh
    cat /opt/victronenergy/version
    ```
 
-2. Confirm es-ESS persistence and restore its service link if necessary:
+3. Confirm es-ESS persistence and restore its service link if necessary:
 
    ```sh
    ls -l /data/es-ESS /data/rc.local /service/es-ESS
@@ -101,32 +116,45 @@ image must be installed.
    /data/es-ESS/install.sh
    ```
 
-3. Check Python dependencies. Reinstall only if the import check fails:
+4. Check Python dependencies before restarting es-ESS. Venus OS firmware
+   updates can remove `python3-pip` and `websocket-client`; if
+   FroniusWattpilot is enabled, a missing `websocket` module causes a
+   `ModuleNotFoundError` during service startup.
 
    ```sh
    python -c "import paho.mqtt.client, websocket; print('Python dependencies OK')"
+   ```
+
+   If the import check fails, keep es-ESS stopped and reinstall the missing
+   packages:
+
+   ```sh
+   svc -d /service/es-ESS
    opkg update
    opkg install python3-pip
    python -m pip install websocket-client
+   python -c "import websocket; print('websocket-client OK')"
+   python -c "import paho.mqtt.client, websocket; print('Python dependencies OK')"
+   svstat /service/es-ESS
    ```
 
-4. Restart es-ESS and inspect the log:
+5. Restart es-ESS and inspect the log:
 
    ```sh
    /data/es-ESS/restart.sh
    tail -f -n 100 /data/log/es-ESS/current.log
    ```
 
-5. Confirm there is no compatibility error and that the log reports Venus OS
+6. Confirm there is no compatibility error and that the log reports Venus OS
    `v3.75`.
-6. Verify that enabled D-Bus services register once, both MQTT connections
+7. Verify that enabled D-Bus services register once, both MQTT connections
    recover, all three grid phases are fresh, and SolarOverheadDistributor
    publishes safe values.
-7. Confirm the actual managed battery remains selected as the GX battery
+8. Confirm the actual managed battery remains selected as the GX battery
    monitor and that PV/grid device assignments did not change.
-8. In Wattpilot Manual mode, confirm es-ESS reports status but does not issue
+9. In Wattpilot Manual mode, confirm es-ESS reports status but does not issue
    start, stop, current, or phase commands.
-9. During a supervised low-risk window, validate one-phase Auto/Eco operation,
+10. During a supervised low-risk window, validate one-phase Auto/Eco operation,
    no-grid protection, and then phase switching only when sufficient PV is
    naturally available.
 

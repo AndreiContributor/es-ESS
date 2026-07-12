@@ -882,6 +882,7 @@ tail -f -n 50 /data/log/es-ESS/current.log</pre>
 
       <div class="callout warning">
         <p><strong>Maintenance window:</strong> do not update during active EV charging. Disconnect the vehicle or put Wattpilot in Manual mode, keep local access available, disable automatic firmware updates, and supervise the first Auto/Eco session after the upgrade.</p>
+        <p><strong>SSH note:</strong> a Venus OS firmware update can reset the root password because the password is stored on the firmware root filesystem. After reboot, open Settings → Access &amp; Security on the Cerbo console, enable Superuser access, confirm SSH on LAN is still enabled, and set a new root password if the previous one no longer works.</p>
       </div>
 
       <h3>Before upgrading</h3>
@@ -908,6 +909,9 @@ tail -f -n 50 /data/log/es-ESS/current.log</pre>
       </ol>
 
       <h3 style="margin-top:32px">Post-update checks</h3>
+      <ol class="steps">
+        <li><strong>Restore or confirm SSH access.</strong><br>On the Cerbo console, open Settings → Access &amp; Security. Enable Superuser access, check that SSH on LAN is enabled, and set a new root password if password login no longer works. Do not store the root password in project files.</li>
+      </ol>
       <pre><span class="comment"># Confirm firmware and persistent installation</span>
 cat /opt/victronenergy/version
 ls -l /data/es-ESS /data/rc.local /service/es-ESS
@@ -916,9 +920,19 @@ grep -F '/data/es-ESS/install.sh' /data/rc.local
 
 <span class="comment"># Check dependencies, restart, and inspect logs</span>
 python -c "import paho.mqtt.client, websocket; print('Python dependencies OK')"
+
+<span class="comment"># If websocket or pip is missing after a firmware update</span>
+svc -d /service/es-ESS
+opkg update
+opkg install python3-pip
+python -m pip install websocket-client
+python -c "import websocket; print('websocket-client OK')"
+python -c "import paho.mqtt.client, websocket; print('Python dependencies OK')"
+svstat /service/es-ESS
+
 /data/es-ESS/restart.sh
 tail -f -n 100 /data/log/es-ESS/current.log</pre>
-      <p>If the Python import fails, reinstall <code>python3-pip</code> and <code>websocket-client</code>. Confirm that D-Bus services register once, main/local MQTT recover, all grid phases are fresh, the actual managed battery is still selected, and SolarOverheadDistributor reports safe values. In Manual mode confirm that es-ESS reports status but sends no charging commands. Then perform supervised one-phase Auto/Eco and no-grid checks; test phase switching only when PV naturally permits it.</p>
+      <p>If the Python import fails, reinstall <code>python3-pip</code> and <code>websocket-client</code> before restarting es-ESS. A missing <code>websocket</code> module causes FroniusWattpilot startup to log <code>ModuleNotFoundError</code>. Confirm that D-Bus services register once, main/local MQTT recover, all grid phases are fresh, the actual managed battery is still selected, and SolarOverheadDistributor reports safe values. In Manual mode confirm that es-ESS reports status but sends no charging commands. Then perform supervised one-phase Auto/Eco and no-grid checks; test phase switching only when PV naturally permits it.</p>
 
       <h3 style="margin-top:32px">Rollback option 1: stored backup firmware</h3>
       <ol class="steps">
