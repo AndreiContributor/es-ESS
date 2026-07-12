@@ -237,6 +237,39 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
 
         self.assertEqual(client.awattarCurrentPrice, 0.42)
 
+    def test_command_guard_blocks_every_state_changing_update(self):
+        _install_wattpilot_client_stubs()
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_command_guard_block_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+        sent = []
+        client._wsapp.send = lambda message: sent.append(message)
+        client.set_command_guard(lambda _name, _value: False)
+
+        self.assertFalse(client.send_update("amp", 6))
+        self.assertFalse(client.send_update("frc", 2))
+        self.assertFalse(client.send_update("psm", 1))
+        self.assertFalse(client.send_update("lmo", 4))
+
+        self.assertEqual(sent, [])
+        self.assertEqual(client._Wattpilot__requestid, 0)
+
+    def test_command_guard_allows_update_after_compatibility_confirmation(self):
+        _install_wattpilot_client_stubs()
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_command_guard_allow_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+        sent = []
+        client._wsapp.send = lambda message: sent.append(message)
+        client.set_command_guard(lambda name, value: name == "amp" and value == 6)
+
+        self.assertTrue(client.send_update("amp", 6))
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(client._Wattpilot__requestid, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -145,11 +145,16 @@ def _install_fronius_startup_stubs(warnings, errors):
             self.power3 = None
             self.carStateReady = False
             self.mode = None
+            self.firmware = None
             self.carConnected = False
             self.phase_commands = []
+            self.command_guard = None
 
         def connect(self):
             return None
+
+        def set_command_guard(self, callback):
+            self.command_guard = callback
 
         def set_phases(self, value):
             self.phase_commands.append(value)
@@ -205,6 +210,13 @@ class WattpilotStartupTests(unittest.TestCase):
         }
         controller.publishServiceMessage = lambda *args, **kwargs: None
         controller.dumpEvChargerInfo = lambda: None
+        controller.validatedVenusOsVersion = "v3.73"
+        controller.validatedWattpilotFirmware = "42.5"
+        controller.validatedWattpilotAppVersion = "2.1.0"
+        controller.actualVenusOsVersion = "v3.73"
+        controller.actualWattpilotFirmware = None
+        controller.wattpilotFirmwareCompatible = False
+        controller._lastWattpilotCompatibilityState = None
 
         controller.initFinalize()
 

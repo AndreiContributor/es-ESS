@@ -352,10 +352,34 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
             "/BatteryAssistActive",
             "/GridImportGuardActive",
             "/TelemetryHealthy",
+            "/CompatibilityOk",
+            "/CompatibilityLiteral",
+            "/ExpectedVenusOsVersion",
+            "/ActualVenusOsVersion",
+            "/ExpectedWattpilotFirmware",
+            "/ActualWattpilotFirmware",
+            "/ValidatedWattpilotAppVersion",
         }
         self.assertTrue(required.issubset(controller.dbusService.paths_at_registration))
         self.assertEqual(controller.dbusService["/Status"], 123)
         self.assertEqual(controller.dbusService["/StatusLiteral"], "Disconnected")
+
+    def test_firmware_mismatch_publishes_fault_and_blocks_healthy_status(self):
+        controller, _reporter = self.make_controller()
+        controller.wattpilotFirmwareCompatible = False
+        controller.validatedVenusOsVersion = "v3.73"
+        controller.actualVenusOsVersion = "v3.73"
+        controller.validatedWattpilotFirmware = "42.5"
+        controller.actualWattpilotFirmware = "42.6"
+        controller.validatedWattpilotAppVersion = "2.1.0"
+
+        self.publish(controller, "WaitingForSun")
+
+        self.assertEqual(controller.dbusService["/ControlState"], CONTROL_STATE_FAULT)
+        self.assertEqual(controller.dbusService["/CompatibilityOk"], 0)
+        self.assertEqual(controller.dbusService["/TelemetryHealthy"], 0)
+        self.assertEqual(controller.dbusService["/ExpectedWattpilotFirmware"], "42.5")
+        self.assertEqual(controller.dbusService["/ActualWattpilotFirmware"], "42.6")
 
     def test_every_required_control_state(self):
         def one_phase(controller):
@@ -717,6 +741,13 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
             "BatteryAssistActive",
             "GridImportGuardActive",
             "TelemetryHealthy",
+            "CompatibilityOk",
+            "CompatibilityLiteral",
+            "ExpectedVenusOsVersion",
+            "ActualVenusOsVersion",
+            "ExpectedWattpilotFirmware",
+            "ActualWattpilotFirmware",
+            "ValidatedWattpilotAppVersion",
         }
         self.assertEqual(
             set(published),

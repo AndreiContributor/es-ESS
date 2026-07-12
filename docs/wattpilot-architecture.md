@@ -19,6 +19,23 @@ freshness checks, and the public D-Bus/MQTT status contract.
 
 ## Module Responsibilities
 
+### `RuntimeCompatibility.py`
+
+`RuntimeCompatibility.py` is the single validated runtime-version baseline.
+
+It owns:
+
+- Exact Venus OS compatibility (`v3.73`) before the application constructs
+  services, connects MQTT, or writes the Victron grid setpoint.
+- Exact Wattpilot firmware compatibility (`42.5`) from `fwv` telemetry.
+- The operator-verified Solar.wattpilot mobile app baseline (`2.1.0`), which
+  cannot be queried by es-ESS.
+- Version normalization that accepts an optional leading `v` but retains beta
+  or build qualifiers so an unvalidated candidate cannot match a clean release.
+
+The module must not infer that a newer version is compatible. A baseline update
+requires explicit integration validation and matching tests.
+
 ### `Wattpilot.py`
 
 `Wattpilot.py` is the Wattpilot WebSocket client and transport boundary.
@@ -32,6 +49,9 @@ It owns:
 - Parsing Wattpilot status messages into local client properties.
 - Sending direct Wattpilot protocol updates such as `amp`, `frc`, `psm`, and
   `lmo` when the controller asks for them.
+- Enforcing a controller-installed compatibility callback at the common
+  `setValue` transport boundary. Authentication and status requests remain
+  available while commands are blocked so firmware can be identified.
 - Publishing raw client events to registered event handlers.
 
 It must not own:
@@ -207,7 +227,8 @@ dashboards, Cerbo extensions, MQTT consumers, and diagnostics.
 It owns:
 
 - Runtime-status D-Bus paths such as `/ControlState`, `/PhaseMode`,
-  `/BatteryAssistActive`, `/GridImportGuardActive`, and `/TelemetryHealthy`.
+  `/BatteryAssistActive`, `/GridImportGuardActive`, `/TelemetryHealthy`, and
+  the expected/actual runtime compatibility paths.
 - Matching MQTT runtime-status publication under
   `es-ESS/FroniusWattpilot/RuntimeStatus`.
 - Observation of controller transitions and Wattpilot transport health.
@@ -230,6 +251,15 @@ and sufficient for a charge action.
 ## Safety Invariants
 
 Future Wattpilot changes must preserve these invariants:
+
+- Venus OS must match the validated `v3.73` release before es-ESS starts any
+  service or grid-setpoint side effect.
+- Wattpilot commands must remain blocked until `fwv` telemetry exactly matches
+  validated firmware `42.5`. Missing telemetry fails closed.
+- Solar.wattpilot app `2.1.0` is a commissioning baseline only; it cannot be
+  asserted from the local es-ESS runtime.
+- The Wattpilot WebSocket query value `version=1.2.9` is a protocol/client
+  identifier, not the mobile app version.
 
 - Normal Wattpilot Manual mode remains user-controlled. es-ESS may report
   Manual status, but must not start, stop, phase-switch, or current-limit a

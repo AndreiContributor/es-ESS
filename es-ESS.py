@@ -33,6 +33,7 @@ from dbus.mainloop.glib import DBusGMainLoop # type: ignore
 #esEss imports
 import Globals
 import Helper
+import RuntimeCompatibility
 from Globals import MqttSubscriptionType
 from Helper import i, c, d, w, e, t
 from esESSService import DbusSubscription, esESSService, WorkerThread, MqttSubscription
@@ -42,6 +43,10 @@ DBusGMainLoop(set_as_default=True)
 
 class esESS:
     def __init__(self):
+        # Defense in depth for callers that construct esESS directly instead
+        # of using main(). Keep this outside the broad initialization handler
+        # so a compatibility failure cannot leave a partly initialized object.
+        self.venusOsVersion = RuntimeCompatibility.require_validated_venus_os()
         try:
             #First thing to do is check, if the current configuration matches the desired version.
             #if not, upgrade to most recent version, save changes and reload configuration file. 
@@ -951,7 +956,16 @@ def configureLogging(config):
   
 
 def main(config):
-  
+  # This check must run before constructing esESS: construction and
+  # initialization can start MQTT clients, services, and grid-setpoint writes.
+  detectedVenusVersion = RuntimeCompatibility.require_validated_venus_os()
+  i(
+      "Main",
+      "Validated Venus OS compatibility baseline confirmed: {0}.".format(
+          detectedVenusVersion
+      ),
+  )
+
   try:
       # Have a mainloop, so we can send/receive asynchronous calls to and from dbus
       from dbus.mainloop.glib import DBusGMainLoop # type: ignore
@@ -983,5 +997,8 @@ if __name__ == "__main__":
 
   try:
     main(config)
+  except RuntimeCompatibility.CompatibilityError as compatibilityException:
+     c("COMPATIBILITY", str(compatibilityException))
+     sys.exit(1)
   except Exception as uncoughtException:
      c("UNCOUGHT", "Uncought exception, main() dieded.", exc_info=uncoughtException)

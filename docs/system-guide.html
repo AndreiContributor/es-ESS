@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A practical guide to coordinating a Fronius three-phase PV system, Wattpilot EV charger, and Victron battery ESS with es-ESS.">
+  <title>PV-Surplus EV Charging with Fronius, Victron ESS and es-ESS</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #16212b;
+      --muted: #5b6975;
+      --paper: #f4f5f2;
+      --surface: #ffffff;
+      --line: #d9dfdf;
+      --navy: #173f5f;
+      --blue: #2574a9;
+      --blue-soft: #e7f2f8;
+      --solar: #e5a122;
+      --solar-soft: #fff4d6;
+      --battery: #3b8c6e;
+      --battery-soft: #e6f4ed;
+      --grid: #aa4f4f;
+      --grid-soft: #f9eaea;
+      --control: #7765a8;
+      --control-soft: #f0ecfa;
+      --shadow: 0 18px 50px rgba(22, 33, 43, .08);
+      --radius: 18px;
+      --max: 1180px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 0%, rgba(229,161,34,.10), transparent 28rem),
+        radial-gradient(circle at 90% 10%, rgba(37,116,169,.09), transparent 30rem),
+        var(--paper);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.62;
+    }
+
+    a { color: #12649a; text-underline-offset: 3px; }
+    a:hover { color: #0b466c; }
+    img, svg { max-width: 100%; }
+    code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    code { font-size: .93em; }
+
+    .wrap { width: min(calc(100% - 32px), var(--max)); margin-inline: auto; }
+
+    .hero {
+      padding: 68px 0 46px;
+      border-bottom: 1px solid rgba(23,63,95,.12);
+      background: linear-gradient(135deg, rgba(255,255,255,.88), rgba(244,245,242,.6));
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0 0 18px;
+      color: var(--navy);
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 28px;
+      height: 3px;
+      border-radius: 3px;
+      background: var(--solar);
+    }
+
+    h1, h2, h3 { line-height: 1.15; letter-spacing: -.025em; }
+    h1 { max-width: 900px; margin: 0; font-size: clamp(2.4rem, 6vw, 5.3rem); }
+    h2 { margin: 0 0 18px; font-size: clamp(1.8rem, 3vw, 2.7rem); }
+    h3 { margin: 0 0 10px; font-size: 1.25rem; }
+
+    .lede {
+      max-width: 850px;
+      margin: 24px 0 0;
+      color: var(--muted);
+      font-size: clamp(1.05rem, 2vw, 1.28rem);
+    }
+
+    .hero-badges { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+    .badge {
+      padding: 7px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,.78);
+      color: var(--muted);
+      font-size: .86rem;
+      font-weight: 700;
+    }
+
+    .toc-shell { position: sticky; top: 0; z-index: 20; background: rgba(244,245,242,.92); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+    .toc { display: flex; gap: 4px; padding: 10px 0; overflow-x: auto; scrollbar-width: thin; }
+    .toc a { flex: 0 0 auto; padding: 7px 10px; border-radius: 9px; color: var(--muted); font-size: .82rem; font-weight: 750; text-decoration: none; }
+    .toc a:hover { color: var(--navy); background: var(--surface); }
+
+    main { padding: 26px 0 90px; }
+    section { scroll-margin-top: 76px; padding: 58px 0; }
+    section + section { border-top: 1px solid var(--line); }
+    .section-intro { max-width: 840px; margin: 0 0 26px; color: var(--muted); font-size: 1.06rem; }
+
+    .grid { display: grid; gap: 18px; }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .card {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.9);
+      box-shadow: 0 8px 24px rgba(22,33,43,.045);
+    }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .card-kicker { margin: 0 0 7px; color: var(--muted); font-size: .73rem; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+    .card.solar { border-top: 4px solid var(--solar); }
+    .card.battery { border-top: 4px solid var(--battery); }
+    .card.grid-card { border-top: 4px solid var(--grid); }
+    .card.control { border-top: 4px solid var(--control); }
+
+    .diagram {
+      margin-top: 28px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .diagram figcaption { max-width: 900px; margin: 14px auto 0; color: var(--muted); font-size: .9rem; text-align: center; }
+
+    .legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; margin: 0 0 14px; color: var(--muted); font-size: .82rem; }
+    .legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .legend i { width: 26px; height: 4px; border-radius: 5px; background: currentColor; }
+    .legend .solar-key { color: var(--solar); }
+    .legend .battery-key { color: var(--battery); }
+    .legend .grid-key { color: var(--grid); }
+    .legend .load-key { color: var(--blue); }
+    .legend .control-key { color: var(--control); }
+
+    .callout {
+      margin: 22px 0;
+      padding: 18px 20px;
+      border-left: 5px solid var(--blue);
+      border-radius: 0 14px 14px 0;
+      background: var(--blue-soft);
+    }
+    .callout.warning { border-color: var(--solar); background: var(--solar-soft); }
+    .callout.danger { border-color: var(--grid); background: var(--grid-soft); }
+    .callout.success { border-color: var(--battery); background: var(--battery-soft); }
+    .callout p { margin: 0; }
+
+    .formula {
+      padding: 20px;
+      border-radius: 16px;
+      background: #142430;
+      color: #edf5f7;
+      overflow-x: auto;
+    }
+    .formula .dim { color: #a8bcc7; }
+    .formula .accent { color: #ffd47b; }
+
+    .compare { width: 100%; border-collapse: collapse; margin: 18px 0; background: var(--surface); }
+    .compare th, .compare td { padding: 13px 14px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .compare th { background: #eef2f3; font-size: .82rem; letter-spacing: .04em; text-transform: uppercase; }
+    .compare tr:nth-child(even) td { background: #fafbfa; }
+
+    pre {
+      margin: 18px 0;
+      padding: 20px;
+      border-radius: 16px;
+      color: #eaf2f5;
+      background: #12232f;
+      font-size: .86rem;
+      line-height: 1.55;
+      overflow-x: auto;
+      white-space: pre;
+    }
+    .comment { color: #9fb9c3; }
+    .value { color: #ffd37a; }
+
+    .steps { counter-reset: steps; display: grid; gap: 15px; margin: 22px 0 0; padding: 0; list-style: none; }
+    .steps li { position: relative; min-height: 54px; padding: 5px 0 10px 64px; }
+    .steps li::before {
+      counter-increment: steps;
+      content: counter(steps);
+      position: absolute;
+      left: 0;
+      top: 0;
+      display: grid;
+      width: 44px;
+      height: 44px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--navy);
+      color: white;
+      font-weight: 850;
+    }
+
+    .checklist { display: grid; gap: 9px; padding: 0; list-style: none; }
+    .checklist li { position: relative; padding-left: 29px; }
+    .checklist li::before { content: "✓"; position: absolute; left: 0; top: 0; color: var(--battery); font-weight: 900; }
+
+    details { margin: 12px 0; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+    summary { cursor: pointer; padding: 15px 18px; font-weight: 780; }
+    details > div { padding: 0 18px 18px; color: var(--muted); }
+
+    .adapt-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px 24px; padding: 18px; border: 1px dashed #9caaae; border-radius: 16px; background: rgba(255,255,255,.7); }
+    .adapt-item { display: grid; grid-template-columns: minmax(180px, .8fr) 1fr; gap: 12px; padding-bottom: 7px; border-bottom: 1px solid var(--line); }
+    .adapt-item strong { font-size: .9rem; }
+    .blank { min-height: 1.4em; border-bottom: 1px dotted #66757b; color: var(--muted); }
+
+    .sources { columns: 2; column-gap: 36px; }
+    .sources li { break-inside: avoid; margin-bottom: 12px; }
+
+    footer { padding: 28px 0 46px; border-top: 1px solid var(--line); color: var(--muted); font-size: .87rem; }
+
+    @media (max-width: 900px) {
+      .grid-3, .grid-4 { grid-template-columns: repeat(2, minmax(0,1fr)); }
+      .adapt-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 680px) {
+      .hero { padding-top: 46px; }
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+      .diagram { padding: 10px; border-radius: 16px; }
+      .compare { display: block; overflow-x: auto; font-size: .85rem; }
+      .sources { columns: 1; }
+      .adapt-item { grid-template-columns: 1fr; }
+    }
+    @media print {
+      body { background: #fff; font-size: 10.5pt; }
+      .toc-shell { display: none; }
+      .hero { padding: 28px 0; }
+      h1 { font-size: 34pt; }
+      section { padding: 30px 0; break-inside: avoid; }
+      .card, .diagram { box-shadow: none; }
+      a { color: inherit; text-decoration: none; }
+      pre { white-space: pre-wrap; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <p class="eyebrow">System design and deployment guide</p>
+      <h1>PV-surplus EV charging when a battery ESS changes the power flow</h1>
+      <p class="lede">A generic, adaptable explanation of how a three-phase Fronius PV system, Fronius Wattpilot, Victron inverter/chargers, a GX device and a lithium battery bank can be coordinated by <strong>es-ESS</strong>—without confusing battery-supported power with real PV surplus.</p>
+      <div class="hero-badges" aria-label="Guide topics">
+        <span class="badge">Three-phase AC system</span>
+        <span class="badge">Automatic 1 ↔ 3 phase EV charging</span>
+        <span class="badge">Bounded battery bridge</span>
+        <span class="badge">No intentional grid charging</span>
+        <span class="badge">Venus OS / Cerbo GX</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="toc-shell">
+    <nav class="toc wrap" aria-label="Page sections">
+      <a href="#overview">Overview</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#problem">The problem</a>
+      <a href="#controller">es-ESS control</a>
+      <a href="#modes">Charging modes</a>
+      <a href="#assist">Battery assist</a>
+      <a href="#setpoint">Grid setpoint</a>
+      <a href="#configure">Configuration</a>
+      <a href="#deploy">Deployment</a>
+      <a href="#commission">Commissioning</a>
+      <a href="#adapt">Adapt it</a>
+      <a href="#sources">Sources</a>
+    </nav>
+  </div>
+
+  <main class="wrap">
+    <section id="overview">
+      <p class="eyebrow">01 · The system</p>
+      <h2>Generic architecture, concrete example</h2>
+      <p class="section-intro">The concepts apply to many AC-coupled three-phase systems. Product names below are examples, not universal requirements. Electrical ratings, protection, phase allocation and battery limits must always be verified for the actual installation.</p>
+
+      <div class="grid grid-4">
+        <article class="card solar">
+          <p class="card-kicker">PV generation</p>
+          <h3>Three-phase grid-tied inverter</h3>
+          <p>Produces AC power from the PV array and exposes production data over the local network.</p>
+          <p><strong>Example:</strong> Fronius Symo 10.0-3-M with 24 panels.</p>
+        </article>
+        <article class="card grid-card">
+          <p class="card-kicker">Point of connection</p>
+          <h3>Bidirectional smart meter</h3>
+          <p>Measures import and export at the grid connection and communicates with the PV inverter.</p>
+          <p><strong>Example:</strong> Fronius Smart Meter 63 A via Modbus RTU.</p>
+        </article>
+        <article class="card battery">
+          <p class="card-kicker">Energy storage</p>
+          <h3>Three-phase battery ESS</h3>
+          <p>One inverter/charger per phase, coordinated by a GX device and a managed lithium battery bank.</p>
+          <p><strong>Example:</strong> 3 × MultiPlus-II 48/4k5/55-32 and 2 × 16 kWh LiFePO₄.</p>
+        </article>
+        <article class="card control">
+          <p class="card-kicker">Flexible demand</p>
+          <h3>EV charging</h3>
+          <p>A networked wallbox whose current and phase mode can be controlled in small steps.</p>
+          <p><strong>Example:</strong> Fronius Wattpilot Go 22 kW.</p>
+        </article>
+      </div>
+
+      <div class="callout warning">
+        <p><strong>Units matter:</strong> inverter power is measured in kW, battery energy in kWh, and current in A. “10.0” in a Symo model name is an inverter power class; two 16 kWh batteries provide about 32 kWh nominal energy, not 32 kW.</p>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <p class="eyebrow">02 · Architecture</p>
+      <h2>Power flows and information flows are different</h2>
+      <p class="section-intro">A reliable controller needs more than the power seen by one meter. The solid lines below are electrical paths; dashed lines are measurement or command paths.</p>
+
+      <figure class="diagram">
+        <div class="legend" aria-hidden="true">
+          <span class="solar-key"><i></i> PV power</span>
+          <span class="battery-key"><i></i> Battery power</span>
+          <span class="grid-key"><i></i> Grid power</span>
+          <span class="load-key"><i></i> AC load power</span>
+          <span class="control-key"><i></i> Data / control</span>
+        </div>
+        <svg viewBox="0 0 1200 910" role="img" aria-labelledby="system-title system-desc">
+          <title id="system-title">Generic Fronius, Victron and Wattpilot system architecture</title>
+          <desc id="system-desc">PV panels feed a three-phase Fronius inverter connected to a site AC bus. A Fronius Smart Meter measures the boundary between that bus and the utility grid. Three Victron inverter chargers connect a lithium battery to the same AC system. The EV charger and house loads are parallel branches. A Cerbo GX exchanges data with the Fronius inverter, Victron system, battery BMS, and Wattpilot.</desc>
+          <defs>
+            <marker id="arrowSolar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#e5a122"/></marker>
+            <marker id="arrowBattery" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#3b8c6e"/></marker>
+            <marker id="arrowGrid" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#aa4f4f"/></marker>
+            <marker id="arrowLoad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#2574a9"/></marker>
+            <marker id="arrowNeutral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#7c8a90"/></marker>
+            <marker id="arrowControl" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#7765a8"/></marker>
+            <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="6" flood-opacity=".10"/></filter>
+          </defs>
+
+          <!-- Electrical paths are drawn first so component cards remain legible. -->
+          <path d="M235 150H290" stroke="#e5a122" stroke-width="7" marker-end="url(#arrowSolar)"/>
+          <path d="M405 210V310" stroke="#e5a122" stroke-width="7" marker-end="url(#arrowSolar)"/>
+          <path d="M785 150H1000" stroke="#aa4f4f" stroke-width="7" marker-start="url(#arrowGrid)" marker-end="url(#arrowGrid)"/>
+          <path d="M675 210V310" stroke="#aa4f4f" stroke-width="7" marker-start="url(#arrowGrid)" marker-end="url(#arrowGrid)"/>
+          <path d="M420 390L220 500" fill="none" stroke="#3b8c6e" stroke-width="7" marker-start="url(#arrowBattery)" marker-end="url(#arrowBattery)"/>
+          <path d="M755 390V500" stroke="#2574a9" stroke-width="7" marker-end="url(#arrowLoad)"/>
+          <path d="M820 390L1020 500" fill="none" stroke="#2574a9" stroke-width="7" marker-end="url(#arrowLoad)"/>
+          <path d="M165 650V760" stroke="#3b8c6e" stroke-width="7" marker-start="url(#arrowBattery)" marker-end="url(#arrowBattery)"/>
+
+          <!-- Protocol-specific information paths. -->
+          <path d="M405 82V54H675V82" fill="none" stroke="#7765a8" stroke-width="3" stroke-dasharray="8 7" marker-start="url(#arrowControl)" marker-end="url(#arrowControl)"/>
+          <text x="540" y="43" text-anchor="middle" font-size="12" font-weight="750" fill="#7765a8">Modbus RTU · Smart Meter ↔ Fronius inverter</text>
+          <path d="M605 760V245H545V150H525" fill="none" stroke="#7765a8" stroke-width="3" stroke-dasharray="8 7" marker-start="url(#arrowControl)" marker-end="url(#arrowControl)"/>
+          <rect x="615" y="688" width="100" height="25" rx="7" fill="#fff" opacity=".95"/>
+          <text x="665" y="705" text-anchor="middle" font-size="12" font-weight="750" fill="#7765a8">LAN / TCP</text>
+          <path d="M520 800H415V620H390" fill="none" stroke="#7765a8" stroke-width="3" stroke-dasharray="8 7" marker-start="url(#arrowControl)" marker-end="url(#arrowControl)"/>
+          <text x="455" y="746" text-anchor="middle" font-size="12" font-weight="750" fill="#7765a8">VE.Bus</text>
+          <path d="M520 840H390" stroke="#7765a8" stroke-width="3" stroke-dasharray="8 7" marker-start="url(#arrowControl)" marker-end="url(#arrowControl)"/>
+          <text x="455" y="830" text-anchor="middle" font-size="12" font-weight="750" fill="#7765a8">BMS-CAN</text>
+          <path d="M880 825H910V700H930V665" fill="none" stroke="#7765a8" stroke-width="3" stroke-dasharray="8 7" marker-start="url(#arrowControl)" marker-end="url(#arrowControl)"/>
+          <rect x="935" y="688" width="105" height="25" rx="7" fill="#fff" opacity=".95"/>
+          <text x="988" y="705" text-anchor="middle" font-size="12" font-weight="750" fill="#7765a8">WebSocket</text>
+
+          <!-- Generation and grid boundary. -->
+          <rect x="15" y="90" width="220" height="120" rx="18" fill="#fff4d6" stroke="#e5a122" stroke-width="2" filter="url(#softShadow)"/>
+          <text x="125" y="119" text-anchor="middle" font-size="17" font-weight="800" fill="#16212b">PV array</text>
+          <g fill="#d79517"><rect x="45" y="138" width="27" height="45" rx="2"/><rect x="79" y="138" width="27" height="45" rx="2"/><rect x="113" y="138" width="27" height="45" rx="2"/></g>
+          <text x="187" y="153" text-anchor="middle" font-size="10" fill="#5b6975">Generic 3-phase</text>
+          <text x="187" y="177" text-anchor="middle" font-size="10" fill="#5b6975">24-panel example</text>
+
+          <rect x="290" y="90" width="230" height="120" rx="18" fill="#fff" stroke="#e5a122" stroke-width="2" filter="url(#softShadow)"/>
+          <text x="405" y="119" text-anchor="middle" font-size="17" font-weight="800" fill="#16212b">PV inverter</text>
+          <rect x="312" y="132" width="46" height="58" rx="8" fill="#eef0ef" stroke="#8b9698"/>
+          <circle cx="335" cy="150" r="7" fill="#e5a122"/>
+          <text x="435" y="153" text-anchor="middle" font-size="11" fill="#5b6975">Fronius 3-phase family</text>
+          <text x="435" y="177" text-anchor="middle" font-size="11" fill="#5b6975">Example: Symo 10.0-3-M</text>
+
+          <rect x="565" y="90" width="220" height="120" rx="18" fill="#fff" stroke="#aa4f4f" stroke-width="2" filter="url(#softShadow)"/>
+          <text x="675" y="119" text-anchor="middle" font-size="16" font-weight="800" fill="#16212b">Smart Meter</text>
+          <rect x="588" y="133" width="48" height="55" rx="4" fill="#e8ecec" stroke="#7f8b8d"/>
+          <rect x="597" y="143" width="30" height="15" rx="2" fill="#92b8a7"/>
+          <text x="709" y="153" text-anchor="middle" font-size="11" fill="#5b6975">Whole-site boundary</text>
+          <text x="709" y="177" text-anchor="middle" font-size="11" fill="#5b6975">Import / export meter</text>
+
+          <rect x="1000" y="90" width="175" height="120" rx="18" fill="#f9eaea" stroke="#aa4f4f" stroke-width="2" filter="url(#softShadow)"/>
+          <text x="1088" y="119" text-anchor="middle" font-size="17" font-weight="800" fill="#16212b">Grid</text>
+          <path d="M1020 184L1044 135L1068 184M1029 159H1059M1025 172H1063" fill="none" stroke="#aa4f4f" stroke-width="4"/>
+          <text x="1124" y="153" text-anchor="middle" font-size="11" fill="#5b6975">Three phase</text>
+          <text x="1124" y="177" text-anchor="middle" font-size="11" fill="#5b6975">Bidirectional</text>
+
+          <!-- Common site AC bus. -->
+          <rect x="300" y="310" width="650" height="80" rx="18" fill="#eef2f3" stroke="#7c8a90" stroke-width="2" filter="url(#softShadow)"/>
+          <text x="625" y="342" text-anchor="middle" font-size="19" font-weight="850" fill="#16212b">Site-side three-phase AC distribution</text>
+          <text x="625" y="369" text-anchor="middle" font-size="13" fill="#5b6975">AC-in / AC-out split and protected circuits vary by installation</text>
+
+          <!-- Parallel consumers and bidirectional storage interface. -->
+          <rect x="25" y="500" width="350" height="150" rx="20" fill="#e6f4ed" stroke="#3b8c6e" stroke-width="2" filter="url(#softShadow)"/>
+          <text x="200" y="529" text-anchor="middle" font-size="16" font-weight="800" fill="#16212b">Three-phase inverter / chargers</text>
+          <g transform="translate(50 550)">
+            <rect x="0" y="0" width="42" height="72" rx="5" fill="#2474a3"/><rect x="52" y="0" width="42" height="72" rx="5" fill="#2474a3"/><rect x="104" y="0" width="42" height="72" rx="5" fill="#2474a3"/>
+            <rect x="7" y="16" width="28" height="6" fill="#ef6950"/><rect x="59" y="16" width="28" height="6" fill="#ef6950"/><rect x="111" y="16" width="28" height="6" fill="#ef6950"/>
+          </g>
+          <text x="285" y="564" text-anchor="middle" font-size="12" fill="#5b6975">One unit per phase</text>
+          <text x="285" y="589" text-anchor="middle" font-size="12" fill="#5b6975">Example: 3 × MultiPlus-II</text>
+          <text x="285" y="614" text-anchor="middle" font-size="12" fill="#5b6975">Bidirectional AC ↔ DC</text>
+
+          <rect x="630" y="500" width="250" height="120" rx="20" fill="#fff" stroke="#7c8a90" stroke-width="2" filter="url(#softShadow)"/>
+          <path d="M657 589V543H700V589M668 558H689" fill="none" stroke="#5b6975" stroke-width="4"/>
+          <text x="795" y="537" text-anchor="middle" font-size="17" font-weight="800" fill="#16212b">House loads</text>
+          <text x="795" y="565" text-anchor="middle" font-size="12" fill="#5b6975">Parallel AC branch</text>
+          <text x="795" y="590" text-anchor="middle" font-size="12" fill="#5b6975">Protected / non-protected</text>
+
+          <rect x="900" y="500" width="280" height="160" rx="20" fill="#e7f2f8" stroke="#2574a9" stroke-width="2" filter="url(#softShadow)"/>
+          <rect x="927" y="530" width="72" height="98" rx="20" fill="#f5f6f5" stroke="#8d9696"/>
+          <circle cx="963" cy="579" r="21" fill="#1e2d34"/><circle cx="963" cy="579" r="14" fill="none" stroke="#5fb290" stroke-width="3"/>
+          <text x="1085" y="537" text-anchor="middle" font-size="17" font-weight="800" fill="#16212b">EV charger</text>
+          <text x="1085" y="567" text-anchor="middle" font-size="12" fill="#5b6975">Fronius Wattpilot family</text>
+          <text x="1085" y="592" text-anchor="middle" font-size="12" fill="#5b6975">Example: Go 22 kW</text>
+          <text x="1085" y="617" text-anchor="middle" font-size="12" fill="#5b6975">Worked example: Position=0</text>
+
+          <!-- DC battery and supervisory controller. -->
+          <rect x="25" y="760" width="350" height="90" rx="18" fill="#fff" stroke="#3b8c6e" stroke-width="2" filter="url(#softShadow)"/>
+          <rect x="49" y="788" width="76" height="36" rx="6" fill="#f5f5ef" stroke="#78847f"/>
+          <rect x="125" y="799" width="8" height="14" rx="2" fill="#78847f"/>
+          <text x="260" y="790" text-anchor="middle" font-size="16" font-weight="800" fill="#16212b">48 V battery bank</text>
+          <text x="260" y="818" text-anchor="middle" font-size="12" fill="#5b6975">Example: 2 × 16 kWh LiFePO₄</text>
+
+          <rect x="520" y="760" width="360" height="120" rx="20" fill="#f0ecfa" stroke="#7765a8" stroke-width="2" filter="url(#softShadow)"/>
+          <rect x="546" y="786" width="82" height="56" rx="8" fill="#2372a2"/>
+          <rect x="556" y="796" width="62" height="36" rx="3" fill="#cde8f5"/>
+          <text x="734" y="792" text-anchor="middle" font-size="17" font-weight="800" fill="#16212b">GX device</text>
+          <text x="734" y="818" text-anchor="middle" font-size="12" fill="#5b6975">Example: Cerbo GX</text>
+          <rect x="645" y="836" width="210" height="30" rx="9" fill="#7765a8"/>
+          <text x="750" y="857" text-anchor="middle" font-size="14" font-weight="850" fill="#fff">es-ESS controller</text>
+        </svg>
+        <figcaption>The Smart Meter measures the whole-site grid boundary and exchanges data with the Fronius inverter over Modbus RTU. Wattpilot and house loads are parallel branches, not a series path. The Cerbo/GX uses LAN for the Fronius inverter, VE.Bus for the inverter/chargers, BMS-CAN for the managed battery, and es-ESS uses the Wattpilot WebSocket interface. Exact AC-in/AC-out placement must still be verified on every site.</figcaption>
+      </figure>
+
+      <div class="grid grid-2" style="margin-top:22px">
+        <article class="card">
+          <h3>Example placement: Wattpilot <code>Position=0</code></h3>
+          <p>es-ESS publishes <code>0</code> as AC-out and <code>1</code> as AC-in. This is a configured reporting value, not automatic proof of the physical wiring. Check the deployed <code>/data/es-ESS/config.ini</code>, the Cerbo device view and the electrical diagram.</p>
+        </article>
+        <article class="card">
+          <h3>Grid failure is a separate design case</h3>
+          <p>House backup can remain stable while EV Auto/Eco charging stops. Whether an AC-coupled PV inverter can continue during an outage depends on its AC location, certified anti-islanding behavior, inverter/charger sizing and Victron’s AC-coupling rules. This is installer-level design, not an es-ESS setting.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="problem">
+      <p class="eyebrow">03 · Why the problem appears</p>
+      <h2>A meter sees net flow—not the history of each watt</h2>
+      <p class="section-intro">Before storage, grid export is a good approximation of unused PV. After storage, a battery inverter can actively change that grid flow. The EV controller must therefore know the battery contribution.</p>
+
+      <div class="grid grid-3">
+        <article class="card solar">
+          <p class="card-kicker">Before batteries</p>
+          <h3>Export usually means unused PV</h3>
+          <p>If PV produces 5 kW and the house consumes 2 kW, roughly 3 kW reaches the grid point. A surplus controller can safely allocate most of that to the EV.</p>
+        </article>
+        <article class="card battery">
+          <p class="card-kicker">After batteries</p>
+          <h3>ESS holds the grid target</h3>
+          <p>When the EV demand rises or PV falls, the Victron ESS may discharge the battery so the grid remains near 0 W or a small configured export.</p>
+        </article>
+        <article class="card grid-card">
+          <p class="card-kicker">Control-loop trap</p>
+          <h3>The shortfall becomes invisible</h3>
+          <p>A controller that sees only the Fronius side can conclude that charging is still covered, even though the Victron battery is now supplying part of the car.</p>
+        </article>
+      </div>
+
+      <h3 style="margin-top:30px">Worked example: apparent surplus versus real overhead</h3>
+      <table class="compare">
+        <thead><tr><th>Power item</th><th>Before cloud</th><th>After cloud, ESS compensates</th></tr></thead>
+        <tbody>
+          <tr><td>PV generation</td><td>6,000 W</td><td>2,700 W</td></tr>
+          <tr><td>House excluding EV</td><td>1,500 W</td><td>1,500 W</td></tr>
+          <tr><td>EV charge</td><td>4,140 W (3 × 6 A)</td><td>4,140 W requested</td></tr>
+          <tr><td>Battery</td><td>Charging or idle</td><td>About 2,940 W discharge</td></tr>
+          <tr><td>Grid meter</td><td>Small export</td><td>Still near its target</td></tr>
+          <tr><td>Real PV available to EV</td><td>About 4,500 W</td><td>About 1,200 W</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout danger">
+        <p><strong>Key lesson:</strong> a near-zero grid value does not mean “the EV is running on PV.” It means the complete site is balanced at the meter. PV, battery and grid contributions must be evaluated together.</p>
+      </div>
+
+      <h3>What the supplied system screen demonstrates</h3>
+      <p>A representative screen can simultaneously show PV at <strong>0 W</strong>, AC loads around <strong>1.1 kW</strong>, battery discharge around <strong>1.26 kW</strong>, and grid flow of only a few watts. That is normal ESS regulation: the battery supplies the loads while the grid stays close to its target. The screen’s <code>Grid setpoint 0 W</code> is a different setting from the example <code>-50 W</code> configuration described later.</p>
+    </section>
+
+    <section id="controller">
+      <p class="eyebrow">04 · es-ESS control model</p>
+      <h2>Calculate real overhead, reserve it, then grant an allowance</h2>
+      <p class="section-intro">es-ESS uses the GX system view because it includes battery and grid behavior. <code>SolarOverheadDistributor</code> reconstructs the energy budget and assigns the Wattpilot only the power it is allowed to consume.</p>
+
+      <div class="formula" role="note" aria-label="Simplified overhead formula">
+        <strong>raw overhead</strong> = max(0, <span class="accent">grid feed-in</span> + controlled-consumer power + <span class="accent">battery power</span>)<br>
+        <span class="dim">with the repository convention: battery charging is positive; battery discharge is negative</span><br><br>
+        <strong>consumer allowance</strong> = raw overhead distributed by priority, minimum step and battery-charge reservation
+      </div>
+
+      <div class="grid grid-3" style="margin-top:22px">
+        <article class="card">
+          <p class="card-kicker">1 · Observe</p>
+          <h3>Require fresh inputs</h3>
+          <p>Read all three grid phases, battery power/SOC, current consumer demand and Wattpilot state. Missing critical inputs produce zero allowance or a fail-safe stop.</p>
+        </article>
+        <article class="card">
+          <p class="card-kicker">2 · Allocate</p>
+          <h3>Reserve and distribute</h3>
+          <p>Keep the configured battery-charge reservation, then allocate available power to automatic consumers by minimum, step size and priority.</p>
+        </article>
+        <article class="card">
+          <p class="card-kicker">3 · Command</p>
+          <h3>Control only Auto/Eco</h3>
+          <p>Start, stop, change current or switch phases only when Wattpilot mode telemetry confirms ECO control. Manual remains owned by the user.</p>
+        </article>
+      </div>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 1080 340" role="img" aria-labelledby="flow-title flow-desc">
+          <title id="flow-title">es-ESS Wattpilot Auto Eco decision flow</title>
+          <desc id="flow-desc">Fresh telemetry leads to a real PV allowance. If it cannot support one phase, charging waits or stops. If one phase is supported, charging starts or adjusts. Sustained higher allowance may switch to three phases. Grid import or stale telemetry invokes a safety guard.</desc>
+          <defs><marker id="fArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#60727a"/></marker></defs>
+          <g font-family="Inter,Segoe UI,sans-serif" text-anchor="middle">
+            <rect x="30" y="110" width="170" height="80" rx="16" fill="#f0ecfa" stroke="#7765a8" stroke-width="2"/>
+            <text x="115" y="143" font-weight="800" font-size="16">Fresh GX data?</text><text x="115" y="167" font-size="12" fill="#5b6975">Grid L1/L2/L3 + battery</text>
+            <path d="M200 150H260" stroke="#60727a" stroke-width="3" marker-end="url(#fArrow)"/>
+            <rect x="260" y="110" width="180" height="80" rx="16" fill="#fff4d6" stroke="#e5a122" stroke-width="2"/>
+            <text x="350" y="143" font-weight="800" font-size="16">PV allowance</text><text x="350" y="167" font-size="12" fill="#5b6975">≥ one-phase minimum?</text>
+            <path d="M440 150H500" stroke="#60727a" stroke-width="3" marker-end="url(#fArrow)"/>
+            <rect x="500" y="110" width="180" height="80" rx="16" fill="#e7f2f8" stroke="#2574a9" stroke-width="2"/>
+            <text x="590" y="143" font-weight="800" font-size="16">Start / adjust</text><text x="590" y="167" font-size="12" fill="#5b6975">One phase, bounded current</text>
+            <path d="M680 150H740" stroke="#60727a" stroke-width="3" marker-end="url(#fArrow)"/>
+            <rect x="740" y="110" width="180" height="80" rx="16" fill="#e6f4ed" stroke="#3b8c6e" stroke-width="2"/>
+            <text x="830" y="143" font-weight="800" font-size="16">Sustained surplus?</text><text x="830" y="167" font-size="12" fill="#5b6975">Phase-up threshold + timer</text>
+            <path d="M920 150H970" stroke="#60727a" stroke-width="3" marker-end="url(#fArrow)"/>
+            <rect x="970" y="110" width="90" height="80" rx="16" fill="#e6f4ed" stroke="#3b8c6e" stroke-width="2"/>
+            <text x="1015" y="143" font-weight="800" font-size="15">3 phase</text><text x="1015" y="166" font-size="11" fill="#5b6975">PV only</text>
+            <path d="M350 190V268" stroke="#aa4f4f" stroke-width="3" marker-end="url(#fArrow)"/>
+            <rect x="210" y="268" width="280" height="56" rx="14" fill="#f9eaea" stroke="#aa4f4f" stroke-width="2"/>
+            <text x="350" y="292" font-weight="800" font-size="15">Wait, phase-down or stop</text><text x="350" y="311" font-size="11" fill="#5b6975">Optional bounded bridge if already running</text>
+            <path d="M115 110V48H590V110" fill="none" stroke="#aa4f4f" stroke-width="3" marker-end="url(#fArrow)"/>
+            <text x="350" y="39" font-size="12" fill="#aa4f4f">Stale telemetry or no-grid safety guard</text>
+            <path d="M830 190V235H590V190" fill="none" stroke="#60727a" stroke-width="3" marker-end="url(#fArrow)"/>
+            <text x="715" y="228" font-size="12" fill="#5b6975">No: remain on one phase</text>
+          </g>
+        </svg>
+        <figcaption>The assigned Wattpilot allowance—not raw export alone—is authoritative for starting and remaining on three phases. Raw overhead may support a safer three-to-one fallback, but it cannot start charging or authorize phase-up.</figcaption>
+      </figure>
+    </section>
+
+    <section id="modes">
+      <p class="eyebrow">05 · Charging modes</p>
+      <h2>“Available” does not always mean “PV-only”</h2>
+      <table class="compare">
+        <thead><tr><th>Mode</th><th>Who controls it?</th><th>Energy behavior</th><th>es-ESS boundary</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Standard / Manual</strong></td><td>Wattpilot user/app</td><td>Charges at the selected current; grid or battery may support it.</td><td>Reports state but does not continuously start, stop, current-limit or phase-switch. A one-time release clears old Auto/Eco limits when leaving Auto.</td></tr>
+          <tr><td><strong>Auto / ECO</strong></td><td>es-ESS, when ECO telemetry is confirmed</td><td>Starts from assigned real PV allowance. Optional bounded battery assist is continuation-only.</td><td>Full PV policy, freshness checks, current bounds, phase switching and grid-import guard.</td></tr>
+          <tr><td><strong>Next Trip</strong></td><td>Native Wattpilot scheduling</td><td>Targets a requested energy/range by a deadline. It may use PV, stored energy or grid power to meet the trip requirement.</td><td>Not a guarantee of PV-only charging. Treat it as an explicit user override for mobility.</td></tr>
+          <tr><td><strong>Flexible-tariff / low-price</strong></td><td>Native Wattpilot logic</td><td>Can intentionally charge when price is low; the stationary battery may discharge before grid import.</td><td>Detected as a native charging reason rather than taken over by the normal PV controller.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout warning">
+        <p>To avoid two controllers competing in Auto/Eco, place the Wattpilot in ECO mode but configure its native PV start threshold above any reachable site surplus if the app permits it (the repository documentation uses 99 kW as an example). es-ESS then owns PV start/stop decisions. Standard and Next Trip remain deliberate user choices.</p>
+      </div>
+    </section>
+
+    <section id="assist">
+      <p class="eyebrow">06 · Battery policy</p>
+      <h2>Strict PV-only and bounded cloud bridging are different policies</h2>
+      <p class="section-intro">Both profiles prevent a battery-assisted start. The difference is what happens to an already-running charge when a short cloud suddenly removes some PV.</p>
+
+      <div class="grid grid-2">
+        <article class="card solar">
+          <p class="card-kicker">Alternative</p>
+          <h3>Strict PV-only</h3>
+          <p>The controller reduces current, moves to one phase or stops once the configured allowance and safety grace are exhausted. It minimizes home-battery cycling but may cause more EV interruptions.</p>
+          <pre><span class="comment"># Never bridge a PV dip with the home battery</span>
+BatteryAssistEnabled=<span class="value">false</span>
+AllowGridCharging=<span class="value">false</span></pre>
+        </article>
+        <article class="card battery">
+          <p class="card-kicker">Recommended example</p>
+          <h3>Bounded battery assist</h3>
+          <p>A running charge may survive a short cloud when SOC, shortfall and time remain within limits. This reduces rapid switching while keeping battery use explicit and finite.</p>
+          <pre>BatteryAssistEnabled=<span class="value">true</span>
+BatteryAssistSocMin=<span class="value">50</span>
+BatteryAssistMaxSeconds=<span class="value">600</span>
+BatteryAssistMaxShortfallW=<span class="value">2500</span>
+BatteryAssistRecoverySeconds=<span class="value">120</span>
+AllowGridCharging=<span class="value">false</span></pre>
+        </article>
+      </div>
+
+      <h3 style="margin-top:30px">What the recommended example permits</h3>
+      <ul class="checklist">
+        <li>Only an already-running Auto/Eco session can receive assistance.</li>
+        <li>SOC must remain at or above 50%.</li>
+        <li>The calculated PV shortfall must not exceed 2.5 kW.</li>
+        <li>One assist window lasts no more than 600 seconds.</li>
+        <li>PV must fully recover for 120 seconds before another locked-out assist window becomes available.</li>
+        <li>Assistance cannot start an EV session and cannot justify switching from one phase to three.</li>
+        <li>With <code>AllowGridCharging=false</code>, sustained grid import still invokes the stop guard.</li>
+      </ul>
+
+      <div class="callout success">
+        <p><strong>Energy scale:</strong> 2.5 kW for 600 seconds is at most about <strong>0.42 kWh</strong> before conversion losses—around 1.3% of a 32 kWh nominal battery bank. The actual amount is usually lower because assistance tracks only the shortfall.</p>
+      </div>
+
+      <p><code>EvPriorityOverBatteryCharge=true</code> is not battery discharge assistance. Above <code>EvPriorityMinSoc</code>, it allows real PV that would otherwise charge the stationary battery to be redirected to the connected EV. The controller still requires an actual distributor allowance for a new start.</p>
+    </section>
+
+    <section id="setpoint">
+      <p class="eyebrow">07 · Grid setpoint ownership</p>
+      <h2><code>DefaultPowerSetPoint=-50</code> actively changes Victron ESS</h2>
+      <p class="section-intro">This setting is global to es-ESS. It is not merely a documentation default and it is not part of the Wattpilot allowance calculation.</p>
+
+      <div class="grid grid-3">
+        <article class="card grid-card">
+          <p class="card-kicker">Baseline</p>
+          <h3>Negative exports</h3>
+          <p><code>-50</code> asks Victron ESS to export approximately 50 W. A positive value asks for grid import. The physical result will move around the target because meters and control loops have delays.</p>
+        </article>
+        <article class="card control">
+          <p class="card-kicker">Runtime behavior</p>
+          <h3>es-ESS writes the setting</h3>
+          <p>At startup, es-ESS publishes the calculated value through local Venus MQTT to <code>/Settings/CGwacs/AcPowerSetPoint</code>. It restores the baseline after a managed error or graceful shutdown.</p>
+        </article>
+        <article class="card battery">
+          <p class="card-kicker">Energy source</p>
+          <h3>The target is source-blind</h3>
+          <p>The 50 W export can be supplied by PV or by battery discharge. The setpoint does not prove PV surplus; this is why the overhead calculation separately includes battery power.</p>
+        </article>
+      </div>
+
+      <div class="formula" style="margin-top:22px">
+        <strong>combined grid setpoint</strong> = <span class="accent">DefaultPowerSetPoint</span> + active service adjustments<br><br>
+        <span class="dim">Example with NoBatToEV active:</span><br>
+        −50 W baseline + 2,000 W request = <span class="accent">+1,950 W import target</span>
+      </div>
+
+      <h3 style="margin-top:28px">Scope and interaction with services</h3>
+      <ul>
+        <li>If <code>NoBatToEV=false</code>, no currently active service adds a grid-setpoint request, so es-ESS normally calculates <code>-50 W</code>.</li>
+        <li><code>NoBatToEV</code> can add a positive request to offload the EV shortfall to the grid, preventing that EV portion from draining the battery.</li>
+        <li>That behavior conflicts with a no-grid Auto/Eco objective, so keep <code>NoBatToEV=false</code> with the recommended Wattpilot battery-assist profile.</li>
+        <li>The dormant <code>ChargeCurrentReducer</code> has a separate setting of the same name in its own section; it is not an active service in this checkout.</li>
+        <li>es-ESS republishes the grid setpoint when its calculated value changes. It does not necessarily overwrite every later external change on each five-second management cycle.</li>
+        <li>A 50 W export is far below the usual EV minimum of about 1.38 kW, so it cannot alone support a normal 6 A start. It can still contribute to a misleading source-blind native measurement.</li>
+      </ul>
+
+      <div class="callout danger">
+        <p><strong>Configuration-file distinction:</strong> <code>config.sample.ini</code> is a template. The deployed service reads <code>/data/es-ESS/config.ini</code>. Editing the sample does not modify an already-installed system unless the production file is updated too.</p>
+      </div>
+    </section>
+
+    <section id="configure">
+      <p class="eyebrow">08 · Configuration</p>
+      <h2>Recommended adaptable starting point</h2>
+      <p class="section-intro">The following is a worked profile, not a substitute for commissioning. Replace network addresses, portal ID, current limits, AC position, battery power limits and reservation policy with verified installation values.</p>
+
+      <pre><span class="comment">[Common]</span>
+VRMPortalID=<span class="value">&lt;GX portal ID from /sbin/get-unique-id&gt;</span>
+BatteryCapacityInWh=<span class="value">32000</span>             <span class="comment"># Example: 2 × 16 kWh nominal</span>
+BatteryMaxChargeInWh=<span class="value">9000</span>              <span class="comment"># Example only; historical key name, value is power in W</span>
+DefaultPowerSetPoint=<span class="value">-50</span>              <span class="comment"># Small export target</span>
+
+<span class="comment">[Mqtt]</span>
+Host=<span class="value">localhost</span>
+Port=<span class="value">1883</span>
+SslEnabled=<span class="value">false</span>
+LocalSslEnabled=<span class="value">false</span>
+
+<span class="comment">[Services]</span>
+SolarOverheadDistributor=<span class="value">true</span>
+FroniusWattpilot=<span class="value">true</span>
+NoBatToEV=<span class="value">false</span>                    <span class="comment"># Required for this no-grid profile</span>
+
+<span class="comment">[SolarOverheadDistributor]</span>
+VRMInstanceID=<span class="value">1000</span>
+VRMInstanceID_ReservationMonitor=<span class="value">1001</span>
+UpdateInterval=<span class="value">5000</span>
+MinBatteryCharge=<span class="value">(5750/(min(SOC,99)-100)+5750)+250</span>
+
+<span class="comment">[FroniusWattpilot]</span>
+VRMInstanceID=<span class="value">1007</span>
+VRMInstanceID_OverheadRequest=<span class="value">1006</span>
+Host=<span class="value">&lt;static Wattpilot IP or hostname&gt;</span>
+Password=<span class="value">&lt;Wattpilot password&gt;</span>
+Position=<span class="value">0</span>                         <span class="comment"># 0=AC-out, 1=AC-in; verify wiring</span>
+HibernateMode=<span class="value">false</span>
+
+MinCurrentPerPhase=<span class="value">6</span>
+MaxCurrentPerPhase=<span class="value">16</span>               <span class="comment"># Example only; respect all electrical limits</span>
+MinOnOffSeconds=<span class="value">60</span>
+MinPhaseSwitchSeconds=<span class="value">600</span>
+ThreePhasePvSurplusStartW=<span class="value">5000</span>
+ThreePhasePvSurplusStopW=<span class="value">4100</span>
+
+EvPriorityOverBatteryCharge=<span class="value">true</span>
+EvPriorityMinSoc=<span class="value">50</span>
+BatteryAssistEnabled=<span class="value">true</span>
+BatteryAssistSocMin=<span class="value">50</span>
+BatteryAssistMaxSeconds=<span class="value">600</span>
+BatteryAssistMaxShortfallW=<span class="value">2500</span>
+BatteryAssistRecoverySeconds=<span class="value">120</span>
+
+AllowGridCharging=<span class="value">false</span>
+GridImportPositive=<span class="value">true</span>             <span class="comment"># Verify from live grid readings</span>
+GridImportStopW=<span class="value">300</span>
+GridImportStopSeconds=<span class="value">15</span>
+GridTelemetryFreshSeconds=<span class="value">15</span>
+AllowanceFreshSeconds=<span class="value">15</span>
+AllowanceDropGraceSeconds=<span class="value">15</span>
+RawOverheadFreshSeconds=<span class="value">15</span>
+
+CarDisconnectConfirmSeconds=<span class="value">15</span>
+SurplusDropGraceSeconds=<span class="value">20</span>
+StartupGraceSeconds=<span class="value">60</span>
+StartupTelemetryRatio=<span class="value">0.80</span>
+ChargeCompletePowerThresholdW=<span class="value">120</span>
+ChargeCompleteConfirmSeconds=<span class="value">300</span>
+ChargeCompleteResumePowerW=<span class="value">300</span>
+ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
+
+      <div class="grid grid-2">
+        <article class="card">
+          <h3>Battery reservation</h3>
+          <p><code>MinBatteryCharge</code> is a desired PV reservation for stationary-battery charging, evaluated from SOC. It is not a BMS current limit. With the example curve, reservation is high at lower SOC and approaches 250 W near 99%.</p>
+          <p>If <code>EvPriorityOverBatteryCharge=true</code> and SOC is high enough, a connected Auto/Eco Wattpilot may ignore that reservation to take real PV. It still cannot start from battery power.</p>
+        </article>
+        <article class="card">
+          <h3>Current and phase thresholds</h3>
+          <p>The Wattpilot family commonly starts around 6 A: approximately 1.38 kW on one phase and 4.14 kW on three phases at nominal voltage. Use hysteresis, so the three-phase start threshold is higher than the stop threshold.</p>
+          <p>Do not infer a safe 32 A setting from a 22 kW product label. The lowest limit among supply, protection, cabling, adapter, wallbox, vehicle and local rules wins.</p>
+        </article>
+      </div>
+
+      <div class="callout warning">
+        <p><strong>Fake battery monitors:</strong> SolarOverheadDistributor exposes reservation/consumer information as battery-like D-Bus services for VRM visibility. Manually select the actual managed battery/BMS under GX System Setup → Battery Monitor. Do not leave automatic selection where a fake monitor could be chosen.</p>
+      </div>
+    </section>
+
+    <section id="deploy">
+      <p class="eyebrow">09 · Deployment</p>
+      <h2>Install, configure one service at a time, then observe</h2>
+      <div class="callout danger">
+        <p><strong>Validated runtime lock:</strong> this checkout starts only on Venus OS <code>v3.73</code>. Wattpilot control remains blocked until charger firmware <code>42.5</code> is received through <code>fwv</code> telemetry. Solar.wattpilot mobile app <code>2.1.0</code> is the validated commissioning version, but es-ESS cannot query the mobile app. A version upgrade must be integration-tested before the centralized baseline in <code>RuntimeCompatibility.py</code> is changed.</p>
+      </div>
+      <ol class="steps">
+        <li><strong>Confirm the electrical system first.</strong><br>Record PV and Wattpilot AC positions, Smart Meter direction, grid sign, phase assignment, protection, battery BMS limits, and whether AC-coupled PV is intended to operate during an outage.</li>
+        <li><strong>Prepare the GX device.</strong><br>Confirm the clean Venus OS <code>v3.73</code> release, enable SSH/root access, ensure the local MQTT broker is available, and verify that the Fronius inverter, grid phases, battery and MultiPlus system have fresh values in the GX interface.</li>
+        <li><strong>Stabilize networking.</strong><br>Put the Cerbo GX, Fronius inverter and Wattpilot on a reliable LAN. Use DHCP reservations or static addresses, and confirm the Cerbo discovers the Fronius inverter in the correct AC position.</li>
+        <li><strong>Back up before installation.</strong><br>Save the current GX/ESS settings and any existing <code>/data/es-ESS/config.ini</code>. Record the original Victron grid setpoint because es-ESS will write the configured baseline.</li>
+        <li><strong>Download and install es-ESS.</strong><br>Run the repository installation commands on the GX device. The installer creates the service link, adds a recovery entry to <code>/data/rc.local</code>, and copies <code>config.sample.ini</code> to <code>config.ini</code> only when no production config exists.</li>
+        <li><strong>Install the Wattpilot Python dependency.</strong><br>Install <code>python3-pip</code> when needed and then <code>websocket-client</code>. Venus OS upgrades can remove extra packages, so recheck this dependency after firmware updates.</li>
+        <li><strong>Configure and restart.</strong><br>Edit <code>/data/es-ESS/config.ini</code>, enable SolarOverheadDistributor first, validate its calculations, then enable FroniusWattpilot and restart gracefully.</li>
+        <li><strong>Commission with low risk.</strong><br>Start with a connected vehicle, conservative 16 A maximum, no flexible tariff, and supervision at the site. Validate one-phase operation before allowing the three-phase threshold to be reached.</li>
+      </ol>
+
+      <h3 style="margin-top:32px">GX shell commands</h3>
+      <pre><span class="comment"># Download the current main branch</span>
+wget https://github.com/AndreiContributor/es-ESS/archive/refs/heads/main.zip
+unzip main.zip "es-ESS-main/*" -d /data
+mv /data/es-ESS-main /data/es-ESS
+chmod a+x /data/es-ESS/install.sh
+/data/es-ESS/install.sh
+rm main.zip
+
+<span class="comment"># Wattpilot transport dependency (if not already installed)</span>
+opkg update
+opkg install python3-pip
+python -m pip install websocket-client
+
+<span class="comment"># Identify this GX portal ID for [Common] VRMPortalID</span>
+/sbin/get-unique-id
+
+<span class="comment"># Apply configuration and follow logs</span>
+/data/es-ESS/restart.sh
+tail -f -n 50 /data/log/es-ESS/current.log</pre>
+
+      <div class="callout danger">
+        <p><strong>Do not place real passwords in screenshots or public documentation.</strong> Back up <code>config.ini</code> privately. Use <code>kill_me.sh</code> only when graceful restart fails; normal shutdown restores the configured grid-setpoint baseline and performs service cleanup.</p>
+      </div>
+    </section>
+
+    <section id="commission">
+      <p class="eyebrow">10 · Commissioning</p>
+      <h2>Prove each safety boundary with live measurements</h2>
+      <div class="grid grid-2">
+        <article class="card">
+          <h3>Pre-charge checks</h3>
+          <ul class="checklist">
+            <li>Actual BMS is selected as the GX battery monitor.</li>
+            <li>Grid import/export signs agree on all three phases.</li>
+            <li>Battery discharge is negative in the system value used by the distributor.</li>
+            <li>Fronius PV production is visible and assigned to the correct AC position.</li>
+            <li>Wattpilot IP, password, reported voltage and effective current limit are valid.</li>
+            <li>SolarOverheadDistributor publishes zero allowance when a required input is missing.</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Charging behavior</h3>
+          <ul class="checklist">
+            <li>Manual/Standard charging is not altered by es-ESS.</li>
+            <li>Auto/Eco does not start below the one-phase allowance.</li>
+            <li>One-phase current follows allowance in one-ampere steps.</li>
+            <li>Three-phase switch occurs only after sustained threshold and cooldown.</li>
+            <li>A cloud starts bounded assist only after charging is already active.</li>
+            <li>Assist ends on SOC, power-shortfall or time limit.</li>
+            <li>Sustained grid import triggers phase-down or stop with grid charging disabled.</li>
+          </ul>
+        </article>
+      </div>
+
+      <h3 style="margin-top:30px">Suggested test sequence</h3>
+      <table class="compare">
+        <thead><tr><th>Test</th><th>Method</th><th>Expected result</th></tr></thead>
+        <tbody>
+          <tr><td>Manual boundary</td><td>Select Standard/Manual and change current in the Wattpilot app.</td><td>es-ESS reports the state but does not continuously counter-command the user.</td></tr>
+          <tr><td>No-surplus start</td><td>Connect the car when PV allowance is below about one-phase minimum.</td><td>Auto/Eco waits; battery assist does not create a start.</td></tr>
+          <tr><td>One-phase start</td><td>Increase genuine PV above minimum for <code>MinOnOffSeconds</code>.</td><td>Charge starts on one phase at a bounded current.</td></tr>
+          <tr><td>Phase-up</td><td>Hold assigned allowance above <code>ThreePhasePvSurplusStartW</code>.</td><td>Three-phase command occurs only after <code>MinPhaseSwitchSeconds</code> and is confirmed from telemetry.</td></tr>
+          <tr><td>Cloud bridge</td><td>Reduce PV so shortfall is under 2.5 kW while SOC is above 50%.</td><td>Existing charge is held temporarily; runtime status shows assist active.</td></tr>
+          <tr><td>Assist timeout</td><td>Keep the shortfall present beyond 600 seconds.</td><td>Assist locks out; controller reduces to one phase or stops according to fresh allowance.</td></tr>
+          <tr><td>Grid guard</td><td>Supervised test causing import above 300 W for 15 seconds.</td><td>No-grid Auto/Eco stops or safely reduces; Manual remains user-controlled.</td></tr>
+          <tr><td>Telemetry failure</td><td>Temporarily interrupt grid or allowance telemetry.</td><td>New Auto/Eco start is blocked; running no-grid Auto/Eco fails safe.</td></tr>
+          <tr><td>Network recovery</td><td>Restart or disconnect Wattpilot networking.</td><td>Status becomes unavailable, then reconnects without duplicate control workers.</td></tr>
+          <tr><td>Grid failure</td><td>Installer-supervised outage test.</td><td>House backup follows the certified ESS design; EV Auto/Eco must not be assumed available.</td></tr>
+        </tbody>
+      </table>
+
+      <details>
+        <summary>Where to observe detailed controller state</summary>
+        <div><p>Use the Wattpilot D-Bus service paths <code>/ControlState</code>, <code>/PhaseMode</code>, <code>/BatteryAssistActive</code>, <code>/GridImportGuardActive</code> and <code>/TelemetryHealthy</code>, or the retained MQTT equivalents below <code>es-ESS/FroniusWattpilot/RuntimeStatus/...</code>. The standard EVCS overview tile intentionally remains compatible with normal Victron status values and does not show every safety detail.</p></div>
+      </details>
+      <details>
+        <summary>What to check after a Venus OS update</summary>
+        <div><p>es-ESS will refuse to start on any release other than validated Venus OS <code>v3.73</code>. Restore <code>v3.73</code>, or complete the full compatibility test matrix before deliberately updating <code>RuntimeCompatibility.py</code> and its tests. After returning to a validated release, confirm the service link and <code>/data/rc.local</code> recovery entry, rerun <code>/data/es-ESS/install.sh</code> if necessary, verify <code>websocket-client</code>, check MQTT access, and repeat the Manual/Auto boundary tests.</p></div>
+      </details>
+    </section>
+
+    <section id="adapt">
+      <p class="eyebrow">11 · Adaptation worksheet</p>
+      <h2>Record the installation before copying values</h2>
+      <p class="section-intro">Print this section or fill it digitally. Values in the example profile should not be copied until the matching item is known.</p>
+      <div class="adapt-grid">
+        <div class="adapt-item"><strong>PV inverter family/model</strong><span class="blank">Example: Fronius Symo 10.0-3-M</span></div>
+        <div class="adapt-item"><strong>PV array peak power</strong><span class="blank">kWp and panel count</span></div>
+        <div class="adapt-item"><strong>PV AC position</strong><span class="blank">AC-in / AC-out / parallel</span></div>
+        <div class="adapt-item"><strong>Grid phases</strong><span class="blank">1 / 3</span></div>
+        <div class="adapt-item"><strong>Smart Meter</strong><span class="blank">Model, direction, feed-in point</span></div>
+        <div class="adapt-item"><strong>Wattpilot model</strong><span class="blank">11 / 22 kW, generation</span></div>
+        <div class="adapt-item"><strong>Wattpilot AC position</strong><span class="blank">0=AC-out / 1=AC-in</span></div>
+        <div class="adapt-item"><strong>Maximum permitted EV current</strong><span class="blank">A per phase</span></div>
+        <div class="adapt-item"><strong>Victron inverter/chargers</strong><span class="blank">Model, quantity, phase mapping</span></div>
+        <div class="adapt-item"><strong>GX device and Venus OS</strong><span class="blank">Model and version</span></div>
+        <div class="adapt-item"><strong>Battery bank</strong><span class="blank">Chemistry, voltage, nominal kWh</span></div>
+        <div class="adapt-item"><strong>BMS protocol and monitor</strong><span class="blank">Actual selected service</span></div>
+        <div class="adapt-item"><strong>Minimum operating SOC</strong><span class="blank">%</span></div>
+        <div class="adapt-item"><strong>Maximum charge/discharge</strong><span class="blank">W / A, BMS-approved</span></div>
+        <div class="adapt-item"><strong>Battery assist</strong><span class="blank">SOC, W, seconds, recovery</span></div>
+        <div class="adapt-item"><strong>Grid setpoint</strong><span class="blank">W; negative export / positive import</span></div>
+        <div class="adapt-item"><strong>Grid sign verified</strong><span class="blank">Positive import: yes / no</span></div>
+        <div class="adapt-item"><strong>Network reservations</strong><span class="blank">GX, Fronius, Wattpilot</span></div>
+        <div class="adapt-item"><strong>Backup-load policy</strong><span class="blank">EV and PV behavior during outage</span></div>
+        <div class="adapt-item"><strong>Installer approval/date</strong><span class="blank"></span></div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <p class="eyebrow">12 · References</p>
+      <h2>Primary documentation and project contracts</h2>
+      <ol class="sources">
+        <li><a href="https://manuals.fronius.com/html/4204260435/en-US.html">Fronius Wattpilot operating instructions</a> — modes, PV surplus, 1/3-phase switching, battery and tariff behavior.</li>
+        <li><a href="https://www.fronius.com/en/help-center/solar-energy/products/e-mobility/wallbox/wattpilot-homego/wattpilot-go-22-j">Fronius Wattpilot Go 22 J product support</a> — product family capability and technical data.</li>
+        <li><a href="https://www.victronenergy.com/media/pg/Energy_Storage_System/en/index-en.html">Victron ESS design and installation manual</a> — system design, AC-coupled PV, SOC, grid setpoint and commissioning.</li>
+        <li><a href="https://www.victronenergy.com/media/pg/Energy_Storage_System/en/configuration.html">Victron ESS configuration</a> — grid setpoint sign, ESS modes, SOC and feed-in behavior.</li>
+        <li><a href="https://www.victronenergy.com/live/ac_coupling%3Afronius">Victron GX–Fronius integration guide</a> — LAN setup, monitoring and compatible feed-in control.</li>
+        <li><a href="https://www.victronenergy.com/media/pg/Cerbo_GX/en/index-en.html">Cerbo GX manual</a> — device integration, PV inverter positions, MQTT and system configuration.</li>
+        <li><a href="wattpilot-architecture.md">Local Wattpilot architecture contract</a> — command boundaries, Manual-mode protection, no-grid policy, battery assist and runtime-status contracts.</li>
+        <li><a href="service-inventory.md">Local es-ESS service inventory</a> — active services, D-Bus/MQTT boundaries and grid-setpoint ownership.</li>
+        <li><a href="../README.md">Project README</a> — installation, configuration keys, deployment verification and operating notes.</li>
+        <li><a href="../config.sample.ini">Maintained configuration template</a> — current supported keys and example defaults.</li>
+      </ol>
+      <div class="callout">
+        <p>This guide explains software behavior and system concepts. It is not an electrical design certificate. Three-phase wiring, anti-islanding, RCD/MCB selection, earthing, conductor sizing, battery fusing and manufacturer compatibility must be designed and commissioned by qualified professionals under applicable local rules.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">Generic system guide for es-ESS · English edition · Inline diagrams are original and intentionally model-adaptable.</div>
+  </footer>
+</body>
+</html>

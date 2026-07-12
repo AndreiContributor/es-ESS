@@ -81,6 +81,13 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         controller.currentPhaseMode = 1
         controller.mode = self.fwp.VrmEvChargerControlMode.Auto
         controller.autostart = 1
+        controller.validatedVenusOsVersion = "v3.73"
+        controller.validatedWattpilotFirmware = "42.5"
+        controller.validatedWattpilotAppVersion = "2.1.0"
+        controller.actualVenusOsVersion = "v3.73"
+        controller.actualWattpilotFirmware = "42.5"
+        controller.wattpilotFirmwareCompatible = True
+        controller._lastWattpilotCompatibilityState = (True, "42.5")
         controller.dbusService = {
             "/Mode": self.fwp.VrmEvChargerControlMode.Auto.value,
             "/ModeLiteral": self.fwp.VrmEvChargerControlMode.Auto.name,
@@ -89,6 +96,7 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         }
         controller.wattpilot = SimpleNamespace(
             ampLimit=None,
+            firmware="42.5",
             voltage1=230,
             mode=self.fwp.WattpilotControlMode.ECO,
             set_power=Mock(),
@@ -104,6 +112,23 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         controller.dumpEvChargerInfo = Mock()
         controller.clearChargeCompleteHold = Mock()
         return controller
+
+    def test_wattpilot_firmware_mismatch_blocks_command_authorization(self):
+        controller = self._controller()
+        controller.wattpilot.firmware = "42.6"
+
+        self.assertFalse(controller.allowWattpilotCommand("amp", 6))
+        self.assertFalse(controller.wattpilotFirmwareCompatible)
+        self.assertEqual(controller.actualWattpilotFirmware, "42.6")
+        self.assertIn("All es-ESS Wattpilot commands are blocked", controller.serviceMessages[-1])
+
+    def test_missing_wattpilot_firmware_blocks_command_authorization(self):
+        controller = self._controller()
+        controller.wattpilot.firmware = None
+
+        self.assertFalse(controller.allowWattpilotCommand("frc", 2))
+        self.assertFalse(controller.wattpilotFirmwareCompatible)
+        self.assertIn("<unavailable>", controller.serviceMessages[-1])
 
     def test_set_current_is_rejected_when_wattpilot_reports_manual_mode(self):
         controller = self._controller()

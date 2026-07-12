@@ -67,6 +67,37 @@ Your system needs to match the following requirements in order to use es-ESS:
 - Have a mqtt server (or the use builtin one, to minimize system load an external mqtt is recommended)
 - Have shell access enabled and know how to use it. (See: https://www.victronenergy.com/live/ccgx:root_access)
 
+## Validated runtime versions
+
+This checkout deliberately fails closed outside the runtime versions validated
+on the reference installation:
+
+| Component | Validated version | Runtime enforcement |
+| --- | --- | --- |
+| Venus OS on the GX device | `v3.73` | Required before es-ESS constructs services, connects MQTT, or writes the grid setpoint. A missing or different version exits with status 1. Qualifiers such as `v3.73~1` do not match the clean release. |
+| Fronius Wattpilot firmware | `42.5` | Read from Wattpilot `fwv` telemetry. Until it matches exactly, every es-ESS Wattpilot `setValue` command is blocked and Auto/Eco reports a compatibility fault. Other es-ESS services may continue. |
+| Fronius Solar.wattpilot mobile app | `2.1.0` | Commissioning baseline only. The app version is not exposed to es-ESS and cannot be checked automatically. |
+
+The compatibility constants and version comparison live in
+`RuntimeCompatibility.py`. Do not change them merely to bypass a failed start.
+First validate Manual-mode ownership, command names and values, PV-only starts,
+current limits, phase switching, grid-import stops, battery-assist bounds,
+telemetry freshness, reconnection, D-Bus/MQTT contracts, and graceful shutdown
+on the proposed new versions. Then update the baseline and tests in the same
+change.
+
+The `?version=1.2.9` value used by the optional Wattpilot cloud WebSocket URL is
+a protocol/client identifier. It is not the Solar.wattpilot mobile app version
+and must not be changed to `2.1.0`.
+
+On a Wattpilot mismatch es-ESS intentionally sends no best-effort stop command,
+because command semantics are precisely what is unvalidated. Keep the native
+Wattpilot ECO start threshold above reachable site surplus, use the Wattpilot
+app to stop or select Manual when necessary, and restore firmware `42.5` before
+returning Auto/Eco control to es-ESS. Fronius documents that stored firmware can
+be selected again after an update and that the mobile app may also need an
+update after firmware changes.
+
 Run the following lines of code on your gx device: 
 
 ```
@@ -127,7 +158,7 @@ have to mind adding / remove values as you enable or disable certain services.
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
 | [Common]                 | BatteryMaxChargeInWh | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
-| [Common]                 | DefaultPowerSetPoint | Default Power Setpoint (W), when using features that manipulte the set point programmatically.         | Integer       | -10                          |
+| [Common]                 | DefaultPowerSetPoint | Default Power Setpoint (W), when using features that manipulte the set point programmatically.         | Integer       | -50                          |
 | [Common]                 | HttpRequestTimeout   | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers.                       | Double        | 5                            |
 | [Mqtt]                   | Host                 | Hostname / IP of your main-mqtt to work with.                                                          | String        | mqtt.ad.equinox-solutions.de |
 | [Mqtt]                   | User                 | Username to connect to your main-mqtt.                                                                 | String        | user                         |
@@ -565,7 +596,10 @@ state is published on the Wattpilot runtime-status contract:
 - D-Bus paths on `com.victronenergy.evcharger.*_FroniusWattpilot`:
   `/ControlState`, `/ControlStateLiteral`, `/PhaseMode`,
   `/PhaseModeLiteral`, `/BatteryAssistActive`, `/GridImportGuardActive`, and
-  `/TelemetryHealthy`.
+  `/TelemetryHealthy`, plus `/CompatibilityOk`, `/CompatibilityLiteral`,
+  `/ExpectedVenusOsVersion`, `/ActualVenusOsVersion`,
+  `/ExpectedWattpilotFirmware`, `/ActualWattpilotFirmware`, and
+  `/ValidatedWattpilotAppVersion`.
 - Retained MQTT topics under
   `es-ESS/FroniusWattpilot/RuntimeStatus/...` with the same value names.
 
@@ -677,7 +711,7 @@ NoBatToEV requires a few variables to be set in `/data/es-ESS/config.ini`:
 | ---------- | ---------|---- | ------------- |--|
 | [Services]    | NoBatToEV   | Flag, if the service should be enabled or not | Boolean | true |
 | [Common]     | VRMPortalID |  Your portal ID to access values on mqtt / dbus |String | VRM0815 |
-| [Common]     | DefaultPowerSetPoint |  Default Power SetPoint, so it can be restored after ev charge finished. | double | -10 |
+| [Common]     | DefaultPowerSetPoint |  Default Power SetPoint, so it can be restored after ev charge finished. | double | -50 |
 | [NoBatToEV]  | UseRelay | can be -1 (disabled) or 0 or 1. Then NoBatToEV will only be "active", when the Relay 0 or 1 is turned on. (Relay Toggles are available in VRM)|
 
 > :warning: NOTE: this feature manipulates the grid set point in order to achieve proper offloading of your evs energy demand. Several precautions ensure that the configured default grid set point
@@ -1146,7 +1180,7 @@ The following D-Bus values are published on the existing
 | 9 | `Stopped for stale telemetry` |
 | 10 | `Fault` |
 
-The same seven values are mirrored to retained main-MQTT topics:
+All fourteen runtime-status values are mirrored to retained main-MQTT topics:
 
 ```text
 es-ESS/FroniusWattpilot/RuntimeStatus/ControlState
@@ -1156,6 +1190,13 @@ es-ESS/FroniusWattpilot/RuntimeStatus/PhaseModeLiteral
 es-ESS/FroniusWattpilot/RuntimeStatus/BatteryAssistActive
 es-ESS/FroniusWattpilot/RuntimeStatus/GridImportGuardActive
 es-ESS/FroniusWattpilot/RuntimeStatus/TelemetryHealthy
+es-ESS/FroniusWattpilot/RuntimeStatus/CompatibilityOk
+es-ESS/FroniusWattpilot/RuntimeStatus/CompatibilityLiteral
+es-ESS/FroniusWattpilot/RuntimeStatus/ExpectedVenusOsVersion
+es-ESS/FroniusWattpilot/RuntimeStatus/ActualVenusOsVersion
+es-ESS/FroniusWattpilot/RuntimeStatus/ExpectedWattpilotFirmware
+es-ESS/FroniusWattpilot/RuntimeStatus/ActualWattpilotFirmware
+es-ESS/FroniusWattpilot/RuntimeStatus/ValidatedWattpilotAppVersion
 ```
 
 All runtime-status MQTT topics are retained. The status is republished

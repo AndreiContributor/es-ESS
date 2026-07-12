@@ -205,6 +205,13 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         controller.evPriorityOverBatteryCharge = False
         controller.evPriorityMinSoc = 0
+        controller.validatedVenusOsVersion = "v3.73"
+        controller.validatedWattpilotFirmware = "42.5"
+        controller.validatedWattpilotAppVersion = "2.1.0"
+        controller.actualVenusOsVersion = "v3.73"
+        controller.actualWattpilotFirmware = "42.5"
+        controller.wattpilotFirmwareCompatible = True
+        controller._lastWattpilotCompatibilityState = (True, "42.5")
         controller.config = {
             "FroniusWattpilot": {
                 "VRMInstanceID_OverheadRequest": "42",
@@ -214,6 +221,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         controller.wattpilot = SimpleNamespace(
             ampLimit=None,
+            firmware="42.5",
             voltage1=230,
             voltage2=230,
             voltage3=230,
