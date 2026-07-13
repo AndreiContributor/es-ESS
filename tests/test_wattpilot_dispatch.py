@@ -94,6 +94,7 @@ class WattpilotDispatchCharacterizationTests(unittest.TestCase):
         controller.clearChargeCompleteHold = Mock()
         controller.clearPowerTransitionGrace = Mock()
         controller.clearPendingPhaseSwitch = Mock()
+        controller.clearPhaseSwitchCandidate = Mock()
         controller.publishSafetyTelemetry = Mock()
         controller.handleChargingState = Mock()
         controller.handleNotChargingState = Mock()
@@ -198,6 +199,7 @@ class WattpilotDispatchCharacterizationTests(unittest.TestCase):
         )
         controller.clearPowerTransitionGrace.assert_called_once_with()
         controller.clearPendingPhaseSwitch.assert_called_once_with()
+        controller.clearPhaseSwitchCandidate.assert_called_once_with()
         controller.publishSafetyTelemetry.assert_called_once_with()
 
 
