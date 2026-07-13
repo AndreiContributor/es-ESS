@@ -17,6 +17,11 @@ and phase-switch EV charging. Changes in this area must preserve Manual mode,
 PV-only Auto/Eco behavior, grid-use guards, battery-assist limits, telemetry
 freshness checks, and the public D-Bus/MQTT status contract.
 
+For post-deploy, post-firmware, morning daylight and mid-day PV-surplus
+validation, `scripts/es-ess-health-monitor.sh` reads the public service state
+and Wattpilot D-Bus/runtime-status contract without issuing commands. Its
+installation and interpretation notes live in `docs/es-ess-health-monitor.md`.
+
 ## Module Responsibilities
 
 ### `RuntimeCompatibility.py`
@@ -318,6 +323,10 @@ Future Wattpilot changes must preserve these invariants:
 - Current limits must respect configured per-phase bounds and the
   Wattpilot-reported effective limit.
 - Public D-Bus and MQTT runtime-status paths are compatibility contracts.
+- Keep read-only diagnostics such as `scripts/es-ess-health-monitor.sh`
+  command-free. Monitoring tools may read the runtime-status contract, service
+  state, selected config values and logs, but must not write Wattpilot, D-Bus,
+  MQTT, service or configuration state.
 
 ## Refactoring Guidance
 
