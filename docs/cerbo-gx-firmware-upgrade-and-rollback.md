@@ -156,6 +156,19 @@ image must be installed.
 10. During a supervised low-risk window, validate one-phase Auto/Eco operation,
    no-grid protection, and then phase switching only when sufficient PV is
    naturally available.
+11. Install or verify the read-only health monitor, then capture a post-upgrade
+    snapshot for the maintenance record:
+
+    ```sh
+    cd /data/es-ESS
+    chmod +x scripts/es-ess-health-monitor.sh
+    /data/es-ESS/scripts/es-ess-health-monitor.sh | tee /data/es-ess-health-$(date +%Y%m%d-%H%M%S).log
+    ```
+
+    If the script was copied manually, first create `/data/es-ESS/scripts` and
+    copy `scripts/es-ess-health-monitor.sh` there. See
+    [`es-ess-health-monitor.md`](es-ess-health-monitor.md) for the full install,
+    run and interpretation guide.
 
 The `v3.75` migration has passed live upgrade, idle/no-vehicle, Manual
 charging, Manual current-change, and Manual recovery checks on a Cerbo GX. Do
@@ -222,3 +235,4 @@ firmware before starting es-ESS.
 - [Cerbo GX firmware update and rollback manual](https://www.victronenergy.com/media/pg/Cerbo_GX/en/firmware-updates.html)
 - [Official Cerbo GX `einstein` firmware archive](https://updates.victronenergy.com/feeds/venus/release/images/einstein/)
 - [Victron guidance for persistent `/data` modifications](https://www.victronenergy.com/live/ccgx%3Aroot_access)
+- [Local es-ESS production health monitor](es-ess-health-monitor.md)

@@ -1,0 +1,162 @@
+# es-ESS Production Health Monitor
+
+`scripts/es-ess-health-monitor.sh` is a read-only shell monitor for a Cerbo GX
+or other Venus OS GX device running es-ESS. Use it after a firmware upgrade,
+after deploying a new checkout, after editing `config.ini`, during early
+morning daylight validation, during mid-day PV-surplus/phase-switch validation,
+and after dependency recovery such as reinstalling `websocket-client`.
+
+The script does not write to D-Bus, MQTT, configuration files, service state, or
+Wattpilot control values. It only reads local files, D-Bus paths, service
+status, selected config keys, disk usage, Python dependency imports, and recent
+logs.
+
+## Install The Script
+
+### Option 1: the script is already in the es-ESS checkout
+
+After updating or copying the repository to `/data/es-ESS`, make the script
+executable:
+
+```sh
+cd /data/es-ESS
+chmod +x scripts/es-ess-health-monitor.sh
+```
+
+Optionally verify shell syntax:
+
+```sh
+sh -n scripts/es-ess-health-monitor.sh
+```
+
+### Option 2: copy only the script manually
+
+If you are using WinSCP, SCP, or another manual copy method, create the scripts
+directory first and place `es-ess-health-monitor.sh` inside it:
+
+```sh
+mkdir -p /data/es-ESS/scripts
+```
+
+Then copy the local file:
+
+```text
+scripts/es-ess-health-monitor.sh
+```
+
+to:
+
+```text
+/data/es-ESS/scripts/es-ess-health-monitor.sh
+```
+
+Finally, make it executable and verify syntax:
+
+```sh
+chmod +x /data/es-ESS/scripts/es-ess-health-monitor.sh
+sh -n /data/es-ESS/scripts/es-ess-health-monitor.sh
+```
+
+## Run A Single Health Snapshot
+
+Use this after a deploy, restart, dependency install, or firmware update:
+
+```sh
+/data/es-ESS/scripts/es-ess-health-monitor.sh
+```
+
+To save the output:
+
+```sh
+/data/es-ESS/scripts/es-ess-health-monitor.sh | tee /data/es-ess-health-$(date +%Y%m%d-%H%M%S).log
+```
+
+## Run A Longer Observation Window
+
+For early morning Auto/Eco start validation or mid-day PV-surplus/phase-switch
+validation, run repeated samples:
+
+```sh
+INTERVAL_SECONDS=10 MAX_SAMPLES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh | tee /data/es-ess-health-$(date +%Y%m%d-%H%M%S).log
+```
+
+That captures about 20 minutes. Use `Ctrl-C` to stop earlier. For continuous
+monitoring until stopped:
+
+```sh
+INTERVAL_SECONDS=10 MAX_SAMPLES=0 /data/es-ESS/scripts/es-ess-health-monitor.sh | tee /data/es-ess-health-$(date +%Y%m%d-%H%M%S).log
+```
+
+## What It Checks
+
+The monitor gathers the operational evidence most useful after firmware,
+deployment, or Wattpilot validation work:
+
+- Venus OS version, expected runtime baseline, and service uptime.
+- `/data/es-ESS`, `/service/es-ESS`, and `/data/rc.local` persistence.
+- Python dependency imports for `paho.mqtt.client` and `websocket`.
+- Disk usage for `/` and `/data`.
+- Selected config values that affect Wattpilot safety and PV policy.
+- Wattpilot standard EV-charger D-Bus paths such as `/Connected`,
+  `/StatusLiteral`, `/ModeLiteral`, `/StartStopLiteral`, `/Ac/Power`,
+  `/Current`, `/SetCurrent`, `/PvAllowance`, and `/PhaseModeLiteral`.
+- Wattpilot runtime-status contract paths such as `/ControlStateLiteral`,
+  `/BatteryAssistActive`, `/GridImportGuardActive`, `/TelemetryHealthy`,
+  `/CompatibilityOk`, `/CompatibilityLiteral`, and expected/actual firmware
+  values.
+- Recent log entries for compatibility, dependency, controller, battery-assist,
+  grid-import, phase-switch, and Wattpilot command evidence.
+
+## How To Read The Output
+
+Healthy output normally shows:
+
+- Service state is `up`.
+- Python dependencies import successfully.
+- Venus OS matches the expected clean release.
+- Compatibility status is OK after Wattpilot firmware telemetry is received.
+- `TelemetryHealthy` is `1` during Auto/Eco decisions.
+- `GridImportGuardActive` is `0` during normal no-grid operation.
+- Battery assist, when active, remains bounded and later recovers.
+- Manual mode reports state but does not produce repeated Wattpilot
+  start/stop/current/phase commands.
+
+Stop the active validation and inspect logs immediately if:
+
+- The service is down or restarting repeatedly.
+- The recent log section shows `CRITICAL`, `Traceback`, `ModuleNotFoundError`,
+  `Unsupported Venus OS`, `not validated`, or `CompatibilityError`.
+- Auto/Eco charging shows sustained grid import while
+  `AllowGridCharging=false`.
+- Battery assist exceeds configured duration or shortfall expectations.
+- Manual mode produces Wattpilot start, stop, current, or phase commands.
+
+## Useful Environment Overrides
+
+Defaults are chosen for the production Cerbo GX layout:
+
+```sh
+INTERVAL_SECONDS=10
+MAX_SAMPLES=1
+LOG_LINES=300
+EVENT_LINES=40
+CONFIG_FILE=/data/es-ESS/config.ini
+LOG_FILE=/data/log/es-ESS/current.log
+SERVICE_DIR=/service/es-ESS
+APP_DIR=/data/es-ESS
+WATTPILOT_DBUS_SERVICE=com.victronenergy.evcharger.esESS_FroniusWattpilot
+EXPECTED_VENUS_OS=v3.75
+```
+
+Override them only when intentionally validating a different layout:
+
+```sh
+LOG_LINES=800 EVENT_LINES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh
+```
+
+## Related Documentation
+
+- [Cerbo GX firmware upgrade and rollback](cerbo-gx-firmware-upgrade-and-rollback.md)
+- [Wattpilot architecture boundaries](wattpilot-architecture.md)
+- [es-ESS service inventory](service-inventory.md)
+- [System guide](system-guide.html)

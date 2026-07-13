@@ -9,7 +9,9 @@ sections, D-Bus service contracts, MQTT topics, external dependencies,
 grid-setpoint ownership, or active/dormant service status changes.
 
 For Wattpilot command policy and safety invariants, also read
-`docs/wattpilot-architecture.md`.
+`docs/wattpilot-architecture.md`. For read-only post-deploy and post-firmware
+operator evidence, use `scripts/es-ess-health-monitor.sh`; install and usage
+steps are in `docs/es-ess-health-monitor.md`.
 
 ## Runtime Service Loading
 
@@ -110,7 +112,8 @@ SolarOverheadDistributor consumer messages. The standard Venus/GX EVCS overview
 tile is not forced with synthetic `/Status` or `/Mode` values.
 
 When changing any published D-Bus path, check README/config expectations,
-runtime-status consumers, and VRM/Cerbo compatibility.
+runtime-status consumers, the production health monitor, and VRM/Cerbo
+compatibility.
 
 ### D-Bus readers
 

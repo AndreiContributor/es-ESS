@@ -36,6 +36,7 @@ system for at least 10ish years, there will be plenty of updates and/or bugfixes
 - [SolarOverheadDistributor](#solaroverheaddistributor) - Utility to manage and distribute available solar overhead between various consumers.
   - [Scripted-SolarOverheadConsumer](#scripted-solaroverheadconsumer) - Consumers managed by external scripts can to be more complex and join the solar overhead pool.
   - [NPC-SolarOverheadConsumer](#npc-solaroverheadconsumer) - Manage consumers on a simple on/off level, based on available overhead. No programming required.
+- [Production health monitor](#production-health-monitor) - Read-only GX health snapshot after firmware updates, deploys, config changes and Wattpilot validation runs.
 - [Dormant service modules](#dormant-service-modules) - Legacy code that is retained for reference but is not available for configuration.
 - [This and that](#this-and-that) - Various information that doesn't fit elsewhere.
 - [F.A.Q](#faq) - Frequently Asked Questions
@@ -667,6 +668,27 @@ the runtime-status D-Bus/MQTT values match the observed charging state. For
 transport changes, also power-cycle or disconnect the Wattpilot network link
 several times and confirm es-ESS reconnects without duplicate WebSocket worker
 messages or unbounded exceptions.
+
+### Production health monitor
+
+For firmware-update, deploy, config-change, early daylight and mid-day
+PV-surplus validation windows, use the read-only GX monitor:
+
+```bash
+/data/es-ESS/scripts/es-ess-health-monitor.sh
+```
+
+For a longer observation window with a saved log:
+
+```bash
+INTERVAL_SECONDS=10 MAX_SAMPLES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh | tee /data/es-ess-health-$(date +%Y%m%d-%H%M%S).log
+```
+
+The script reads service state, Venus OS version, Python dependency imports,
+selected config keys, Wattpilot D-Bus/runtime-status paths, disk usage and
+recent controller logs. It does not write D-Bus, MQTT, config, service state or
+Wattpilot control values. Installation and interpretation steps are documented
+in [docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
 
 ### Low Price Charging. 
 Wattpilot supports the function to charge due to cheap grid prices, you can use the builtin feature as you are used to. es-ESS will then detect,
