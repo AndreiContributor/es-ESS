@@ -6,7 +6,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -177,6 +177,78 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         controller.wattpilot.set_power.assert_not_called()
         controller.wattpilot.set_phases.assert_not_called()
         self.assertIn("not in Auto/ECO mode", controller.serviceMessages[-1])
+
+    def test_next_trip_mode_telemetry_fails_closed(self):
+        controller = self._controller()
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.NextTrip
+
+        self.assertFalse(controller._froniusHandleChangedValue("/SetCurrent", 12))
+        self.assertFalse(
+            controller._froniusHandleChangedValue(
+                "/StartStop",
+                self.fwp.VrmEvChargerStartStop.Start.value,
+            )
+        )
+
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+        self.assertEqual(len(controller.serviceMessages), 2)
+        self.assertTrue(
+            all(
+                "not in Auto/ECO mode" in message
+                for message in controller.serviceMessages
+            )
+        )
+
+    def test_mode_publication_correlates_matching_raw_lmo_once(self):
+        controller = self._controller()
+        controller.publish = Mock()
+        controller.wattpilot.modeChangedAt = 100.25
+        controller.wattpilot.modeUpdatedAt = 104.5
+
+        with (
+            patch.object(self.fwp, "i") as info_log,
+            patch.object(self.fwp.time, "time", return_value=105.0),
+        ):
+            controller.reportModeTelemetry()
+            controller.reportModeTelemetry()
+
+        self.assertEqual(
+            controller.publish.call_args_list,
+            [
+                unittest.mock.call(
+                    "/Mode", self.fwp.VrmEvChargerControlMode.Auto.value
+                ),
+                unittest.mock.call(
+                    "/ModeLiteral", self.fwp.VrmEvChargerControlMode.Auto.name
+                ),
+                unittest.mock.call(
+                    "/Mode", self.fwp.VrmEvChargerControlMode.Auto.value
+                ),
+                unittest.mock.call(
+                    "/ModeLiteral", self.fwp.VrmEvChargerControlMode.Auto.name
+                ),
+            ],
+        )
+        info_log.assert_called_once()
+        message = info_log.call_args.args[1]
+        self.assertIn("raw lmo=4 (ECO)", message)
+        self.assertIn("lmo_changed_at_epoch=100.250", message)
+        self.assertIn("lmo_received_at_epoch=104.500", message)
+        self.assertIn("/ModeLiteral=Auto", message)
+        self.assertIn("published_at_epoch=105.000", message)
+
+    def test_missing_mode_does_not_emit_raw_mode_publication_diagnostic(self):
+        controller = self._controller()
+        controller.mode = self.fwp.VrmEvChargerControlMode.Manual
+        controller.wattpilot.mode = None
+        controller.publish = Mock()
+
+        with patch.object(self.fwp, "i") as info_log:
+            controller.reportModeTelemetry()
+
+        info_log.assert_not_called()
 
     def test_eco_mode_accepts_direct_current_and_start_stop_writes(self):
         controller = self._controller()

@@ -621,6 +621,18 @@ Evidence:
 - The Manual-startup production test passed independently; this finding concerns
   live external mode-change propagation, not startup classification.
 
+Implementation progress (2026-07-13):
+
+- Added observer-only raw `lmo` receive/change timestamps in the WebSocket
+  client and correlated controller `/ModeLiteral` publication logs.
+- Extended the read-only GX health monitor and documentation with a dedicated
+  mode-boundary capture procedure for local/hotspot and remote/cloud paths.
+- Added hardware-free timestamp semantics and Next Trip fail-closed command
+  boundary regressions. No polling, generic mode-age timeout, configuration
+  key, public D-Bus/MQTT path, or additional command authority was introduced.
+- The item remains open pending the required vehicle-disconnected evidence;
+  no controller mitigation has been selected by assumption.
+
 Implementation:
 
 - First instrument or otherwise capture timestamped raw `lmo` changes without

@@ -2880,8 +2880,7 @@ class FroniusWattpilot (esESSService):
             if self.wattpilot.power is not None and self.wattpilot.power > 0
             else 0
         )
-        self.publish("/Mode", self.mode.value)
-        self.publish("/ModeLiteral", self.mode.name)
+        self.reportModeTelemetry()
 
         self.publishMainMqtt(
             "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Consumption",
@@ -2919,6 +2918,44 @@ class FroniusWattpilot (esESSService):
         else:
             self.publish("/SetCurrent", amp)
             self.publish("/MaxCurrent", self.getEffectiveMaxCurrent())
+
+    def reportModeTelemetry(self):
+        """Publish controller mode and correlate it with raw ``lmo`` receipt."""
+        self.publish("/Mode", self.mode.value)
+        self.publish("/ModeLiteral", self.mode.name)
+
+        rawMode = getattr(self.wattpilot, "mode", None)
+        if rawMode is None:
+            return
+
+        mappedMode = (
+            VrmEvChargerControlMode.Auto
+            if rawMode == WattpilotControlMode.ECO
+            else VrmEvChargerControlMode.Manual
+        )
+        if mappedMode != self.mode:
+            return
+
+        changedAt = getattr(self.wattpilot, "modeChangedAt", None)
+        updatedAt = getattr(self.wattpilot, "modeUpdatedAt", None)
+        diagnosticKey = (rawMode, changedAt, self.mode)
+        if diagnosticKey == getattr(self, "_lastPublishedModeDiagnostic", None):
+            return
+
+        self._lastPublishedModeDiagnostic = diagnosticKey
+        i(
+            self,
+            "Published Wattpilot mode telemetry: raw lmo={0} ({1}), "
+            "lmo_changed_at_epoch={2}, lmo_received_at_epoch={3}, "
+            "/ModeLiteral={4}, published_at_epoch={5:.3f}.".format(
+                getattr(rawMode, "value", "unavailable"),
+                getattr(rawMode, "name", "unavailable"),
+                "{0:.3f}".format(changedAt) if changedAt is not None else "unavailable",
+                "{0:.3f}".format(updatedAt) if updatedAt is not None else "unavailable",
+                self.mode.name,
+                time.time(),
+            ),
+        )
 
     def publish(self, path, value):
         self.dbusService[path] = value

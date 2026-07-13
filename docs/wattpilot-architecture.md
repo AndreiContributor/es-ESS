@@ -52,6 +52,8 @@ It owns:
   attempts controlled by `_auto_reconnect` and `_reconnect_interval`.
 - Wattpilot authentication and secure message wrapping.
 - Parsing Wattpilot status messages into local client properties.
+- Recording wall-clock receipt and change timestamps for raw `lmo` mode
+  telemetry so delayed external mode transitions can be diagnosed.
 - Sending direct Wattpilot protocol updates such as `amp`, `frc`, `psm`, and
   `lmo` when the controller asks for them.
 - Enforcing a controller-installed compatibility callback at the common
@@ -331,6 +333,10 @@ Future Wattpilot changes must preserve these invariants:
   command-free. Monitoring tools may read the runtime-status contract, service
   state, selected config values and logs, but must not write Wattpilot, D-Bus,
   MQTT, service or configuration state.
+- Raw `lmo` receipt/change timestamps are diagnostic transport facts only.
+  They must not be treated as a generic mode-expiry timeout or independently
+  widen Wattpilot command authority without hardware evidence and an approved
+  controller policy.
 
 ## Refactoring Guidance
 

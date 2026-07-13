@@ -201,6 +201,16 @@ print_log_health() {
     else
         echo "No recent Wattpilot safety/control events in last $LOG_LINES log lines"
     fi
+
+    echo
+    echo "-- Recent Wattpilot mode-boundary events --"
+    mode_events="$(tail -n "$LOG_LINES" "$LOG_FILE" 2>/dev/null | grep -E 'Wattpilot mode telemetry changed|Published Wattpilot mode telemetry|Manual mode selected' | tail -n "$EVENT_LINES")"
+    if [ -n "$mode_events" ]
+    then
+        echo "$mode_events"
+    else
+        echo "No recent Wattpilot mode-boundary events in last $LOG_LINES log lines"
+    fi
 }
 
 print_interpretation_hint() {
@@ -213,6 +223,7 @@ print_interpretation_hint() {
     echo "  - TelemetryHealthy is 1 during Auto/Eco decisions."
     echo "  - GridImportGuardActive stays 0 during normal no-grid operation."
     echo "  - BatteryAssistActive is bounded and later recovers."
+    echo "  - Raw lmo change and /ModeLiteral publication timestamps follow in the expected order."
     echo
     echo "Stop and inspect immediately if:"
     echo "  - Service is down or restarting repeatedly."
