@@ -440,9 +440,10 @@ surplus:
   guards.
 - Manual Wattpilot mode remains user-controlled. es-ESS reports Manual status,
   but Auto/Eco PV policy does not start, stop, current-limit, or phase-switch a
-  normal Manual session. When leaving Auto/Eco for Manual, es-ESS releases its
-  previous Auto/Eco phase and current commands once so Manual charging is not
-  left constrained by the PV controller.
+  normal Manual session, including during service startup while telemetry is
+  still arriving. When leaving Auto/Eco for Manual, es-ESS releases its previous
+  Auto/Eco phase and current commands once so Manual charging is not left
+  constrained by the PV controller.
 - Battery assist is optional and only bridges a short PV dip during an
   already-running Auto/Eco charge. It cannot start a charge and cannot authorize
   a phase-up.

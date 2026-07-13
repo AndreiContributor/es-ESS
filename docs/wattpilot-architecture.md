@@ -275,6 +275,10 @@ Future Wattpilot changes must preserve these invariants:
   tested. The approved exception is a one-time release when leaving Auto/Eco
   for Manual/default mode: es-ESS may clear its previous Auto/Eco phase and
   current commands so the Manual session is not left constrained by PV control.
+- Normal Manual/default startup is command-free even while Wattpilot telemetry
+  is still arriving. es-ESS may infer the reported phase from finite live power,
+  but it must not issue `psm`, `amp`, or `frc`; idle automatic-phase
+  initialization is limited to explicitly confirmed ECO mode.
 - Writable EV-charger `/SetCurrent` and `/StartStop` commands may issue
   Wattpilot current, phase, start, or stop commands only when Wattpilot mode
   telemetry confirms ECO mode. Missing or Manual/default mode telemetry must
