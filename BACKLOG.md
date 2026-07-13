@@ -93,6 +93,23 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-13 - Structural Configuration Fail-Closed Startup
+
+- Rejected missing, unreadable, and malformed configuration files plus missing
+  or non-integer `[Common] ConfigVersion` values with clear status-1 startup
+  failures before migration or runtime side effects.
+- Aggregated mandatory `[Common]`, `[Mqtt]`, and active `[Services]` bootstrap
+  structure and conversion-type diagnostics before MQTT clients, threads,
+  D-Bus, or integration services are constructed, while preserving optional
+  settings with existing runtime defaults.
+- Stopped constructor and main-process exception handlers from returning a
+  partially initialized runtime or a successful exit status; fallback logging
+  remains available for structural diagnostics.
+- Updated the service-inventory startup contract and added hardware-free
+  missing-file, malformed-INI, missing-key, malformed-type, aggregation, and
+  exception-propagation regressions. All 25 focused configuration tests and all
+  268 hardware-free tests passed; tracked application/test Python syntax passed.
+
 ### Completed 2026-07-12 - PR Group 1 Runtime Fail-Safe Hardening
 
 - Removed the Shelly 3EM debug-only 300 W subtraction so raw phase and total
@@ -489,74 +506,6 @@ Done criteria:
 - The bounds and their source are explicitly approved and documented.
 - Combined setpoints are clamped and every clamp is observable.
 - In-range additive behavior and request ownership remain unchanged.
-- Full unittest suite passes.
-
-### P2 - Fail Closed On Structural Configuration Errors
-
-Goal:
-
-Exit cleanly before runtime construction when mandatory configuration structure
-or types are invalid.
-
-Problem:
-
-`_validateConfiguration()` reads `[Common] ConfigVersion` before value
-validation, and the broad constructor exception handler can return a partially
-built object. `main()` may then continue into an AttributeError cascade.
-
-Evidence:
-
-- `es-ESS.py:392` indexes the section/key before validation.
-- The constructor catches general exceptions at lines 98-99.
-
-Implementation:
-
-- Validate the mandatory bootstrap structure before conversions.
-- Aggregate clear critical diagnostics and exit with `SystemExit(1)`.
-- Narrow constructor handling so configuration failure cannot be swallowed;
-  preserve optional keys that already have runtime defaults.
-
-Files to change:
-
-- `es-ESS.py`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Extend `tests/test_config_migration.py` for missing `[Common]`, missing or
-  malformed `ConfigVersion`, and malformed bootstrap values using the existing
-  hardware-free loading pattern.
-
-Expected coverage:
-
-- Proves structural faults never create a half-initialized runtime; existing
-  valid and legacy configurations remain accepted.
-
-Manual validation:
-
-Hardware not needed; optional log-only staging check.
-
-Manual test steps:
-
-1. Remove `ConfigVersion` in a staging config.
-2. Confirm one clear startup failure and no service/MQTT initialization.
-
-Risks and dependencies:
-
-- Declaring too many keys mandatory would break compatible configurations.
-- No other item must land first.
-
-Open questions:
-
-- Finalize the minimal bootstrap-key list from actual unconditional reads; do
-  not make service-specific optional settings globally mandatory.
-
-Done criteria:
-
-- Missing/malformed bootstrap configuration exits cleanly before side effects.
 - Full unittest suite passes.
 
 ### P2 - Add Freshness Guard For Battery-Assist SOC
@@ -1942,8 +1891,6 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-7. P2 fail closed on structural configuration errors — prevent partially
-   initialized safety-sensitive runtimes.
 8. P2 add freshness guard for battery-assist SOC — fail closed when the SOC
    used by assist or battery-priority bypass is stale.
 9. P2 define safe control for unclassified charging model statuses — obtain

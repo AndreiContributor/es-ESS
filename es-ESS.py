@@ -51,6 +51,7 @@ class esESS:
             #First thing to do is check, if the current configuration matches the desired version.
             #if not, upgrade to most recent version, save changes and reload configuration file. 
             self._validateConfiguration()
+            self._validateRuntimeBootstrap()
             
             self._sigTermInvoked=False
             self._shutdownMqttDisconnectsLogged = set()
@@ -98,6 +99,7 @@ class esESS:
                 i(self, "Mqtt-Throttling is enabled to {0}ms".format(self.mqttThrottlePeriod))   
         except Exception as ex:
             c(self, "Exception during __init__:", exc_info=ex)
+            raise
 
     def configureMqtt(self):
         try:
@@ -386,11 +388,171 @@ class esESS:
                 c(self, "Invalid configuration: {0}".format(error))
             raise SystemExit(1)
 
+    def _validateRuntimeBootstrap(self):
+        errors = []
+
+        required_options = {
+            "Common": (
+                "LogLevel",
+                "NumberOfThreads",
+                "ServiceMessageCount",
+                "VRMPortalID",
+                "DefaultPowerSetPoint",
+            ),
+            "Mqtt": ("Host", "Port", "SslEnabled", "LocalSslEnabled"),
+            "Services": (
+                "SolarOverheadDistributor",
+                "TimeToGoCalculator",
+                "FroniusSmartmeterJSON",
+                "MqttExporter",
+                "FroniusWattpilot",
+                "MqttTemperature",
+                "NoBatToEV",
+                "Shelly3EMGrid",
+                "ShellyPMInverter",
+                "MqttPVInverter",
+            ),
+        }
+
+        for section, options in required_options.items():
+            if (not self.config.has_section(section)):
+                errors.append("missing mandatory [{0}] section".format(section))
+                continue
+
+            for option in options:
+                if (not self.config.has_option(section, option)):
+                    errors.append(
+                        "missing mandatory [{0}] {1}".format(section, option)
+                    )
+
+        def integer(section, option):
+            if (
+                not self.config.has_section(section)
+                or not self.config.has_option(section, option)
+            ):
+                return
+
+            value = self.config[section][option]
+            try:
+                int(value)
+            except (TypeError, ValueError):
+                errors.append(
+                    "[{0}] {1} must be an integer; got {2!r}".format(
+                        section, option, value
+                    )
+                )
+
+        def number(section, option):
+            if (
+                not self.config.has_section(section)
+                or not self.config.has_option(section, option)
+            ):
+                return
+
+            value = self.config[section][option]
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                errors.append(
+                    "[{0}] {1} must be a number; got {2!r}".format(
+                        section, option, value
+                    )
+                )
+                return
+
+            if (not math.isfinite(parsed)):
+                errors.append(
+                    "[{0}] {1} must be a finite number; got {2!r}".format(
+                        section, option, value
+                    )
+                )
+
+        def boolean(section, option):
+            if (
+                not self.config.has_section(section)
+                or not self.config.has_option(section, option)
+            ):
+                return
+
+            value = self.config[section][option]
+            if value.lower() not in ("true", "false"):
+                errors.append(
+                    "[{0}] {1} must be a boolean; got {2!r}".format(
+                        section, option, value
+                    )
+                )
+
+        integer("Common", "NumberOfThreads")
+        integer("Common", "ServiceMessageCount")
+        number("Common", "DefaultPowerSetPoint")
+        integer("Mqtt", "Port")
+        if (self.config.has_option("Mqtt", "ThrottlePeriod")):
+            integer("Mqtt", "ThrottlePeriod")
+
+        boolean("Mqtt", "SslEnabled")
+        boolean("Mqtt", "LocalSslEnabled")
+        for option in required_options["Services"]:
+            boolean("Services", option)
+
+        if (
+            self.config.has_section("Common")
+            and self.config.has_option("Common", "LogLevel")
+        ):
+            log_level = self.config["Common"]["LogLevel"].upper()
+            if log_level not in (
+                "TRACE",
+                "DEBUG",
+                "APP_DEBUG",
+                "INFO",
+                "WARNING",
+                "ERROR",
+                "CRITICAL",
+            ):
+                errors.append(
+                    "[Common] LogLevel must be a supported logging level; got {0!r}".format(
+                        self.config["Common"]["LogLevel"]
+                    )
+                )
+
+        if (errors):
+            for error in errors:
+                c(self, "Invalid bootstrap configuration: {0}".format(error))
+            raise SystemExit(1)
+
     def _validateConfiguration(self):
         self.config = configparser.ConfigParser()
         self.config.optionxform = str
-        self.config.read("%s/config.ini" % (os.path.dirname(os.path.realpath(__file__))))
-        loadedVersion = int(self.config["Common"]["ConfigVersion"])
+        config_path = "%s/config.ini" % (os.path.dirname(os.path.realpath(__file__)))
+
+        try:
+            loaded_paths = self.config.read(config_path)
+        except (configparser.Error, OSError) as ex:
+            c(self, "Invalid configuration: unable to read {0}: {1}".format(config_path, ex))
+            raise SystemExit(1)
+
+        if (not loaded_paths):
+            c(self, "Invalid configuration: file was not found or could not be read: {0}".format(config_path))
+            raise SystemExit(1)
+
+        if (not self.config.has_section("Common")):
+            c(self, "Invalid configuration: missing mandatory [Common] section")
+            raise SystemExit(1)
+
+        if (not self.config.has_option("Common", "ConfigVersion")):
+            c(self, "Invalid configuration: missing mandatory [Common] ConfigVersion")
+            raise SystemExit(1)
+
+        raw_loaded_version = self.config["Common"]["ConfigVersion"]
+        try:
+            loadedVersion = int(raw_loaded_version)
+        except (TypeError, ValueError):
+            c(
+                self,
+                "Invalid configuration: [Common] ConfigVersion must be an integer; got {0!r}".format(
+                    raw_loaded_version
+                ),
+            )
+            raise SystemExit(1)
 
         #Version upgrades to be berformed. A User may skip versions during the upgrade process, so 
         #make sure each change is applied incrementally. 
@@ -961,7 +1123,17 @@ def configureLogging(config):
   logging.trace = trace
   logging.Logger.trace = trace
 
-  logLevelString = config["Common"]['LogLevel']
+  logLevelString = config.get("Common", "LogLevel", fallback="INFO").upper()
+  if logLevelString not in (
+      "TRACE",
+      "DEBUG",
+      "APP_DEBUG",
+      "INFO",
+      "WARNING",
+      "ERROR",
+      "CRITICAL",
+  ):
+      logLevelString = "INFO"
   logLevel = logging.getLevelName(logLevelString)
 
   logging.basicConfig(format='%(asctime)s,%(msecs)d %(levelname)s %(message)s',
@@ -1007,13 +1179,17 @@ def main(config):
       mainloop.run()            
   except Exception as e:
     c("Main", "Exception", exc_info=e)
-
-    sys.exit(0)    
+    raise
 
 if __name__ == "__main__":
   # read configuration. TODO: Migrate to UI-Based configuration later.
   config = configparser.ConfigParser()
-  config.read("%s/config.ini" % (os.path.dirname(os.path.realpath(__file__))))
+  try:
+    config.read("%s/config.ini" % (os.path.dirname(os.path.realpath(__file__))))
+  except (configparser.Error, OSError):
+    # _validateConfiguration() emits the authoritative diagnostic after basic
+    # fallback logging is available.
+    config = configparser.ConfigParser()
   
   configureLogging(config)
 
@@ -1024,3 +1200,4 @@ if __name__ == "__main__":
      sys.exit(1)
   except Exception as uncoughtException:
      c("UNCOUGHT", "Uncought exception, main() dieded.", exc_info=uncoughtException)
+     sys.exit(1)
