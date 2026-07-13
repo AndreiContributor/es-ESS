@@ -171,9 +171,8 @@ image must be installed.
     run and interpretation guide.
 
 The `v3.75` migration has passed live upgrade, idle/no-vehicle, Manual
-charging, Manual current-change, and Manual recovery checks on a Cerbo GX. Do
-not mark Auto/Eco PV-surplus operation live-validated until the supervised
-daylight/PV checks have passed.
+charging, Manual current-change, Manual recovery, and supervised Auto/Eco
+PV-surplus daylight checks on a Cerbo GX running build `20260624163305`.
 
 ## Roll Back Using Stored Backup Firmware
 

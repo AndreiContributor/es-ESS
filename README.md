@@ -73,8 +73,8 @@ Your system needs to match the following requirements in order to use es-ESS:
 This checkout deliberately fails closed outside its explicitly approved runtime
 versions. Venus OS v3.75 is the only approved clean Venus OS runtime in this
 checkout. The upgrade, idle/no-vehicle, Manual charging, Manual current-change,
-and Manual recovery checks have passed on a Cerbo GX; Auto/Eco PV-surplus live
-validation still requires a supervised daylight/PV test:
+Manual recovery, and supervised Auto/Eco PV-surplus daylight checks passed on a
+Cerbo GX running Venus OS v3.75 build `20260624163305`:
 
 | Component | Approved version | Runtime enforcement |
 | --- | --- | --- |
