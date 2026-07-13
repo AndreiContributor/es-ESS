@@ -107,6 +107,11 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 - Verification passed: startup syntax compilation, 7 focused startup tests,
   102 wider Wattpilot policy/command-boundary tests, and the full 271-test
   hardware-free suite.
+- Production validation passed on 2026-07-13 with Venus OS `v3.75`, Wattpilot
+  firmware `42.5`, Solar.wattpilot app `2.1.0`, and the vehicle disconnected.
+  After a 13:59:45 UTC restart, startup reported Manual at 14:00:17.676 and the
+  passive Manual/default branch at 14:00:17.687 without any `psm`, `amp`, or
+  `frc` command; the service remained healthy and firmware telemetry recovered.
 
 ### Completed 2026-07-13 - Structural Configuration Fail-Closed Startup
 
@@ -572,6 +577,147 @@ Done criteria:
   stability interval.
 - Transient disconnect handling, Manual ownership, no-grid safety, bounded
   battery assist, and public runtime-status contracts remain unchanged.
+- Full unittest suite passes.
+
+### P1 - Investigate Delayed Wattpilot Mode Telemetry At The Manual Boundary
+
+Goal:
+
+Determine where externally selected Wattpilot mode changes are delayed and
+ensure stale mode telemetry cannot undermine the Manual command boundary.
+
+Problem:
+
+Production testing showed reproducible delays between selecting Standard or
+Eco in Solar.wattpilot and es-ESS publishing the corresponding Manual or Auto
+mode. es-ESS normally reflects the client's `lmo` value on a five-second worker
+cycle, but the observed delays were much longer. It is not yet known whether
+the app sends late, the Wattpilot applies late, or the Wattpilot delays its
+WebSocket status update.
+
+The safety consequence is conditional but important: if the physical charger
+enters Standard/default immediately while the WebSocket client still reports
+ECO, es-ESS could temporarily regard an actually Manual charger as eligible for
+Auto/Eco commands. If the charger itself applies the mode late, the observed
+delay does not violate the command boundary. The current evidence cannot
+distinguish these cases.
+
+Evidence:
+
+- On 2026-07-13, a Solar.wattpilot screenshot recorded Standard selected at
+  approximately 13:53:27 UTC; es-ESS logged `Manual mode selected` at
+  13:54:13.708, about 47 seconds later.
+- After Eco was selected at approximately 14:03 UTC, `/ModeLiteral` remained
+  `Manual` through 14:05:33 and changed to `Auto` between 14:05:33 and
+  14:05:39. The imprecise selection timestamp limits the exact duration, but
+  the delay was at least roughly 95 seconds.
+- `FroniusWattpilot.py:initWorkerThreads()` schedules `_update()` every 5000 ms,
+  and `_update()` maps `WattpilotControlMode.ECO` to Auto and every other live
+  mode to Manual.
+- `Wattpilot.py:__update_single_property()` assigns `self._mode` only when an
+  incoming `lmo` property arrives. There is no timestamped mode-change
+  diagnostic that correlates app selection, physical LEDs, raw `lmo` receipt,
+  and D-Bus publication.
+- The Manual-startup production test passed independently; this finding concerns
+  live external mode-change propagation, not startup classification.
+
+Implementation:
+
+- First instrument or otherwise capture timestamped raw `lmo` changes without
+  logging credentials or issuing Wattpilot commands.
+- With the car disconnected, correlate Solar.wattpilot selection time, the
+  physical Wattpilot operating-mode LEDs, raw `lmo` receipt, the next controller
+  cycle, and `/ModeLiteral` publication for Standard-to-Eco and Eco-to-Standard.
+- Determine whether local/hotspot and remote/cloud app paths behave differently
+  before attributing the defect to the app, charger, network, or es-ESS.
+- If the charger changes before `lmo` telemetry, design a fail-closed mitigation
+  or reliable status-refresh mechanism that cannot command Manual mode. Do not
+  add a generic age timeout that would invalidate a stable long-running ECO
+  session without evidence that it is safe.
+- Preserve the approved one-time Auto/Eco-to-Manual constraint release, normal
+  Manual command ownership, no-grid Auto/Eco policy, and the public runtime
+  status contract unless an explicitly documented extension is required.
+
+Files to change:
+
+- `Wattpilot.py`
+- `FroniusWattpilot.py` only if controller mitigation is proven necessary
+- `WattpilotRuntimeStatus.py` only if a new diagnostic contract is approved
+- `scripts/es-ess-health-monitor.sh`
+- `docs/es-ess-health-monitor.md`
+- `docs/wattpilot-architecture.md`
+- `README.md`
+- `BACKLOG.md`
+- `tests/test_wattpilot_client.py`
+- `tests/test_wattpilot_command_boundary.py`
+- `tests/test_wattpilot_runtime_status.py` only if its contract changes
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add a hardware-free client test proving incoming `lmo` changes are recorded
+  and exposed to the controller with the intended timestamp semantics.
+- Add command-boundary cases proving Default, Next Trip, missing, and any
+  explicitly stale/ambiguous mode state remain command-free while fresh ECO
+  retains existing behavior.
+- If a status refresh is introduced, prove it requests read-only status and
+  never sends `setValue`, `psm`, `amp`, or `frc`.
+- Extend runtime-status and health-monitor tests only if their public output is
+  changed. Use the existing isolated stub pattern; no real WebSocket, D-Bus,
+  MQTT, app, or charger is used in CI.
+
+Expected coverage:
+
+- Proves the selected mitigation cannot widen Wattpilot command authority and
+  that mode diagnostics preserve exact protocol-to-controller mapping.
+- Hardware-free tests cannot reproduce the external app/device delay; the
+  physical-layer ordering remains a required manual result.
+- Existing passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation in a low-risk window with the vehicle disconnected; no active
+charging, grid import, or forced telemetry outage is required.
+
+Manual test steps:
+
+1. Synchronize app and GX timestamps and keep the vehicle disconnected.
+2. Select Standard and record when the app changes, when the Eco LED turns off,
+   when raw `lmo=3` arrives, and when `/ModeLiteral` becomes Manual.
+3. Select Eco and record when the app changes, when the Eco LED turns on, when
+   raw `lmo=4` arrives, and when `/ModeLiteral` becomes Auto.
+4. Repeat once through the local/hotspot path and once through remote access if
+   both are available, then confirm no unintended `psm`, `amp`, or `frc`
+   command occurs during either transition.
+
+Risks and dependencies:
+
+- Extra status requests or aggressive polling could overload the Wattpilot or
+  mask the original timing; add no polling until evidence identifies the gap.
+- Treating normally unchanged ECO telemetry as stale could interrupt valid PV
+  charging, while trusting stale ECO after a physical Manual switch could
+  violate command ownership.
+- Land the confirmed disconnect-candidate reset first; this investigation must
+  remain a separate PR from phase-switch policy changes.
+
+Open questions:
+
+- Does the physical Eco LED follow the app immediately or only when es-ESS later
+  receives `lmo`?
+- Was each observed selection sent locally or through Fronius remote/cloud
+  access, and does that path explain the difference in delay?
+
+Done criteria:
+
+- Timestamped evidence identifies the layer responsible for the delay.
+- Any required es-ESS mitigation fails closed without interfering with normal
+  Manual control or stable Auto/Eco operation.
+- Local and remote paths are either validated separately or the unsupported
+  path is explicitly documented.
+- Manual mode transitions show no unintended `psm`, `amp`, or `frc` command.
 - Full unittest suite passes.
 
 ### P2 - Define Safe Grid-Setpoint Bounds
@@ -1943,6 +2089,9 @@ advance the queue on the next request.
 
 27. P1 reset Wattpilot phase-switch candidates on confirmed disconnect — close
     the production-observed timer leak before other controller work.
+28. P1 investigate delayed Wattpilot mode telemetry at the Manual boundary —
+    identify whether stale `lmo` can outlive a physical mode change before
+    selecting a fail-closed mitigation.
 8. P2 add freshness guard for battery-assist SOC — fail closed when the SOC
    used by assist or battery-priority bypass is stale.
 9. P2 define safe control for unclassified charging model statuses — obtain
@@ -2020,8 +2169,9 @@ For implementation PRs:
 
 ## Outstanding Manual Validation
 
-- **Log-only:** restart es-ESS with an idle Wattpilot explicitly in Manual and
-  confirm startup reports Manual without any `psm`, `amp`, or `frc` command.
+- **Fault simulation, vehicle disconnected:** correlate Solar.wattpilot mode
+  selection, physical mode LEDs, raw `lmo` telemetry, and `/ModeLiteral` for
+  local and remote paths; confirm no unintended `psm`, `amp`, or `frc` command.
 - **Active charging required:** after the disconnect-candidate fix is
   implemented, confirm a reconnect builds a new complete 600-second phase-up
   interval rather than reusing disconnected wall-clock time.
