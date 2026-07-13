@@ -855,15 +855,20 @@ class FroniusWattpilot (esESSService):
                 return False
 
             effectiveCarConnected = self.updateEffectiveCarConnection()
+            modeTelemetryPending = self.modeTelemetryNeedsControllerCycle()
 
             # In idle mode the charger is polled only every five minutes. While a
             # car is connected (or briefly disconnecting) we run every five
-            # seconds for PV and safety control.
+            # seconds for PV and safety control. A newly received Wattpilot mode
+            # must also run on that five-second cadence so disconnected Manual
+            # ownership and /ModeLiteral reporting cannot remain stale until the
+            # next idle dump.
             if not (
                 effectiveCarConnected
                 or not self.isIdleMode
                 or self.lastVarDump < (time.time() - 300)
                 or not self.wattpilot.carStateReady
+                or modeTelemetryPending
             ):
                 return
 
@@ -2880,8 +2885,7 @@ class FroniusWattpilot (esESSService):
             if self.wattpilot.power is not None and self.wattpilot.power > 0
             else 0
         )
-        self.publish("/Mode", self.mode.value)
-        self.publish("/ModeLiteral", self.mode.name)
+        self.reportModeTelemetry()
 
         self.publishMainMqtt(
             "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Consumption",
@@ -2919,6 +2923,64 @@ class FroniusWattpilot (esESSService):
         else:
             self.publish("/SetCurrent", amp)
             self.publish("/MaxCurrent", self.getEffectiveMaxCurrent())
+
+    def modeTelemetryDiagnosticKey(self):
+        """Return the raw-to-controller mode transition awaiting publication."""
+        rawMode = getattr(self.wattpilot, "mode", None)
+        if rawMode is None:
+            return None
+
+        mappedMode = (
+            VrmEvChargerControlMode.Auto
+            if rawMode == WattpilotControlMode.ECO
+            else VrmEvChargerControlMode.Manual
+        )
+        return (
+            rawMode,
+            getattr(self.wattpilot, "modeChangedAt", None),
+            mappedMode,
+        )
+
+    def modeTelemetryNeedsControllerCycle(self):
+        """Keep a raw mode transition from being hidden by idle throttling."""
+        diagnosticKey = self.modeTelemetryDiagnosticKey()
+        return (
+            diagnosticKey is not None
+            and diagnosticKey
+            != getattr(self, "_lastPublishedModeDiagnostic", None)
+        )
+
+    def reportModeTelemetry(self):
+        """Publish controller mode and correlate it with raw ``lmo`` receipt."""
+        self.publish("/Mode", self.mode.value)
+        self.publish("/ModeLiteral", self.mode.name)
+
+        diagnosticKey = self.modeTelemetryDiagnosticKey()
+        if diagnosticKey is None:
+            return
+
+        rawMode, changedAt, mappedMode = diagnosticKey
+        if mappedMode != self.mode:
+            return
+
+        updatedAt = getattr(self.wattpilot, "modeUpdatedAt", None)
+        if diagnosticKey == getattr(self, "_lastPublishedModeDiagnostic", None):
+            return
+
+        self._lastPublishedModeDiagnostic = diagnosticKey
+        i(
+            self,
+            "Published Wattpilot mode telemetry: raw lmo={0} ({1}), "
+            "lmo_changed_at_epoch={2}, lmo_received_at_epoch={3}, "
+            "/ModeLiteral={4}, published_at_epoch={5:.3f}.".format(
+                getattr(rawMode, "value", "unavailable"),
+                getattr(rawMode, "name", "unavailable"),
+                "{0:.3f}".format(changedAt) if changedAt is not None else "unavailable",
+                "{0:.3f}".format(updatedAt) if updatedAt is not None else "unavailable",
+                self.mode.name,
+                time.time(),
+            ),
+        )
 
     def publish(self, path, value):
         self.dbusService[path] = value

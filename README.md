@@ -524,6 +524,16 @@ Manual and Auto/ECO. When Manual is selected, es-ESS sends a one-time release
 of its previous Auto/Eco phase/current limits, then leaves subsequent Manual
 charging under Wattpilot app/user control.
 
+For diagnosis of externally selected mode delays, es-ESS logs timestamped raw
+Wattpilot `lmo` changes and the matching `/ModeLiteral` publication. These
+timestamps are observation-only: they do not expire a stable ECO session,
+authorize a command, or change Manual ownership. The production health monitor
+collects the matching mode-boundary events for vehicle-disconnected validation.
+When a raw mode transition arrives while the vehicle is disconnected, it
+bypasses the normal five-minute idle-report throttle and is reflected on
+`/ModeLiteral` by the next five-second controller cycle. Unchanged disconnected
+state remains on the low-frequency idle cadence.
+
 > :warning: **FAKE-BMS injection**:<br /> This feature is creating FAKE-BMS information on dbus. Make sure to manually select your *actual* BMS unter *Settings > System setup > Battery Monitor* else your ESS may not behave correctly anymore. Don't leave this setting to *Automatic*
 
 > :warning: **Dependency**:<br /> If you want to enable Solar-Overhead Charging, you need to enable the [SolarOverheadDistributor](#solaroverheaddistributor) as well. (It will be responsible for giving a clearence to Wattpilots charge request)
@@ -692,9 +702,11 @@ INTERVAL_SECONDS=10 MAX_SAMPLES=120 /data/es-ESS/scripts/es-ess-health-monitor.s
 
 The script reads service state, Venus OS version, Python dependency imports,
 selected config keys, Wattpilot D-Bus/runtime-status paths, disk usage and
-recent controller logs. It does not write D-Bus, MQTT, config, service state or
-Wattpilot control values. Installation and interpretation steps are documented
-in [docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
+recent controller logs, including raw `lmo` and `/ModeLiteral` transition
+timestamps. It does not write D-Bus, MQTT, config, service state or Wattpilot
+control values. Installation, mode-boundary validation, and interpretation
+steps are documented in
+[docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
 
 ### Low Price Charging. 
 Wattpilot supports the function to charge due to cheap grid prices, you can use the builtin feature as you are used to. es-ESS will then detect,

@@ -20,6 +20,7 @@ import threading
 import hmac
 import logging
 import base64
+import time
 
 from enum import Enum, auto
 from types import SimpleNamespace
@@ -317,6 +318,16 @@ class Wattpilot(object):
     @property
     def mode(self):
         return self._mode
+
+    @property
+    def modeUpdatedAt(self):
+        """Wall-clock time of the most recent successfully parsed ``lmo`` value."""
+        return self._modeUpdatedAt
+
+    @property
+    def modeChangedAt(self):
+        """Wall-clock time when the parsed ``lmo`` mode last changed."""
+        return self._modeChangedAt
     
         # NotChargingBecauseNoChargeCtrlData=0, 
         # NotChargingBecauseOvertemperature=1, 
@@ -592,7 +603,23 @@ class Wattpilot(object):
         elif name=="modelStatus":
             self._modelStatus = WattpilotModelStatus(value)
         elif name=="lmo":
-            self._mode = WattpilotControlMode(value)
+            receivedAt = time.time()
+            previousMode = self._mode
+            nextMode = WattpilotControlMode(value)
+            self._mode = nextMode
+            self._modeUpdatedAt = receivedAt
+            if previousMode != nextMode:
+                self._modeChangedAt = receivedAt
+                i(
+                    self,
+                    "Wattpilot mode telemetry changed: raw lmo={0}, "
+                    "previous={1}, mode={2}, received_at_epoch={3:.3f}.".format(
+                        value,
+                        getattr(previousMode, "name", "unavailable"),
+                        nextMode.name,
+                        receivedAt,
+                    ),
+                )
         elif name=="car":
             self._carConnected = (Wattpilot.carValues[value] != "no car")
             self._carStateReady = True
@@ -805,6 +832,8 @@ class Wattpilot(object):
         self._WifiSSID = None
         self._AllowCharging = None
         self._mode=None
+        self._modeUpdatedAt=None
+        self._modeChangedAt=None
         self._carConnected=None
         self._cae=None
         self._cak=None

@@ -105,7 +105,38 @@ deployment, or Wattpilot validation work:
   `/CompatibilityOk`, `/CompatibilityLiteral`, and expected/actual firmware
   values.
 - Recent log entries for compatibility, dependency, controller, battery-assist,
-  grid-import, phase-switch, and Wattpilot command evidence.
+  grid-import, phase-switch, Wattpilot command evidence, and raw-to-published
+  Wattpilot mode transitions.
+
+## Validate The Wattpilot Mode Boundary
+
+Use this read-only observation with the vehicle disconnected. Synchronize the
+phone and GX clocks, then run the monitor continuously with enough log history:
+
+```sh
+INTERVAL_SECONDS=5 MAX_SAMPLES=0 LOG_LINES=1000 EVENT_LINES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh | tee /data/es-ess-mode-boundary-$(date +%Y%m%d-%H%M%S).log
+```
+
+For each Standard-to-Eco and Eco-to-Standard transition, record the phone-app
+selection time and the physical Eco LED change. The mode-boundary log section
+then provides two es-ESS timestamps:
+
+- `Wattpilot mode telemetry changed` is the raw WebSocket `lmo` receipt.
+- `Published Wattpilot mode telemetry` is the controller's matching
+  `/ModeLiteral` publication.
+
+The matching publication should follow on the next five-second controller
+cycle even while the vehicle is disconnected. Production diagnosis on
+2026-07-13 established that raw `lmo` changed promptly but the prior idle path
+could defer `/ModeLiteral` for up to five minutes. The controller now bypasses
+that idle throttle only for an unpublished raw mode transition.
+
+Repeat once through the local/hotspot app path and once through remote/cloud
+access when both are available. The timestamps are diagnostic facts only; they
+do not expire an otherwise stable ECO session or authorize any Wattpilot
+command. Confirm that neither transition produces an unintended `psm`, `amp`,
+or `frc` command. Stop and retain the capture if the physical Eco LED changes
+to Manual before es-ESS receives the matching non-ECO `lmo` value.
 
 ## How To Read The Output
 
@@ -120,6 +151,8 @@ Healthy output normally shows:
 - Battery assist, when active, remains bounded and later recovers.
 - Manual mode reports state but does not produce repeated Wattpilot
   start/stop/current/phase commands.
+- Raw `lmo` changes are followed by the matching `/ModeLiteral` publication on
+  the next eligible controller cycle.
 
 Stop the active validation and inspect logs immediately if:
 
