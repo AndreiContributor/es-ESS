@@ -836,7 +836,7 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
       <p class="eyebrow">09 · Deployment</p>
       <h2>Install, configure one service at a time, then observe</h2>
       <div class="callout danger">
-        <p><strong>Validated runtime lock:</strong> this checkout starts only on the clean Venus OS release <code>v3.75</code>. Qualified builds and all other versions fail closed before services, MQTT or grid-setpoint writes begin. The v3.75 upgrade, idle/no-vehicle, Manual charging, Manual current-change and Manual recovery checks have passed; Auto/Eco PV-surplus live validation still requires a supervised daylight/PV test. Wattpilot control remains blocked until charger firmware <code>42.5</code> is received through <code>fwv</code> telemetry.</p>
+        <p><strong>Validated runtime lock:</strong> this checkout starts only on the clean Venus OS release <code>v3.75</code>. Qualified builds and all other versions fail closed before services, MQTT or grid-setpoint writes begin. The v3.75 upgrade, idle/no-vehicle, Manual charging, Manual current-change, Manual recovery and supervised Auto/Eco PV-surplus daylight checks have passed on build <code>20260624163305</code>. Wattpilot control remains blocked until charger firmware <code>42.5</code> is received through <code>fwv</code> telemetry.</p>
       </div>
       <ol class="steps">
         <li><strong>Confirm the electrical system first.</strong><br>Record PV and Wattpilot AC positions, Smart Meter direction, grid sign, phase assignment, protection, battery BMS limits, and whether AC-coupled PV is intended to operate during an outage.</li>
