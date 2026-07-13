@@ -427,6 +427,110 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ## Backlog
 
+### P1 - Prevent Wattpilot Phase Commands During Manual Startup
+
+Goal:
+
+Keep normal Wattpilot Manual mode command-free during service startup regardless
+of WebSocket telemetry arrival order.
+
+Problem:
+
+`initFinalize()` classifies non-ECO telemetry as Manual, but its idle branch
+then calls `set_phases(0)`. The common transport guard checks firmware
+compatibility, not Manual-versus-Auto command ownership. This is a latent
+device-control race: the production restart command was blocked because `fwv`
+had not arrived yet, but the same Manual startup could send `psm=0` if validated
+firmware telemetry arrives before the idle phase branch runs.
+
+Evidence:
+
+- `FroniusWattpilot.py:398-451` determines Manual mode and then calls
+  `self.wattpilot.set_phases(0)` whenever startup does not observe active phase
+  power.
+- `FroniusWattpilot.py:835-837` authorizes the transport command solely from
+  firmware compatibility.
+- A production GX restart on 2026-07-13 logged `Mode determined as: ...Manual`,
+  followed by `Currently not charging. Negiotiating automatic phasemode.` and
+  `Blocked Wattpilot setValue psm=0`. No command reached the charger in that
+  run only because firmware compatibility was still unavailable.
+- `tests/test_wattpilot_startup.py:194-221` exercises deferred startup logging
+  but does not assert that Manual startup remains command-free when firmware
+  `42.5` is already confirmed.
+
+Implementation:
+
+- Make the idle phase-detection branch passive when Wattpilot telemetry reports
+  Manual/default mode: update only internal/reporting state and issue no phase,
+  current, start, or stop command.
+- Permit any required startup phase initialization only after live Wattpilot
+  telemetry confirms ECO mode, preserving existing Auto/Eco behavior.
+- Keep the separately approved one-time Auto/Eco-to-Manual constraint release
+  unchanged; normal Manual startup is not a mode transition and must not use
+  that exception.
+- Document the command-free Manual-startup rule in the Wattpilot architecture
+  contract.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `docs/wattpilot-architecture.md`
+- `tests/test_wattpilot_startup.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add a hardware-free Manual, idle, firmware-compatible startup regression that
+  asserts no phase/current/start-stop command is issued.
+- Add the corresponding ECO, idle startup case to prove any retained automatic
+  phase initialization remains limited to confirmed Auto/Eco control.
+- Retain deferred-firmware coverage proving transport gating still blocks every
+  command until firmware `42.5` is confirmed.
+
+Expected coverage:
+
+- Proves WebSocket message ordering cannot turn normal Manual startup into a
+  phase-control action while preserving the existing Auto/Eco startup path and
+  the explicit transition-release exception.
+- Existing passing tests remain unchanged.
+
+Manual validation:
+
+Log-only, safe in production while the charger is idle and explicitly in
+Manual mode; no active charging is required.
+
+Manual test steps:
+
+1. Confirm the Wattpilot is idle and selected to Manual in the supported app.
+2. Restart es-ESS and capture startup logs through confirmed firmware telemetry.
+3. Confirm Manual is reported without an automatic-phase negotiation or any
+   `psm`, `amp`, or `frc` command, then confirm the charger remains Manual with
+   its user-selected settings unchanged.
+
+Risks and dependencies:
+
+- Changing idle phase initialization could alter Auto/Eco startup request math;
+  cover Manual and ECO branches explicitly rather than removing the command
+  unconditionally.
+- No other backlog item must land first.
+
+Open questions:
+
+- None; production telemetry establishes the race and the existing Manual-mode
+  invariant establishes the required behavior.
+
+Done criteria:
+
+- Normal Manual startup issues no phase, current, start, or stop command even
+  when firmware compatibility is already confirmed.
+- Confirmed Auto/Eco startup behavior and the one-time transition-release
+  exception remain covered and unchanged.
+- The architecture contract records command-free Manual startup.
+- Full unittest suite passes.
+
 ### P2 - Define Safe Grid-Setpoint Bounds
 
 Goal:
@@ -1891,6 +1995,8 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
+26. P1 prevent Wattpilot phase commands during Manual startup — close the
+    production-observed telemetry-order race before other controller work.
 8. P2 add freshness guard for battery-assist SOC — fail closed when the SOC
    used by assist or battery-priority bypass is stale.
 9. P2 define safe control for unclassified charging model statuses — obtain
