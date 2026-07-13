@@ -35,8 +35,9 @@ Current validated state:
   Solar.wattpilot app `2.1.0` are the approved runtime baseline. The v3.75
   upgrade, idle/no-vehicle, Manual charging, Manual current-change, and Manual
   recovery checks passed on the production Cerbo GX. Supervised Auto/Eco
-  PV-surplus live validation remains outstanding until a suitable daylight/PV
-  window.
+  daylight validation on 2026-07-13 confirmed one-phase PV charging,
+  three-phase phase-up, no-grid/grid-import guard behavior, bounded battery
+  assist timeout, dynamic current reduction, and phase-down/fallback behavior.
 - Auto/Eco PV-only control, no-grid protection, bounded running-session battery
   assist, telemetry freshness, phase switching, reconnect handling, runtime
   status, configuration migration/validation, and graceful shutdown are
@@ -44,9 +45,8 @@ Current validated state:
 - Manual charging remains user-controlled. Direct current/start/stop writes
   fail closed unless Wattpilot telemetry confirms ECO mode; a one-time release
   of stale Auto/Eco limits on entry to Manual is the sole approved exception.
-- The remaining Wattpilot live-validation gaps are supervised v3.75 Auto/Eco
-  daylight validation and natural winter observation of grid-import and
-  stale-grid-telemetry dispatch.
+- The remaining Wattpilot live-validation gap is natural winter observation of
+  grid-import and stale-grid-telemetry dispatch.
 - The 2026-07-12 review confirmed additional crash, device-control, stale-data,
   persistence, configuration, security, and test-coverage work. Items with
   site-specific limits or uncertain Wattpilot protocol meaning retain explicit
@@ -109,6 +109,31 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   missing-file, malformed-INI, missing-key, malformed-type, aggregation, and
   exception-propagation regressions. All 25 focused configuration tests and all
   268 hardware-free tests passed; tracked application/test Python syntax passed.
+
+### Completed 2026-07-13 - Live-Validate Venus OS v3.75 Auto/Eco PV-Surplus Operation
+
+- Completed the attended daylight Auto/Eco validation on the production Cerbo
+  GX running Venus OS `v3.75` build `20260624163305`.
+- Confirmed one-phase Auto/Eco start after stable PV allowance, no-grid
+  operation with grid near zero, and command-free Manual-mode behavior from the
+  earlier v3.75 validation sequence.
+- Confirmed three-phase phase-up only after the configured
+  `MinPhaseSwitchSeconds=600` guard matured with natural PV above the tested
+  threshold. Telemetry reached `3 phases` / `Charging 3 phases`.
+- Confirmed grid-import guard behavior during insufficient PV: the controller
+  stopped or waited instead of intentionally using grid power with
+  `AllowGridCharging=false`.
+- Confirmed battery assist stayed bounded, hit
+  `BatteryAssistMaxSeconds=600`, locked out further assist, then dynamically
+  reduced three-phase current down to 6 A before falling back to one-phase
+  charging from available PV.
+- Adjusted maintained daily-use defaults after live evidence:
+  `ThreePhasePvSurplusStartW=4500` keeps phase-up above the typical 3-phase
+  6 A electrical floor while matching Wattpilot-app-style behavior more closely
+  than the earlier 5000 W threshold, and
+  `BatteryAssistMaxShortfallW=1000` preserves a small cloud bridge while
+  reducing current, phasing down, or stopping earlier to protect the home
+  battery.
 
 ### Completed 2026-07-12 - PR Group 1 Runtime Fail-Safe Hardening
 
@@ -1887,103 +1912,6 @@ Done criteria:
   unchanged.
 - Full unittest suite passes.
 
-### P1 - Live-Validate Venus OS v3.75 Auto/Eco PV-Surplus Operation
-
-Goal:
-
-Complete the remaining live validation for v3.75 by proving supervised
-Auto/Eco PV-surplus behavior under natural daylight/PV conditions.
-
-Problem:
-
-The production Cerbo GX has already validated the v3.75 upgrade path,
-configuration persistence, service startup, dependency recovery, idle/no-vehicle
-operation, Manual charging, Manual current changes, and Manual recovery. The
-remaining external behavior that CI and the night-time validation cannot prove
-is live Auto/Eco PV-surplus charging, no-grid protection, and phase-switching
-under naturally sufficient PV.
-
-Evidence:
-
-- `RuntimeCompatibility.py` accepts only clean `v3.75`.
-- v3.75 build `20260624163305` booted successfully on the Cerbo GX.
-- `/data/es-ESS/config.ini` survived unchanged, `/data/rc.local` restored the
-  service link, `python3-pip` and `websocket-client` were restored after the
-  firmware update, and es-ESS ran stably.
-- Manual-mode validation confirmed that es-ESS reports Manual charging but does
-  not issue start, stop, current, phase, or other Wattpilot control commands.
-
-Implementation:
-
-- Do not make charger-policy changes as part of this validation.
-- Perform the test only during an attended daylight/PV window with a vehicle
-  connected and enough surplus for the intended check.
-- Confirm one-phase Auto/Eco start, no-grid behavior when grid charging is
-  disabled, configured current limits, and phase switching only when natural PV
-  satisfies the configured thresholds and timers.
-- If behavior differs from the documented safety contract, stop the test,
-  collect logs, and diagnose before changing application behavior.
-
-Files to change:
-
-- `BACKLOG.md` after validation, to move this item to Completed with the date
-  and observed GX results.
-- Compatibility code, tests, or documentation only if live evidence identifies
-  a concrete defect.
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Run `python -m unittest discover -s tests` before any code change.
-- Preserve the hardware-free stub pattern and all existing passing tests.
-
-Expected coverage:
-
-- Live validation proves the Auto/Eco GX, Wattpilot, D-Bus, MQTT, and grid
-  telemetry surfaces that CI cannot emulate.
-
-Manual validation:
-
-Active charging is required. Do not force unsafe grid import, do not force a
-phase transition without natural PV surplus, and keep the test attended.
-
-Manual test steps:
-
-1. Confirm v3.75 is running, dependencies import, es-ESS is up, and the latest
-   log has no critical errors.
-2. Confirm the vehicle and Wattpilot are ready, grid telemetry is fresh on all
-   phases, and the actual managed battery remains selected.
-3. Enable Auto/Eco under supervision and validate one-phase start only when
-   configured PV surplus is available.
-4. Confirm current remains inside configured limits and no-grid behavior holds
-   when grid charging is disabled.
-5. Validate phase switching only if natural PV remains above the configured
-   threshold for the configured timing guard.
-6. Stop or return to Manual if unexpected grid use, stale telemetry, or
-   unbounded battery discharge appears.
-
-Risks and dependencies:
-
-- Active charging checks require a vehicle, sufficient natural PV, fresh grid
-  telemetry, and an attended low-risk window.
-- Weather may prevent phase-switch validation; record that result rather than
-  forcing unsafe conditions.
-
-Open questions:
-
-- Which natural PV window will be used for the supervised phase-switch check?
-
-Done criteria:
-
-- One-phase Auto/Eco, no-grid protection, current bounds, and any naturally
-  available phase-switch behavior are validated on v3.75.
-- Manual mode remains command-free throughout the validation window.
-- The observed build and validation date are recorded in Completed.
-- Full unittest suite passes for any code change made from the results.
-
 ## Suggested Implementation Order / PR Execution Queue
 
 Use this queue as the implementation order. Entries carrying the same PR-group
@@ -2005,9 +1933,6 @@ advance the queue on the next request.
     grid/PV measurements remaining authoritative after non-timeout failures.
 11. P4 harden Wattpilot reconnect and startup None handling — close confirmed
     lifecycle/None defects without adding a disconnect command.
-12. P1 live-validate Venus OS v3.75 Auto/Eco PV-surplus operation — run the
-    daylight active-charging checks only after relevant telemetry/controller
-    fixes above are deployed and their automated tests pass.
 13. P3 fix zero-feed-in logger shadowing and None telemetry — preserve real
     diagnostics and avoid experimental-control crashes.
 14. P3 fix PV inverter stale window and cached-power contribution — remove

@@ -542,14 +542,14 @@ charging under Wattpilot app/user control.
 | [FroniusWattpilot]  | HibernateMode | When the car is disconnected, es-ESS will switch into idle mode, stop doing heavy lifting. Connection to wattpilot remains established and VRM control enabled. <br /><br />With hibernate enabled, wattpilot will also be disconnected, and connected every 5 minutes for a car-state-check. This greatly reduces the number of incoming socket messages from wattpilot by about 95% per day, but causes an delay of up to 5 minutes when the car is connected.<br /><br />You can force a wakeup by switching to *Scheduled charging* in VRM at any time. | Boolean  | false |
 | [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. Must be within `6..32 A`. | Integer (A) | 6 |
 | [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. Must be within `6..32 A` and at least `MinCurrentPerPhase`; the controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
-| [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. Must be greater than `ThreePhasePvSurplusStopW`. | Integer (W) | 5000 |
+| [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. Must be greater than `ThreePhasePvSurplusStopW`. The maintained 4500 W default is above the typical 3-phase 6 A electrical floor while matching observed Wattpilot-app-style behavior more closely than a very conservative 5000 W threshold. | Integer (W) | 4500 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStopW | PV threshold below which Auto/Eco falls back from 3 phases to 1 phase when one-phase charging is still supportable. Must be lower than `ThreePhasePvSurplusStartW`. | Integer (W) | 4100 |
 | [FroniusWattpilot] | EvPriorityOverBatteryCharge | Lets Wattpilot use real PV that would otherwise charge the battery while the car is connected in Auto mode. This does not allow battery-to-EV charging from a stopped state. | Boolean | true |
 | [FroniusWattpilot] | EvPriorityMinSoc | Minimum battery SOC required before EV priority over battery charging is allowed. | Number (%) | 60 |
 | [FroniusWattpilot] | BatteryAssistEnabled | Enables the optional short battery bridge for an already-running Auto/Eco charge. | Boolean | true |
 | [FroniusWattpilot] | BatteryAssistSocMin | Minimum battery SOC required before battery assist can be used. Must be within `0..100`. | Number (%) | 50 |
 | [FroniusWattpilot] | BatteryAssistMaxSeconds | Maximum duration for one battery-assist window. Use at least `MinPhaseSwitchSeconds` when battery should be able to bridge the full phase-down waiting interval. Must be greater than `0` when enabled. | Integer (seconds) | 600 |
-| [FroniusWattpilot] | BatteryAssistMaxShortfallW | Maximum PV shortfall that battery assist may bridge for an already-running charge. | Number (W) | 2500 |
+| [FroniusWattpilot] | BatteryAssistMaxShortfallW | Maximum PV shortfall that battery assist may bridge for an already-running charge. The maintained 1000 W default bridges small clouds but makes larger deficits reduce current, phase down, or stop earlier instead of leaning heavily on the home battery. | Number (W) | 1000 |
 | [FroniusWattpilot] | BatteryAssistRecoverySeconds | Sustained PV-recovery time required before battery assist can be used again after lockout. | Integer (seconds) | 120 |
 | [FroniusWattpilot] | AllowGridCharging | Allows an already-running Auto/Eco charge to continue despite grid import when PV/battery assistance is insufficient. It never permits a new grid-only start. Victron ESS determines the actual battery/grid energy source. Recommended no-grid mode is `false`. | Boolean | false |
 | [FroniusWattpilot] | GridImportPositive | Site grid-power sign convention. `true` means positive grid power is import. | Boolean | true |
@@ -578,7 +578,7 @@ optional running-session grid fallback:
 - During the three-to-one waiting interval, bounded battery assist may hold the existing phase/current. When `AllowGridCharging=true`, an already-running charge may instead continue despite grid import. Neither fallback can start a session or authorize a phase-up.
 - With `AllowGridCharging=false`, loss of an eligible battery bridge causes an immediate reduction to one phase when fresh PV supports the one-phase minimum; otherwise Auto/Eco stops. This safety response may end the normal phase timer early.
 - After a sustained phase-down interval, es-ESS changes to one phase when fresh PV supports it. If PV is below the one-phase minimum, bounded battery assist or allowed grid fallback may keep the running charge active; without either source, charging stops.
-- Battery assist is optional and may only bridge a short cloud for an **already-running** charge. It is limited by its configured SOC, shortfall-power, duration, and PV-recovery settings; it cannot create a new charging session. To cover the full phase waiting interval, `BatteryAssistMaxSeconds` must be at least `MinPhaseSwitchSeconds`.
+- Battery assist is optional and may only bridge a short cloud for an **already-running** charge. It is limited by its configured SOC, shortfall-power, duration, and PV-recovery settings; it cannot create a new charging session. The maintained `BatteryAssistMaxShortfallW=1000` default favors daily battery protection: small dips are bridged, while larger deficits reduce current, phase down, or stop earlier. To cover the full phase waiting interval, `BatteryAssistMaxSeconds` must be at least `MinPhaseSwitchSeconds`.
 - Auto/Eco stops when sustained grid import exceeds `GridImportStopW` for `GridImportStopSeconds`. With `AllowGridCharging=false`, Auto/Eco therefore does not intentionally use grid power. Very short transients can still appear before the guard threshold and timer are reached.
 - `MinOnOffSeconds` applies to normal starts and stops. `MinPhaseSwitchSeconds` is the single shared stability and cooldown setting for both phase directions; no-grid safety may still reduce phase or stop earlier when a running deficit cannot be bridged.
 - Normal Wattpilot `Manual` mode remains under the user's control and is not changed by this Auto/Eco policy.
@@ -636,10 +636,15 @@ PV charging with a 600-second cloud bridge for an already-running session:
 BatteryAssistEnabled=true
 BatteryAssistSocMin=60
 BatteryAssistMaxSeconds=600
-BatteryAssistMaxShortfallW=2500
+BatteryAssistMaxShortfallW=1000
 BatteryAssistRecoverySeconds=120
 AllowGridCharging=false
 ```
+
+The `1000W` shortfall default is a daily-use compromise. It smooths short PV
+dips without letting a three-phase EV session draw heavily from the home
+battery; if the deficit is larger, Auto/Eco should reduce current, phase down,
+or stop according to fresh allowance and no-grid safety.
 
 Conservative five-minute start and phase confirmation timers:
 
