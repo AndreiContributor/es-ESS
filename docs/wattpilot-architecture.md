@@ -96,6 +96,9 @@ It owns:
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
+- Battery-SOC validity and receive-time tracking for battery assist and the
+  EV-priority battery-reservation bypass, delegating pure timestamp freshness
+  evaluation to `WattpilotDecisionInputs.py`.
 - One-phase and three-phase switching orchestration, delegating pure thresholds,
   target-current, distributor-request, and shared bidirectional phase timing
   decisions to
@@ -293,6 +296,9 @@ Future Wattpilot changes must preserve these invariants:
 - Battery assist may only bridge a short PV dip during an already-running
   charge and must remain bounded by SOC, duration, shortfall, and recovery
   settings.
+- Battery assist and the EV-priority battery-reservation bypass require valid
+  battery SOC received within `BatterySocFreshSeconds`. Missing, invalid, or
+  stale SOC fails closed for both features and does not change Manual charging.
 - Battery assist must not start a charge, create a phase-up candidate, or issue
   a switch to three phases. An eligible continuation bridge may intentionally
   leave an already-existing one-to-three candidate timer unchanged; fresh

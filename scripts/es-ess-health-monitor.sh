@@ -139,7 +139,7 @@ print_config() {
         return
     fi
 
-    grep -E '^(FroniusWattpilot|SolarOverheadDistributor|AllowGridCharging|MinCurrentPerPhase|MaxCurrentPerPhase|ThreePhasePvSurplusStartW|ThreePhasePvSurplusStopW|MinOnOffSeconds|MinPhaseSwitchSeconds|BatteryAssistEnabled|BatteryAssistSocMin|BatteryAssistMaxSeconds|BatteryAssistMaxShortfallW|BatteryAssistRecoverySeconds|GridImportPositive)=' "$CONFIG_FILE" 2>/dev/null || echo "No selected config values found"
+    grep -E '^(FroniusWattpilot|SolarOverheadDistributor|AllowGridCharging|MinCurrentPerPhase|MaxCurrentPerPhase|ThreePhasePvSurplusStartW|ThreePhasePvSurplusStopW|MinOnOffSeconds|MinPhaseSwitchSeconds|BatteryAssistEnabled|BatteryAssistSocMin|BatteryAssistMaxSeconds|BatteryAssistMaxShortfallW|BatterySocFreshSeconds|BatteryAssistRecoverySeconds|GridImportPositive)=' "$CONFIG_FILE" 2>/dev/null || echo "No selected config values found"
 }
 
 print_wattpilot_dbus() {

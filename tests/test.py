@@ -166,6 +166,7 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.batteryAssistSocMin = 60
         controller.batteryAssistMaxSeconds = 300
         controller.batteryAssistMaxShortfallW = 3000
+        controller.batterySocFreshSeconds = 15
         controller.batteryAssistRecoverySeconds = 60
         controller.batteryAssistSince = 0
         controller.batteryAssistActive = False
@@ -217,6 +218,8 @@ class WattpilotControlRegressionTests(unittest.TestCase):
             set_mode=Mock(),
         )
         controller.batterySocDbus = SimpleNamespace(value=80)
+        controller.batterySocValid = True
+        controller.batterySocUpdatedAt = self.fwp.time.time()
         controller.batteryPowerDbus = SimpleNamespace(value=0)
         controller.gridL1Dbus = SimpleNamespace(value=0)
         controller.gridL2Dbus = SimpleNamespace(value=0)
@@ -655,8 +658,10 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.wattpilot.power = 2.0
 
         with patch.object(self.fwp.time, "time", return_value=100):
+            controller.recordBatterySocTelemetry(80)
             self.assertTrue(controller.startOrContinueBatteryAssist(1000))
         with patch.object(self.fwp.time, "time", return_value=399):
+            controller.recordBatterySocTelemetry(80)
             self.assertTrue(controller.startOrContinueBatteryAssist(1000))
         with patch.object(self.fwp.time, "time", return_value=400):
             self.assertFalse(controller.startOrContinueBatteryAssist(1000))
@@ -1015,6 +1020,31 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         self.assertEqual(controller.gridL1UpdatedAt, 100)
         self.assertEqual(controller.gridL2UpdatedAt, 100)
         self.assertEqual(controller.gridL3UpdatedAt, 100)
+
+    def test_soc_subscription_uses_missing_initial_default_and_callback(self):
+        controller = self._controller()
+        subscriptions = []
+
+        def register(service_name, dbus_path, **kwargs):
+            subscription = SimpleNamespace(
+                serviceName=service_name,
+                dbusPath=dbus_path,
+                value=None,
+                **kwargs,
+            )
+            subscriptions.append(subscription)
+            return subscription
+
+        controller.registerDbusSubscription = Mock(side_effect=register)
+        controller.initDbusSubscriptions()
+
+        soc_subscription = subscriptions[0]
+        self.assertEqual(soc_subscription.dbusPath, "/Dc/Battery/Soc")
+        self.assertIsNone(soc_subscription.initialValueDefault)
+        self.assertEqual(
+            soc_subscription.callback.__func__,
+            controller.onBatterySocTelemetry.__func__,
+        )
 
     def test_invalid_allowance_message_invalidates_previous_allowance(self):
         controller = self._controller()

@@ -335,6 +335,7 @@ class ConfigValueValidationTests(unittest.TestCase):
         wattpilot["ThreePhasePvSurplusStopW"] = "4100"
         wattpilot["BatteryAssistSocMin"] = "0"
         wattpilot["BatteryAssistMaxSeconds"] = "1"
+        wattpilot["BatterySocFreshSeconds"] = "1"
         wattpilot["MinPhaseSwitchSeconds"] = "0"
         wattpilot["AllowanceDropGraceSeconds"] = "0"
         wattpilot["SurplusDropGraceSeconds"] = "0"
@@ -467,6 +468,12 @@ class ConfigValueValidationTests(unittest.TestCase):
 
         app._validateConfigValues()
 
+    def test_missing_battery_soc_freshness_uses_compatible_default(self):
+        app = self._app_with_sample_config()
+        app.config.remove_option("FroniusWattpilot", "BatterySocFreshSeconds")
+
+        app._validateConfigValues()
+
     def test_each_invalid_value_causes_clean_startup_failure(self):
         cases = (
             ("FroniusWattpilot", "MinCurrentPerPhase", "5"),
@@ -474,6 +481,7 @@ class ConfigValueValidationTests(unittest.TestCase):
             ("FroniusWattpilot", "BatteryAssistSocMin", "-1"),
             ("FroniusWattpilot", "BatteryAssistSocMin", "101"),
             ("FroniusWattpilot", "BatteryAssistMaxSeconds", "0"),
+            ("FroniusWattpilot", "BatterySocFreshSeconds", "0"),
             ("FroniusWattpilot", "MinPhaseSwitchSeconds", "-1"),
             ("FroniusWattpilot", "AllowanceDropGraceSeconds", "-1"),
             ("FroniusWattpilot", "SurplusDropGraceSeconds", "-1"),

@@ -150,6 +150,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.batteryAssistSocMin = 60
         controller.batteryAssistMaxSeconds = 300
         controller.batteryAssistMaxShortfallW = 3000
+        controller.batterySocFreshSeconds = 15
         controller.batteryAssistRecoverySeconds = 60
         controller.batteryAssistSince = 0
         controller.batteryAssistActive = False
@@ -244,6 +245,8 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         )
 
         controller.batterySocDbus = SimpleNamespace(value=80)
+        controller.batterySocValid = True
+        controller.batterySocUpdatedAt = 100
         controller.batteryPowerDbus = SimpleNamespace(value=0)
         controller.gridL1Dbus = SimpleNamespace(value=0)
         controller.gridL2Dbus = SimpleNamespace(value=0)
@@ -633,6 +636,73 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         self.assertTrue(controller.batteryAssistActive)
 
+    def test_battery_soc_accepts_only_fresh_finite_telemetry(self):
+        controller = self._controller()
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.batterySocDbus.value = 80
+            controller.onBatterySocTelemetry(controller.batterySocDbus)
+            self.assertEqual(controller.batterySoc(), 80)
+
+        with patch.object(self.fwp.time, "time", return_value=115):
+            self.assertEqual(controller.batterySoc(), 80)
+
+        with patch.object(self.fwp.time, "time", return_value=115.001):
+            self.assertIsNone(controller.batterySoc())
+
+        for value in (None, "invalid", float("nan"), float("inf")):
+            with self.subTest(value=value), patch.object(
+                self.fwp.time, "time", return_value=120
+            ):
+                controller.batterySocDbus.value = value
+                controller.onBatterySocTelemetry(controller.batterySocDbus)
+                self.assertIsNone(controller.batterySoc())
+
+    def test_stale_soc_clears_active_battery_assist(self):
+        controller = self._controller()
+        controller.wattpilot.power = 2.3
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.startOrContinueBatteryAssist(1000))
+
+        with patch.object(self.fwp.time, "time", return_value=116):
+            self.assertFalse(controller.startOrContinueBatteryAssist(1000))
+
+        self.assertFalse(controller.batteryAssistActive)
+        self.assertEqual(controller.batteryAssistSince, 0)
+        self.assertFalse(controller.batteryAssistLockedOut)
+
+    def test_missing_and_invalid_soc_cannot_activate_battery_assist(self):
+        for value in (None, "invalid", float("nan"), float("inf")):
+            with self.subTest(value=value):
+                controller = self._controller()
+                controller.wattpilot.power = 2.3
+                controller.batterySocDbus.value = value
+                with patch.object(self.fwp.time, "time", return_value=100):
+                    controller.onBatterySocTelemetry(controller.batterySocDbus)
+                    self.assertFalse(controller.startOrContinueBatteryAssist(1000))
+
+                self.assertFalse(controller.batteryAssistActive)
+
+    def test_missing_invalid_and_stale_soc_cannot_bypass_battery_reservation(self):
+        controller = self._controller()
+        controller.evPriorityOverBatteryCharge = True
+        controller.evPriorityMinSoc = 60
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.shouldIgnoreBatteryReservation())
+
+        with patch.object(self.fwp.time, "time", return_value=116):
+            self.assertFalse(controller.shouldIgnoreBatteryReservation())
+
+        for value in (None, "invalid", float("nan")):
+            with self.subTest(value=value), patch.object(
+                self.fwp.time, "time", return_value=120
+            ):
+                controller.batterySocDbus.value = value
+                controller.onBatterySocTelemetry(controller.batterySocDbus)
+                self.assertFalse(controller.shouldIgnoreBatteryReservation())
+
     def test_three_to_one_phase_switch_waits_for_shared_timer_on_battery(self):
         controller = self._controller()
         controller.currentPhaseMode = 2
@@ -910,6 +980,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         with patch.object(self.fwp.time, "time", return_value=100):
             self.assertTrue(controller.startOrContinueBatteryAssist(2000))
         with patch.object(self.fwp.time, "time", return_value=399):
+            controller.recordBatterySocTelemetry(80)
             self.assertTrue(controller.startOrContinueBatteryAssist(2000))
         with patch.object(self.fwp.time, "time", return_value=400):
             self.assertFalse(controller.startOrContinueBatteryAssist(2000))
