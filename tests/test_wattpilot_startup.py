@@ -77,7 +77,8 @@ def _install_wattpilot_client_stubs(info_messages):
     )
 
 
-def _install_fronius_startup_stubs(warnings, errors):
+def _install_fronius_startup_stubs(warnings, errors, wattpilot_state=None):
+    wattpilot_state = wattpilot_state or {}
     paho = _module("paho")
     paho.__path__ = []
     paho_mqtt = _module("paho.mqtt")
@@ -139,14 +140,19 @@ def _install_fronius_startup_stubs(warnings, errors):
 
     class FakeWattpilot:
         def __init__(self, _host, _password):
-            self.connected = False
-            self.power1 = None
-            self.power2 = None
-            self.power3 = None
-            self.carStateReady = False
-            self.mode = None
-            self.firmware = None
-            self.carConnected = False
+            self.connected = wattpilot_state.get("connected", False)
+            self.power1 = wattpilot_state.get("power1")
+            self.power2 = wattpilot_state.get("power2")
+            self.power3 = wattpilot_state.get("power3")
+            self.carStateReady = wattpilot_state.get("car_state_ready", False)
+            mode_name = wattpilot_state.get("mode")
+            self.mode = (
+                WattpilotControlMode[mode_name]
+                if mode_name is not None
+                else None
+            )
+            self.firmware = wattpilot_state.get("firmware")
+            self.carConnected = wattpilot_state.get("car_connected", False)
             self.phase_commands = []
             self.command_guard = None
 
@@ -164,6 +170,41 @@ def _install_fronius_startup_stubs(warnings, errors):
 
 
 class WattpilotStartupTests(unittest.TestCase):
+    def _fronius_startup_controller(self, module_name, wattpilot_state):
+        warnings = []
+        errors = []
+        messages = []
+        _install_fronius_startup_stubs(
+            warnings,
+            errors,
+            wattpilot_state=wattpilot_state,
+        )
+        fronius_module = _load_module(
+            module_name,
+            ROOT / "FroniusWattpilot.py",
+        )
+        controller = fronius_module.FroniusWattpilot.__new__(
+            fronius_module.FroniusWattpilot
+        )
+        controller.config = {
+            "FroniusWattpilot": {
+                "Host": "127.0.0.1",
+                "Password": "secret",
+            }
+        }
+        controller.publishServiceMessage = (
+            lambda _service, message: messages.append(message)
+        )
+        controller.dumpEvChargerInfo = lambda: None
+        controller.validatedVenusOsVersion = "v3.75"
+        controller.validatedWattpilotFirmware = "42.5"
+        controller.validatedWattpilotAppVersion = "2.1.0"
+        controller.actualVenusOsVersion = "v3.75"
+        controller.actualWattpilotFirmware = None
+        controller.wattpilotFirmwareCompatible = False
+        controller._lastWattpilotCompatibilityState = None
+        return controller, fronius_module, warnings, errors, messages
+
     def test_wattpilot_energy_counter_exists_before_first_status_update(self):
         info_messages = []
         _install_wattpilot_client_stubs(info_messages)
@@ -224,6 +265,95 @@ class WattpilotStartupTests(unittest.TestCase):
         self.assertTrue(any("connection not ready during startup" in message for message in warnings))
         self.assertTrue(any("car state not ready during startup" in message for message in warnings))
         self.assertFalse(any("within 30 seconds" in message for message in warnings))
+        self.assertEqual(controller.wattpilot.phase_commands, [])
+
+    def test_manual_idle_startup_is_command_free_with_confirmed_firmware(self):
+        controller, fronius_module, warnings, errors, messages = (
+            self._fronius_startup_controller(
+                "fronius_manual_idle_startup_under_test",
+                {
+                    "connected": True,
+                    "car_state_ready": True,
+                    "mode": "Default",
+                    "firmware": "42.5",
+                    "car_connected": False,
+                    "power1": 0,
+                    "power2": 0,
+                    "power3": 0,
+                },
+            )
+        )
+
+        controller.initFinalize()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(warnings, [])
+        self.assertEqual(
+            controller.mode,
+            fronius_module.VrmEvChargerControlMode.Manual,
+        )
+        self.assertEqual(controller.currentPhaseMode, 0)
+        self.assertEqual(controller.wattpilot.phase_commands, [])
+        self.assertIn(
+            "Manual/default startup leaves Wattpilot phase mode unchanged.",
+            messages,
+        )
+
+    def test_manual_startup_with_missing_phase_power_is_none_safe_and_command_free(self):
+        controller, fronius_module, _warnings, errors, _messages = (
+            self._fronius_startup_controller(
+                "fronius_manual_missing_power_startup_under_test",
+                {
+                    "connected": True,
+                    "car_state_ready": True,
+                    "mode": "Default",
+                    "firmware": "42.5",
+                    "car_connected": True,
+                },
+            )
+        )
+
+        controller.initFinalize()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            controller.mode,
+            fronius_module.VrmEvChargerControlMode.Manual,
+        )
+        self.assertEqual(controller.currentPhaseMode, 0)
+        self.assertEqual(controller.wattpilot.phase_commands, [])
+
+    def test_eco_idle_startup_retains_automatic_phase_initialization(self):
+        controller, fronius_module, warnings, errors, messages = (
+            self._fronius_startup_controller(
+                "fronius_eco_idle_startup_under_test",
+                {
+                    "connected": True,
+                    "car_state_ready": True,
+                    "mode": "ECO",
+                    "firmware": "42.5",
+                    "car_connected": False,
+                    "power1": 0,
+                    "power2": 0,
+                    "power3": 0,
+                },
+            )
+        )
+
+        controller.initFinalize()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(warnings, [])
+        self.assertEqual(
+            controller.mode,
+            fronius_module.VrmEvChargerControlMode.Auto,
+        )
+        self.assertEqual(controller.currentPhaseMode, 0)
+        self.assertEqual(controller.wattpilot.phase_commands, [0])
+        self.assertIn(
+            "Currently not charging. Negotiating automatic phase mode.",
+            messages,
+        )
 
     def test_fronius_dashboard_transport_outage_updates_standard_paths(self):
         warnings = []

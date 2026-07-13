@@ -93,6 +93,21 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-13 - Prevent Wattpilot Phase Commands During Manual Startup
+
+- Made Manual/default startup passive even when Wattpilot firmware `42.5` is
+  already confirmed: startup may observe finite phase power for reporting but
+  does not issue `psm`, `amp`, or `frc` commands.
+- Kept idle automatic-phase initialization limited to explicitly confirmed ECO
+  mode and made startup phase observation safe while power telemetry is still
+  missing.
+- Added hardware-free Manual idle, Manual missing-power, ECO idle, and existing
+  deferred-compatibility coverage and documented the command-free startup
+  boundary in the architecture and README contracts.
+- Verification passed: startup syntax compilation, 7 focused startup tests,
+  102 wider Wattpilot policy/command-boundary tests, and the full 271-test
+  hardware-free suite.
+
 ### Completed 2026-07-13 - Structural Configuration Fail-Closed Startup
 
 - Rejected missing, unreadable, and malformed configuration files plus missing
@@ -452,55 +467,55 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ## Backlog
 
-### P1 - Prevent Wattpilot Phase Commands During Manual Startup
+### P1 - Reset Wattpilot Phase-Switch Candidates On Confirmed Disconnect
 
 Goal:
 
-Keep normal Wattpilot Manual mode command-free during service startup regardless
-of WebSocket telemetry arrival order.
+Require a new continuous-PV phase-up interval after a confirmed vehicle
+disconnect so stale phase-switch eligibility cannot command a reconnecting car.
 
 Problem:
 
-`initFinalize()` classifies non-ECO telemetry as Manual, but its idle branch
-then calls `set_phases(0)`. The common transport guard checks firmware
-compatibility, not Manual-versus-Auto command ownership. This is a latent
-device-control race: the production restart command was blocked because `fwv`
-had not arrived yet, but the same Manual startup could send `psm=0` if validated
-firmware telemetry arrives before the idle phase branch runs.
+The confirmed-disconnect handler clears pending phase commands and transition
+state but leaves `phaseSwitchCandidateSince` intact. Idle mode then stops normal
+controller evaluation, so an old one-to-three candidate can mature while no car
+is connected. On reconnect, one fresh allowance cycle can issue the three-phase
+command instead of rebuilding the configured continuous-condition timer.
 
 Evidence:
 
-- `FroniusWattpilot.py:398-451` determines Manual mode and then calls
-  `self.wattpilot.set_phases(0)` whenever startup does not observe active phase
-  power.
-- `FroniusWattpilot.py:835-837` authorizes the transport command solely from
-  firmware compatibility.
-- A production GX restart on 2026-07-13 logged `Mode determined as: ...Manual`,
-  followed by `Currently not charging. Negiotiating automatic phasemode.` and
-  `Blocked Wattpilot setValue psm=0`. No command reached the charger in that
-  run only because firmware compatibility was still unavailable.
-- `tests/test_wattpilot_startup.py:194-221` exercises deferred startup logging
-  but does not assert that Manual startup remains command-free when firmware
-  `42.5` is already confirmed.
+- Production log evidence from 2026-07-13 shows a phase-up candidate beginning
+  at 09:30:48 UTC, confirmed disconnect at 09:34:08, reconnect at 09:48:59,
+  and a physical one-to-three switch at 09:49:04 after only one fresh
+  distributor cycle. PV was sufficient, so no grid-use incident occurred, but
+  the configured 600-second continuous-condition rule was bypassed.
+- `FroniusWattpilot.py:_handleDisconnected()` clears battery assist, transition
+  grace, and the pending phase switch but does not call
+  `clearPhaseSwitchCandidate()`.
+- `adjustChargeForPvAllowance()` reuses the retained candidate timestamp once
+  fresh allowance reaches the full phase-up threshold.
+- `tests/test_wattpilot_dispatch.py` characterizes disconnect resets but does
+  not require the phase-switch candidate to clear, and the Eco/PV policy tests
+  do not cover disconnect/reconnect between candidate creation and phase-up.
 
 Implementation:
 
-- Make the idle phase-detection branch passive when Wattpilot telemetry reports
-  Manual/default mode: update only internal/reporting state and issue no phase,
-  current, start, or stop command.
-- Permit any required startup phase initialization only after live Wattpilot
-  telemetry confirms ECO mode, preserving existing Auto/Eco behavior.
-- Keep the separately approved one-time Auto/Eco-to-Manual constraint release
-  unchanged; normal Manual startup is not a mode transition and must not use
-  that exception.
-- Document the command-free Manual-startup rule in the Wattpilot architecture
-  contract.
+- Call `clearPhaseSwitchCandidate()` only from the confirmed-disconnect handler.
+- Preserve `lastPhaseSwitchTime`, the 15-second transient-disconnect confirmation,
+  current/phase command ownership, and the intentional battery-assist rule that
+  may retain an existing candidate during an already-running charge.
+- Require reconnect to receive fresh assigned allowance and build a new full
+  `MinPhaseSwitchSeconds` candidate before a one-to-three command.
+- Document candidate reset as part of the confirmed-disconnect safety contract.
 
 Files to change:
 
 - `FroniusWattpilot.py`
 - `docs/wattpilot-architecture.md`
-- `tests/test_wattpilot_startup.py`
+- `README.md`
+- `BACKLOG.md`
+- `tests/test_wattpilot_dispatch.py`
+- `tests/test_eco_pv_policy.py`
 
 Files to add:
 
@@ -508,52 +523,55 @@ Files to add:
 
 Tests:
 
-- Add a hardware-free Manual, idle, firmware-compatible startup regression that
-  asserts no phase/current/start-stop command is issued.
-- Add the corresponding ECO, idle startup case to prove any retained automatic
-  phase initialization remains limited to confirmed Auto/Eco control.
-- Retain deferred-firmware coverage proving transport gating still blocks every
-  command until firmware `42.5` is confirmed.
+- Extend the disconnect-handler characterization to require
+  `clearPhaseSwitchCandidate()` exactly once after confirmed disconnect.
+- Add a hardware-free policy regression that creates a one-to-three candidate,
+  confirms disconnect, reconnects with full fresh PV, proves no phase command
+  occurs before a new complete timer, and proves phase-up is allowed afterward.
+- Use the existing isolated Victron/D-Bus/MQTT/Wattpilot stub pattern; no real
+  broker, D-Bus, WebSocket, or hardware is used in CI.
 
 Expected coverage:
 
-- Proves WebSocket message ordering cannot turn normal Manual startup into a
-  phase-control action while preserving the existing Auto/Eco startup path and
-  the explicit transition-release exception.
+- Proves disconnected wall-clock time cannot satisfy phase-up stability and
+  reconnect requires a new continuous-PV interval.
 - Existing passing tests remain unchanged.
 
 Manual validation:
 
-Log-only, safe in production while the charger is idle and explicitly in
-Manual mode; no active charging is required.
+Active charging required in a supervised daylight window with sufficient PV;
+do not force grid import or alter unrelated ESS behavior.
 
 Manual test steps:
 
-1. Confirm the Wattpilot is idle and selected to Manual in the supported app.
-2. Restart es-ESS and capture startup logs through confirmed firmware telemetry.
-3. Confirm Manual is reported without an automatic-phase negotiation or any
-   `psm`, `amp`, or `frc` command, then confirm the charger remains Manual with
-   its user-selected settings unchanged.
+1. Start a normal one-phase Auto/Eco charge and allow a phase-up candidate to
+   begin without letting it mature.
+2. Disconnect the vehicle long enough for the configured confirmation period.
+3. Reconnect while full phase-up PV is naturally available.
+4. Confirm no three-phase command occurs until a new complete
+   `MinPhaseSwitchSeconds` interval has elapsed.
 
 Risks and dependencies:
 
-- Changing idle phase initialization could alter Auto/Eco startup request math;
-  cover Manual and ECO branches explicitly rather than removing the command
-  unconditionally.
+- Clearing too early on transient telemetry could create unnecessary phase-up
+  delay; reset only after physical disconnect is confirmed.
+- Do not reset `lastPhaseSwitchTime` or alter candidate preservation during an
+  eligible battery-assist bridge for an already-running charge.
 - No other backlog item must land first.
 
 Open questions:
 
-- None; production telemetry establishes the race and the existing Manual-mode
-  invariant establishes the required behavior.
+- None; production telemetry proves the state leak and the documented
+  continuous-condition timer defines the required reset.
 
 Done criteria:
 
-- Normal Manual startup issues no phase, current, start, or stop command even
-  when firmware compatibility is already confirmed.
-- Confirmed Auto/Eco startup behavior and the one-time transition-release
-  exception remain covered and unchanged.
-- The architecture contract records command-free Manual startup.
+- Confirmed disconnect clears every phase-switch candidate without issuing a
+  Wattpilot command.
+- Reconnect cannot phase-up until fresh assigned PV satisfies a new complete
+  stability interval.
+- Transient disconnect handling, Manual ownership, no-grid safety, bounded
+  battery assist, and public runtime-status contracts remain unchanged.
 - Full unittest suite passes.
 
 ### P2 - Define Safe Grid-Setpoint Bounds
@@ -1923,8 +1941,8 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-26. P1 prevent Wattpilot phase commands during Manual startup — close the
-    production-observed telemetry-order race before other controller work.
+27. P1 reset Wattpilot phase-switch candidates on confirmed disconnect — close
+    the production-observed timer leak before other controller work.
 8. P2 add freshness guard for battery-assist SOC — fail closed when the SOC
    used by assist or battery-priority bypass is stale.
 9. P2 define safe control for unclassified charging model statuses — obtain
@@ -2002,6 +2020,11 @@ For implementation PRs:
 
 ## Outstanding Manual Validation
 
+- **Log-only:** restart es-ESS with an idle Wattpilot explicitly in Manual and
+  confirm startup reports Manual without any `psm`, `amp`, or `frc` command.
+- **Active charging required:** after the disconnect-candidate fix is
+  implemented, confirm a reconnect builds a new complete 600-second phase-up
+  interval rather than reusing disconnected wall-clock time.
 - **Active charging required:** complete supervised v3.75 Auto/Eco PV-surplus,
   no-grid, current-limit, and naturally available phase-switch validation.
 - **Log-only:** validate the future `velib_python` provenance/import change on

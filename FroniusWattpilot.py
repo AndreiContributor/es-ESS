@@ -435,20 +435,30 @@ class FroniusWattpilot (esESSService):
             
         self.publishServiceMessage(self, "Mode determined as: {0}".format(self.mode))
 
-        #Adetermine the current phase mode. 
-        #if the car is charging, we can do that by looking at the phase power. 
-        #if the car is not charging, we can simply force it to be 3 phases, until determined 
-        #otherwise. 
-        if (self.wattpilot.carConnected and self.wattpilot.power2 > 0):
+        # Determine the current phase mode from live power when it is available.
+        # Missing startup telemetry is normal while the initial full-status
+        # message is still arriving, so keep the observation path None-safe.
+        power1 = DecisionInputs.finite_number(self.wattpilot.power1)
+        power2 = DecisionInputs.finite_number(self.wattpilot.power2)
+        if self.wattpilot.carConnected and power2 is not None and power2 > 0:
             self.currentPhaseMode = 2
             self.publishServiceMessage(self, "Currently charging on 3 phases.")
-        elif (self.wattpilot.carConnected and self.wattpilot.power1 > 0):
+        elif self.wattpilot.carConnected and power1 is not None and power1 > 0:
             self.currentPhaseMode = 1
             self.publishServiceMessage(self, "Currently charging on 1 phase.")
         else:
-            self.publishServiceMessage(self, "Currently not charging. Negiotiating automatic phasemode.")
             self.currentPhaseMode = 0
-            self.wattpilot.set_phases(0) #autoselect.
+            if self.wattpilot.mode == WattpilotControlMode.ECO:
+                self.publishServiceMessage(
+                    self,
+                    "Currently not charging. Negotiating automatic phase mode."
+                )
+                self.wattpilot.set_phases(0)  # autoselect
+            else:
+                self.publishServiceMessage(
+                    self,
+                    "Manual/default startup leaves Wattpilot phase mode unchanged."
+                )
 
         self.dumpEvChargerInfo()
 
