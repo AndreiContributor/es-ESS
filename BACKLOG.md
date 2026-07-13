@@ -93,6 +93,23 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-13 - Structural Configuration Fail-Closed Startup
+
+- Rejected missing, unreadable, and malformed configuration files plus missing
+  or non-integer `[Common] ConfigVersion` values with clear status-1 startup
+  failures before migration or runtime side effects.
+- Aggregated mandatory `[Common]`, `[Mqtt]`, and active `[Services]` bootstrap
+  structure and conversion-type diagnostics before MQTT clients, threads,
+  D-Bus, or integration services are constructed, while preserving optional
+  settings with existing runtime defaults.
+- Stopped constructor and main-process exception handlers from returning a
+  partially initialized runtime or a successful exit status; fallback logging
+  remains available for structural diagnostics.
+- Updated the service-inventory startup contract and added hardware-free
+  missing-file, malformed-INI, missing-key, malformed-type, aggregation, and
+  exception-propagation regressions. All 25 focused configuration tests and all
+  268 hardware-free tests passed; tracked application/test Python syntax passed.
+
 ### Completed 2026-07-12 - PR Group 1 Runtime Fail-Safe Hardening
 
 - Removed the Shelly 3EM debug-only 300 W subtraction so raw phase and total
@@ -410,6 +427,110 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ## Backlog
 
+### P1 - Prevent Wattpilot Phase Commands During Manual Startup
+
+Goal:
+
+Keep normal Wattpilot Manual mode command-free during service startup regardless
+of WebSocket telemetry arrival order.
+
+Problem:
+
+`initFinalize()` classifies non-ECO telemetry as Manual, but its idle branch
+then calls `set_phases(0)`. The common transport guard checks firmware
+compatibility, not Manual-versus-Auto command ownership. This is a latent
+device-control race: the production restart command was blocked because `fwv`
+had not arrived yet, but the same Manual startup could send `psm=0` if validated
+firmware telemetry arrives before the idle phase branch runs.
+
+Evidence:
+
+- `FroniusWattpilot.py:398-451` determines Manual mode and then calls
+  `self.wattpilot.set_phases(0)` whenever startup does not observe active phase
+  power.
+- `FroniusWattpilot.py:835-837` authorizes the transport command solely from
+  firmware compatibility.
+- A production GX restart on 2026-07-13 logged `Mode determined as: ...Manual`,
+  followed by `Currently not charging. Negiotiating automatic phasemode.` and
+  `Blocked Wattpilot setValue psm=0`. No command reached the charger in that
+  run only because firmware compatibility was still unavailable.
+- `tests/test_wattpilot_startup.py:194-221` exercises deferred startup logging
+  but does not assert that Manual startup remains command-free when firmware
+  `42.5` is already confirmed.
+
+Implementation:
+
+- Make the idle phase-detection branch passive when Wattpilot telemetry reports
+  Manual/default mode: update only internal/reporting state and issue no phase,
+  current, start, or stop command.
+- Permit any required startup phase initialization only after live Wattpilot
+  telemetry confirms ECO mode, preserving existing Auto/Eco behavior.
+- Keep the separately approved one-time Auto/Eco-to-Manual constraint release
+  unchanged; normal Manual startup is not a mode transition and must not use
+  that exception.
+- Document the command-free Manual-startup rule in the Wattpilot architecture
+  contract.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `docs/wattpilot-architecture.md`
+- `tests/test_wattpilot_startup.py`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add a hardware-free Manual, idle, firmware-compatible startup regression that
+  asserts no phase/current/start-stop command is issued.
+- Add the corresponding ECO, idle startup case to prove any retained automatic
+  phase initialization remains limited to confirmed Auto/Eco control.
+- Retain deferred-firmware coverage proving transport gating still blocks every
+  command until firmware `42.5` is confirmed.
+
+Expected coverage:
+
+- Proves WebSocket message ordering cannot turn normal Manual startup into a
+  phase-control action while preserving the existing Auto/Eco startup path and
+  the explicit transition-release exception.
+- Existing passing tests remain unchanged.
+
+Manual validation:
+
+Log-only, safe in production while the charger is idle and explicitly in
+Manual mode; no active charging is required.
+
+Manual test steps:
+
+1. Confirm the Wattpilot is idle and selected to Manual in the supported app.
+2. Restart es-ESS and capture startup logs through confirmed firmware telemetry.
+3. Confirm Manual is reported without an automatic-phase negotiation or any
+   `psm`, `amp`, or `frc` command, then confirm the charger remains Manual with
+   its user-selected settings unchanged.
+
+Risks and dependencies:
+
+- Changing idle phase initialization could alter Auto/Eco startup request math;
+  cover Manual and ECO branches explicitly rather than removing the command
+  unconditionally.
+- No other backlog item must land first.
+
+Open questions:
+
+- None; production telemetry establishes the race and the existing Manual-mode
+  invariant establishes the required behavior.
+
+Done criteria:
+
+- Normal Manual startup issues no phase, current, start, or stop command even
+  when firmware compatibility is already confirmed.
+- Confirmed Auto/Eco startup behavior and the one-time transition-release
+  exception remain covered and unchanged.
+- The architecture contract records command-free Manual startup.
+- Full unittest suite passes.
+
 ### P2 - Define Safe Grid-Setpoint Bounds
 
 Goal:
@@ -489,74 +610,6 @@ Done criteria:
 - The bounds and their source are explicitly approved and documented.
 - Combined setpoints are clamped and every clamp is observable.
 - In-range additive behavior and request ownership remain unchanged.
-- Full unittest suite passes.
-
-### P2 - Fail Closed On Structural Configuration Errors
-
-Goal:
-
-Exit cleanly before runtime construction when mandatory configuration structure
-or types are invalid.
-
-Problem:
-
-`_validateConfiguration()` reads `[Common] ConfigVersion` before value
-validation, and the broad constructor exception handler can return a partially
-built object. `main()` may then continue into an AttributeError cascade.
-
-Evidence:
-
-- `es-ESS.py:392` indexes the section/key before validation.
-- The constructor catches general exceptions at lines 98-99.
-
-Implementation:
-
-- Validate the mandatory bootstrap structure before conversions.
-- Aggregate clear critical diagnostics and exit with `SystemExit(1)`.
-- Narrow constructor handling so configuration failure cannot be swallowed;
-  preserve optional keys that already have runtime defaults.
-
-Files to change:
-
-- `es-ESS.py`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Extend `tests/test_config_migration.py` for missing `[Common]`, missing or
-  malformed `ConfigVersion`, and malformed bootstrap values using the existing
-  hardware-free loading pattern.
-
-Expected coverage:
-
-- Proves structural faults never create a half-initialized runtime; existing
-  valid and legacy configurations remain accepted.
-
-Manual validation:
-
-Hardware not needed; optional log-only staging check.
-
-Manual test steps:
-
-1. Remove `ConfigVersion` in a staging config.
-2. Confirm one clear startup failure and no service/MQTT initialization.
-
-Risks and dependencies:
-
-- Declaring too many keys mandatory would break compatible configurations.
-- No other item must land first.
-
-Open questions:
-
-- Finalize the minimal bootstrap-key list from actual unconditional reads; do
-  not make service-specific optional settings globally mandatory.
-
-Done criteria:
-
-- Missing/malformed bootstrap configuration exits cleanly before side effects.
 - Full unittest suite passes.
 
 ### P2 - Add Freshness Guard For Battery-Assist SOC
@@ -1942,8 +1995,8 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-7. P2 fail closed on structural configuration errors — prevent partially
-   initialized safety-sensitive runtimes.
+26. P1 prevent Wattpilot phase commands during Manual startup — close the
+    production-observed telemetry-order race before other controller work.
 8. P2 add freshness guard for battery-assist SOC — fail closed when the SOC
    used by assist or battery-priority bypass is stale.
 9. P2 define safe control for unclassified charging model statuses — obtain

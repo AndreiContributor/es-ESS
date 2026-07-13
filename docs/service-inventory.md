@@ -27,11 +27,15 @@ imported by module/class name, created, and then initialized through the common
 - `initFinalize()`
 
 Before MQTT, D-Bus, or service initialization, `_validateConfiguration()`
-applies version migrations and validates bounded/cross-field Wattpilot values,
-positive service update intervals, and positive device polling intervals. Any
-invalid configured values are logged together at CRITICAL level and startup
-exits with status 1; optional sections and settings that already have runtime
-defaults remain compatible when absent.
+rejects missing, unreadable, or malformed configuration files before applying
+version migrations. Startup then verifies the mandatory `[Common]`, `[Mqtt]`,
+and active `[Services]` bootstrap keys and their conversion types before
+constructing MQTT clients, threads, D-Bus services, or integration services.
+It also validates bounded/cross-field Wattpilot values, positive service update
+intervals, and positive device polling intervals. Invalid bootstrap values are
+logged together at CRITICAL level and startup exits with status 1; optional
+sections and settings that already have runtime defaults remain compatible when
+absent.
 
 Before constructing the runtime at all, `RuntimeCompatibility.py` also requires
 the GX device to report the exact supported clean Venus OS release, `v3.75`. A

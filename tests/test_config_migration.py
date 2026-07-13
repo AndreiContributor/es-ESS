@@ -113,6 +113,78 @@ class ConfigMigrationTests(unittest.TestCase):
             backup_names = sorted(path.name for path in tmp_path.glob("config.ini.v*.backup"))
             return migrated, backup_names
 
+    def _run_invalid_configuration(self, config_text=None):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            if config_text is not None:
+                (tmp_path / "config.ini").write_text(
+                    textwrap.dedent(config_text).strip() + "\n", encoding="utf-8"
+                )
+
+            app = self.es_ess.esESS.__new__(self.es_ess.esESS)
+            with patch.object(
+                self.es_ess.os.path,
+                "realpath",
+                return_value=str(tmp_path / "es-ESS.py"),
+            ), patch.object(self.es_ess, "c") as critical:
+                with self.assertRaises(SystemExit) as raised:
+                    app._validateConfiguration()
+
+            self.assertEqual(raised.exception.code, 1)
+            return [call.args[1] for call in critical.call_args_list]
+
+    def test_missing_configuration_file_fails_cleanly(self):
+        messages = self._run_invalid_configuration()
+
+        self.assertEqual(len(messages), 1)
+        self.assertIn("file was not found or could not be read", messages[0])
+
+    def test_missing_common_section_fails_cleanly(self):
+        messages = self._run_invalid_configuration(
+            """
+            [Mqtt]
+            Host=localhost
+            """
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertIn("missing mandatory [Common] section", messages[0])
+
+    def test_missing_config_version_fails_cleanly(self):
+        messages = self._run_invalid_configuration(
+            """
+            [Common]
+            LogLevel=INFO
+            """
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertIn("missing mandatory [Common] ConfigVersion", messages[0])
+
+    def test_malformed_config_version_fails_cleanly(self):
+        for value in ("ten", "10.5"):
+            with self.subTest(value=value):
+                messages = self._run_invalid_configuration(
+                    """
+                    [Common]
+                    ConfigVersion={0}
+                    """.format(value)
+                )
+
+                self.assertEqual(len(messages), 1)
+                self.assertIn("ConfigVersion must be an integer", messages[0])
+
+    def test_malformed_ini_fails_cleanly(self):
+        messages = self._run_invalid_configuration(
+            """
+            [Common
+            ConfigVersion=10
+            """
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertIn("unable to read", messages[0])
+
     def test_existing_later_sections_do_not_break_version_6_migration(self):
         migrated, backups = self._run_migration(
             """
@@ -280,6 +352,113 @@ class ConfigValueValidationTests(unittest.TestCase):
 
         wattpilot["BatteryAssistSocMin"] = "100"
         app._validateConfigValues()
+
+    def test_maintained_sample_passes_runtime_bootstrap_validation(self):
+        app = self._app_with_sample_config()
+
+        app._validateRuntimeBootstrap()
+
+    def test_runtime_bootstrap_aggregates_missing_structure(self):
+        app = self._app_with_sample_config()
+        app.config.remove_option("Common", "NumberOfThreads")
+        app.config.remove_section("Mqtt")
+        app.config.remove_option("Services", "MqttExporter")
+
+        with patch.object(self.es_ess, "c") as critical:
+            with self.assertRaises(SystemExit) as raised:
+                app._validateRuntimeBootstrap()
+
+        self.assertEqual(raised.exception.code, 1)
+        messages = [call.args[1] for call in critical.call_args_list]
+        self.assertEqual(len(messages), 3)
+        self.assertTrue(any("NumberOfThreads" in message for message in messages))
+        self.assertTrue(any("[Mqtt] section" in message for message in messages))
+        self.assertTrue(any("MqttExporter" in message for message in messages))
+
+    def test_runtime_bootstrap_aggregates_malformed_types(self):
+        app = self._app_with_sample_config()
+        app.config["Common"]["LogLevel"] = "LOUD"
+        app.config["Common"]["NumberOfThreads"] = "many"
+        app.config["Common"]["ServiceMessageCount"] = "many"
+        app.config["Common"]["DefaultPowerSetPoint"] = "nan"
+        app.config["Mqtt"]["Port"] = "mqtt"
+        app.config["Mqtt"]["SslEnabled"] = "perhaps"
+        app.config["Mqtt"]["ThrottlePeriod"] = "soon"
+        app.config["Services"]["FroniusWattpilot"] = "perhaps"
+
+        with patch.object(self.es_ess, "c") as critical:
+            with self.assertRaises(SystemExit) as raised:
+                app._validateRuntimeBootstrap()
+
+        self.assertEqual(raised.exception.code, 1)
+        messages = [call.args[1] for call in critical.call_args_list]
+        self.assertEqual(len(messages), 8)
+        for key in (
+            "LogLevel",
+            "NumberOfThreads",
+            "ServiceMessageCount",
+            "DefaultPowerSetPoint",
+            "Port",
+            "SslEnabled",
+            "ThrottlePeriod",
+            "FroniusWattpilot",
+        ):
+            self.assertTrue(any(key in message for message in messages), key)
+
+    def test_constructor_reraises_unexpected_initialization_failure(self):
+        with patch.object(
+            self.es_ess.RuntimeCompatibility,
+            "require_validated_venus_os",
+            return_value="v3.75",
+        ), patch.object(
+            self.es_ess.esESS,
+            "_validateConfiguration",
+            side_effect=RuntimeError("configuration failed"),
+        ), patch.object(self.es_ess, "c") as critical:
+            with self.assertRaisesRegex(RuntimeError, "configuration failed"):
+                self.es_ess.esESS()
+
+        critical.assert_called_once()
+
+    def test_constructor_stops_before_wait_for_invalid_bootstrap(self):
+        invalid_config = self._sample_config()
+        invalid_config.remove_option("Common", "NumberOfThreads")
+
+        def load_invalid_config(app):
+            app.config = invalid_config
+
+        with patch.object(
+            self.es_ess.RuntimeCompatibility,
+            "require_validated_venus_os",
+            return_value="v3.75",
+        ), patch.object(
+            self.es_ess.esESS,
+            "_validateConfiguration",
+            autospec=True,
+            side_effect=load_invalid_config,
+        ), patch.object(
+            self.es_ess.Helper, "waitTimeout"
+        ) as wait_timeout, patch.object(self.es_ess, "c"):
+            with self.assertRaises(SystemExit) as raised:
+                self.es_ess.esESS()
+
+        self.assertEqual(raised.exception.code, 1)
+        wait_timeout.assert_not_called()
+
+    def test_main_reraises_runtime_construction_failure(self):
+        with patch.object(
+            self.es_ess.RuntimeCompatibility,
+            "require_validated_venus_os",
+            return_value="v3.75",
+        ), patch.object(
+            self.es_ess,
+            "esESS",
+            side_effect=RuntimeError("construction failed"),
+        ), patch.object(self.es_ess, "c") as critical:
+            with self.assertRaisesRegex(RuntimeError, "construction failed"):
+                self.es_ess.main(self._sample_config())
+
+        critical.assert_called_once()
 
     def test_disabled_battery_assist_allows_zero_max_seconds(self):
         app = self._app_with_sample_config()
