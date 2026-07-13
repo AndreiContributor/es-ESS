@@ -337,6 +337,11 @@ Future Wattpilot changes must preserve these invariants:
   They must not be treated as a generic mode-expiry timeout or independently
   widen Wattpilot command authority without hardware evidence and an approved
   controller policy.
+- A newly received raw `lmo` transition bypasses the disconnected five-minute
+  idle-report throttle and is mapped by the normal controller worker on its
+  next five-second cycle. WebSocket callbacks remain command-free and do not
+  publish D-Bus or MQTT directly. After the transition is correlated and
+  published, unchanged disconnected state returns to the idle cadence.
 
 ## Refactoring Guidance
 

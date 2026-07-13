@@ -529,6 +529,10 @@ Wattpilot `lmo` changes and the matching `/ModeLiteral` publication. These
 timestamps are observation-only: they do not expire a stable ECO session,
 authorize a command, or change Manual ownership. The production health monitor
 collects the matching mode-boundary events for vehicle-disconnected validation.
+When a raw mode transition arrives while the vehicle is disconnected, it
+bypasses the normal five-minute idle-report throttle and is reflected on
+`/ModeLiteral` by the next five-second controller cycle. Unchanged disconnected
+state remains on the low-frequency idle cadence.
 
 > :warning: **FAKE-BMS injection**:<br /> This feature is creating FAKE-BMS information on dbus. Make sure to manually select your *actual* BMS unter *Settings > System setup > Battery Monitor* else your ESS may not behave correctly anymore. Don't leave this setting to *Automatic*
 

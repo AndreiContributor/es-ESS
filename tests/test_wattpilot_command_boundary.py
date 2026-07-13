@@ -250,6 +250,105 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
 
         info_log.assert_not_called()
 
+    def _prepare_disconnected_idle_update(self, controller):
+        controller.wattpilot.connected = True
+        controller.wattpilot.carStateReady = True
+        controller.wattpilot.carConnected = False
+        controller.wattpilot.power = 0
+        controller.wattpilot.modelStatus = SimpleNamespace(value=1)
+        controller.updateWattpilotTransportDashboardStatus = Mock(return_value=False)
+        controller.refreshWattpilotFirmwareCompatibility = Mock(return_value=True)
+        controller.updateEffectiveCarConnection = Mock(return_value=False)
+        controller.isIdleMode = True
+        controller.isHibernateEnabled = False
+        controller.lastVarDump = 100.0
+        controller.reportStartStopValue = Mock()
+        controller.publishSafetyTelemetry = Mock()
+        controller.gridTelemetryIsFresh = Mock(return_value=True)
+        controller.selectControlState = Mock(
+            return_value=(
+                self.fwp.ControlStates.WattpilotControlState.DISCONNECTED,
+                None,
+                None,
+            )
+        )
+        controller.dispatchControlState = Mock(return_value=True)
+        controller.reportBaseRequest = Mock()
+        controller.publish = Mock(
+            side_effect=lambda path, value: controller.dbusService.__setitem__(
+                path, value
+            )
+        )
+        controller.dumpEvChargerInfo = controller.reportModeTelemetry
+
+    def test_disconnected_manual_transition_bypasses_idle_throttle_once(self):
+        controller = self._controller()
+        self._prepare_disconnected_idle_update(controller)
+        controller.mode = self.fwp.VrmEvChargerControlMode.Auto
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+        controller.wattpilot.modeChangedAt = 200.25
+        controller.wattpilot.modeUpdatedAt = 200.25
+        controller._lastPublishedModeDiagnostic = (
+            self.fwp.WattpilotControlMode.ECO,
+            150.0,
+            self.fwp.VrmEvChargerControlMode.Auto,
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=205.0):
+            controller._update()
+
+        self.assertEqual(
+            controller.dbusService["/ModeLiteral"],
+            self.fwp.VrmEvChargerControlMode.Manual.name,
+        )
+        controller.wattpilot.set_phases.assert_called_once_with(0)
+        controller.wattpilot.set_power.assert_called_once_with(
+            controller.getEffectiveMaxCurrent()
+        )
+        controller.dispatchControlState.assert_called_once()
+        self.assertEqual(controller.lastVarDump, 205.0)
+        self.assertFalse(controller.modeTelemetryNeedsControllerCycle())
+
+        controller.wattpilot.set_phases.reset_mock()
+        controller.wattpilot.set_power.reset_mock()
+        controller.dispatchControlState.reset_mock()
+        controller.publish.reset_mock()
+
+        with patch.object(self.fwp.time, "time", return_value=210.0):
+            controller._update()
+
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+        controller.dispatchControlState.assert_not_called()
+        controller.publish.assert_not_called()
+        self.assertEqual(controller.lastVarDump, 205.0)
+
+    def test_disconnected_eco_transition_publishes_without_commands(self):
+        controller = self._controller()
+        self._prepare_disconnected_idle_update(controller)
+        controller.mode = self.fwp.VrmEvChargerControlMode.Manual
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.ECO
+        controller.wattpilot.modeChangedAt = 300.5
+        controller.wattpilot.modeUpdatedAt = 300.5
+        controller._lastPublishedModeDiagnostic = (
+            self.fwp.WattpilotControlMode.Default,
+            250.0,
+            self.fwp.VrmEvChargerControlMode.Manual,
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=305.0):
+            controller._update()
+
+        self.assertEqual(
+            controller.dbusService["/ModeLiteral"],
+            self.fwp.VrmEvChargerControlMode.Auto.name,
+        )
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+        controller.dispatchControlState.assert_called_once()
+        self.assertFalse(controller.modeTelemetryNeedsControllerCycle())
+
     def test_eco_mode_accepts_direct_current_and_start_stop_writes(self):
         controller = self._controller()
 

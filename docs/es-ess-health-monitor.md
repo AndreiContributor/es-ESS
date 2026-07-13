@@ -125,6 +125,12 @@ then provides two es-ESS timestamps:
 - `Published Wattpilot mode telemetry` is the controller's matching
   `/ModeLiteral` publication.
 
+The matching publication should follow on the next five-second controller
+cycle even while the vehicle is disconnected. Production diagnosis on
+2026-07-13 established that raw `lmo` changed promptly but the prior idle path
+could defer `/ModeLiteral` for up to five minutes. The controller now bypasses
+that idle throttle only for an unpublished raw mode transition.
+
 Repeat once through the local/hotspot app path and once through remote/cloud
 access when both are available. The timestamps are diagnostic facts only; they
 do not expire an otherwise stable ECO session or authorize any Wattpilot
