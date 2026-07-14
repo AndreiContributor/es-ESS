@@ -95,20 +95,36 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ### Completed 2026-07-13 - Add Freshness Guard For Battery-Assist SOC
 
-- Added receive-time and finite-value tracking for Wattpilot controller battery
-  SOC with a dedicated, positive `BatterySocFreshSeconds=15` setting. Existing
-  configurations remain compatible through the same runtime default.
-- Missing, invalid, or stale SOC now clears/refuses battery assist and disables
-  the EV-priority battery-reservation bypass for that cycle. Fresh SOC preserves
-  the existing continuation-only thresholds, duration, shortfall, recovery,
-  and phase behavior; Manual charging remains unchanged.
+- Production GX validation found that unchanged SOC is not periodically
+  republished by either `com.victronenergy.system` or the selected Pylontech
+  service, contradicting the original SOC-callback freshness model. The system
+  service did publish selected-battery power activity 26 times in 30 seconds;
+  the Pylontech service published power activity 23 times in 30 seconds.
+- Corrected the guard to require finite system SOC plus a finite selected-
+  battery `/Dc/Battery/Power` update within the dedicated, positive
+  `BatterySocFreshSeconds=15` window. Existing configurations retain the same
+  default. A perfectly unchanged power value can conservatively disable the
+  features, but cannot authorize charging from stale evidence.
+- Missing or invalid SOC, or a missing, invalid, or stale battery-activity
+  heartbeat, clears/refuses battery assist and disables the EV-priority
+  battery-reservation bypass for that cycle. Eligible inputs preserve the
+  existing continuation-only thresholds, duration, shortfall, recovery, and
+  phase behavior; Manual charging remains unchanged.
 - Documented the fail-closed SOC contract in the maintained sample, README,
   Wattpilot architecture, read-only health monitor, and HTML system guide.
-- Added hardware-free fresh/boundary/stale/missing/invalid SOC, missing initial
-  D-Bus default, active-assist clearing, reservation-bypass, compatible-default,
-  and invalid-config regressions. All 283 tests, changed-file Python syntax,
-  shell syntax, and whitespace checks passed.
-- Supervised SOC-telemetry interruption during a naturally eligible active
+- Added hardware-free valid/invalid SOC, fresh/boundary/stale/invalid battery
+  heartbeat, unchanged-SOC recovery, missing initial D-Bus defaults,
+  active-assist clearing, reservation-bypass, compatible-default, and invalid-
+  config regressions. All 284 tests, application/test Python syntax, shell
+  syntax, and whitespace checks passed.
+- Live GX validation on 2026-07-14 observed 36 selected-battery power updates
+  in 45 seconds with a maximum 2.979-second gap, well inside the configured
+  15-second window. With SOC unchanged at 74%, an already-running one-phase
+  Auto/Eco charge sustained battery assist for at least 75 seconds across
+  34-321 W shortfalls while the grid remained at net export. This confirms the
+  corrected heartbeat prevents false SOC expiry without changing the bounded,
+  continuation-only assist contract.
+- Supervised battery-heartbeat interruption during a naturally eligible active
   Auto/Eco charge remains a manual fault-simulation follow-up.
 
 ### Completed 2026-07-13 - Fix Delayed Wattpilot Mode Telemetry At The Manual Boundary

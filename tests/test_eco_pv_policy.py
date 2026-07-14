@@ -246,8 +246,9 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         controller.batterySocDbus = SimpleNamespace(value=80)
         controller.batterySocValid = True
-        controller.batterySocUpdatedAt = 100
         controller.batteryPowerDbus = SimpleNamespace(value=0)
+        controller.batteryTelemetryValid = True
+        controller.batteryTelemetryUpdatedAt = 100
         controller.gridL1Dbus = SimpleNamespace(value=0)
         controller.gridL2Dbus = SimpleNamespace(value=0)
         controller.gridL3Dbus = SimpleNamespace(value=0)
@@ -636,12 +637,13 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         self.assertTrue(controller.batteryAssistActive)
 
-    def test_battery_soc_accepts_only_fresh_finite_telemetry(self):
+    def test_battery_soc_requires_valid_soc_and_fresh_battery_activity(self):
         controller = self._controller()
 
         with patch.object(self.fwp.time, "time", return_value=100):
             controller.batterySocDbus.value = 80
             controller.onBatterySocTelemetry(controller.batterySocDbus)
+            controller.onBatteryPowerTelemetry(controller.batteryPowerDbus)
             self.assertEqual(controller.batterySoc(), 80)
 
         with patch.object(self.fwp.time, "time", return_value=115):
@@ -650,15 +652,31 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         with patch.object(self.fwp.time, "time", return_value=115.001):
             self.assertIsNone(controller.batterySoc())
 
+        with patch.object(self.fwp.time, "time", return_value=116):
+            controller.onBatteryPowerTelemetry(controller.batteryPowerDbus)
+            self.assertEqual(controller.batterySoc(), 80)
+
         for value in (None, "invalid", float("nan"), float("inf")):
             with self.subTest(value=value), patch.object(
                 self.fwp.time, "time", return_value=120
             ):
+                controller.onBatteryPowerTelemetry(controller.batteryPowerDbus)
                 controller.batterySocDbus.value = value
                 controller.onBatterySocTelemetry(controller.batterySocDbus)
                 self.assertIsNone(controller.batterySoc())
 
-    def test_stale_soc_clears_active_battery_assist(self):
+    def test_invalid_battery_activity_makes_soc_ineligible(self):
+        controller = self._controller()
+
+        for value in (None, "invalid", float("nan"), float("inf")):
+            with self.subTest(value=value), patch.object(
+                self.fwp.time, "time", return_value=100
+            ):
+                controller.batteryPowerDbus.value = value
+                controller.onBatteryPowerTelemetry(controller.batteryPowerDbus)
+                self.assertIsNone(controller.batterySoc())
+
+    def test_stale_battery_activity_clears_active_battery_assist(self):
         controller = self._controller()
         controller.wattpilot.power = 2.3
 
@@ -699,6 +717,8 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             with self.subTest(value=value), patch.object(
                 self.fwp.time, "time", return_value=120
             ):
+                controller.batteryPowerDbus.value = 0
+                controller.onBatteryPowerTelemetry(controller.batteryPowerDbus)
                 controller.batterySocDbus.value = value
                 controller.onBatterySocTelemetry(controller.batterySocDbus)
                 self.assertFalse(controller.shouldIgnoreBatteryReservation())
@@ -980,7 +1000,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         with patch.object(self.fwp.time, "time", return_value=100):
             self.assertTrue(controller.startOrContinueBatteryAssist(2000))
         with patch.object(self.fwp.time, "time", return_value=399):
-            controller.recordBatterySocTelemetry(80)
+            controller.recordBatteryPowerTelemetry(0)
             self.assertTrue(controller.startOrContinueBatteryAssist(2000))
         with patch.object(self.fwp.time, "time", return_value=400):
             self.assertFalse(controller.startOrContinueBatteryAssist(2000))

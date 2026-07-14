@@ -219,8 +219,9 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         )
         controller.batterySocDbus = SimpleNamespace(value=80)
         controller.batterySocValid = True
-        controller.batterySocUpdatedAt = self.fwp.time.time()
         controller.batteryPowerDbus = SimpleNamespace(value=0)
+        controller.batteryTelemetryValid = True
+        controller.batteryTelemetryUpdatedAt = self.fwp.time.time()
         controller.gridL1Dbus = SimpleNamespace(value=0)
         controller.gridL2Dbus = SimpleNamespace(value=0)
         controller.gridL3Dbus = SimpleNamespace(value=0)
@@ -658,10 +659,10 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.wattpilot.power = 2.0
 
         with patch.object(self.fwp.time, "time", return_value=100):
-            controller.recordBatterySocTelemetry(80)
+            controller.recordBatteryPowerTelemetry(0)
             self.assertTrue(controller.startOrContinueBatteryAssist(1000))
         with patch.object(self.fwp.time, "time", return_value=399):
-            controller.recordBatterySocTelemetry(80)
+            controller.recordBatteryPowerTelemetry(0)
             self.assertTrue(controller.startOrContinueBatteryAssist(1000))
         with patch.object(self.fwp.time, "time", return_value=400):
             self.assertFalse(controller.startOrContinueBatteryAssist(1000))
@@ -1044,6 +1045,14 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         self.assertEqual(
             soc_subscription.callback.__func__,
             controller.onBatterySocTelemetry.__func__,
+        )
+
+        power_subscription = subscriptions[1]
+        self.assertEqual(power_subscription.dbusPath, "/Dc/Battery/Power")
+        self.assertIsNone(power_subscription.initialValueDefault)
+        self.assertEqual(
+            power_subscription.callback.__func__,
+            controller.onBatteryPowerTelemetry.__func__,
         )
 
     def test_invalid_allowance_message_invalidates_previous_allowance(self):

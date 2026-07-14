@@ -297,8 +297,12 @@ Future Wattpilot changes must preserve these invariants:
   charge and must remain bounded by SOC, duration, shortfall, and recovery
   settings.
 - Battery assist and the EV-priority battery-reservation bypass require valid
-  battery SOC received within `BatterySocFreshSeconds`. Missing, invalid, or
-  stale SOC fails closed for both features and does not change Manual charging.
+  finite system SOC plus selected-battery activity within
+  `BatterySocFreshSeconds`. Venus OS does not periodically republish unchanged
+  SOC, so finite `/Dc/Battery/Power` updates from `com.victronenergy.system`
+  provide the liveness heartbeat for its cached SOC. Missing or invalid SOC,
+  or a missing, invalid, or stale heartbeat, fails closed for both features
+  and does not change Manual charging.
 - Battery assist must not start a charge, create a phase-up candidate, or issue
   a switch to three phases. An eligible continuation bridge may intentionally
   leave an already-existing one-to-three candidate timer unchanged; fresh

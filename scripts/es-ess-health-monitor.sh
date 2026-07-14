@@ -45,21 +45,26 @@ read_first_line() {
     fi
 }
 
-dbus_get() {
-    path="$1"
+dbus_get_from() {
+    service="$1"
+    path="$2"
     if ! command_exists dbus
     then
         echo "unavailable: dbus command missing"
         return
     fi
 
-    value="$(dbus -y "$WATTPILOT_DBUS_SERVICE" "$path" GetValue 2>/dev/null | tr -d "'")"
+    value="$(dbus -y "$service" "$path" GetValue 2>/dev/null | tr -d "'")"
     if [ -n "$value" ]
     then
         echo "$value"
     else
         echo "unavailable"
     fi
+}
+
+dbus_get() {
+    dbus_get_from "$WATTPILOT_DBUS_SERVICE" "$1"
 }
 
 check_python_dependencies() {
@@ -173,6 +178,20 @@ print_wattpilot_dbus() {
     done
 }
 
+print_system_battery_dbus() {
+    echo
+    echo "-- Selected system-battery D-Bus snapshot --"
+    echo "Repeated samples should show /Dc/Battery/Power changing inside BatterySocFreshSeconds."
+
+    for path in \
+        /ActiveBatteryService \
+        /Dc/Battery/Soc \
+        /Dc/Battery/Power
+    do
+        print_kv "$path" "$(dbus_get_from com.victronenergy.system "$path")"
+    done
+}
+
 print_log_health() {
     echo
     echo "-- Recent log health --"
@@ -238,6 +257,7 @@ run_sample() {
     print_runtime
     print_disk
     print_config
+    print_system_battery_dbus
     print_wattpilot_dbus
     print_log_health
     print_interpretation_hint
