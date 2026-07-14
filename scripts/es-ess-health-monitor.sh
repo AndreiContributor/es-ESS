@@ -45,21 +45,26 @@ read_first_line() {
     fi
 }
 
-dbus_get() {
-    path="$1"
+dbus_get_from() {
+    service="$1"
+    path="$2"
     if ! command_exists dbus
     then
         echo "unavailable: dbus command missing"
         return
     fi
 
-    value="$(dbus -y "$WATTPILOT_DBUS_SERVICE" "$path" GetValue 2>/dev/null | tr -d "'")"
+    value="$(dbus -y "$service" "$path" GetValue 2>/dev/null | tr -d "'")"
     if [ -n "$value" ]
     then
         echo "$value"
     else
         echo "unavailable"
     fi
+}
+
+dbus_get() {
+    dbus_get_from "$WATTPILOT_DBUS_SERVICE" "$1"
 }
 
 check_python_dependencies() {
@@ -139,7 +144,7 @@ print_config() {
         return
     fi
 
-    grep -E '^(FroniusWattpilot|SolarOverheadDistributor|AllowGridCharging|MinCurrentPerPhase|MaxCurrentPerPhase|ThreePhasePvSurplusStartW|ThreePhasePvSurplusStopW|MinOnOffSeconds|MinPhaseSwitchSeconds|BatteryAssistEnabled|BatteryAssistSocMin|BatteryAssistMaxSeconds|BatteryAssistMaxShortfallW|BatteryAssistRecoverySeconds|GridImportPositive)=' "$CONFIG_FILE" 2>/dev/null || echo "No selected config values found"
+    grep -E '^(FroniusWattpilot|SolarOverheadDistributor|AllowGridCharging|MinCurrentPerPhase|MaxCurrentPerPhase|ThreePhasePvSurplusStartW|ThreePhasePvSurplusStopW|MinOnOffSeconds|MinPhaseSwitchSeconds|BatteryAssistEnabled|BatteryAssistSocMin|BatteryAssistMaxSeconds|BatteryAssistMaxShortfallW|BatterySocFreshSeconds|BatteryAssistRecoverySeconds|GridImportPositive)=' "$CONFIG_FILE" 2>/dev/null || echo "No selected config values found"
 }
 
 print_wattpilot_dbus() {
@@ -173,6 +178,20 @@ print_wattpilot_dbus() {
     done
 }
 
+print_system_battery_dbus() {
+    echo
+    echo "-- Selected system-battery D-Bus snapshot --"
+    echo "Repeated samples should show /Dc/Battery/Power changing inside BatterySocFreshSeconds."
+
+    for path in \
+        /ActiveBatteryService \
+        /Dc/Battery/Soc \
+        /Dc/Battery/Power
+    do
+        print_kv "$path" "$(dbus_get_from com.victronenergy.system "$path")"
+    done
+}
+
 print_log_health() {
     echo
     echo "-- Recent log health --"
@@ -201,6 +220,16 @@ print_log_health() {
     else
         echo "No recent Wattpilot safety/control events in last $LOG_LINES log lines"
     fi
+
+    echo
+    echo "-- Recent Wattpilot mode-boundary events --"
+    mode_events="$(tail -n "$LOG_LINES" "$LOG_FILE" 2>/dev/null | grep -E 'Wattpilot mode telemetry changed|Published Wattpilot mode telemetry|Manual mode selected' | tail -n "$EVENT_LINES")"
+    if [ -n "$mode_events" ]
+    then
+        echo "$mode_events"
+    else
+        echo "No recent Wattpilot mode-boundary events in last $LOG_LINES log lines"
+    fi
 }
 
 print_interpretation_hint() {
@@ -213,6 +242,7 @@ print_interpretation_hint() {
     echo "  - TelemetryHealthy is 1 during Auto/Eco decisions."
     echo "  - GridImportGuardActive stays 0 during normal no-grid operation."
     echo "  - BatteryAssistActive is bounded and later recovers."
+    echo "  - Raw lmo change and /ModeLiteral publication timestamps follow in the expected order."
     echo
     echo "Stop and inspect immediately if:"
     echo "  - Service is down or restarting repeatedly."
@@ -227,6 +257,7 @@ run_sample() {
     print_runtime
     print_disk
     print_config
+    print_system_battery_dbus
     print_wattpilot_dbus
     print_log_health
     print_interpretation_hint

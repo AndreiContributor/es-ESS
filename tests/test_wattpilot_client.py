@@ -8,6 +8,7 @@ import types
 import unittest
 from enum import Enum
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,6 +97,7 @@ def _install_wattpilot_client_stubs(info_messages=None, debug_messages=None):
     class WattpilotControlMode(Enum):
         Default = 3
         ECO = 4
+        NextTrip = 5
 
     class WattpilotModelStatus(Enum):
         Idle = 1
@@ -236,6 +238,77 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
         )
 
         self.assertEqual(client.awattarCurrentPrice, 0.42)
+
+    def test_mode_telemetry_records_receive_and_change_timestamps(self):
+        info_messages = []
+        _install_wattpilot_client_stubs(info_messages=info_messages)
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_mode_timestamp_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+
+        with patch.object(wattpilot_module.time, "time", return_value=100.25):
+            client._Wattpilot__on_message(
+                client._wsapp,
+                json.dumps(
+                    {
+                        "type": "fullStatus",
+                        "partial": False,
+                        "status": {"lmo": 4},
+                    }
+                ),
+            )
+
+        self.assertEqual(client.mode, wattpilot_module.WattpilotControlMode.ECO)
+        self.assertEqual(client.modeUpdatedAt, 100.25)
+        self.assertEqual(client.modeChangedAt, 100.25)
+        mode_messages = [
+            message
+            for message in info_messages
+            if "Wattpilot mode telemetry changed" in message
+        ]
+        self.assertIn("raw lmo=4", mode_messages[-1])
+        self.assertIn("mode=ECO", mode_messages[-1])
+        self.assertIn("received_at_epoch=100.250", mode_messages[-1])
+
+        with patch.object(wattpilot_module.time, "time", return_value=105.5):
+            client._Wattpilot__on_message(
+                client._wsapp,
+                json.dumps(
+                    {"type": "deltaStatus", "status": {"lmo": 4}}
+                ),
+            )
+
+        self.assertEqual(client.modeUpdatedAt, 105.5)
+        self.assertEqual(client.modeChangedAt, 100.25)
+        mode_messages = [
+            message
+            for message in info_messages
+            if "Wattpilot mode telemetry changed" in message
+        ]
+        self.assertEqual(len(mode_messages), 1)
+
+        with patch.object(wattpilot_module.time, "time", return_value=112.75):
+            client._Wattpilot__on_message(
+                client._wsapp,
+                json.dumps(
+                    {"type": "deltaStatus", "status": {"lmo": 3}}
+                ),
+            )
+
+        self.assertEqual(
+            client.mode, wattpilot_module.WattpilotControlMode.Default
+        )
+        self.assertEqual(client.modeUpdatedAt, 112.75)
+        self.assertEqual(client.modeChangedAt, 112.75)
+        mode_messages = [
+            message
+            for message in info_messages
+            if "Wattpilot mode telemetry changed" in message
+        ]
+        self.assertEqual(len(mode_messages), 2)
+        self.assertIn("previous=ECO", mode_messages[-1])
+        self.assertIn("mode=Default", mode_messages[-1])
 
     def test_command_guard_blocks_every_state_changing_update(self):
         _install_wattpilot_client_stubs()

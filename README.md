@@ -201,6 +201,9 @@ configuration errors are logged at CRITICAL level and startup exits with status
   `ThreePhasePvSurplusStopW` so phase-switch hysteresis is not inverted.
 - `BatteryAssistSocMin` must be within `0..100`. When battery assist is enabled,
   `BatteryAssistMaxSeconds` must be greater than `0`.
+- `BatterySocFreshSeconds` must be greater than `0`; it limits the age of
+  selected-battery activity used to trust the cached SOC. Missing settings in
+  older configurations use the compatible 15-second default.
 - `MinPhaseSwitchSeconds`, `AllowanceDropGraceSeconds`, `SurplusDropGraceSeconds`,
   `CarDisconnectConfirmSeconds`, and `StartupGraceSeconds` must be `0` or
   greater. Existing controller-side minimums still apply where defined.
@@ -524,6 +527,16 @@ Manual and Auto/ECO. When Manual is selected, es-ESS sends a one-time release
 of its previous Auto/Eco phase/current limits, then leaves subsequent Manual
 charging under Wattpilot app/user control.
 
+For diagnosis of externally selected mode delays, es-ESS logs timestamped raw
+Wattpilot `lmo` changes and the matching `/ModeLiteral` publication. These
+timestamps are observation-only: they do not expire a stable ECO session,
+authorize a command, or change Manual ownership. The production health monitor
+collects the matching mode-boundary events for vehicle-disconnected validation.
+When a raw mode transition arrives while the vehicle is disconnected, it
+bypasses the normal five-minute idle-report throttle and is reflected on
+`/ModeLiteral` by the next five-second controller cycle. Unchanged disconnected
+state remains on the low-frequency idle cadence.
+
 > :warning: **FAKE-BMS injection**:<br /> This feature is creating FAKE-BMS information on dbus. Make sure to manually select your *actual* BMS unter *Settings > System setup > Battery Monitor* else your ESS may not behave correctly anymore. Don't leave this setting to *Automatic*
 
 > :warning: **Dependency**:<br /> If you want to enable Solar-Overhead Charging, you need to enable the [SolarOverheadDistributor](#solaroverheaddistributor) as well. (It will be responsible for giving a clearence to Wattpilots charge request)
@@ -551,6 +564,7 @@ charging under Wattpilot app/user control.
 | [FroniusWattpilot] | BatteryAssistSocMin | Minimum battery SOC required before battery assist can be used. Must be within `0..100`. | Number (%) | 50 |
 | [FroniusWattpilot] | BatteryAssistMaxSeconds | Maximum duration for one battery-assist window. Use at least `MinPhaseSwitchSeconds` when battery should be able to bridge the full phase-down waiting interval. Must be greater than `0` when enabled. | Integer (seconds) | 600 |
 | [FroniusWattpilot] | BatteryAssistMaxShortfallW | Maximum PV shortfall that battery assist may bridge for an already-running charge. The maintained 1000 W default bridges small clouds but makes larger deficits reduce current, phase down, or stop earlier instead of leaning heavily on the home battery. | Number (W) | 1000 |
+| [FroniusWattpilot] | BatterySocFreshSeconds | Maximum age of selected-battery activity used to trust the cached SOC for battery assist or the EV-priority battery-reservation bypass. Valid finite SOC and a recent finite `/Dc/Battery/Power` update are both required; otherwise both features are ineligible. Must be greater than `0`. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | BatteryAssistRecoverySeconds | Sustained PV-recovery time required before battery assist can be used again after lockout. | Integer (seconds) | 120 |
 | [FroniusWattpilot] | AllowGridCharging | Allows an already-running Auto/Eco charge to continue despite grid import when PV/battery assistance is insufficient. It never permits a new grid-only start. Victron ESS determines the actual battery/grid energy source. Recommended no-grid mode is `false`. | Boolean | false |
 | [FroniusWattpilot] | GridImportPositive | Site grid-power sign convention. `true` means positive grid power is import. | Boolean | true |
@@ -580,7 +594,7 @@ optional running-session grid fallback:
 - During the three-to-one waiting interval, bounded battery assist may hold the existing phase/current. When `AllowGridCharging=true`, an already-running charge may instead continue despite grid import. Neither fallback can start a session or authorize a phase-up.
 - With `AllowGridCharging=false`, loss of an eligible battery bridge causes an immediate reduction to one phase when fresh PV supports the one-phase minimum; otherwise Auto/Eco stops. This safety response may end the normal phase timer early.
 - After a sustained phase-down interval, es-ESS changes to one phase when fresh PV supports it. If PV is below the one-phase minimum, bounded battery assist or allowed grid fallback may keep the running charge active; without either source, charging stops.
-- Battery assist is optional and may only bridge a short cloud for an **already-running** charge. It is limited by its configured SOC, shortfall-power, duration, and PV-recovery settings; it cannot create a new charging session. The maintained `BatteryAssistMaxShortfallW=1000` default favors daily battery protection: small dips are bridged, while larger deficits reduce current, phase down, or stop earlier. To cover the full phase waiting interval, `BatteryAssistMaxSeconds` must be at least `MinPhaseSwitchSeconds`.
+- Battery assist is optional and may only bridge a short cloud for an **already-running** charge. It is limited by valid SOC, recent selected-battery activity, shortfall-power, duration, and PV-recovery settings; it cannot create a new charging session. Missing or invalid SOC, or a missing, invalid, or older-than-`BatterySocFreshSeconds` `/Dc/Battery/Power` update, clears/refuses assist and also disables the `EvPriorityOverBatteryCharge` reservation bypass for that cycle. The maintained `BatteryAssistMaxShortfallW=1000` default favors daily battery protection: small dips are bridged, while larger deficits reduce current, phase down, or stop earlier. To cover the full phase waiting interval, `BatteryAssistMaxSeconds` must be at least `MinPhaseSwitchSeconds`.
 - Auto/Eco stops when sustained grid import exceeds `GridImportStopW` for `GridImportStopSeconds`. With `AllowGridCharging=false`, Auto/Eco therefore does not intentionally use grid power. Very short transients can still appear before the guard threshold and timer are reached.
 - `MinOnOffSeconds` applies to normal starts and stops. `MinPhaseSwitchSeconds` is the single shared stability and cooldown setting for both phase directions; no-grid safety may still reduce phase or stop earlier when a running deficit cannot be bridged.
 - Normal Wattpilot `Manual` mode remains under the user's control and is not changed by this Auto/Eco policy.
@@ -589,7 +603,7 @@ optional running-session grid fallback:
 
 When `AllowGridCharging=false` (the recommended no-grid configuration), Auto/Eco charging requires valid, fresh grid-power telemetry for all three grid phases. If any L1, L2, or L3 value is missing, invalid, or older than `GridTelemetryFreshSeconds`, es-ESS will not start a new Auto/Eco session and will stop an active Auto/Eco session immediately. This means a grid-meter or D-Bus telemetry outage can stop charging until fresh values recover.
 
-Auto/Eco also requires a valid Wattpilot allowance received within `AllowanceFreshSeconds`. Missing, malformed, or stale allowance is never replaced with raw-overhead data. A running Auto/Eco session uses the existing `AllowanceDropGraceSeconds` debounce before stopping for insufficient or stale allowance. Manual Wattpilot mode remains under the Wattpilot user's control and is not changed by these Auto/Eco freshness guards.
+Auto/Eco also requires a valid Wattpilot allowance received within `AllowanceFreshSeconds`. Missing, malformed, or stale allowance is never replaced with raw-overhead data. A running Auto/Eco session uses the existing `AllowanceDropGraceSeconds` debounce before stopping for insufficient or stale allowance. SOC-dependent battery assist and battery-reservation bypass require valid finite system SOC plus a finite selected-battery `/Dc/Battery/Power` update received within `BatterySocFreshSeconds`. This power path is the liveness heartbeat because unchanged SOC is not periodically republished by Venus OS. Missing or invalid SOC, or missing, invalid, or stale battery activity, fails closed without changing Manual charging. Manual Wattpilot mode remains under the Wattpilot user's control and is not changed by these Auto/Eco freshness guards.
 
 ### Runtime status
 
@@ -639,6 +653,7 @@ BatteryAssistEnabled=true
 BatteryAssistSocMin=60
 BatteryAssistMaxSeconds=600
 BatteryAssistMaxShortfallW=1000
+BatterySocFreshSeconds=15
 BatteryAssistRecoverySeconds=120
 AllowGridCharging=false
 ```
@@ -693,9 +708,11 @@ INTERVAL_SECONDS=10 MAX_SAMPLES=120 /data/es-ESS/scripts/es-ess-health-monitor.s
 
 The script reads service state, Venus OS version, Python dependency imports,
 selected config keys, Wattpilot D-Bus/runtime-status paths, disk usage and
-recent controller logs. It does not write D-Bus, MQTT, config, service state or
-Wattpilot control values. Installation and interpretation steps are documented
-in [docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
+recent controller logs, including raw `lmo` and `/ModeLiteral` transition
+timestamps. It does not write D-Bus, MQTT, config, service state or Wattpilot
+control values. Installation, mode-boundary validation, and interpretation
+steps are documented in
+[docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
 
 ### Low Price Charging. 
 Wattpilot supports the function to charge due to cheap grid prices, you can use the builtin feature as you are used to. es-ESS will then detect,

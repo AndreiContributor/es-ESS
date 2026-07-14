@@ -83,6 +83,9 @@ class FroniusWattpilot (esESSService):
         self.batteryAssistMaxShortfallW = float(
             settings.get("BatteryAssistMaxShortfallW", 3000)
         )
+        self.batterySocFreshSeconds = max(
+            1, int(settings.get("BatterySocFreshSeconds", 15))
+        )
         # After the maximum bridge time is reached, require a sustained period
         # where PV fully covers the active EV demand before battery assist may
         # be used again. This prevents repeated 300-second assist windows
@@ -226,7 +229,10 @@ class FroniusWattpilot (esESSService):
 
         # Populated in initDbusSubscriptions().
         self.batterySocDbus = None
+        self.batterySocValid = False
         self.batteryPowerDbus = None
+        self.batteryTelemetryValid = False
+        self.batteryTelemetryUpdatedAt = 0
         self.gridL1Dbus = None
         self.gridL2Dbus = None
         self.gridL3Dbus = None
@@ -315,10 +321,14 @@ class FroniusWattpilot (esESSService):
 
     def initDbusSubscriptions(self):
         self.batterySocDbus = self.registerDbusSubscription(
-            "com.victronenergy.system", "/Dc/Battery/Soc"
+            "com.victronenergy.system", "/Dc/Battery/Soc",
+            callback=self.onBatterySocTelemetry,
+            initialValueDefault=None,
         )
         self.batteryPowerDbus = self.registerDbusSubscription(
-            "com.victronenergy.system", "/Dc/Battery/Power"
+            "com.victronenergy.system", "/Dc/Battery/Power",
+            callback=self.onBatteryPowerTelemetry,
+            initialValueDefault=None,
         )
         self.gridL1Dbus = self.registerDbusSubscription(
             "com.victronenergy.system", "/Ac/Grid/L1/Power",
@@ -343,6 +353,24 @@ class FroniusWattpilot (esESSService):
         )
         self.registerMqttSubscription(
             self.mqttRawOverheadTopic, callback=self.onMqttMessage
+        )
+
+    def onBatterySocTelemetry(self, subscription):
+        self.recordBatterySocTelemetry(subscription.value)
+
+    def recordBatterySocTelemetry(self, value):
+        """Record whether the selected system-battery SOC is usable."""
+        self.batterySocValid, _ = DecisionInputs.telemetry_sample(
+            value, time.time()
+        )
+
+    def onBatteryPowerTelemetry(self, subscription):
+        self.recordBatteryPowerTelemetry(subscription.value)
+
+    def recordBatteryPowerTelemetry(self, value):
+        """Timestamp selected-battery activity used to trust cached SOC."""
+        self.batteryTelemetryValid, self.batteryTelemetryUpdatedAt = (
+            DecisionInputs.telemetry_sample(value, time.time())
         )
 
     def onGridL1Telemetry(self, subscription):
@@ -856,15 +884,20 @@ class FroniusWattpilot (esESSService):
                 return False
 
             effectiveCarConnected = self.updateEffectiveCarConnection()
+            modeTelemetryPending = self.modeTelemetryNeedsControllerCycle()
 
             # In idle mode the charger is polled only every five minutes. While a
             # car is connected (or briefly disconnecting) we run every five
-            # seconds for PV and safety control.
+            # seconds for PV and safety control. A newly received Wattpilot mode
+            # must also run on that five-second cadence so disconnected Manual
+            # ownership and /ModeLiteral reporting cannot remain stale until the
+            # next idle dump.
             if not (
                 effectiveCarConnected
                 or not self.isIdleMode
                 or self.lastVarDump < (time.time() - 300)
                 or not self.wattpilot.carStateReady
+                or modeTelemetryPending
             ):
                 return
 
@@ -2014,6 +2047,17 @@ class FroniusWattpilot (esESSService):
         )
 
     def batterySoc(self):
+        if not DecisionInputs.timestamped_value_is_fresh(
+            getattr(self, "batteryTelemetryValid", False),
+            getattr(self, "batteryTelemetryUpdatedAt", 0),
+            self.batterySocFreshSeconds,
+            time.time(),
+        ):
+            return None
+
+        if not getattr(self, "batterySocValid", False):
+            return None
+
         return self.dbusValue(self.batterySocDbus, None)
 
     def rawPvOverheadW(self):
@@ -2881,8 +2925,7 @@ class FroniusWattpilot (esESSService):
             if self.wattpilot.power is not None and self.wattpilot.power > 0
             else 0
         )
-        self.publish("/Mode", self.mode.value)
-        self.publish("/ModeLiteral", self.mode.name)
+        self.reportModeTelemetry()
 
         self.publishMainMqtt(
             "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Consumption",
@@ -2920,6 +2963,64 @@ class FroniusWattpilot (esESSService):
         else:
             self.publish("/SetCurrent", amp)
             self.publish("/MaxCurrent", self.getEffectiveMaxCurrent())
+
+    def modeTelemetryDiagnosticKey(self):
+        """Return the raw-to-controller mode transition awaiting publication."""
+        rawMode = getattr(self.wattpilot, "mode", None)
+        if rawMode is None:
+            return None
+
+        mappedMode = (
+            VrmEvChargerControlMode.Auto
+            if rawMode == WattpilotControlMode.ECO
+            else VrmEvChargerControlMode.Manual
+        )
+        return (
+            rawMode,
+            getattr(self.wattpilot, "modeChangedAt", None),
+            mappedMode,
+        )
+
+    def modeTelemetryNeedsControllerCycle(self):
+        """Keep a raw mode transition from being hidden by idle throttling."""
+        diagnosticKey = self.modeTelemetryDiagnosticKey()
+        return (
+            diagnosticKey is not None
+            and diagnosticKey
+            != getattr(self, "_lastPublishedModeDiagnostic", None)
+        )
+
+    def reportModeTelemetry(self):
+        """Publish controller mode and correlate it with raw ``lmo`` receipt."""
+        self.publish("/Mode", self.mode.value)
+        self.publish("/ModeLiteral", self.mode.name)
+
+        diagnosticKey = self.modeTelemetryDiagnosticKey()
+        if diagnosticKey is None:
+            return
+
+        rawMode, changedAt, mappedMode = diagnosticKey
+        if mappedMode != self.mode:
+            return
+
+        updatedAt = getattr(self.wattpilot, "modeUpdatedAt", None)
+        if diagnosticKey == getattr(self, "_lastPublishedModeDiagnostic", None):
+            return
+
+        self._lastPublishedModeDiagnostic = diagnosticKey
+        i(
+            self,
+            "Published Wattpilot mode telemetry: raw lmo={0} ({1}), "
+            "lmo_changed_at_epoch={2}, lmo_received_at_epoch={3}, "
+            "/ModeLiteral={4}, published_at_epoch={5:.3f}.".format(
+                getattr(rawMode, "value", "unavailable"),
+                getattr(rawMode, "name", "unavailable"),
+                "{0:.3f}".format(changedAt) if changedAt is not None else "unavailable",
+                "{0:.3f}".format(updatedAt) if updatedAt is not None else "unavailable",
+                self.mode.name,
+                time.time(),
+            ),
+        )
 
     def publish(self, path, value):
         self.dbusService[path] = value

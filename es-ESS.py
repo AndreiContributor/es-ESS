@@ -356,6 +356,20 @@ class esESS:
                     assist_seconds,
                 )
 
+            battery_soc_fresh_seconds = integer(
+                section, "BatterySocFreshSeconds", 15
+            )
+            if (
+                battery_soc_fresh_seconds is not None
+                and battery_soc_fresh_seconds <= 0
+            ):
+                invalid(
+                    section,
+                    "BatterySocFreshSeconds",
+                    "must be greater than 0",
+                    battery_soc_fresh_seconds,
+                )
+
             for key, default in (
                 ("MinPhaseSwitchSeconds", 600),
                 ("AllowanceDropGraceSeconds", 15),
@@ -751,7 +765,11 @@ class esESS:
             d(self, "Initializing dbus values for first-use.")
             for (key, sublist) in self._dbusSubscriptions.items():
                 for sub in sublist:
-                    v = self._dbusMonitor.get_value(sub.serviceName, sub.dbusPath, 0)
+                    v = self._dbusMonitor.get_value(
+                        sub.serviceName,
+                        sub.dbusPath,
+                        getattr(sub, "initialValueDefault", 0),
+                    )
                     sub.value = v
                     d(self, "{0}{1}: Value is: {2}".format(sub.serviceName, sub.dbusPath, v))
               

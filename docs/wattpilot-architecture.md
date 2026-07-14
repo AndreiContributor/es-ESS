@@ -52,6 +52,8 @@ It owns:
   attempts controlled by `_auto_reconnect` and `_reconnect_interval`.
 - Wattpilot authentication and secure message wrapping.
 - Parsing Wattpilot status messages into local client properties.
+- Recording wall-clock receipt and change timestamps for raw `lmo` mode
+  telemetry so delayed external mode transitions can be diagnosed.
 - Sending direct Wattpilot protocol updates such as `amp`, `frc`, `psm`, and
   `lmo` when the controller asks for them.
 - Enforcing a controller-installed compatibility callback at the common
@@ -94,6 +96,9 @@ It owns:
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
+- Battery-SOC validity and receive-time tracking for battery assist and the
+  EV-priority battery-reservation bypass, delegating pure timestamp freshness
+  evaluation to `WattpilotDecisionInputs.py`.
 - One-phase and three-phase switching orchestration, delegating pure thresholds,
   target-current, distributor-request, and shared bidirectional phase timing
   decisions to
@@ -291,6 +296,13 @@ Future Wattpilot changes must preserve these invariants:
 - Battery assist may only bridge a short PV dip during an already-running
   charge and must remain bounded by SOC, duration, shortfall, and recovery
   settings.
+- Battery assist and the EV-priority battery-reservation bypass require valid
+  finite system SOC plus selected-battery activity within
+  `BatterySocFreshSeconds`. Venus OS does not periodically republish unchanged
+  SOC, so finite `/Dc/Battery/Power` updates from `com.victronenergy.system`
+  provide the liveness heartbeat for its cached SOC. Missing or invalid SOC,
+  or a missing, invalid, or stale heartbeat, fails closed for both features
+  and does not change Manual charging.
 - Battery assist must not start a charge, create a phase-up candidate, or issue
   a switch to three phases. An eligible continuation bridge may intentionally
   leave an already-existing one-to-three candidate timer unchanged; fresh
@@ -337,6 +349,15 @@ Future Wattpilot changes must preserve these invariants:
   command-free. Monitoring tools may read the runtime-status contract, service
   state, selected config values and logs, but must not write Wattpilot, D-Bus,
   MQTT, service or configuration state.
+- Raw `lmo` receipt/change timestamps are diagnostic transport facts only.
+  They must not be treated as a generic mode-expiry timeout or independently
+  widen Wattpilot command authority without hardware evidence and an approved
+  controller policy.
+- A newly received raw `lmo` transition bypasses the disconnected five-minute
+  idle-report throttle and is mapped by the normal controller worker on its
+  next five-second cycle. WebSocket callbacks remain command-free and do not
+  publish D-Bus or MQTT directly. After the transition is correlated and
+  published, unchanged disconnected state returns to the idle cadence.
 
 ## Refactoring Guidance
 
