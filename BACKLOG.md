@@ -633,6 +633,20 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 - Added active-service and timeout/migration tests; focused, compilation, and
   full tests passed. MQTT/orchestration reliability remained separate in PR 4.
 
+### Completed 2026-07-14 - Automatic NPC Atomic Allocation
+
+- Changed only explicitly configured HTTP/MQTT NPC consumers to receive their
+  complete remaining `Request` or zero; scripted consumers retain minimum/step
+  allocation, priority shifting, and existing battery-reservation behavior.
+- Added hardware-free regression coverage for insufficient/exact overhead,
+  partial-state recovery, competing priorities, reservation bypass, MQTT
+  turn-on/turn-off, and the unchanged scripted-consumer path; focused checks
+  and the full 341-test suite passed.
+- Documented that NPC loads are not auto-discovered, how to size `Request`, and
+  why an ineligible higher-priority binary load may be skipped for an eligible
+  lower-priority load. Production validation is optional and not required for
+  this isolated allocator correction.
+
 ## Backlog
 
 #### Implementation record - completed in Group B: Define Safe Grid-Setpoint Bounds
@@ -1081,77 +1095,6 @@ Done criteria:
 
 - Every approved remaining rule is documented, migrated if necessary, and
   enforced before side effects.
-- Full unittest suite passes.
-
-### P4 - Fix Automatic NPC Minimum-To-Request Allocation
-
-Goal:
-
-Allow automatic HTTP/MQTT consumers with `0 < Minimum < Request` to reach their
-turn-on request without consuming an unusable partial allowance indefinitely.
-
-Problem:
-
-Automatic NPC parsing forces `StepSize=Request`. Distribution first grants
-`Minimum`, then rejects the next full-request step because it would exceed the
-request. The allowance remains below the control activation threshold.
-
-Evidence:
-
-- `SolarOverheadDistributor.py:244-267` publishes `StepSize=Request` for HTTP
-  and MQTT consumers.
-- Lines 589-606 grant Minimum first and require `assigned + increment <= request`.
-- HTTP/MQTT control turns on only when allowance reaches request.
-
-Implementation:
-
-- For automatic NPC consumers, cap the next increment to the remaining request
-  or treat the eligible start grant atomically, without changing scripted
-  consumer priority shifting.
-- Characterize current allocation ordering before selecting the smaller fix.
-
-Files to change:
-
-- `SolarOverheadDistributor.py`
-- `README.md` if user-visible allocation behavior is clarified
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Extend distributor tests for `Minimum < Request`, insufficient overhead,
-  exact remaining grant, competing priorities, turn-on, and later turn-off.
-
-Expected coverage:
-
-- Proves an NPC never reserves unusable partial power and scripted allocation
-  remains unchanged.
-
-Manual validation:
-
-Fault simulation with a non-critical automatic consumer.
-
-Manual test steps:
-
-1. Configure `0 < Minimum < Request` with sufficient overhead.
-2. Confirm allowance reaches request and the consumer turns on once.
-
-Risks and dependencies:
-
-- Allocation changes can affect priority fairness; scope strictly to automatic
-  NPC consumers.
-- Land separately from lock/I/O restructuring.
-
-Open questions:
-
-- Prefer a capped remaining increment or a single atomic start grant after
-  reviewing expected Minimum semantics?
-
-Done criteria:
-
-- Eligible NPC consumers reach request without over-allocation or starvation.
 - Full unittest suite passes.
 
 ### P4 - Winter Validate Wattpilot Grid-Import Dispatch Branches
@@ -1862,8 +1805,6 @@ advance the queue on the next request.
     relying on further current or phase-control commissioning guidance.
 9. P2 define safe control for unclassified charging model statuses — obtain
    firmware evidence and encode explicit no-grid-safe mappings.
-22. P4 fix automatic NPC minimum-to-request allocation — correct the isolated
-    allocation edge without changing scripted-consumer priority behavior.
 24. P4 audit and pin the Victron `velib_python` dependency — establish v3.75
    provenance and deterministic import ownership as a separate compatibility
    change.

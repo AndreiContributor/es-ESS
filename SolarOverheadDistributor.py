@@ -595,10 +595,19 @@ class SolarOverheadDistributor(esESSService):
                if assigned >= consumer.request:
                   continue
 
-               # An existing consumer grows in StepSize increments. A consumer
-               # that is currently off must first receive its full Minimum.
+               # HTTP/MQTT NPCs are binary on/off loads. A partial allowance
+               # cannot activate them, so reserve either their complete
+               # remaining request or nothing. Scripted consumers retain the
+               # existing Minimum-first and StepSize allocation contract.
+               isNpcConsumer = (
+                  bool(getattr(consumer, "isHttpConsumer", False))
+                  or bool(getattr(consumer, "isMqttConsumer", False))
+               )
                isNewStart = assigned == 0 and consumer.minimum > 0
-               increment = consumer.minimum if isNewStart else consumer.stepSize
+               if isNpcConsumer:
+                  increment = consumer.request - assigned
+               else:
+                  increment = consumer.minimum if isNewStart else consumer.stepSize
 
                if increment <= 0:
                   continue
@@ -614,17 +623,26 @@ class SolarOverheadDistributor(esESSService):
 
                if availableForConsumer >= increment and assigned + increment <= consumer.request:
                   if consumer.ignoreBatReservation:
-                     reason = (
-                        "raw overhead meets minimum"
-                        if isNewStart
-                        else "raw overhead meets step size"
-                     )
+                     if isNpcConsumer:
+                        reason = "raw overhead meets complete NPC request"
+                     else:
+                        reason = (
+                           "raw overhead meets minimum"
+                           if isNewStart
+                           else "raw overhead meets step size"
+                        )
                   else:
-                     reason = (
-                        "overhead after battery reservation meets minimum"
-                        if isNewStart
-                        else "overhead after battery reservation meets step size"
-                     )
+                     if isNpcConsumer:
+                        reason = (
+                           "overhead after battery reservation meets complete "
+                           "NPC request"
+                        )
+                     else:
+                        reason = (
+                           "overhead after battery reservation meets minimum"
+                           if isNewStart
+                           else "overhead after battery reservation meets step size"
+                        )
 
                   d(
                      "SolarOverheadDistributor",
