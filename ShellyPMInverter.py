@@ -126,49 +126,56 @@ class ShellyPMInverterDevice:
 
             #timeout should be half the poll frequency, so there is time to process.
             meter_r = requests.get(url = URL, timeout=(self.pollFrequencyMs/2000))
-            meter_data = meter_r.json()     
-        
-            # check for Json
-            if not meter_data:
-                e(self.rootService, "Shelly response is not resolvable to JSON.")
-                
-            if (meter_data):
-                self.dbusService['/Connected'] = 1
-                self.dbusService['/StatusCode'] = 7
-                self.connectionErrors = 0
+            meter_data = meter_r.json()
+            if not isinstance(meter_data, dict):
+                raise ValueError("response is not a JSON object")
+            apower = meter_data['apower']
+            voltage = meter_data['voltage']
+            current = meter_data['current']
+            energy_forward = meter_data['aenergy']['total'] / 1000.0
 
-                #All good, evaluate and publish on dbus. 
-                self.dbusService['/Ac/Power'] = meter_data['apower']
-                for x in range(1,4):
-                    if (x != int(self.shellyPhase)):
-                        self.dbusService['/Ac/L' + str(x) + '/Voltage'] = None
-                        self.dbusService['/Ac/L' + str(x) + '/Current'] = None
-                        self.dbusService['/Ac/L' + str(x) + '/Power'] = None
-                        self.dbusService['/Ac/L' + str(x) + '/Energy/Forward'] = None
-                        self.dbusService['/Ac/L' + str(x) + '/Energy/Reverse'] = None
-                
-                self.dbusService['/Ac/L' + self.shellyPhase + '/Voltage'] = meter_data['voltage']
-                self.dbusService['/Ac/L' + self.shellyPhase + '/Current'] = meter_data['current']
-                self.dbusService['/Ac/L' + self.shellyPhase + '/Power'] = meter_data['apower']
-                self.dbusService['/Ac/L' + self.shellyPhase + '/Energy/Forward'] = meter_data['aenergy']['total'] / 1000.0
-                self.dbusService['/Ac/L' + self.shellyPhase + '/Energy/Reverse'] = 0
+            self.dbusService['/Connected'] = 1
+            self.dbusService['/StatusCode'] = 7
+            self.connectionErrors = 0
 
-                self.dbusService['/Ac/Power'] = meter_data['apower']
-                self.dbusService['/Ac/Energy/Forward'] = meter_data['aenergy']['total'] / 1000.0
-            else:
-                #publish null values, so it is clear, that we have issues reading the meter and OS can decide how to handle. 
-                self.publishNone()
+            #All good, evaluate and publish on dbus.
+            self.dbusService['/Ac/Power'] = apower
+            for x in range(1,4):
+                if (x != int(self.shellyPhase)):
+                    self.dbusService['/Ac/L' + str(x) + '/Voltage'] = None
+                    self.dbusService['/Ac/L' + str(x) + '/Current'] = None
+                    self.dbusService['/Ac/L' + str(x) + '/Power'] = None
+                    self.dbusService['/Ac/L' + str(x) + '/Energy/Forward'] = None
+                    self.dbusService['/Ac/L' + str(x) + '/Energy/Reverse'] = None
+                
+            self.dbusService['/Ac/L' + self.shellyPhase + '/Voltage'] = voltage
+            self.dbusService['/Ac/L' + self.shellyPhase + '/Current'] = current
+            self.dbusService['/Ac/L' + self.shellyPhase + '/Power'] = apower
+            self.dbusService['/Ac/L' + self.shellyPhase + '/Energy/Forward'] = energy_forward
+            self.dbusService['/Ac/L' + self.shellyPhase + '/Energy/Reverse'] = 0
+
+            self.dbusService['/Ac/Energy/Forward'] = energy_forward
 
         except requests.exceptions.Timeout as ex:
             w(self.rootService, "Shelly PM ({0}) did not response fast enough to sustain a poll frequency of {1} ms. Please adjust. After 3 failures, null will be published.".format(self.key, self.pollFrequencyMs))
-            self.connectionErrors += 1
+            self.connError()
 
-            if (self.connectionErrors > 3):
-                e(self.rootService, "More than 3 consecutive timeouts. Assuming Shelly {0} PM disconnected.".format(self.key))
-                self.publishNone()
+        except requests.exceptions.RequestException as ex:
+            w(self.rootService, "Shelly PM ({0}) request failed: {1}".format(self.key, ex))
+            self.connError()
+
+        except (KeyError, IndexError, TypeError, ValueError) as ex:
+            e(self.rootService, "Shelly PM ({0}) returned an invalid or incomplete payload: {1}".format(self.key, ex))
+            self.connError()
         
         except Exception as ex:
             c(self.rootService, "Exception", exc_info=ex)
+
+    def connError(self):
+        self.connectionErrors += 1
+        if (self.connectionErrors > 3):
+            e(self.rootService, "More than 3 consecutive failures. Assuming Shelly {0} PM disconnected.".format(self.key))
+            self.publishNone()
     
     def publishNone(self):
         self.dbusService["/Connected"] = 0

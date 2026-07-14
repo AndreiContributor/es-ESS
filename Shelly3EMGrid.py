@@ -123,77 +123,97 @@ class Shelly3EMGrid(esESSService):
             
             #timeout should be half the poll frequency, so there is time to process.
             meter_r = requests.get(url = URL, timeout=(self.pollFrequencyMs/2000))
-            meter_data = meter_r.json()     
-        
-            # check for Json
-            if not meter_data:
-                e(self, "Shelly response is not resolvable to JSON.")
-                
-            if (meter_data):
-                self.dbusService['/Connected'] = 1
-                self.connectionErrors = 0
+            meter_data = meter_r.json()
+            if not isinstance(meter_data, dict):
+                raise ValueError("response is not a JSON object")
+            emeters = meter_data['emeters']
+            if not isinstance(emeters, list) or len(emeters) < 3:
+                raise ValueError("emeters must contain three phases")
 
-                #All good, evaluate and publish on dbus. 
-                self.dbusService['/Ac/Power'] = meter_data['total_power']
-                self.dbusService['/Ac/L1/Voltage'] = meter_data['emeters'][0]['voltage']
-                self.dbusService['/Ac/L2/Voltage'] = meter_data['emeters'][1]['voltage']
-                self.dbusService['/Ac/L3/Voltage'] = meter_data['emeters'][2]['voltage']
-                self.dbusService['/Ac/L1/Current'] = meter_data['emeters'][0]['current']
-                self.dbusService['/Ac/L2/Current'] = meter_data['emeters'][1]['current']
-                self.dbusService['/Ac/L3/Current'] = meter_data['emeters'][2]['current']
-                self.dbusService['/Ac/L1/Power'] = meter_data['emeters'][0]['power']
-                self.dbusService['/Ac/L2/Power'] = meter_data['emeters'][1]['power']
-                self.dbusService['/Ac/L3/Power'] = meter_data['emeters'][2]['power']
+            # Resolve the fields used by this mode before publishing anything.
+            total_power = meter_data['total_power']
+            phase_values = [
+                {
+                    'voltage': emeters[index]['voltage'],
+                    'current': emeters[index]['current'],
+                    'power': emeters[index]['power'],
+                }
+                for index in range(3)
+            ]
+            if self.metering == "Default":
+                for index in range(3):
+                    phase_values[index]['total'] = emeters[index]['total']
+                    phase_values[index]['total_returned'] = emeters[index]['total_returned']
 
-                if (self.metering == "Default"):
-                    self.dbusService['/Ac/L1/Energy/Forward'] = (meter_data['emeters'][0]['total']/1000)
-                    self.dbusService['/Ac/L2/Energy/Forward'] = (meter_data['emeters'][1]['total']/1000)
-                    self.dbusService['/Ac/L3/Energy/Forward'] = (meter_data['emeters'][2]['total']/1000)
-                    self.dbusService['/Ac/L1/Energy/Reverse'] = (meter_data['emeters'][0]['total_returned']/1000) 
-                    self.dbusService['/Ac/L2/Energy/Reverse'] = (meter_data['emeters'][1]['total_returned']/1000) 
-                    self.dbusService['/Ac/L3/Energy/Reverse'] = (meter_data['emeters'][2]['total_returned']/1000) 
+            self.dbusService['/Connected'] = 1
+            self.connectionErrors = 0
 
-                    self.dbusService['/Ac/Energy/Forward'] = (meter_data['emeters'][0]['total']/1000.0) + (meter_data['emeters'][1]['total']/1000.0) + (meter_data['emeters'][2]['total']/1000.0)
-                    self.dbusService['/Ac/Energy/Reverse'] = (meter_data['emeters'][0]['total_returned']/1000.0) + (meter_data['emeters'][1]['total_returned']/1000.0) + (meter_data['emeters'][2]['total_returned']/1000.0)
-                else:
-                    #Net metering. We use our own counters and keep track of correct saldating. 
-                    now = time()
-                    duration = (now - self.lastMeasurement) * 1000.0
-                    self.lastMeasurement = now
+            #All good, evaluate and publish on dbus.
+            self.dbusService['/Ac/Power'] = total_power
+            self.dbusService['/Ac/L1/Voltage'] = phase_values[0]['voltage']
+            self.dbusService['/Ac/L2/Voltage'] = phase_values[1]['voltage']
+            self.dbusService['/Ac/L3/Voltage'] = phase_values[2]['voltage']
+            self.dbusService['/Ac/L1/Current'] = phase_values[0]['current']
+            self.dbusService['/Ac/L2/Current'] = phase_values[1]['current']
+            self.dbusService['/Ac/L3/Current'] = phase_values[2]['current']
+            self.dbusService['/Ac/L1/Power'] = phase_values[0]['power']
+            self.dbusService['/Ac/L2/Power'] = phase_values[1]['power']
+            self.dbusService['/Ac/L3/Power'] = phase_values[2]['power']
 
-                    if (meter_data['total_power'] >=0):
-                        #Consumption
-                        self.energyForwarded += meter_data['total_power'] * (duration/(3600.0*1000.0))
-                    else:
-                        #FeedIn
-                        self.energyReversed += (meter_data['total_power'] * -1) * (duration/(3600.0*1000.0))
+            if (self.metering == "Default"):
+                self.dbusService['/Ac/L1/Energy/Forward'] = (phase_values[0]['total']/1000)
+                self.dbusService['/Ac/L2/Energy/Forward'] = (phase_values[1]['total']/1000)
+                self.dbusService['/Ac/L3/Energy/Forward'] = (phase_values[2]['total']/1000)
+                self.dbusService['/Ac/L1/Energy/Reverse'] = (phase_values[0]['total_returned']/1000)
+                self.dbusService['/Ac/L2/Energy/Reverse'] = (phase_values[1]['total_returned']/1000)
+                self.dbusService['/Ac/L3/Energy/Reverse'] = (phase_values[2]['total_returned']/1000)
 
-                    self.dbusService['/Ac/L1/Energy/Forward'] = None
-                    self.dbusService['/Ac/L2/Energy/Forward'] = None
-                    self.dbusService['/Ac/L3/Energy/Forward'] = None
-                    self.dbusService['/Ac/L1/Energy/Reverse'] = None
-                    self.dbusService['/Ac/L2/Energy/Reverse'] = None
-                    self.dbusService['/Ac/L3/Energy/Reverse'] = None
-
-                    self.dbusService['/Ac/Energy/Forward'] = round(self.energyForwarded / 1000.0, 2)
-                    self.dbusService['/Ac/Energy/Reverse'] = round(self.energyReversed / 1000.0, 2)
-
-                    d(self, "Duration: {dur} -> Counters: F/R: {f}/{r}".format(f=self.energyForwarded, r=self.energyReversed, dur=duration))
+                self.dbusService['/Ac/Energy/Forward'] = sum(value['total'] for value in phase_values)/1000.0
+                self.dbusService['/Ac/Energy/Reverse'] = sum(value['total_returned'] for value in phase_values)/1000.0
             else:
-                #publish null values, so it is clear, that we have issues reading the meter and OS can decide how to handle. 
-                self.publishNone()
+                #Net metering. We use our own counters and keep track of correct saldating.
+                now = time()
+                duration = (now - self.lastMeasurement) * 1000.0
+                self.lastMeasurement = now
 
+                if (total_power >=0):
+                    #Consumption
+                    self.energyForwarded += total_power * (duration/(3600.0*1000.0))
+                else:
+                    #FeedIn
+                    self.energyReversed += (total_power * -1) * (duration/(3600.0*1000.0))
+
+                self.dbusService['/Ac/L1/Energy/Forward'] = None
+                self.dbusService['/Ac/L2/Energy/Forward'] = None
+                self.dbusService['/Ac/L3/Energy/Forward'] = None
+                self.dbusService['/Ac/L1/Energy/Reverse'] = None
+                self.dbusService['/Ac/L2/Energy/Reverse'] = None
+                self.dbusService['/Ac/L3/Energy/Reverse'] = None
+
+                self.dbusService['/Ac/Energy/Forward'] = round(self.energyForwarded / 1000.0, 2)
+                self.dbusService['/Ac/Energy/Reverse'] = round(self.energyReversed / 1000.0, 2)
+
+                d(self, "Duration: {dur} -> Counters: F/R: {f}/{r}".format(f=self.energyForwarded, r=self.energyReversed, dur=duration))
         except requests.exceptions.Timeout as ex:
             w(self, "Shelly 3EM did not response fast enough to sustain a poll frequency of {0} ms. Please adjust. After 3 failures, null will be published.".format(self.pollFrequencyMs))
-            self.connectionErrors += 1
-            #
+            self.connError()
 
-            if (self.connectionErrors > 3):
-                e(self, "More than 3 consecutive timeouts. Assuming Meter disconnected.")
-                self.publishNone()
+        except requests.exceptions.RequestException as ex:
+            w(self, "Shelly 3EM request failed: {0}".format(ex))
+            self.connError()
+
+        except (KeyError, IndexError, TypeError, ValueError) as ex:
+            e(self, "Shelly 3EM returned an invalid or incomplete payload: {0}".format(ex))
+            self.connError()
         
         except Exception as ex:
             c(self, "Exception", exc_info=ex)
+
+    def connError(self):
+        self.connectionErrors += 1
+        if (self.connectionErrors > 3):
+            e(self, "More than 3 consecutive failures. Assuming Meter disconnected.")
+            self.publishNone()
     
     def publishNone(self):
         self.dbusService["/Connected"] = 0

@@ -596,6 +596,51 @@ class ConfigValueValidationTests(unittest.TestCase):
 
             app._validateConfigValues.assert_called_once_with()
 
+    def test_configuration_processing_restricts_active_config_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            config_path = tmp_path / "config.ini"
+            config_path.write_text(
+                (ROOT / "config.sample.ini").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            app = self.es_ess.esESS.__new__(self.es_ess.esESS)
+
+            with patch.object(
+                self.es_ess.os.path,
+                "realpath",
+                return_value=str(tmp_path / "es-ESS.py"),
+            ), patch.object(self.es_ess.os, "chmod") as chmod:
+                app._validateConfiguration()
+
+            self.assertTrue(
+                any(
+                    Path(call.args[0]) == config_path and call.args[1] == 0o600
+                    for call in chmod.call_args_list
+                )
+            )
+
+    def test_backup_config_is_restricted_to_owner(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            app = self.es_ess.esESS.__new__(self.es_ess.esESS)
+            app.config = configparser.ConfigParser()
+            app.config.read_dict({"Common": {"ConfigVersion": "10"}})
+            backup_path = tmp_path / "config.ini.v10.backup"
+
+            with patch.object(
+                self.es_ess.os.path,
+                "realpath",
+                return_value=str(tmp_path / "es-ESS.py"),
+            ), patch.object(self.es_ess.os, "chmod") as chmod:
+                app._backupConfig()
+
+            self.assertTrue(backup_path.exists())
+            chmod.assert_called_once()
+            called_path, called_mode = chmod.call_args.args
+            self.assertEqual(Path(called_path), backup_path)
+            self.assertEqual(called_mode, 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()

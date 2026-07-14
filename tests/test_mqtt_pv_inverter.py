@@ -136,6 +136,8 @@ class MqttPVInverterTests(unittest.TestCase):
 
     def setUp(self):
         self.module.c = Mock()
+        self.module.d = Mock()
+        self.module.w = Mock()
 
     @staticmethod
     def _dbus(value):
@@ -180,6 +182,35 @@ class MqttPVInverterTests(unittest.TestCase):
             ("opendtu/roof/cmd/limit_nonpersistent_relative", 55.00000000000001, 0, False),
             service.published,
         )
+
+    def test_zero_feedin_missing_consumption_keeps_last_limit(self):
+        for missing_phase in range(3):
+            with self.subTest(missing_phase=missing_phase):
+                service, inverter = self._service()
+                subscriptions = (
+                    service.consumptionL1Dbus,
+                    service.consumptionL2Dbus,
+                    service.consumptionL3Dbus,
+                )
+                subscriptions[missing_phase].value = None
+                previous_publications = list(service.published)
+
+                service._dtuZeroFeedin()
+
+                self.assertEqual(inverter.throttle, 0.5)
+                self.assertEqual(service.published, previous_publications)
+                self.module.c.assert_not_called()
+                self.module.d.assert_called()
+                self.module.d.reset_mock()
+
+    def test_zero_feedin_unexpected_error_keeps_critical_logger_callable(self):
+        service, _inverter = self._service()
+        service.mqttPVInverters = None
+
+        service._dtuZeroFeedin()
+
+        self.module.c.assert_called_once()
+        self.assertIn("zero feedin calculation", self.module.c.call_args.args[1])
 
     def test_dbus_service_and_mqtt_subscriptions_initialize(self):
         service = self.module.MqttPVInverter()

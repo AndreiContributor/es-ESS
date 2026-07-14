@@ -498,9 +498,24 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         app.publishServiceMessage = lambda *_args, **_kwargs: events.append(
             "message"
         )
-        app.publishLocalMqtt = lambda *_args, **_kwargs: events.append(
-            "grid-restore"
-        )
+        restore_calls = []
+
+        class PublishResult:
+            def wait_for_publish(self, timeout):
+                events.append("grid-wait")
+                self.timeout = timeout
+
+            def is_published(self):
+                return True
+
+        publish_result = PublishResult()
+
+        def publish_local(*args, **kwargs):
+            events.append("grid-restore")
+            restore_calls.append((args, kwargs))
+            return publish_result
+
+        app.publishLocalMqtt = publish_local
 
         subscription = self._subscription(
             "es-ESS/main", self.es_ess.MqttSubscriptionType.Main
@@ -526,6 +541,7 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
             app.handleSigterm(None, None)
 
         self.assertEqual(events.count("grid-restore"), 1)
+        self.assertEqual(events.count("grid-wait"), 1)
         self.assertEqual(events.count("main-unsubscribe"), 1)
         self.assertEqual(events.count("service-cleanup"), 1)
         self.assertEqual(events.count("main-disconnect"), 1)
@@ -534,6 +550,11 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         self.assertEqual(events.count("local-shutdown-info"), 1)
         self.assertEqual(events.count("terminate"), 1)
         self.assertLess(events.index("grid-restore"), events.index("service-cleanup"))
+        self.assertLess(events.index("grid-wait"), events.index("service-cleanup"))
+        restore_args, restore_kwargs = restore_calls[0]
+        self.assertEqual(restore_args[2:5], (1, False, True))
+        self.assertEqual(restore_kwargs, {})
+        self.assertEqual(publish_result.timeout, 2.0)
         self.assertLess(
             events.index("service-cleanup"), events.index("main-disconnect")
         )
@@ -545,6 +566,21 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         )
         self.assertLess(events.index("local-disconnect"), events.index("final-log"))
         self.assertLess(events.index("final-log"), events.index("terminate"))
+
+    def test_shutdown_publish_wait_is_bounded_when_not_confirmed(self):
+        app = self._app()
+
+        publish_result = SimpleNamespace(
+            wait_for_publish=Mock(),
+            is_published=Mock(return_value=False),
+        )
+
+        with patch.object(self.es_ess, "w") as warning_log:
+            confirmed = app._waitForMqttPublish(publish_result, 2.0)
+
+        self.assertFalse(confirmed)
+        publish_result.wait_for_publish.assert_called_once_with(2.0)
+        warning_log.assert_called_once()
 
     def test_termination_uses_uninterceptable_process_exit_after_log_flush(self):
         app = self._app()
@@ -561,6 +597,8 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         attributes = (ROOT / ".gitattributes").read_text(encoding="utf-8")
         service_run = (ROOT / "service" / "run").read_text(encoding="utf-8")
         restart_script = (ROOT / "restart.sh").read_text(encoding="utf-8")
+        install_script = (ROOT / "install.sh").read_text(encoding="utf-8")
+        uninstall_script = (ROOT / "uninstall.sh").read_text(encoding="utf-8")
 
         self.assertIn("*.sh text eol=lf", attributes)
         self.assertIn("service/run text eol=lf", attributes)
@@ -577,6 +615,9 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         self.assertIn('/proc/$pid/stat', restart_script)
         self.assertIn('/proc/$pid/cmdline', restart_script)
         self.assertIn('kill -s 9 "$pid"', restart_script)
+        self.assertIn('chmod 600 "$CONFIG_TARGET"', install_script)
+        self.assertIn('chmod 700 "$BACKUP_DIR"', uninstall_script)
+        self.assertIn('chmod 600 "$BACKUP_TARGET"', uninstall_script)
 
 
 if __name__ == "__main__":

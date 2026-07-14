@@ -145,7 +145,10 @@ Uninstall es-ESS:
 ```
 The uninstall script stops es-ESS, removes the service symlink and `rc.local`
 startup entry, and removes `/data/es-ESS`. If `/data/es-ESS/config.ini` exists,
-it is backed up first under `/data/es-ESS-backups/`.
+it is backed up first under `/data/es-ESS-backups/`. The active configuration
+and every backup are restricted to owner-only access (`0600`); the external
+backup directory is restricted to `0700` because these files can contain MQTT
+and Wattpilot credentials.
 
 Tail current log file (log file rotated daily, 14 days kept, see [logging](#logging) for more details): 
 ```
@@ -159,6 +162,10 @@ that file to `/data/es-ESS/config.ini`. Not all of the Global / Common Values
 are required, it depends on the combination of services that should be active.
 However, it easiest to setup the common values for every usecase, so you don't
 have to mind adding / remove values as you enable or disable certain services. 
+
+Install and startup reassert owner-only `0600` permissions on `config.ini`.
+Configuration migration backups use the same mode and startup fails clearly if
+the credential-bearing file cannot be secured.
 
 | Section                  | Value name           |  Descripion                                                                                            | Type          | Example Value                |
 | ------------------------ | ---------------------|------------------------------------------------------------------------------------------------------- | ------------- |------------------------------|
@@ -228,6 +235,10 @@ fills that gap and calculates the time, when BMS don't. Calculation is done in b
 
 - **When discharging**: Time based on current discharge rate until the active SoC Limit is reached.
 - **When charging**: Time based on current charge rate until 100% SoC is reached. 
+
+If power, state of charge, or the active state-of-charge limit is temporarily
+unavailable, the calculator skips that cycle without replacing the last valid
+time-to-go value. Calculation resumes automatically when all inputs recover.
 
 #### Configuration
 
@@ -379,6 +390,10 @@ MqttPvInverter requires a few variables to be set in `/data/es-ESS/config.ini`:
 When zero-feed-in is enabled and the calculated target inverter power is `0`,
 producing inverters with `DtuControlTopic` receive an explicit `0%` OpenDTU
 limit command.
+
+Zero-feed-in calculation requires all three consumption phases. If one phase is
+temporarily unavailable, es-ESS keeps the last inverter limit and skips that
+cycle until complete telemetry returns.
 
 For every inverter you want to create you have to create a additional section, specifying paths on mqtt. This is quite a bunch of work, but generally only done once. 
 
@@ -615,6 +630,12 @@ state is published on the Wattpilot runtime-status contract:
   sets `/StatusLiteral` to `Wattpilot not accessible`, and sets
   `/CustomName` to `Wattpilot not reachable` for detail views, D-Bus
   inspection, MQTT consumers, and SolarOverheadDistributor messages.
+- After the normal connection debounce confirms that the car is disconnected,
+  the detailed control state is `Stopped`. A transient disconnect indication
+  inside the debounce window keeps the active state to avoid status flicker.
+- A reconnect request waits for a stopping connection worker for a bounded
+  interval before starting its replacement, preventing overlapping workers
+  from owning the Wattpilot transport.
 - The supported es-ESS visibility route for a wallbox transport outage is the
   EV-charger detail view, D-Bus, retained MQTT runtime status, es-ESS service
   messages, or SolarOverheadDistributor messages. es-ESS does not publish a
@@ -775,6 +796,11 @@ NoBatToEV requires a few variables to be set in `/data/es-ESS/config.ini`:
 > powerlosses of your GX-device, complete Hardware-failure, networking-issues or usage of the `reboot` command on the cerbo that may not be the case.
 > I have never expierienced issues with that, hence I can't tell what the multiplus will do, if the cerbo `dies`, while the grid set point is -5000 Watt or something.
 > I assume, Worstcase, your multiplus will keep charging your houses battery until there is no more consumer for such a (stuck) grid request.
+
+During an orderly shutdown, es-ESS sends the configured default grid set point
+as a forced QoS 1 MQTT publication and waits for acknowledgement for up to two
+seconds before disconnecting MQTT. Shutdown still continues if the broker does
+not acknowledge within that bound.
 
 # Shelly3EMGrid
 > :large_orange_diamond: Release-Candiate-Version: Feature is still undergoing development, but current version is already satisfying: NET-Metering is untested so far, need to get hands on a shelly 3EM, fist.

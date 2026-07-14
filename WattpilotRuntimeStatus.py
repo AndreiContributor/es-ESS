@@ -612,6 +612,14 @@ class WattpilotRuntimeStatusReporter:
         if not self._wattpilot_connected():
             return CONTROL_STATE_STOPPED
 
+        # The controller owns the connection debounce. Once it confirms that
+        # no vehicle is present, that physical state is authoritative even if
+        # Wattpilot briefly retains an active model status or phase telemetry.
+        # Use an explicit False check so older isolated callers without this
+        # controller field keep their existing fallback behavior.
+        if getattr(self.controller, "effectiveCarConnected", None) is False:
+            return CONTROL_STATE_STOPPED
+
         pending_phase = getattr(self.controller, "pendingPhaseSwitchMode", 0)
         status_name = self.last_vrm_status_name or ""
         if pending_phase == 1 or status_name == "SwitchingTo1Phase":

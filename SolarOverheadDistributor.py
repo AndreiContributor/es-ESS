@@ -280,13 +280,14 @@ class SolarOverheadDistributor(esESSService):
          consumerKeyMo = re.search(r'es-ESS/SolarOverheadDistributor/Requests/([^/]+)/', msg.topic)
          if (consumerKeyMo is not None):
             consumerKey = consumerKeyMo.group(1)
-            if (not consumerKey in self._knownSolarOverheadConsumers):
-               i(self, "New SolarOverhead-Consumer registered: " + consumerKey + ". Creating respective services.")
-
-               with self._knownSolarOverheadConsumersLock:
+            with self._knownSolarOverheadConsumersLock:
+               consumer = self._knownSolarOverheadConsumers.get(consumerKey)
+               if consumer is None:
+                  i(self, "New SolarOverhead-Consumer registered: " + consumerKey + ". Creating respective services.")
                   self._knownSolarOverheadConsumers[consumerKey] = SolarOverheadConsumer(consumerKey)
+                  consumer = self._knownSolarOverheadConsumers[consumerKey]
 
-            self._knownSolarOverheadConsumers[consumerKey].setValue(msg.topic, message)
+               consumer.setValue(msg.topic, message)
 
       except Exception as ex:
          c(self, "Exception while receiving message '{0}' on topic '{1}'".format(message, msg.topic), exc_info=ex)
@@ -296,12 +297,12 @@ class SolarOverheadDistributor(esESSService):
        self.registerSingleThread(self._moveEnergyData, 86400000) #1 day
 
        with self._knownSolarOverheadConsumersLock:
-         for consumerKey in self._knownSolarOverheadConsumers:
-            consumer = self._knownSolarOverheadConsumers[consumerKey]
+         consumers = list(self._knownSolarOverheadConsumers.values())
                
-            if (consumer.isInitialized):
-               i(self, "Moving energy stats to yesterday for {0}.".format(consumer.consumerKey))
-               consumer._moveEnergyData()
+       for consumer in consumers:
+          if (consumer.isInitialized):
+             i(self, "Moving energy stats to yesterday for {0}.".format(consumer.consumerKey))
+             consumer._moveEnergyData()
 
        #unschedule current timer.
        return False
@@ -311,14 +312,14 @@ class SolarOverheadDistributor(esESSService):
       Dump is repeated upon every assignment-cycle."""
       try:
          with self._knownSolarOverheadConsumersLock:
-            for consumerKey in self._knownSolarOverheadConsumers:
-               consumer = self._knownSolarOverheadConsumers[consumerKey]
+            consumers = list(self._knownSolarOverheadConsumers.values())
                   
-               if (not consumer.isInitialized):
-                  consumer.checkFinalInit(self)
+         for consumer in consumers:
+            if (not consumer.isInitialized):
+               consumer.checkFinalInit(self)
 
-               if (consumer.isInitialized):
-                  consumer.dumpFakeBMS()
+            if (consumer.isInitialized):
+               consumer.dumpFakeBMS()
 
       except Exception as ex:
           e(self, "Error", exc_info = ex)
@@ -327,21 +328,21 @@ class SolarOverheadDistributor(esESSService):
    
    def _validateNpcConsumerStates(self):
       with self._knownSolarOverheadConsumersLock:
-         for consumerKey in self._knownSolarOverheadConsumers:            
-            try:
-               consumer = self._knownSolarOverheadConsumers[consumerKey]
+         consumers = list(self._knownSolarOverheadConsumers.items())
 
-               if (consumer.isInitialized):
+      for consumerKey, consumer in consumers:
+         try:
+            if (consumer.isInitialized):
                   
-                  if (consumer.isHttpConsumer):
-                     consumer.validateHttpStatus(None)
-                     consumer.httpControl()
+               if (consumer.isHttpConsumer):
+                  consumer.validateHttpStatus(None)
+                  consumer.httpControl()
                   
-                  elif (consumer.isMqttConsumer):
-                     consumer.mqttControl()
+               elif (consumer.isMqttConsumer):
+                  consumer.mqttControl()
 
-            except Exception as ex:
-               e(self, "Error validating consumer {0}".format(consumerKey), exc_info = ex)
+         except Exception as ex:
+            e(self, "Error validating consumer {0}".format(consumerKey), exc_info = ex)
 
       #dump values for update on status (if any)
       self.dumpConsumerBms()
@@ -349,11 +350,19 @@ class SolarOverheadDistributor(esESSService):
 
    def _persistEnergyStats(self):
       with self._knownSolarOverheadConsumersLock:
-         for consumerKey in self._knownSolarOverheadConsumers:
-            consumer = self._knownSolarOverheadConsumers[consumerKey]
+         consumers = list(self._knownSolarOverheadConsumers.values())
       
-            if (consumer.isInitialized):
-               consumer._persistEnergyStats()
+      for consumer in consumers:
+         if (consumer.isInitialized):
+            consumer._persistEnergyStats()
+
+   def _updateAllowanceOutsideConsumerLock(self, consumer, allowance):
+      """Run consumer publication/control without holding the shared map lock."""
+      self._knownSolarOverheadConsumersLock.release()
+      try:
+         consumer.updateAllowance(allowance, self)
+      finally:
+         self._knownSolarOverheadConsumersLock.acquire()
    
    def dumpReservationBms(self):
       #dump main bms information as well. 
@@ -370,10 +379,10 @@ class SolarOverheadDistributor(esESSService):
        d(self, "Updating Solar-Overhead distribution")
        
        with self._knownSolarOverheadConsumersLock:
+         consumerItems = list(self._knownSolarOverheadConsumers.items())
          # first, check if we have new Overhead consumers to initialize.
-         for consumerKey in self._knownSolarOverheadConsumers:
+         for consumerKey, consumer in consumerItems:
             d(self, "pre-checks on consumer {0}".format(consumerKey))
-            consumer = self._knownSolarOverheadConsumers[consumerKey]
 
             d(
                self,
@@ -434,10 +443,9 @@ class SolarOverheadDistributor(esESSService):
             self.Publish("/Calculations/OverheadAvailable", 0)
 
             overheadAssigned = 0
-            for consumerKey in self._knownSolarOverheadConsumers:
-               consumer = self._knownSolarOverheadConsumers[consumerKey]
+            for consumerKey, consumer in consumerItems:
                if (consumer.isInitialized):
-                  consumer.updateAllowance(0, self)
+                  self._updateAllowanceOutsideConsumerLock(consumer, 0)
                   overheadAssigned += consumer.allowance
 
             self.Publish("/Calculations/OverheadAssigned", overheadAssigned)
@@ -463,11 +471,10 @@ class SolarOverheadDistributor(esESSService):
          # prevents a newly automatic consumer from missing the allocation map.
          overheadDistribution = {
             consumerKey: 0
-            for consumerKey in self._knownSolarOverheadConsumers
+            for consumerKey, _consumer in consumerItems
          }
 
-         for consumerKey in self._knownSolarOverheadConsumers:
-            consumer = self._knownSolarOverheadConsumers[consumerKey]
+         for consumerKey, consumer in consumerItems:
 
             if (consumer.isInitialized and consumer.isAutomatic):
                d(self,"Already Assigned consumption on " + consumer.consumerKey + " (" + str(consumer.vrmInstanceID) +"): " + str(consumer.consumption))
@@ -512,11 +519,10 @@ class SolarOverheadDistributor(esESSService):
          if overheadDistribution is None:
             overheadDistribution = {}
 
-         for consumerKey in self._knownSolarOverheadConsumers:
+         for consumerKey, _consumer in consumerItems:
             overheadDistribution.setdefault(consumerKey, 0)
          
-         for consumerKey in self._knownSolarOverheadConsumers:
-            consumer = self._knownSolarOverheadConsumers[consumerKey]
+         for consumerKey, consumer in consumerItems:
             
             if (consumer.isInitialized and consumer.isAutomatic):
                d(
@@ -533,14 +539,17 @@ class SolarOverheadDistributor(esESSService):
                if (Globals.esESS._sigTermInvoked == True):
                   return
                
-               consumer.updateAllowance(overheadDistribution.get(consumerKey, 0), self)
+               self._updateAllowanceOutsideConsumerLock(
+                  consumer,
+                  overheadDistribution.get(consumerKey, 0),
+               )
                overheadAssigned += consumer.allowance
                overhead -= consumer.allowance
                self.publishServiceMessage(self, "Assigned {0}W to {1} ({2}, {3})".format(consumer.allowance, consumer.customName, consumer.priority, consumerKey))
             elif (not consumer.isInitialized):
                self.publishServiceMessage(self, "{0} ({1}) is not yet initialized.".format(consumer.customName, consumerKey), Globals.ServiceMessageType.Warning)
             elif (not consumer.isAutomatic):
-               consumer.updateAllowance(0, self)
+               self._updateAllowanceOutsideConsumerLock(consumer, 0)
                self.publishServiceMessage(self, "{0} ({1}) is not in automatic mode.".format(consumer.customName, consumerKey))
          
          i(self, "New Overhead assigned: " + str(overheadAssigned) + "W")
@@ -837,7 +846,7 @@ class SolarOverheadConsumer:
          return
       
       self.dbusService["/Dc/0/Power"] = self.consumption if self.consumption is not None else 0
-      if (self.request > 0 and self.request is not None and self.consumption is not None):
+      if (self.request is not None and self.request > 0 and self.consumption is not None):
          self.dbusService["/Soc"] = self.consumption / self.request * 100.0
       else:
          self.dbusService["/Soc"] = 0
@@ -1004,7 +1013,7 @@ class SolarOverheadConsumer:
      sod.publishMainMqtt("{0}/SolarOverheadDistributor/Requests/{1}/Energy/runtimeToday".format(Globals.esEssTag, self.consumerKey), self.runtimeToday, 1, True)
      sod.publishMainMqtt("{0}/SolarOverheadDistributor/Requests/{1}/Energy/runtimeYesterday".format(Globals.esEssTag, self.consumerKey), self.runtimeYesterday, 1, True)
      sod.publishMainMqtt("{0}/SolarOverheadDistributor/Requests/{1}/Energy/runtimeTotal".format(Globals.esEssTag, self.consumerKey), self.runtimeTotal, 1, True)
-     sod.publishMainMqtt("{0}/SolarOverheadDistributor/Requests/{1}/Energy/energyToday".format(Globals.esEssTag, self.consumerKey), self.energyTotal, 1, True)
+     sod.publishMainMqtt("{0}/SolarOverheadDistributor/Requests/{1}/Energy/energyToday".format(Globals.esEssTag, self.consumerKey), self.energyToday, 1, True)
      sod.publishMainMqtt("{0}/SolarOverheadDistributor/Requests/{1}/Energy/energyYesterday".format(Globals.esEssTag, self.consumerKey), self.energyYesterday, 1, True)
      sod.publishMainMqtt("{0}/SolarOverheadDistributor/Requests/{1}/Energy/energyTotal".format(Globals.esEssTag, self.consumerKey), self.energyTotal, 1, True)  
 

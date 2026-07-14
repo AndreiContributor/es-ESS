@@ -51,7 +51,8 @@ def w(module, msg, **kwargs):
    func = inspect.currentframe().f_back.f_code
    lineIdentifier = "{0}|{1}.{2}".format(threading.currentThread().getName(), module, func.co_name)
 
-   Globals.esESS.publishServiceMessage(module, "[" + lineIdentifier + "] " + msg, Globals.ServiceMessageType.Warning)
+   if Globals.esESS is not None:
+       Globals.esESS.publishServiceMessage(module, "[" + lineIdentifier + "] " + msg, Globals.ServiceMessageType.Warning)
 
    logging.warning("[" + lineIdentifier + "] " + msg, **kwargs)
 
@@ -62,7 +63,8 @@ def e(module, msg, **kwargs):
    func = inspect.currentframe().f_back.f_code
    lineIdentifier = "{0}|{1}.{2}".format(threading.currentThread().getName(), module, func.co_name)
 
-   Globals.esESS.publishServiceMessage(module,  "[" + lineIdentifier + "] " + msg, Globals.ServiceMessageType.Error)
+   if Globals.esESS is not None:
+       Globals.esESS.publishServiceMessage(module,  "[" + lineIdentifier + "] " + msg, Globals.ServiceMessageType.Error)
 
    logging.error("[" + lineIdentifier + "] " + msg, **kwargs)
 
