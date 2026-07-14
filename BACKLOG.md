@@ -112,12 +112,6 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 - Preserved active phase reporting during transient disconnect samples inside
   `CarDisconnectConfirmSeconds`, retained controller-owned `currentPhaseMode`
   for control continuity, and issued no Wattpilot command.
-- Added one-phase, three-phase, internal-state-retention, debounce, and
-  command-free regressions and updated README, Wattpilot architecture, and
-  service-inventory runtime-contract documentation.
-- Verification passed: changed-file Python syntax, all 22 focused
-  runtime-status tests, the full 363-test hardware-free suite including backlog
-  and configuration-contract checks, and whitespace validation.
 
 ### Completed 2026-07-14 - Group B Configuration And Policy Hardening
 
@@ -1879,8 +1873,8 @@ The authoritative manual work is now attached to the corresponding open item:
 The general Venus OS `v3.75` daylight Auto/Eco PV-surplus, no-grid, battery-
 assist, current-reduction, and naturally available phase-switch validation is
 complete and is not a separate outstanding item. The native-PV command-
-ownership gap discovered during that validation remains open under its own P2
-item.
+ownership guard is implemented; its supervised Gate 2 live validation remains
+open under its own P2 item.
 
 - The complete operator behavior checklist remains in README and the safety
   invariants remain in `docs/wattpilot-architecture.md`.
