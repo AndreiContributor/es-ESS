@@ -52,10 +52,11 @@ Current validated state:
 - Manual charging remains user-controlled. Direct current/start/stop writes
   fail closed unless Wattpilot telemetry confirms ECO mode; a one-time release
   of stale Auto/Eco limits on entry to Manual is the sole approved exception.
-- Remaining Wattpilot work includes the native Eco/es-ESS command-ownership
-  investigation, explicit policy for unclassified charging statuses, and the
-  independent mode-boundary, battery-heartbeat, and natural winter observation
-  tasks below.
+- The native Eco/es-ESS command-ownership guard is implemented and merged on
+  `main`; supervised daylight validation of that boundary remains open.
+  Additional Wattpilot work includes explicit policy for unclassified charging
+  statuses and the independent mode-boundary, battery-heartbeat, and natural
+  winter observation tasks below.
 - The 2026-07-12 review confirmed additional crash, device-control, stale-data,
   persistence, configuration, security, and test-coverage work. Items with
   site-specific limits or uncertain Wattpilot protocol meaning retain explicit
@@ -101,6 +102,16 @@ Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
+### Completed 2026-07-14 - Clear Public Wattpilot Phase State After Confirmed Disconnect
+
+- Made the runtime-status observer publish `/PhaseMode=0` and
+  `/PhaseModeLiteral=Unknown` after the controller's existing debounce confirms
+  that no vehicle is present, even when live phase power or remembered phase
+  state still describes the previous session.
+- Preserved active phase reporting during transient disconnect samples inside
+  `CarDisconnectConfirmSeconds`, retained controller-owned `currentPhaseMode`
+  for control continuity, and issued no Wattpilot command.
 
 ### Completed 2026-07-14 - Group B Configuration And Policy Hardening
 
@@ -1320,13 +1331,22 @@ Done criteria:
   unchanged.
 - Full unittest suite passes.
 
-### P2 - Establish Single Auto/Eco Command Ownership Against Native Wattpilot PV Regulation
+### P2 - Live-Validate Implemented Auto/Eco Command Ownership
 
 Goal:
 
-Establish and validate a Solar.wattpilot `2.1.0` commissioning or controller
-contract in which es-ESS is the sole owner of Auto/Eco start, stop, current, and
-phase decisions.
+Live-validate the merged Solar.wattpilot `2.1.0` command-authority guard and
+confirm that es-ESS is the sole effective owner of Auto/Eco start, stop,
+current, and phase decisions.
+
+Implementation status:
+
+- The fail-closed authority implementation is merged on `main` through PR #70
+  (`c01a783`). Hardware-free command-boundary, policy, runtime-status,
+  configuration-contract, and full-suite verification passed before merge.
+- Gate 1 command-free setting capture is complete. Only Gate 2
+  vehicle-disconnected preflight and supervised daylight active-charging
+  validation remain before this item can close.
 
 Problem:
 
@@ -1453,45 +1473,22 @@ Investigation progress 2026-07-14:
 
 Files to change:
 
-- `BACKLOG.md`
-- `README.md`
-- `config.sample.ini`
-- `docs/wattpilot-architecture.md`
-- `docs/service-inventory.md`
-- `docs/system-guide.html`
-- `Wattpilot.py` and `FroniusWattpilot.py`, only if the validated result
-  requires observable-setting enforcement or a controller change
-- `WattpilotRuntimeStatus.py`, only if the selected contract adds a public
-  compatibility/ownership diagnostic
-- Existing Wattpilot test files matching the selected implementation
-- `scripts/wattpilot-setting-capture.py`
-- `docs/wattpilot-command-ownership-validation.md`
-- `tests/test_wattpilot_setting_capture.py`
+- `BACKLOG.md` when recording the Gate 2 result
+- Production code, maintained configuration, documentation, and focused tests
+  only if supervised evidence contradicts the implemented authority contract
 
 Files to add:
 
-- Investigation-stage capture script, operator guide, and focused test file
-  listed above are now present; no additional file is expected unless the
-  validated authority implementation has no appropriate existing test home.
+- None expected.
 
 Tests:
 
-- Keep `tests/test_wattpilot_setting_capture.py` command-free and cover every
-  capture safety/redaction boundary without a charger, app, D-Bus, or network.
-- Extend `tests/test_wattpilot_client.py` if native configuration fields are
-  parsed; cover missing, malformed, enabled, disabled, and change events from
-  recorded firmware `42.5` payload shapes.
-- Extend `tests/test_wattpilot_command_boundary.py` and
-  `tests/test_eco_pv_policy.py` for the selected authority rule. Prove Manual
-  remains command-free, missing or conflicting authority fails closed, and a
-  validated ECO state preserves existing `amp`, `frc`, and `psm` decisions.
-- If a public diagnostic is added, extend
-  `tests/test_wattpilot_runtime_status.py` and prove the observer remains
-  command-free with unchanged existing path values.
-- Extend `tests/test_config_contract.py` if a commissioning requirement or new
-  supported setting is added to `config.sample.ini`.
-- Follow the existing hardware-free Victron/D-Bus/MQTT/Wattpilot stub pattern;
-  no real charger, app, D-Bus, MQTT, or network is used in CI.
+- Existing setting-capture, client parsing, command-boundary, Eco/PV policy,
+  runtime-status, configuration-contract, and full-suite tests are the
+  automated verifier for the merged implementation.
+- No new test is required for a successful observation-only Gate 2 run. If it
+  exposes a defect, add focused hardware-free coverage before changing the
+  command boundary.
 
 Expected coverage:
 
@@ -1540,8 +1537,8 @@ Risks and dependencies:
 - A vehicle-side current limit can resemble native regulation; command
   acknowledgement, requested current, and repeated behavior across app setting
   changes must be correlated before assigning cause.
-- The P3 stopped-runtime-state item is related diagnostic cleanup but is not a
-  prerequisite for this command-ownership investigation.
+- The stopped/phase runtime-state cleanup is completed observer behavior and is
+  independent of this command-ownership validation.
 
 Open questions:
 
@@ -1771,7 +1768,7 @@ Risks and dependencies:
   execution.
 - Weather and load must create a naturally eligible running-assist window; do
   not force unsafe grid import or battery discharge to satisfy the item.
-- The Auto/Eco command-ownership investigation should be understood when
+- The implemented Auto/Eco command-ownership guard should be understood when
   interpreting charger current, but it is not required to verify that stale SOC
   evidence disables assist and reservation bypass.
 
@@ -1800,9 +1797,9 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-30. P2 establish single Auto/Eco command ownership against native Wattpilot PV
-    regulation — resolve the production-proven dual-controller boundary before
-    relying on further current or phase-control commissioning guidance.
+30. P2 live-validate implemented Auto/Eco command ownership — confirm the
+    merged fail-closed native-controller boundary during supervised daylight
+    charging before closing its commissioning guidance.
 9. P2 define safe control for unclassified charging model statuses — obtain
    firmware evidence and encode explicit no-grid-safe mappings.
 24. P4 audit and pin the Victron `velib_python` dependency — establish v3.75
@@ -1824,9 +1821,9 @@ occur; an inconclusive window is preferable to forcing production behavior:
 
 Hardware validation scope for the remaining backlog:
 
-- The P2 native-PV command-ownership investigation requires supervised daylight
-  active charging after read-only protocol-field capture with the vehicle
-  disconnected.
+- The P2 implemented native-PV command-ownership guard requires supervised
+  daylight active charging after the completed read-only protocol-field capture
+  and a vehicle-disconnected preflight.
 - Unclassified Wattpilot charging statuses require firmware evidence before a
   policy change; unit tests remain the primary verifier if a rare status cannot
   be reproduced safely.
@@ -1863,8 +1860,8 @@ The authoritative manual work is now attached to the corresponding open item:
 
 - **Fault simulation, vehicle disconnected:** complete local and remote
   Wattpilot mode-boundary correlation.
-- **Active charging required:** establish single Auto/Eco command ownership
-  against native Solar.wattpilot PV regulation.
+- **Active charging required:** live-validate the implemented single Auto/Eco
+  command-ownership guard against native Solar.wattpilot PV regulation.
 - **Log-only:** validate the future `velib_python` provenance/import change on
   the supported Venus OS release.
 - **Active charging required under natural conditions:** winter-validate
@@ -1876,8 +1873,8 @@ The authoritative manual work is now attached to the corresponding open item:
 The general Venus OS `v3.75` daylight Auto/Eco PV-surplus, no-grid, battery-
 assist, current-reduction, and naturally available phase-switch validation is
 complete and is not a separate outstanding item. The native-PV command-
-ownership gap discovered during that validation remains open under its own P2
-item.
+ownership guard is implemented; its supervised Gate 2 live validation remains
+open under its own P2 item.
 
 - The complete operator behavior checklist remains in README and the safety
   invariants remain in `docs/wattpilot-architecture.md`.

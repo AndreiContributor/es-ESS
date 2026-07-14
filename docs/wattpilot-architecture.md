@@ -350,10 +350,12 @@ Future Wattpilot changes must preserve these invariants:
   control even if Wattpilot briefly continues to report a stale active charging
   model status.
 - The public runtime-status observer must also publish `Stopped` after that
-  debounced confirmed disconnect. Stale active model status or phase telemetry
-  may still describe the last session, but cannot override the controller's
-  effective no-vehicle state. Transient raw disconnect samples inside
-  `CarDisconnectConfirmSeconds` retain the active runtime state.
+  debounced confirmed disconnect. It also publishes `/PhaseMode=0` and
+  `/PhaseModeLiteral=Unknown`; stale active model status, live-power fields, or
+  remembered controller phase state cannot remain visible as a current vehicle
+  phase. The observer does not clear the controller-owned phase memory or issue
+  a command. Transient raw disconnect samples inside
+  `CarDisconnectConfirmSeconds` retain the active runtime and phase state.
 - A confirmed physical vehicle disconnect also clears every pending phase-switch
   stability candidate, including its below-threshold grace timestamp. A
   reconnect must build a new complete `MinPhaseSwitchSeconds` interval from

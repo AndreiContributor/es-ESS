@@ -681,8 +681,9 @@ state is published on the Wattpilot runtime-status contract:
   `/CustomName` to `Wattpilot not reachable` for detail views, D-Bus
   inspection, MQTT consumers, and SolarOverheadDistributor messages.
 - After the normal connection debounce confirms that the car is disconnected,
-  the detailed control state is `Stopped`. A transient disconnect indication
-  inside the debounce window keeps the active state to avoid status flicker.
+  the detailed control state is `Stopped`, `/PhaseMode` is `0`, and
+  `/PhaseModeLiteral` is `Unknown`. A transient disconnect indication inside
+  the debounce window keeps the active state and phase to avoid status flicker.
 - A reconnect request waits for a stopping connection worker for a bounded
   interval before starting its replacement, preventing overlapping workers
   from owning the Wattpilot transport.
@@ -1390,7 +1391,10 @@ the Wattpilot's live L1/L2/L3 power telemetry. This keeps Manual mode accurate
 when the Auto/Eco controller's remembered phase command is unavailable or
 stale. A pending Auto/Eco phase transition remains `Transition` until the
 controller confirms the result; the controller's phase command is used only as
-a fallback while live phase telemetry is unavailable.
+a fallback while live phase telemetry is unavailable. After a confirmed vehicle
+disconnect, the public phase state is cleared to `0` / `Unknown` even if those
+inputs still contain the last session's phase. Internal phase memory is not
+changed and no Wattpilot command is issued.
 
 No extra configuration setting is required for the runtime-status contract.
 Normal Wattpilot Manual mode remains unchanged. In Auto/Eco mode, the runtime

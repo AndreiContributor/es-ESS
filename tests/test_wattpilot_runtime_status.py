@@ -520,7 +520,22 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
         self.publish(controller, "Disconnected")
 
         self.assert_state(controller, CONTROL_STATE_STOPPED, "Stopped")
-        self.assert_phase_mode(controller, 1, "1 phase")
+        self.assert_phase_mode(controller, 0, "Unknown")
+        self.assertEqual(controller.currentPhaseMode, 1)
+        self.assertEqual(controller.wattpilot.command_calls, [])
+
+    def test_confirmed_disconnect_clears_stale_three_phase_public_state(self):
+        controller, _reporter = self.make_controller()
+        controller.effectiveCarConnected = False
+        controller.currentPhaseMode = 2
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
+        self.set_live_phase_power(controller, 1.4, 1.4, 1.4)
+
+        self.publish(controller, "Disconnected")
+
+        self.assert_state(controller, CONTROL_STATE_STOPPED, "Stopped")
+        self.assert_phase_mode(controller, 0, "Unknown")
+        self.assertEqual(controller.currentPhaseMode, 2)
         self.assertEqual(controller.wattpilot.command_calls, [])
 
     def test_transient_disconnect_debounce_preserves_active_runtime_state(self):
@@ -532,6 +547,7 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
         self.publish(controller, "Disconnected")
 
         self.assert_state(controller, CONTROL_STATE_CHARGING_1_PHASE, "Charging 1 phase")
+        self.assert_phase_mode(controller, 1, "1 phase")
         self.assertEqual(controller.wattpilot.command_calls, [])
 
     def test_incomplete_live_phase_telemetry_uses_existing_controller_fallback(self):

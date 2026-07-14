@@ -680,6 +680,14 @@ class WattpilotRuntimeStatusReporter:
         return CONTROL_STATE_WAITING_FOR_STABLE_PV if self._has_minimum_allowance() else CONTROL_STATE_WAITING_FOR_PV
 
     def _phase_mode(self) -> Tuple[int, str]:
+        # Phase mode describes an active/connected session. Once the
+        # controller has confirmed that no vehicle is present, stale phase
+        # power or the remembered controller mode must not remain visible as
+        # current phase state. Keep currentPhaseMode unchanged because it is
+        # controller-owned state; this observer only clears the public value.
+        if getattr(self.controller, "effectiveCarConnected", None) is False:
+            return 0, "Unknown"
+
         pending = getattr(self.controller, "pendingPhaseSwitchMode", 0)
         if pending in (1, 2):
             return 0, "Transition"
