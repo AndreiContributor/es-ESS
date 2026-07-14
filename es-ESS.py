@@ -77,6 +77,9 @@ class esESS:
             self._gridSetPointRequests: Dict[str, float] = {}
             self._gridSetPointRequestsLock = threading.Lock()
             self._gridSetPointDefault = float(self.config["Common"]["DefaultPowerSetPoint"])
+            self._gridSetPointMin = float(self.config["Common"]["GridSetPointMinW"])
+            self._gridSetPointMax = float(self.config["Common"]["GridSetPointMaxW"])
+            self._gridSetPointLastClamp = None
             self._gridSetPointCurrent = -99999 #use a unreal number at first, so es-ESS will detect a change upon restart and guarantee to set default GSP.
             self._threadExecutionsMinute = 0
             
@@ -124,8 +127,12 @@ class esESS:
 
         if (self.config["Mqtt"]["SslEnabled"].lower() == "true"):
             i(self, "Connecting to broker: {0}://{1}:{2}".format("tcp-ssl", config["Mqtt"]["Host"], config["Mqtt"]["Port"]))
-            self.mainMqttClient.tls_set(cert_reqs=ssl.CERT_NONE)
-            self.mainMqttClient.tls_insecure_set(True)
+            self._configureMqttTls(
+                self.mainMqttClient,
+                "SslVerification",
+                "SslCaFile",
+                "Main MQTT",
+            )
             self.mainMqttClient.connect(
                 host=config["Mqtt"]["Host"],
                 port=int(config["Mqtt"]["Port"])
@@ -151,8 +158,12 @@ class esESS:
 
         if (self.config["Mqtt"]["LocalSslEnabled"].lower() == "true"):
             i(self, "Connecting to broker: {0}://{1}:{2}".format("tcp-ssl", "localhost", 8883))
-            self.localMqttClient.tls_set(cert_reqs=ssl.CERT_NONE)
-            self.localMqttClient.tls_insecure_set(True)
+            self._configureMqttTls(
+                self.localMqttClient,
+                "LocalSslVerification",
+                "LocalSslCaFile",
+                "Local MQTT",
+            )
             #TODO: After a system reboot, es-ESS is starting faster than the local mqtt, which might lead to connection issues. 
             #      Either loop in a try/error, or sth.
             #      Similiar issues might occur for the dbus service, if devices are not yet registered?
@@ -169,6 +180,37 @@ class esESS:
             )
 
         self.localMqttClient.loop_start()
+
+    def _configureMqttTls(self, client, verificationOption, caFileOption, label):
+        verification = self.config["Mqtt"].get(
+            verificationOption, "Required"
+        ).strip().lower()
+        caFile = self.config["Mqtt"].get(caFileOption, "").strip() or None
+
+        if verification == "required":
+            client.tls_set(ca_certs=caFile, cert_reqs=ssl.CERT_REQUIRED)
+            client.tls_insecure_set(False)
+            return
+
+        if verification == "certificateonly":
+            client.tls_set(ca_certs=caFile, cert_reqs=ssl.CERT_REQUIRED)
+            client.tls_insecure_set(True)
+            w(
+                self,
+                "{0} TLS hostname verification is disabled by explicit configuration.".format(
+                    label
+                ),
+            )
+            return
+
+        client.tls_set(cert_reqs=ssl.CERT_NONE)
+        client.tls_insecure_set(True)
+        w(
+            self,
+            "{0} TLS certificate and hostname verification are disabled by explicit legacy compatibility configuration.".format(
+                label
+            ),
+        )
 
     def onMainMqttConnect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -373,6 +415,50 @@ class esESS:
                 )
 
             for key, default in (
+                ("GridImportStopW", 150),
+                ("BatteryAssistMaxShortfallW", 3000),
+            ):
+                value = number(section, key, default)
+                if (value is not None and value < 0):
+                    invalid(section, key, "must be greater than or equal to 0", value)
+
+            for key, default in (
+                ("GridImportStopSeconds", 5),
+                ("BatteryAssistRecoverySeconds", 60),
+            ):
+                value = integer(section, key, default)
+                if (value is not None and value < 0):
+                    invalid(section, key, "must be greater than or equal to 0", value)
+
+            for key, default, minimum in (
+                ("GridTelemetryFreshSeconds", 15, 1),
+                ("AllowanceFreshSeconds", 15, 1),
+                ("RawOverheadFreshSeconds", 15, 5),
+            ):
+                value = integer(section, key, default)
+                if (value is not None and value < minimum):
+                    invalid(
+                        section,
+                        key,
+                        "must be greater than or equal to {0}".format(minimum),
+                        value,
+                    )
+
+            startup_telemetry_ratio = number(
+                section, "StartupTelemetryRatio", 0.80
+            )
+            if (
+                startup_telemetry_ratio is not None
+                and not 0 < startup_telemetry_ratio <= 1
+            ):
+                invalid(
+                    section,
+                    "StartupTelemetryRatio",
+                    "must be greater than 0 and less than or equal to 1",
+                    startup_telemetry_ratio,
+                )
+
+            for key, default in (
                 ("MinPhaseSwitchSeconds", 600),
                 ("AllowanceDropGraceSeconds", 15),
                 ("SurplusDropGraceSeconds", 20),
@@ -399,6 +485,109 @@ class esESS:
                 if (value is not None and value <= 0):
                     invalid(section, "PollFrequencyMs", "must be greater than 0", value)
 
+        common_number_of_threads = integer("Common", "NumberOfThreads")
+        if common_number_of_threads is not None and common_number_of_threads <= 0:
+            invalid("Common", "NumberOfThreads", "must be greater than 0", common_number_of_threads)
+
+        http_request_timeout = number("Common", "HttpRequestTimeout", 5)
+        if http_request_timeout is not None and http_request_timeout <= 0:
+            invalid("Common", "HttpRequestTimeout", "must be greater than 0", http_request_timeout)
+
+        default_grid_setpoint = number("Common", "DefaultPowerSetPoint")
+        minimum_grid_setpoint = number(
+            "Common", "GridSetPointMinW", default_grid_setpoint
+        )
+        maximum_grid_setpoint = number(
+            "Common", "GridSetPointMaxW", default_grid_setpoint
+        )
+        if (
+            minimum_grid_setpoint is not None
+            and maximum_grid_setpoint is not None
+            and minimum_grid_setpoint > maximum_grid_setpoint
+        ):
+            invalid(
+                "Common",
+                "GridSetPointMinW",
+                "must be less than or equal to GridSetPointMaxW",
+                minimum_grid_setpoint,
+            )
+        if (
+            default_grid_setpoint is not None
+            and minimum_grid_setpoint is not None
+            and maximum_grid_setpoint is not None
+            and not minimum_grid_setpoint
+            <= default_grid_setpoint
+            <= maximum_grid_setpoint
+        ):
+            invalid(
+                "Common",
+                "DefaultPowerSetPoint",
+                "must be between GridSetPointMinW and GridSetPointMaxW",
+                default_grid_setpoint,
+            )
+
+        if (self.config.has_section("MqttPvInverter")):
+            section = "MqttPvInverter"
+            stale_timeout = integer(section, "StaleTimeoutSeconds", 300)
+            if stale_timeout is not None and stale_timeout < 5:
+                invalid(section, "StaleTimeoutSeconds", "must be at least 5", stale_timeout)
+
+            scale_step = number(section, "ZeroFeedinScaleStep", 0.05)
+            if scale_step is not None and not 0 < scale_step <= 1:
+                invalid(
+                    section,
+                    "ZeroFeedinScaleStep",
+                    "must be greater than 0 and less than or equal to 1",
+                    scale_step,
+                )
+
+            distance = number(section, "ZeroFeedinDistance", 50)
+            if distance is not None and distance < 0:
+                invalid(section, "ZeroFeedinDistance", "must be greater than or equal to 0", distance)
+
+            start_soc = number(section, "ZeroFeedinStartSoc", 100)
+            if start_soc is not None and not 0 <= start_soc <= 100:
+                invalid(section, "ZeroFeedinStartSoc", "must be between 0 and 100", start_soc)
+
+        if (self.config.has_section("Mqtt")):
+            for enabledOption, verificationOption, caFileOption in (
+                ("SslEnabled", "SslVerification", "SslCaFile"),
+                ("LocalSslEnabled", "LocalSslVerification", "LocalSslCaFile"),
+            ):
+                verification = self.config["Mqtt"].get(
+                    verificationOption, "Required"
+                ).strip()
+                normalized = verification.lower()
+                if normalized not in ("required", "certificateonly", "insecure"):
+                    invalid(
+                        "Mqtt",
+                        verificationOption,
+                        "must be Required, CertificateOnly, or Insecure",
+                        verification,
+                    )
+                    continue
+
+                tlsEnabled = self.config["Mqtt"].get(
+                    enabledOption, "false"
+                ).lower() == "true"
+                caFile = self.config["Mqtt"].get(caFileOption, "").strip()
+                if tlsEnabled and normalized == "certificateonly" and not caFile:
+                    invalid(
+                        "Mqtt",
+                        caFileOption,
+                        "is required when {0}=CertificateOnly".format(
+                            verificationOption
+                        ),
+                        caFile,
+                    )
+                if (
+                    tlsEnabled
+                    and normalized in ("required", "certificateonly")
+                    and caFile
+                    and (not os.path.isfile(caFile) or not os.access(caFile, os.R_OK))
+                ):
+                    invalid("Mqtt", caFileOption, "must be a readable file", caFile)
+
         if (errors):
             for error in errors:
                 c(self, "Invalid configuration: {0}".format(error))
@@ -414,8 +603,19 @@ class esESS:
                 "ServiceMessageCount",
                 "VRMPortalID",
                 "DefaultPowerSetPoint",
+                "GridSetPointMinW",
+                "GridSetPointMaxW",
             ),
-            "Mqtt": ("Host", "Port", "SslEnabled", "LocalSslEnabled"),
+            "Mqtt": (
+                "Host",
+                "Port",
+                "SslEnabled",
+                "SslVerification",
+                "SslCaFile",
+                "LocalSslEnabled",
+                "LocalSslVerification",
+                "LocalSslCaFile",
+            ),
             "Services": (
                 "SolarOverheadDistributor",
                 "TimeToGoCalculator",
@@ -664,6 +864,45 @@ class esESS:
                 self.config.remove_option(
                     "FroniusWattpilot", "PhaseSwitchDelaySeconds"
                 )
+
+        version = 11
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+
+            default_grid_setpoint = self.config["Common"].get(
+                "DefaultPowerSetPoint", "0"
+            )
+            self._setConfigDefault(
+                "Common", "GridSetPointMinW", default_grid_setpoint
+            )
+            self._setConfigDefault(
+                "Common", "GridSetPointMaxW", default_grid_setpoint
+            )
+            self._setConfigDefault(
+                "MqttPvInverter", "StaleTimeoutSeconds", "300"
+            )
+
+            self._ensureConfigSection("Mqtt")
+            mainTlsEnabled = self.config["Mqtt"].get(
+                "SslEnabled", "false"
+            ).lower() == "true"
+            localTlsEnabled = self.config["Mqtt"].get(
+                "LocalSslEnabled", "false"
+            ).lower() == "true"
+            self._setConfigDefault(
+                "Mqtt",
+                "SslVerification",
+                "Insecure" if mainTlsEnabled else "Required",
+            )
+            self._setConfigDefault("Mqtt", "SslCaFile", "")
+            self._setConfigDefault(
+                "Mqtt",
+                "LocalSslVerification",
+                "Insecure" if localTlsEnabled else "Required",
+            )
+            self._setConfigDefault("Mqtt", "LocalSslCaFile", "")
 
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 
         if (loadedVersion < int(self.config["Common"]["ConfigVersion"])):
@@ -915,6 +1154,26 @@ class esESS:
                 if (v is not None):
                     d(self, "Grid Set Point request of {0} is {1}".format(k,v))
                     gsp += v
+
+            requestedGsp = gsp
+            if not math.isfinite(requestedGsp):
+                raise ValueError("combined grid set point must be finite")
+            gsp = min(max(requestedGsp, self._gridSetPointMin), self._gridSetPointMax)
+            if gsp != requestedGsp:
+                clampState = (requestedGsp, gsp)
+                if clampState != self._gridSetPointLastClamp:
+                    w(
+                        self,
+                        "Combined grid set point {0}W is outside configured bounds {1}..{2}W; clamped to {3}W.".format(
+                            requestedGsp,
+                            self._gridSetPointMin,
+                            self._gridSetPointMax,
+                            gsp,
+                        ),
+                    )
+                self._gridSetPointLastClamp = clampState
+            else:
+                self._gridSetPointLastClamp = None
             
             #only publish, if there is a change in current GSP.
             if (gsp != self._gridSetPointCurrent):

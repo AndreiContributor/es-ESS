@@ -202,17 +202,23 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "10")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
+        self.assertEqual(migrated["Common"]["GridSetPointMinW"], "0")
+        self.assertEqual(migrated["Common"]["GridSetPointMaxW"], "0")
         self.assertEqual(migrated["NoBatToEV"]["UseRelay"], "4")
         self.assertEqual(migrated["MqttPvInverter"]["EnableZeroFeedin"], "true")
         self.assertEqual(migrated["MqttPvInverter"]["EnablePvShutdown"], "false")
         self.assertEqual(migrated["MqttPvInverter"]["ZeroFeedinScaleStep"], "0.05")
         self.assertEqual(migrated["MqttPvInverter"]["ZeroFeedinDistance"], "50")
         self.assertEqual(migrated["MqttPvInverter"]["ZeroFeedinStartSoc"], "100")
+        self.assertEqual(migrated["MqttPvInverter"]["StaleTimeoutSeconds"], "300")
+        self.assertEqual(migrated["Mqtt"]["SslVerification"], "Required")
+        self.assertEqual(migrated["Mqtt"]["LocalSslVerification"], "Required")
         self.assertEqual(
             backups,
             [
+                "config.ini.v10.backup",
                 "config.ini.v6.backup",
                 "config.ini.v7.backup",
                 "config.ini.v8.backup",
@@ -231,7 +237,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "10")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["NoBatToEV"]["UseRelay"], "-1")
         self.assertEqual(migrated["MqttPvInverter"]["EnableZeroFeedin"], "false")
@@ -239,6 +245,7 @@ class ConfigMigrationTests(unittest.TestCase):
         self.assertEqual(migrated["MqttPvInverter"]["ZeroFeedinScaleStep"], "0.05")
         self.assertEqual(migrated["MqttPvInverter"]["ZeroFeedinDistance"], "50")
         self.assertEqual(migrated["MqttPvInverter"]["ZeroFeedinStartSoc"], "100")
+        self.assertEqual(migrated["MqttPvInverter"]["StaleTimeoutSeconds"], "300")
 
     def test_existing_service_flags_are_preserved_when_defaults_are_added(self):
         migrated, _backups = self._run_migration(
@@ -260,7 +267,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "10")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["Services"]["Shelly3EMGrid"], "true")
         self.assertEqual(migrated["Services"]["ShellyPMInverter"], "true")
@@ -283,7 +290,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "10")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "12")
 
     def test_version_10_removes_obsolete_phase_switch_delay(self):
@@ -299,14 +306,35 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "10")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
         self.assertEqual(
             migrated["FroniusWattpilot"]["MinPhaseSwitchSeconds"], "600"
         )
         self.assertFalse(
             migrated.has_option("FroniusWattpilot", "PhaseSwitchDelaySeconds")
         )
-        self.assertEqual(backups, ["config.ini.v9.backup"])
+        self.assertEqual(backups, ["config.ini.v10.backup", "config.ini.v9.backup"])
+
+    def test_version_11_makes_legacy_tls_compatibility_explicit(self):
+        migrated, backups = self._run_migration(
+            """
+            [Common]
+            ConfigVersion=10
+            DefaultPowerSetPoint=-50
+
+            [Mqtt]
+            SslEnabled=true
+            LocalSslEnabled=false
+            """
+        )
+
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
+        self.assertEqual(migrated["Common"]["GridSetPointMinW"], "-50")
+        self.assertEqual(migrated["Common"]["GridSetPointMaxW"], "-50")
+        self.assertEqual(migrated["Mqtt"]["SslVerification"], "Insecure")
+        self.assertEqual(migrated["Mqtt"]["LocalSslVerification"], "Required")
+        self.assertEqual(migrated["Mqtt"]["SslCaFile"], "")
+        self.assertEqual(backups, ["config.ini.v10.backup"])
 
 
 class ConfigValueValidationTests(unittest.TestCase):
@@ -341,6 +369,22 @@ class ConfigValueValidationTests(unittest.TestCase):
         wattpilot["SurplusDropGraceSeconds"] = "0"
         wattpilot["CarDisconnectConfirmSeconds"] = "0"
         wattpilot["StartupGraceSeconds"] = "0"
+        wattpilot["GridImportStopW"] = "0"
+        wattpilot["GridImportStopSeconds"] = "0"
+        wattpilot["GridTelemetryFreshSeconds"] = "1"
+        wattpilot["AllowanceFreshSeconds"] = "1"
+        wattpilot["RawOverheadFreshSeconds"] = "5"
+        wattpilot["BatteryAssistMaxShortfallW"] = "0"
+        wattpilot["BatteryAssistRecoverySeconds"] = "0"
+        wattpilot["StartupTelemetryRatio"] = "1"
+        app.config["Common"]["NumberOfThreads"] = "1"
+        app.config["Common"]["HttpRequestTimeout"] = "0.1"
+        app.config["Common"]["GridSetPointMinW"] = "-100"
+        app.config["Common"]["GridSetPointMaxW"] = "100"
+        app.config["MqttPvInverter"]["StaleTimeoutSeconds"] = "5"
+        app.config["MqttPvInverter"]["ZeroFeedinScaleStep"] = "1"
+        app.config["MqttPvInverter"]["ZeroFeedinDistance"] = "0"
+        app.config["MqttPvInverter"]["ZeroFeedinStartSoc"] = "0"
         app.config["SolarOverheadDistributor"]["UpdateInterval"] = "1"
         app.config["TimeToGoCalculator"]["UpdateInterval"] = "1"
         app.config["FroniusSmartmeterJSON"]["PollFrequencyMs"] = "1"
@@ -487,6 +531,23 @@ class ConfigValueValidationTests(unittest.TestCase):
             ("FroniusWattpilot", "SurplusDropGraceSeconds", "-1"),
             ("FroniusWattpilot", "CarDisconnectConfirmSeconds", "-1"),
             ("FroniusWattpilot", "StartupGraceSeconds", "-1"),
+            ("FroniusWattpilot", "GridImportStopW", "-1"),
+            ("FroniusWattpilot", "GridImportStopSeconds", "-1"),
+            ("FroniusWattpilot", "GridTelemetryFreshSeconds", "0"),
+            ("FroniusWattpilot", "AllowanceFreshSeconds", "0"),
+            ("FroniusWattpilot", "RawOverheadFreshSeconds", "4"),
+            ("FroniusWattpilot", "BatteryAssistMaxShortfallW", "-1"),
+            ("FroniusWattpilot", "BatteryAssistRecoverySeconds", "-1"),
+            ("FroniusWattpilot", "StartupTelemetryRatio", "0"),
+            ("FroniusWattpilot", "StartupTelemetryRatio", "1.01"),
+            ("Common", "NumberOfThreads", "0"),
+            ("Common", "HttpRequestTimeout", "0"),
+            ("MqttPvInverter", "StaleTimeoutSeconds", "4"),
+            ("MqttPvInverter", "ZeroFeedinScaleStep", "0"),
+            ("MqttPvInverter", "ZeroFeedinScaleStep", "1.01"),
+            ("MqttPvInverter", "ZeroFeedinDistance", "-1"),
+            ("MqttPvInverter", "ZeroFeedinStartSoc", "-1"),
+            ("MqttPvInverter", "ZeroFeedinStartSoc", "101"),
             ("SolarOverheadDistributor", "UpdateInterval", "0"),
             ("TimeToGoCalculator", "UpdateInterval", "0"),
             ("FroniusSmartmeterJSON", "PollFrequencyMs", "0"),
@@ -526,6 +587,46 @@ class ConfigValueValidationTests(unittest.TestCase):
 
                 self.assertEqual(raised.exception.code, 1)
                 self.assertIn(first_key, critical.call_args.args[1])
+
+    def test_grid_setpoint_bounds_must_contain_default(self):
+        cases = (
+            ("100", "0", "50"),
+            ("0", "100", "101"),
+        )
+        for minimum, maximum, default in cases:
+            with self.subTest(minimum=minimum, maximum=maximum, default=default):
+                app = self._app_with_sample_config()
+                app.config["Common"]["GridSetPointMinW"] = minimum
+                app.config["Common"]["GridSetPointMaxW"] = maximum
+                app.config["Common"]["DefaultPowerSetPoint"] = default
+                with patch.object(self.es_ess, "c") as critical:
+                    with self.assertRaises(SystemExit):
+                        app._validateConfigValues()
+
+                self.assertTrue(
+                    any(
+                        "GridSetPoint" in call.args[1]
+                        or "DefaultPowerSetPoint" in call.args[1]
+                        for call in critical.call_args_list
+                    )
+                )
+
+    def test_tls_verification_modes_are_validated(self):
+        app = self._app_with_sample_config()
+        app.config["Mqtt"]["SslVerification"] = "sometimes"
+        with patch.object(self.es_ess, "c") as critical:
+            with self.assertRaises(SystemExit):
+                app._validateConfigValues()
+        self.assertIn("SslVerification", critical.call_args.args[1])
+
+        app = self._app_with_sample_config()
+        app.config["Mqtt"]["SslEnabled"] = "true"
+        app.config["Mqtt"]["SslVerification"] = "CertificateOnly"
+        app.config["Mqtt"]["SslCaFile"] = ""
+        with patch.object(self.es_ess, "c") as critical:
+            with self.assertRaises(SystemExit):
+                app._validateConfigValues()
+        self.assertIn("SslCaFile", critical.call_args.args[1])
 
     def test_optional_shelly_poll_intervals_are_rejected_when_present(self):
         for section in ("Shelly3EMGrid", "ShellyPMInverter:Roof"):

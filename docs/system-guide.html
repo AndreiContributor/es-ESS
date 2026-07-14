@@ -706,8 +706,8 @@ AllowGridCharging=<span class="value">false</span></pre>
       </div>
 
       <div class="formula" style="margin-top:22px">
-        <strong>combined grid setpoint</strong> = <span class="accent">DefaultPowerSetPoint</span> + active service adjustments<br><br>
-        <span class="dim">Example with NoBatToEV active:</span><br>
+        <strong>combined grid setpoint</strong> = clamp(<span class="accent">DefaultPowerSetPoint</span> + active service adjustments, <span class="accent">GridSetPointMinW</span>, <span class="accent">GridSetPointMaxW</span>)<br><br>
+        <span class="dim">Example with NoBatToEV active and a commissioned maximum of at least +1,950 W:</span><br>
         −50 W baseline + 2,000 W request = <span class="accent">+1,950 W import target</span>
       </div>
 
@@ -715,6 +715,7 @@ AllowGridCharging=<span class="value">false</span></pre>
       <ul>
         <li>If <code>NoBatToEV=false</code>, no currently active service adds a grid-setpoint request, so es-ESS normally calculates <code>-50 W</code>.</li>
         <li><code>NoBatToEV</code> can add a positive request to offload the EV shortfall to the grid, preventing that EV portion from draining the battery.</li>
+        <li>Version 11 defaults both configured bounds to the existing baseline. Dynamic adjustments therefore remain clamped to that baseline until the operator enters site-approved limits; each distinct clamp is logged.</li>
         <li>That behavior conflicts with a no-grid Auto/Eco objective, so keep <code>NoBatToEV=false</code> with the recommended Wattpilot battery-assist profile.</li>
         <li>The dormant <code>ChargeCurrentReducer</code> has a separate setting of the same name in its own section; it is not an active service in this checkout.</li>
         <li>es-ESS republishes the grid setpoint when its calculated value changes. It does not necessarily overwrite every later external change on each five-second management cycle.</li>
@@ -736,12 +737,18 @@ VRMPortalID=<span class="value">&lt;GX portal ID from /sbin/get-unique-id&gt;</s
 BatteryCapacityInWh=<span class="value">32000</span>             <span class="comment"># Example: 2 × 16 kWh nominal</span>
 BatteryMaxChargeInWh=<span class="value">9000</span>              <span class="comment"># Example only; historical key name, value is power in W</span>
 DefaultPowerSetPoint=<span class="value">-50</span>              <span class="comment"># Small export target</span>
+GridSetPointMinW=<span class="value">-50</span>                   <span class="comment"># Fail-closed until site limits are approved</span>
+GridSetPointMaxW=<span class="value">-50</span>
 
 <span class="comment">[Mqtt]</span>
 Host=<span class="value">localhost</span>
 Port=<span class="value">1883</span>
 SslEnabled=<span class="value">false</span>
+SslVerification=<span class="value">Required</span>             <span class="comment"># Certificate + hostname verification</span>
+SslCaFile=<span class="value"></span>                            <span class="comment"># Empty uses system trust</span>
 LocalSslEnabled=<span class="value">false</span>
+LocalSslVerification=<span class="value">Required</span>
+LocalSslCaFile=<span class="value"></span>
 
 <span class="comment">[Services]</span>
 SolarOverheadDistributor=<span class="value">true</span>

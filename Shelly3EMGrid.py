@@ -6,6 +6,8 @@ import dbus # type: ignore
 import dbus.service # type: ignore
 import inspect
 import pprint
+import math
+import tempfile
 from time import time
 import requests # type: ignore
 import os
@@ -36,17 +38,37 @@ class Shelly3EMGrid(esESSService):
         self.lastMeasurement = time()
 
         if (self.metering == "Net"):
-            #load stored counters, if any. 
+            self.energyForwarded = self._loadCounter("energyForwarded3EM")
+            self.energyReversed = self._loadCounter("energyReversed3EM")
 
-            if os.path.isfile("{0}/runtimeData/energyForwarded3EM".format(os.path.dirname(os.path.realpath(__file__)))):
-                with open("{0}/runtimeData/energyForwarded3EM".format(os.path.dirname(os.path.realpath(__file__))), 'r') as cfile:
-                    self.energyForwarded = float(cfile.read().strip())
-                    i(self, "Read stored counter energyForwarded={0}".format(self.energyForwarded))
-                
-            if os.path.isfile("{0}/runtimeData/energyReversed3EM".format(os.path.dirname(os.path.realpath(__file__)))):    
-                with open("{0}/runtimeData/energyReversed3EM".format(os.path.dirname(os.path.realpath(__file__))), 'r') as cfile:
-                    self.energyReversed = float(cfile.read().strip())
-                    i(self, "Read stored counter energyReversed={0}".format(self.energyReversed))
+    def _runtimeDataPath(self):
+        return os.path.join(
+            os.path.dirname(os.path.realpath(__file__)), "runtimeData"
+        )
+
+    def _counterPath(self, filename):
+        return os.path.join(self._runtimeDataPath(), filename)
+
+    def _loadCounter(self, filename):
+        path = self._counterPath(filename)
+        if not os.path.isfile(path):
+            return 0
+
+        try:
+            with open(path, "r") as counter_file:
+                value = float(counter_file.read().strip())
+            if not math.isfinite(value) or value < 0:
+                raise ValueError("counter must be a finite non-negative number")
+            i(self, "Read stored counter {0}={1}".format(filename, value))
+            return value
+        except (OSError, TypeError, ValueError) as ex:
+            w(
+                self,
+                "Ignoring invalid stored Shelly counter {0}: {1}. Starting at 0.".format(
+                    path, ex
+                ),
+            )
+            return 0
 
     def initDbusService(self):
         self.serviceType = "com.victronenergy.grid"
@@ -117,6 +139,7 @@ class Shelly3EMGrid(esESSService):
        self.persistCounters()
 
     def queryShelly(self):
+        measurementTime = time()
         try:
             URL = "http://%s:%s@%s/status" % (self.shellyUsername, self.shellyPassword, self.shellyHost)
             URL = URL.replace(":@", "")
@@ -172,9 +195,7 @@ class Shelly3EMGrid(esESSService):
                 self.dbusService['/Ac/Energy/Reverse'] = sum(value['total_returned'] for value in phase_values)/1000.0
             else:
                 #Net metering. We use our own counters and keep track of correct saldating.
-                now = time()
-                duration = (now - self.lastMeasurement) * 1000.0
-                self.lastMeasurement = now
+                duration = max(0.0, measurementTime - self.lastMeasurement) * 1000.0
 
                 if (total_power >=0):
                     #Consumption
@@ -208,6 +229,11 @@ class Shelly3EMGrid(esESSService):
         
         except Exception as ex:
             c(self, "Exception", exc_info=ex)
+        finally:
+            if self.metering == "Net":
+                # Never apply the next successful power sample across an
+                # interval for which no measurement was available.
+                self.lastMeasurement = measurementTime
 
     def connError(self):
         self.connectionErrors += 1
@@ -231,11 +257,45 @@ class Shelly3EMGrid(esESSService):
     def persistCounters(self):
         i(self, "Saving energy counters to disk. F/R: {0}/{1}".format(self.energyForwarded, self.energyReversed))
 
-        with open("{0}/runtimeData/energyForwarded3EM".format(os.path.dirname(os.path.realpath(__file__))), 'w+') as cfile:
-            cfile.write(str(self.energyForwarded))
-            
-        with open("{0}/runtimeData/energyReversed3EM".format(os.path.dirname(os.path.realpath(__file__))), 'w+') as cfile:
-            cfile.write(str(self.energyReversed))
+        self._persistCounter("energyForwarded3EM", self.energyForwarded)
+        self._persistCounter("energyReversed3EM", self.energyReversed)
+
+    def _persistCounter(self, filename, value):
+        runtime_path = self._runtimeDataPath()
+        target_path = self._counterPath(filename)
+        temporary_path = None
+        try:
+            persisted_value = float(value)
+            if not math.isfinite(persisted_value) or persisted_value < 0:
+                raise ValueError("counter must be a finite non-negative number")
+            os.makedirs(runtime_path, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                dir=runtime_path,
+                prefix=".{0}.".format(filename),
+                delete=False,
+            ) as counter_file:
+                temporary_path = counter_file.name
+                counter_file.write(str(value))
+                counter_file.flush()
+                os.fsync(counter_file.fileno())
+            os.replace(temporary_path, target_path)
+            temporary_path = None
+            return True
+        except (OSError, TypeError, ValueError) as ex:
+            e(
+                self,
+                "Unable to persist Shelly counter {0}: {1}".format(
+                    target_path, ex
+                ),
+            )
+            return False
+        finally:
+            if temporary_path is not None:
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass
 
 
 

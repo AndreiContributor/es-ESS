@@ -32,7 +32,9 @@ version migrations. Startup then verifies the mandatory `[Common]`, `[Mqtt]`,
 and active `[Services]` bootstrap keys and their conversion types before
 constructing MQTT clients, threads, D-Bus services, or integration services.
 It also validates bounded/cross-field Wattpilot values, positive service update
-intervals, and positive device polling intervals. Invalid bootstrap values are
+intervals, positive device polling intervals, MQTT PV stale/zero-feed-in
+values, common thread/HTTP values, TLS trust modes, and configured combined
+grid-setpoint bounds. Invalid bootstrap values are
 logged together at CRITICAL level and startup exits with status 1; optional
 sections and settings that already have runtime defaults remain compatible when
 absent.
@@ -76,9 +78,9 @@ flag is set to `true`.
 | `FroniusWattpilot` | `FroniusWattpilot.py` | `[FroniusWattpilot]` | Integrates and controls a Fronius Wattpilot EV charger. | Owns Victron EV-charger D-Bus paths, including session energy/time compatibility paths, Wattpilot WebSocket commands through `Wattpilot.py`, SolarOverheadDistributor requests, grid telemetry safety checks, runtime-status publication, and shutdown behavior. The underlying `Wattpilot.py` client owns a single worker reconnect loop for WebSocket outages. See `docs/wattpilot-architecture.md` before changing it. |
 | `MqttTemperature` | `MqttTemperature.py` | `MqttTemperature:*` | Exposes MQTT temperature sensors in VRM/D-Bus. | Subscribes to configured MQTT value, humidity, and pressure topics; publishes one `com.victronenergy.temperature` D-Bus service per configured sensor. |
 | `NoBatToEV` | `NoBatToEV.py` | `[NoBatToEV]`, `[Common]` | Offloads EV load to grid-setpoint requests so an AC-out EV charge does not drain the home battery. | Reads Victron system consumption, PV, phase-count, optional relay, and EV-charger power data; registers or revokes shared grid-setpoint requests through the es-ESS runtime. |
-| `Shelly3EMGrid` | `Shelly3EMGrid.py` | `[Shelly3EMGrid]` | Exposes a Shelly 3EM as a Victron grid meter. | Polls the Shelly HTTP status API and publishes a `com.victronenergy.grid` D-Bus service; can persist derived net-energy counters under `runtimeData/` when configured for net metering. |
+| `Shelly3EMGrid` | `Shelly3EMGrid.py` | `[Shelly3EMGrid]` | Exposes a Shelly 3EM as a Victron grid meter. | Polls the Shelly HTTP status API and publishes a `com.victronenergy.grid` D-Bus service; net-meter counters use atomic persistence, corrupt-value recovery, and exclude unknown failed-poll intervals. |
 | `ShellyPMInverter` | `ShellyPMInverter.py` | `ShellyPMInverter:*` | Exposes one or more Shelly PM devices as PV inverters. | Polls Shelly Gen2 HTTP RPC status endpoints and publishes one `com.victronenergy.pvinverter` D-Bus service per configured device. |
-| `MqttPVInverter` | `MqttPVInverter.py` | `[MqttPvInverter]`, `MqttPVInverter:*` | Exposes MQTT-reported PV inverters in VRM/D-Bus. | Subscribes to configured MQTT voltage, current, power, and energy topics; publishes `com.victronenergy.pvinverter` D-Bus services; optionally publishes OpenDTU limit commands for experimental zero-feed-in control. A zero target still publishes `0%`; incomplete consumption telemetry keeps the last limit and skips that control cycle. |
+| `MqttPVInverter` | `MqttPVInverter.py` | `[MqttPvInverter]`, `MqttPVInverter:*` | Exposes MQTT-reported PV inverters in VRM/D-Bus. | Subscribes to configured MQTT voltage, current, power, and energy topics; publishes `com.victronenergy.pvinverter` D-Bus services; optionally publishes OpenDTU limit commands for experimental zero-feed-in control. A zero target still publishes `0%`; incomplete consumption telemetry keeps the last limit, while a fully silent inverter is invalidated after the configured timeout and contributes zero cached power. |
 
 ## Dormant Or Commented Services
 
@@ -141,6 +143,13 @@ sensors/inverters, and SolarOverheadDistributor requests. The local Venus MQTT
 broker is used for writes to Venus settings or system values, such as
 TimeToGoCalculator and grid-setpoint commands.
 
+When TLS is enabled, each client has an explicit trust mode. `Required` uses
+certificate and hostname verification with either system trust or a configured
+CA file. `CertificateOnly` requires a CA/certificate file but explicitly
+disables hostname verification for pinned self-signed deployments. `Insecure`
+is an explicit warning-producing legacy mode; there is no silent fallback from
+verification failure.
+
 The SolarOverheadDistributor request namespace is shared by internal consumers
 such as Wattpilot and by external/scripted consumers:
 
@@ -177,6 +186,11 @@ use in this checkout:
 
 - `NoBatToEV` registers and revokes grid-setpoint requests through the shared
   runtime API.
+
+The final additive value is clamped to the configured site-approved
+`[Common] GridSetPointMinW..GridSetPointMaxW` range. Configuration migration
+defaults both limits to the existing baseline setpoint, so dynamic adjustments
+remain fail-closed until an operator commissions a wider range.
 
 Dormant `ChargeCurrentReducer` writes local Venus MQTT setpoints directly and
 uses a hard-coded VRM portal ID in its current file. Do not reactivate or mix it

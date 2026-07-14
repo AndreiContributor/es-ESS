@@ -42,6 +42,9 @@ class MqttPVInverter(esESSService):
             self.zeroFeedinScaleStep = float(self.config["MqttPvInverter"]["ZeroFeedinScaleStep"])
             self.zeroFeedinDistance = float(self.config["MqttPvInverter"]["ZeroFeedinDistance"])
             self.zeroFeedinStartSoc = float(self.config["MqttPvInverter"]["ZeroFeedinStartSoc"])
+            self.staleTimeoutSeconds = int(
+                self.config["MqttPvInverter"].get("StaleTimeoutSeconds", 300)
+            )
 
             if self.enableZeroFeedin:
                 i(self, "Enabling ZeroFeedin through DTU")
@@ -102,7 +105,11 @@ class MqttPVInverter(esESSService):
 
     def _checkStale(self):
         for (inverter) in self.mqttPVInverters.values():
-            if (time.time() - inverter.lastMessageReceived > 10 * 3600):
+            if (
+                not inverter.isStale
+                and time.time() - inverter.lastMessageReceived
+                > self.staleTimeoutSeconds
+            ):
                 w(self, "PVInverter detected stale: {0}".format(inverter.customName))
                 inverter.setStale()
     
@@ -179,7 +186,7 @@ class MqttPVInverterInstance:
         self.l3EnergyForwardedTopic = configValues["L3EnergyForwardedTopic"]
         self.totalEnergyForwardedTopic = configValues["TotalEnergyForwardedTopic"]
         self.dtuControlTopic = configValues["DtuControlTopic"] if "DtuControlTopic" in configValues else None
-        self.lastMessageReceived = 0
+        self.lastMessageReceived = time.time()
         self.isStale=False
         self.rootService:MqttPVInverter = rootService
         self.l1power = 0 
@@ -301,6 +308,9 @@ class MqttPVInverterInstance:
     
     def setStale(self):
         self.isStale=True
+        self.l1power = 0
+        self.l2power = 0
+        self.l3power = 0
         self.dbusService["/Connected"] = 0
         self.dbusService['/StatusCode'] = 10
         self.dbusService['/Ac/Power'] = None

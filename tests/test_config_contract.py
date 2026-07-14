@@ -14,6 +14,20 @@ DORMANT_SERVICES = {
     "Grid2Bat",
     "MqttDC",
 }
+POLICY_CONFIG_KEYS = {
+    "Common": {
+        "GridSetPointMinW",
+        "GridSetPointMaxW",
+        "HttpRequestTimeout",
+    },
+    "Mqtt": {
+        "SslVerification",
+        "SslCaFile",
+        "LocalSslVerification",
+        "LocalSslCaFile",
+    },
+    "MqttPvInverter": {"StaleTimeoutSeconds"},
+}
 
 
 class _WattpilotConfigKeyVisitor(ast.NodeVisitor):
@@ -143,6 +157,18 @@ class ConfigContractTests(unittest.TestCase):
         self.assertTrue(DORMANT_SERVICES.isdisjoint(_runtime_service_names()))
         self.assertTrue(DORMANT_SERVICES.isdisjoint(_sample_service_names()))
         self.assertTrue(DORMANT_SERVICES.isdisjoint(_readme_active_service_names()))
+
+    def test_policy_settings_are_present_in_maintained_sample(self):
+        config = configparser.ConfigParser()
+        config.optionxform = str
+        config.read(ROOT / "config.sample.ini", encoding="utf-8")
+
+        for section, required_keys in POLICY_CONFIG_KEYS.items():
+            with self.subTest(section=section):
+                self.assertTrue(config.has_section(section))
+                self.assertEqual(
+                    sorted(required_keys - set(config[section].keys())), []
+                )
 
 
 if __name__ == "__main__":

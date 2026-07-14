@@ -3,6 +3,7 @@
 import configparser
 import importlib.util
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -125,6 +126,11 @@ class Shelly3EMGridTests(unittest.TestCase):
         _install_runtime_stubs()
         cls.module = _load_module("shelly3em_grid_under_test", ROOT / "Shelly3EMGrid.py")
 
+    def setUp(self):
+        self.module.c = Mock()
+        self.module.e = Mock()
+        self.module.w = Mock()
+
     def _service(self):
         service = self.module.Shelly3EMGrid()
         service.initDbusService()
@@ -228,6 +234,120 @@ class Shelly3EMGridTests(unittest.TestCase):
 
         self.assertEqual(service.dbusService["/Connected"], 0)
         self.assertIsNone(service.dbusService["/Ac/L1/Power"])
+
+    def test_failed_poll_resets_net_integration_timestamp(self):
+        service = self._service()
+        service.metering = "Net"
+        service.energyForwarded = 0
+        service.lastMeasurement = 0
+        self.module.requests.get = Mock(
+            side_effect=self.module.requests.exceptions.Timeout()
+        )
+
+        with patch.object(self.module, "time", return_value=10):
+            service.queryShelly()
+
+        self.assertEqual(service.lastMeasurement, 10)
+
+        self.module.requests.get = Mock(
+            return_value=FakeResponse(
+                {
+                    "total_power": 3600,
+                    "emeters": [
+                        {"voltage": 230, "current": 4, "power": 1000},
+                        {"voltage": 231, "current": 5, "power": 1200},
+                        {"voltage": 232, "current": 6, "power": 1400},
+                    ],
+                }
+            )
+        )
+        with patch.object(self.module, "time", return_value=11):
+            service.queryShelly()
+
+        self.assertEqual(service.energyForwarded, 1)
+
+    def test_clock_rollback_does_not_decrement_net_counter(self):
+        service = self._service()
+        service.metering = "Net"
+        service.energyForwarded = 5
+        service.lastMeasurement = 10
+        self.module.requests.get = Mock(
+            return_value=FakeResponse(
+                {
+                    "total_power": 3600,
+                    "emeters": [
+                        {"voltage": 230, "current": 4, "power": 1000},
+                        {"voltage": 231, "current": 5, "power": 1200},
+                        {"voltage": 232, "current": 6, "power": 1400},
+                    ],
+                }
+            )
+        )
+
+        with patch.object(self.module, "time", return_value=9):
+            service.queryShelly()
+
+        self.assertEqual(service.energyForwarded, 5)
+        self.assertEqual(service.lastMeasurement, 9)
+
+    def test_invalid_persisted_counter_recovers_to_zero(self):
+        for content in ("", "garbage", "nan", "-1"):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as tmp_dir:
+                counter_path = Path(tmp_dir) / "energyForwarded3EM"
+                counter_path.write_text(content, encoding="utf-8")
+                service = self.module.Shelly3EMGrid.__new__(
+                    self.module.Shelly3EMGrid
+                )
+                service._runtimeDataPath = lambda: tmp_dir
+
+                self.assertEqual(service._loadCounter("energyForwarded3EM"), 0)
+                self.module.w.assert_called()
+                self.module.w.reset_mock()
+
+    def test_counter_persistence_uses_fsync_and_atomic_replace(self):
+        service = self._service()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service._runtimeDataPath = lambda: tmp_dir
+            with patch.object(self.module.os, "fsync") as fsync, patch.object(
+                self.module.os, "replace", wraps=self.module.os.replace
+            ) as replace:
+                self.assertTrue(service._persistCounter("energyForwarded3EM", 12.5))
+
+            self.assertEqual(
+                (Path(tmp_dir) / "energyForwarded3EM").read_text(encoding="utf-8"),
+                "12.5",
+            )
+            fsync.assert_called_once()
+            replace.assert_called_once()
+
+    def test_interrupted_atomic_replace_preserves_existing_counter(self):
+        service = self._service()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service._runtimeDataPath = lambda: tmp_dir
+            target = Path(tmp_dir) / "energyForwarded3EM"
+            target.write_text("7", encoding="utf-8")
+            with patch.object(
+                self.module.os, "replace", side_effect=OSError("interrupted")
+            ):
+                self.assertFalse(service._persistCounter("energyForwarded3EM", 9))
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "7")
+            self.assertEqual(
+                list(Path(tmp_dir).glob(".energyForwarded3EM.*")), []
+            )
+            self.module.e.assert_called_once()
+
+    def test_invalid_counter_value_is_not_persisted(self):
+        service = self._service()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            service._runtimeDataPath = lambda: tmp_dir
+            target = Path(tmp_dir) / "energyForwarded3EM"
+            target.write_text("7", encoding="utf-8")
+
+            self.assertFalse(service._persistCounter("energyForwarded3EM", float("nan")))
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "7")
+            self.module.e.assert_called_once()
 
 
 if __name__ == "__main__":

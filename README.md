@@ -172,18 +172,24 @@ the credential-bearing file cannot be secured.
 | [Common]                 | LogLevel             | LogLevel to use. See [Logging](#logging) use `INFO` if you are unsure.                                 | String        | INFO                         |  
 | [Common]                 | NumberOfThreads      | Number of Threads to use. 3-XX depending on enabled service count.                                     | Integer       | 5                            |
 | [Common]                 | ServiceMessageCount  | Number of ServiceMessages to publish on Mqtt. See [Service Messages](#service-messages)                | Integer       | 50                           |
-| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 10                           |
+| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 11                           |
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
 | [Common]                 | BatteryMaxChargeInWh | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
 | [Common]                 | DefaultPowerSetPoint | Default Power Setpoint (W), when using features that manipulte the set point programmatically.         | Integer       | -50                          |
+| [Common]                 | GridSetPointMinW     | Site-approved minimum combined Victron ESS grid setpoint. Must contain `DefaultPowerSetPoint`.         | Number (W)    | -50                          |
+| [Common]                 | GridSetPointMaxW     | Site-approved maximum combined Victron ESS grid setpoint. Must contain `DefaultPowerSetPoint`.         | Number (W)    | -50                          |
 | [Common]                 | HttpRequestTimeout   | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers.                       | Double        | 5                            |
 | [Mqtt]                   | Host                 | Hostname / IP of your main-mqtt to work with.                                                          | String        | mqtt.ad.equinox-solutions.de |
 | [Mqtt]                   | User                 | Username to connect to your main-mqtt.                                                                 | String        | user                         |
 | [Mqtt]                   | Password             | Password to connect to your main-mqtt.                                                                 | String        | secure123!                   |
 | [Mqtt]                   | Port                 | Port to connect to your main-mqtt.                                                                     | Integer       | 1833                         |
-| [Mqtt]                   | SslEnabled           | Flag, if your main-mqtt is ssl enabled. Note: We kindly ignore Certificate-Checks as of now.           | Boolean       | true                         |
-| [Mqtt]                   | LocalSslEnabled      | Flag, if your local / venus-Mqtt is SSL or plain.                                                      | Boolean       | true                         |
+| [Mqtt]                   | SslEnabled           | Flag indicating whether the main MQTT connection uses TLS.                                             | Boolean       | true                         |
+| [Mqtt]                   | SslVerification      | `Required`, `CertificateOnly`, or explicit legacy `Insecure`.                                          | String        | Required                     |
+| [Mqtt]                   | SslCaFile            | Optional readable CA/certificate file. Empty `Required` mode uses the system trust store.              | Path          | /data/keys/broker-ca.crt     |
+| [Mqtt]                   | LocalSslEnabled      | Flag indicating whether the local Venus MQTT connection uses TLS.                                      | Boolean       | true                         |
+| [Mqtt]                   | LocalSslVerification | Local-client TLS policy: `Required`, `CertificateOnly`, or explicit legacy `Insecure`.                 | String        | Required                     |
+| [Mqtt]                   | LocalSslCaFile       | Optional readable CA/certificate file for local Venus MQTT.                                            | Path          | /data/keys/mosquitto.crt     |
 | [Services]               | SolarOverheadDistributor  | Flag, if [SolarOverheadDistributor](#solaroverheaddistributor) is enabled.                        | Boolean       | true                         |
 | [Services]               | TimeToGoCalculator        | Flag, if [TimeToGoCalculator](#timetogocalculator) is enabled.                                    | Boolean       | true                         |
 | [Services]               | FroniusSmartmeterJSON     | Flag, if the Fronius JSON smart-meter integration is enabled.                                     | Boolean       | true                         |
@@ -217,6 +223,29 @@ configuration errors are logged at CRITICAL level and startup exits with status
 - `TimeToGoCalculator` and `SolarOverheadDistributor` `UpdateInterval` values,
   plus `FroniusSmartmeterJSON`, `Shelly3EMGrid`, and every
   `ShellyPMInverter:*` `PollFrequencyMs`, must be greater than `0` milliseconds.
+- Grid-import and battery-assist thresholds must be non-negative. Grid and
+  allowance freshness windows must be positive, `RawOverheadFreshSeconds`
+  must be at least `5`, and `StartupTelemetryRatio` must be in `(0, 1]`.
+- `[MqttPvInverter] StaleTimeoutSeconds` must be at least `5`,
+  `ZeroFeedinScaleStep` must be in `(0, 1]`, `ZeroFeedinDistance` must be
+  non-negative, and `ZeroFeedinStartSoc` must be in `0..100`.
+- `[Common] NumberOfThreads` and `HttpRequestTimeout` must be greater than `0`.
+  The finite grid-setpoint bounds must contain `DefaultPowerSetPoint`.
+
+#### MQTT TLS verification
+
+TLS authenticates the broker by default. `Required` validates both certificate
+and hostname. Leave the CA-file setting empty to use the system trust store, or
+provide a readable CA/certificate file. `CertificateOnly` still validates the
+certificate but explicitly disables hostname checking; it is intended for a
+pinned self-signed Venus certificate whose name does not match the connection
+hostname. `Insecure` disables both checks and should be temporary only.
+
+Configuration version 11 migrates an existing TLS-enabled client to explicit
+`Insecure` so an upgrade does not silently disconnect a legacy self-signed
+broker. TLS-disabled clients and new installations default to `Required`.
+Every non-required mode emits a startup warning, and es-ESS never silently
+falls back from verified TLS.
 
 > :warning: NOTE: I recommend to enable one service after each other and finalize configuration, before enabling another one. Else configuration may become a bit clumsy and error-prone.
 
@@ -386,6 +415,7 @@ MqttPvInverter requires a few variables to be set in `/data/es-ESS/config.ini`:
 | [MqttPvInverter]    | ZeroFeedinScaleStep | Experimental OpenDTU throttle rate-of-change limit per zero-feed-in cycle. | Double | 0.05
 | [MqttPvInverter]    | ZeroFeedinDistance | Experimental buffer in W subtracted from measured consumption before calculating target inverter power. | Double | 50
 | [MqttPvInverter]    | ZeroFeedinStartSoc | Experimental SOC threshold where zero-feed-in control may begin. | Double | 100
+| [MqttPvInverter]    | StaleTimeoutSeconds | Maximum age of any MQTT message from one inverter before its D-Bus state and cached phase power are invalidated. Must be at least `5`. | Integer (seconds) | 300
 
 When zero-feed-in is enabled and the calculated target inverter power is `0`,
 producing inverters with `DtuControlTopic` receive an explicit `0%` OpenDTU
@@ -394,6 +424,12 @@ limit command.
 Zero-feed-in calculation requires all three consumption phases. If one phase is
 temporarily unavailable, es-ESS keeps the last inverter limit and skips that
 cycle until complete telemetry returns.
+
+An inverter that publishes no MQTT message for `StaleTimeoutSeconds` is marked
+disconnected, its D-Bus measurements are nulled, and its cached phase power is
+cleared so frozen production cannot influence zero-feed-in calculations. The
+first later message restores the normal connected state; fresh phase-power
+topics rebuild the cached total.
 
 For every inverter you want to create you have to create a additional section, specifying paths on mqtt. This is quite a bunch of work, but generally only done once. 
 
@@ -578,21 +614,21 @@ state remains on the low-frequency idle cadence.
 | [FroniusWattpilot] | BatteryAssistEnabled | Enables the optional short battery bridge for an already-running Auto/Eco charge. | Boolean | true |
 | [FroniusWattpilot] | BatteryAssistSocMin | Minimum battery SOC required before battery assist can be used. Must be within `0..100`. | Number (%) | 50 |
 | [FroniusWattpilot] | BatteryAssistMaxSeconds | Maximum duration for one battery-assist window. Use at least `MinPhaseSwitchSeconds` when battery should be able to bridge the full phase-down waiting interval. Must be greater than `0` when enabled. | Integer (seconds) | 600 |
-| [FroniusWattpilot] | BatteryAssistMaxShortfallW | Maximum PV shortfall that battery assist may bridge for an already-running charge. The maintained 1000 W default bridges small clouds but makes larger deficits reduce current, phase down, or stop earlier instead of leaning heavily on the home battery. | Number (W) | 1000 |
+| [FroniusWattpilot] | BatteryAssistMaxShortfallW | Maximum non-negative PV shortfall that battery assist may bridge for an already-running charge. The maintained 1000 W default bridges small clouds but makes larger deficits reduce current, phase down, or stop earlier instead of leaning heavily on the home battery. | Number (W) | 1000 |
 | [FroniusWattpilot] | BatterySocFreshSeconds | Maximum age of selected-battery activity used to trust the cached SOC for battery assist or the EV-priority battery-reservation bypass. Valid finite SOC and a recent finite `/Dc/Battery/Power` update are both required; otherwise both features are ineligible. Must be greater than `0`. | Integer (seconds) | 15 |
-| [FroniusWattpilot] | BatteryAssistRecoverySeconds | Sustained PV-recovery time required before battery assist can be used again after lockout. | Integer (seconds) | 120 |
+| [FroniusWattpilot] | BatteryAssistRecoverySeconds | Non-negative sustained PV-recovery time required before battery assist can be used again after lockout. | Integer (seconds) | 120 |
 | [FroniusWattpilot] | AllowGridCharging | Allows an already-running Auto/Eco charge to continue despite grid import when PV/battery assistance is insufficient. It never permits a new grid-only start. Victron ESS determines the actual battery/grid energy source. Recommended no-grid mode is `false`. | Boolean | false |
 | [FroniusWattpilot] | GridImportPositive | Site grid-power sign convention. `true` means positive grid power is import. | Boolean | true |
-| [FroniusWattpilot] | GridImportStopW | Sustained grid-import power threshold that stops Auto/Eco when grid charging is disabled. | Number (W) | 300 |
-| [FroniusWattpilot] | GridImportStopSeconds | Duration grid import must exceed `GridImportStopW` before Auto/Eco is stopped. | Integer (seconds) | 15 |
-| [FroniusWattpilot] | AllowanceFreshSeconds | Maximum age of the assigned SolarOverheadDistributor Wattpilot allowance. Missing, malformed, or stale allowance is treated as insufficient. | Integer (seconds) | 15 |
-| [FroniusWattpilot] | GridTelemetryFreshSeconds | Maximum age of each required grid-power value (L1, L2, and L3) while no-grid Auto/Eco control is enabled. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | GridImportStopW | Non-negative sustained grid-import power threshold that stops Auto/Eco when grid charging is disabled. | Number (W) | 300 |
+| [FroniusWattpilot] | GridImportStopSeconds | Non-negative duration grid import must exceed `GridImportStopW` before Auto/Eco is stopped. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | AllowanceFreshSeconds | Positive maximum age of the assigned SolarOverheadDistributor Wattpilot allowance. Missing, malformed, or stale allowance is treated as insufficient. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | GridTelemetryFreshSeconds | Positive maximum age of each required grid-power value (L1, L2, and L3) while no-grid Auto/Eco control is enabled. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | AllowanceDropGraceSeconds | Non-negative grace period before an already-running Auto/Eco session is stopped for insufficient or stale allowance. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | CarDisconnectConfirmSeconds | Non-negative time a disconnected car-state reading must remain stable before es-ESS accepts it as a disconnect. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | SurplusDropGraceSeconds | Non-negative grace period before continuous low surplus resets the Auto/Eco start timer. On the normal current-adjustment path it also preserves an active 1-to-3 candidate through a shorter-than-grace dip only while allowance remains above the effective three-phase floor. Eligible battery assist may leave an already-existing candidate timer running through its bounded bridge, including a deeper dip; it cannot create the candidate or issue a phase command. Full phase-up allowance is always required at the command boundary. | Integer (seconds) | 20 |
 | [FroniusWattpilot] | StartupGraceSeconds | Non-negative time after a start or phase switch where commanded EV demand may be reported while Wattpilot telemetry catches up. | Integer (seconds) | 60 |
-| [FroniusWattpilot] | StartupTelemetryRatio | Fraction of commanded demand that Wattpilot telemetry must reach before startup grace is considered satisfied. | Number | 0.80 |
-| [FroniusWattpilot] | RawOverheadFreshSeconds | Maximum age of raw distributor overhead used only for safe 3-to-1 fallback decisions. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | StartupTelemetryRatio | Fraction of commanded demand that Wattpilot telemetry must reach before startup grace is considered satisfied. Must be greater than `0` and at most `1`. | Number | 0.80 |
+| [FroniusWattpilot] | RawOverheadFreshSeconds | Maximum age of raw distributor overhead used only for safe 3-to-1 fallback decisions. Must be at least `5`. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | ChargeCompletePowerThresholdW | Sustained low EV power treated as charge-complete hold instead of restarting Auto/Eco PV control. | Number (W) | 100 |
 | [FroniusWattpilot] | ChargeCompleteConfirmSeconds | Time low EV power must remain below `ChargeCompletePowerThresholdW` before charge-complete hold starts. | Integer (seconds) | 120 |
 | [FroniusWattpilot] | ChargeCompleteResumePowerW | EV power above this value starts the confirmation for leaving charge-complete hold. | Number (W) | 300 |
@@ -789,6 +825,8 @@ NoBatToEV requires a few variables to be set in `/data/es-ESS/config.ini`:
 | [Services]    | NoBatToEV   | Flag, if the service should be enabled or not | Boolean | true |
 | [Common]     | VRMPortalID |  Your portal ID to access values on mqtt / dbus |String | VRM0815 |
 | [Common]     | DefaultPowerSetPoint |  Default Power SetPoint, so it can be restored after ev charge finished. | double | -50 |
+| [Common]     | GridSetPointMinW | Minimum site-approved final grid setpoint. | double | -50 |
+| [Common]     | GridSetPointMaxW | Maximum site-approved final grid setpoint. | double | 12000 |
 | [NoBatToEV]  | UseRelay | can be -1 (disabled) or 0 or 1. Then NoBatToEV will only be "active", when the Relay 0 or 1 is turned on. (Relay Toggles are available in VRM)|
 
 > :warning: NOTE: this feature manipulates the grid set point in order to achieve proper offloading of your evs energy demand. Several precautions ensure that the configured default grid set point
@@ -801,6 +839,13 @@ During an orderly shutdown, es-ESS sends the configured default grid set point
 as a forced QoS 1 MQTT publication and waits for acknowledgement for up to two
 seconds before disconnecting MQTT. Shutdown still continues if the broker does
 not acknowledge within that bound.
+
+The final combined setpoint is clamped to `GridSetPointMinW..GridSetPointMaxW`
+and each distinct clamp is logged. Version 11 migrates both bounds to the
+existing `DefaultPowerSetPoint`, which deliberately prevents dynamic
+NoBatToEV adjustments until the operator enters limits approved for the local
+ESS, grid connection, protection, and contract. The bounds are safety policy,
+not a substitute for Victron input-current or inverter limits.
 
 # Shelly3EMGrid
 > :large_orange_diamond: Release-Candiate-Version: Feature is still undergoing development, but current version is already satisfying: NET-Metering is untested so far, need to get hands on a shelly 3EM, fist.
@@ -839,6 +884,13 @@ every 5 minutes, so in case of a unexpected shutdown, they are not lost.
 However, since this requires to count the momentary values and derive a hourly consumption from that values, it 
 may be less precise than any other meter. Also flows that happen while the shelly or es-ESS is offline cannot be 
 recovered, leading to temporary "gaps" on the consumption/feed-in records.
+
+Persisted net counters are written with flush, filesystem synchronization, and
+atomic replacement. Missing files start at zero; corrupt, non-finite, or
+negative values are ignored with a warning. A failed Shelly poll resets the
+integration timestamp, so power observed after an outage is never applied to
+the unknown outage interval. This intentionally leaves an energy gap instead
+of inventing consumption or feed-in.
 
 ### Example config
 
@@ -1176,7 +1228,7 @@ Additionally there are the following configuration options available:
 | ---------- | ---------|---- | ------------- |--|
 | [Common]    | NumberOfThreads |  Number of threads, es-ESS should use. | int | 5 |
 | [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 50 |
-| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 10 |
+| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 11 |
 | [Common]    | HttpRequestTimeout | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers. | double | 5 |
 
 ### Service Messages

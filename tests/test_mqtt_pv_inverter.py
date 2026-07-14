@@ -7,7 +7,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +52,7 @@ def _config():
                 "ZeroFeedinScaleStep": "0.05",
                 "ZeroFeedinDistance": "50",
                 "ZeroFeedinStartSoc": "90",
+                "StaleTimeoutSeconds": "300",
             },
             "MqttPVInverter:roof": {
                 "CustomName": "Roof",
@@ -225,6 +226,39 @@ class MqttPVInverterTests(unittest.TestCase):
         self.assertIn("roof/l1v", subscribed_topics)
         self.assertIn("roof/power", subscribed_topics)
         self.assertIn("roof/energy", subscribed_topics)
+
+    def test_stale_boundary_clears_cached_power_once(self):
+        service, inverter = self._service()
+        service.initDbusService()
+        inverter.lastMessageReceived = 100
+
+        with patch.object(self.module.time, "time", return_value=400):
+            service._checkStale()
+
+        self.assertFalse(inverter.isStale)
+
+        with patch.object(self.module.time, "time", return_value=401):
+            service._checkStale()
+            service._checkStale()
+
+        self.assertTrue(inverter.isStale)
+        self.assertEqual(inverter.total_power, 0)
+        self.assertEqual(inverter.dbusService["/Connected"], 0)
+        self.assertIsNone(inverter.dbusService["/Ac/L1/Power"])
+        self.module.w.assert_called_once()
+
+    def test_first_message_after_stale_recovers_and_rebuilds_power(self):
+        service, inverter = self._service()
+        service.initDbusService()
+        inverter.setStale()
+        message = SimpleNamespace(topic="roof/l1p", payload=b"125")
+
+        inverter.onMqttMessage(None, None, message)
+
+        self.assertFalse(inverter.isStale)
+        self.assertEqual(inverter.dbusService["/Connected"], 1)
+        self.assertEqual(inverter.l1power, 125)
+        self.assertEqual(inverter.total_power, 125)
 
 
 if __name__ == "__main__":
