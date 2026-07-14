@@ -101,6 +101,47 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-14 - Group B Configuration And Policy Hardening
+
+- Replaced the ten-hour MQTT PV inverter stale window with a validated,
+  configurable 300-second default, suppressed repeated stale transitions, and
+  cleared cached phase power so silent inverters contribute zero to
+  zero-feed-in control until fresh MQTT data recovers.
+- Made Shelly net-meter counter reads tolerate corrupt, non-finite, or negative
+  files; created the runtime directory when needed; and persisted each existing
+  counter through flush, `fsync`, and atomic replacement. Failed poll attempts
+  now reset the integration timestamp so later power is not applied across an
+  unknown outage interval.
+- Added `Required`, `CertificateOnly`, and explicit warning-producing
+  `Insecure` MQTT TLS verification policies for both main and local clients.
+  New/disabled configurations default to full certificate/hostname
+  verification, while previously enabled TLS migrates once to explicit legacy
+  compatibility without silently breaking connectivity.
+- Added aggregate fail-fast validation for remaining Wattpilot grid,
+  freshness, assist, and startup-ratio values; MQTT PV zero-feed-in/stale
+  values; and positive common thread/HTTP values, without adding arbitrary
+  site-specific upper limits.
+- Added configured final grid-setpoint bounds, cross-field validation, clamp
+  diagnostics, and fail-closed migration that sets both limits to the existing
+  baseline until the operator commissions a site-approved range.
+- Advanced configuration to version 11, updated the maintained sample, README,
+  Wattpilot architecture, service inventory, and system guide, and added
+  hardware-free migration, boundary, TLS, stale/recovery, persistence, outage,
+  and clamp regressions.
+- Verification passed: changed-production-file syntax, repository compileall,
+  84 focused tests, the 4-test configuration contract, the full 334-test
+  hardware-free suite, shell syntax, backlog audit, and whitespace checks.
+- Production GX validation passed on 2026-07-14: all three changed runtime
+  modules matched the reviewed content after line-ending normalization; every
+  deployed top-level Python file and lifecycle shell script passed syntax
+  validation; configuration v11 passed the exact bootstrap and value
+  validators with `0600 root:root` permissions; and the controlled Venus OS
+  v3.75 restart recovered both MQTT clients, the Wattpilot D-Bus service,
+  healthy telemetry, firmware compatibility, and the fail-closed `-50 W` grid
+  setpoint without serious runtime errors. Services disabled in production
+  were not enabled solely for fault injection; their stale, persistence, TLS,
+  and clamp branches retain hardware-free regression coverage.
+
 ### Completed 2026-07-14 - Group A Runtime Fail-Safe Hardening
 
 - Published `Stopped` after confirmed vehicle disconnect while retaining the
@@ -593,7 +634,7 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ## Backlog
 
-### P2 - Define Safe Grid-Setpoint Bounds
+#### Implementation record - completed in Group B: Define Safe Grid-Setpoint Bounds
 
 Goal:
 
@@ -662,10 +703,11 @@ Risks and dependencies:
   unsafe request.
 - Land the grid-setpoint combiner lock before implementing this item.
 
-Open questions:
+Resolved decisions:
 
-- What minimum and maximum AC power setpoints are safe for the production ESS?
-- Should the limits be configured or read from a validated Victron source?
+- Bounds are explicit site configuration because the repository has no
+  universal production-safe range. Migration sets both to the existing default
+  setpoint, so adjustments fail closed until an operator approves wider limits.
 
 Done criteria:
 
@@ -747,7 +789,7 @@ Done criteria:
 - All six statuses have evidence-backed, tested control-state mappings.
 - Full unittest suite passes.
 
-### P3 - Fix PV Inverter Stale Window And Cached-Power Contribution
+#### Implementation record - completed in Group B: Fix PV Inverter Stale Window And Cached-Power Contribution
 
 Goal:
 
@@ -807,16 +849,17 @@ Risks and dependencies:
   transitions.
 - No other item must land first.
 
-Open questions:
+Resolved decision:
 
-- Use a documented fixed timeout or add a per-service configurable value?
+- Use a service-wide configurable timeout with a documented 300-second default
+  and a validated five-second minimum.
 
 Done criteria:
 
 - Stale detection uses an approved window and stale power contributes zero.
 - Full unittest suite passes.
 
-### P3 - Make Shelly Net-Energy Persistence Robust And Atomic
+#### Implementation record - completed in Group B: Make Shelly Net-Energy Persistence Robust And Atomic
 
 Goal:
 
@@ -874,17 +917,17 @@ Risks and dependencies:
 - Preserve counter units, paths, and existing valid values.
 - No other item must land first.
 
-Open questions:
+Resolved decision:
 
-- Prefer resetting the timestamp on every poll attempt or a documented maximum
-  integration duration derived from `PollFrequencyMs`?
+- Reset the timestamp on every poll attempt. Unknown outage energy is omitted
+  instead of applying the next successful power sample across the gap.
 
 Done criteria:
 
 - Corrupt files recover safely, writes are atomic, and outage gaps are bounded.
 - Full unittest suite passes.
 
-### P3 - Make MQTT TLS Certificate Verification The Default
+#### Implementation record - completed in Group B: Make MQTT TLS Certificate Verification The Default
 
 Goal:
 
@@ -945,18 +988,21 @@ Risks and dependencies:
   operator guidance must land together.
 - No other backlog item must land first.
 
-Open questions:
+Resolved decisions:
 
-- Rely on the Venus OS trust store, add a CA-file setting, or support both?
-- Should an existing `SslEnabled=true` config migrate to explicit insecure
-  compatibility once, or fail until the operator supplies trust configuration?
+- Support both system trust and an explicit CA/certificate file. Full
+  verification is the default, certificate-only pinning is explicit, and
+  insecure operation remains a warning-producing compatibility mode.
+- Migrate an already-enabled legacy TLS client once to explicit `Insecure` so
+  upgrade does not silently disconnect it; new and previously disabled clients
+  default to `Required`.
 
 Done criteria:
 
 - Verified TLS is the default and any insecure mode is explicit/documented.
 - Full unittest suite passes.
 
-### P3 - Validate Remaining Safety And Operational Values
+#### Implementation record - completed in Group B: Validate Remaining Safety And Operational Values
 
 Goal:
 
@@ -1023,10 +1069,12 @@ Risks and dependencies:
   bound.
 - Structural configuration validation should land first or in a separate PR.
 
-Open questions:
+Resolved decision:
 
-- Approve exact bounds after reviewing controller semantics and documented
-  units; do not infer site limits.
+- Validate non-negative grid/assist thresholds, positive freshness, a
+  five-second raw-overhead floor, startup ratio in `(0, 1]`, positive common
+  runtime values, zero-feed-in scale in `(0, 1]`, non-negative distance, and
+  SOC in `0..100`. Do not add site-specific upper limits.
 
 Done criteria:
 
@@ -1547,22 +1595,11 @@ advance the queue on the next request.
     relying on further current or phase-control commissioning guidance.
 9. P2 define safe control for unclassified charging model statuses — obtain
    firmware evidence and encode explicit no-grid-safe mappings.
-14. P3 fix PV inverter stale window and cached-power contribution — remove
-    frozen inverter power from zero-feed-in control.
-15. P3 make Shelly net-energy persistence robust and atomic — survive corrupt
-    files and avoid false energy across failed-poll gaps.
-18. P3 make MQTT TLS certificate verification the default — select and migrate
-    an explicit trust model before changing existing deployments.
-19. P3 validate remaining safety and operational values — extend PR 7 without
-    reopening interval/value rules already completed.
 22. P4 fix automatic NPC minimum-to-request allocation — correct the isolated
     allocation edge without changing scripted-consumer priority behavior.
 24. P4 audit and pin the Victron `velib_python` dependency — establish v3.75
    provenance and deterministic import ownership as a separate compatibility
    change.
-25. P2 define safe grid-setpoint bounds — after the combiner lock lands, obtain
-   approved site-safe limits or a validated Victron source before adding any
-   clamp.
 
 The P4 winter grid-import dispatch validation is an observation task, not a
 code PR, and remains open independently of this queue. Complete it only under

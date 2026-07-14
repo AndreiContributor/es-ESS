@@ -7,7 +7,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +99,9 @@ class GridSetpointTests(unittest.TestCase):
         app._gridSetPointRequests = {}
         app._gridSetPointRequestsLock = threading.Lock()
         app._gridSetPointDefault = -50
+        app._gridSetPointMin = -1000
+        app._gridSetPointMax = 2000
+        app._gridSetPointLastClamp = None
         app._gridSetPointCurrent = -99999
         app.config = {"Common": {"VRMPortalID": "portal-id"}}
         app.publishLocalMqtt = Mock()
@@ -187,6 +190,61 @@ class GridSetpointTests(unittest.TestCase):
             1,
             False,
         )
+
+    def test_non_finite_combination_publishes_default_fallback(self):
+        app = self._app()
+        service = self._service("InvalidService")
+        app.registerGridSetPointRequest(service, float("nan"))
+
+        app._manageGridSetPoint()
+
+        app.publishLocalMqtt.assert_called_once_with(
+            "W/portal-id/settings/0/Settings/CGwacs/AcPowerSetPoint",
+            '{"value": -50}',
+            1,
+            False,
+        )
+
+    def test_combined_setpoint_clamps_at_exact_configured_bounds(self):
+        app = self._app()
+        app._gridSetPointMin = -100
+        app._gridSetPointMax = 100
+        service = self._service("NoBatToEV")
+
+        app.registerGridSetPointRequest(service, 151)
+        app._manageGridSetPoint()
+        self.assertEqual(app.publishLocalMqtt.call_args.args[1], '{"value": 100}')
+
+        app.registerGridSetPointRequest(service, -51)
+        app._manageGridSetPoint()
+        self.assertEqual(app.publishLocalMqtt.call_args.args[1], '{"value": -100}')
+
+    def test_clamp_warning_is_once_per_distinct_out_of_range_sum(self):
+        app = self._app()
+        app._gridSetPointMax = 100
+        service = self._service("NoBatToEV")
+        app.registerGridSetPointRequest(service, 200)
+
+        with patch.object(self.es_ess, "w") as warning:
+            app._manageGridSetPoint()
+            app._manageGridSetPoint()
+            app.registerGridSetPointRequest(service, 300)
+            app._manageGridSetPoint()
+
+        self.assertEqual(warning.call_count, 2)
+
+    def test_in_range_setpoint_preserves_additive_behavior(self):
+        app = self._app()
+        app._gridSetPointMin = -500
+        app._gridSetPointMax = 500
+        service = self._service("NoBatToEV")
+        app.registerGridSetPointRequest(service, 400)
+
+        with patch.object(self.es_ess, "w") as warning:
+            app._manageGridSetPoint()
+
+        self.assertEqual(app.publishLocalMqtt.call_args.args[1], '{"value": 350}')
+        warning.assert_not_called()
 
 
 if __name__ == "__main__":

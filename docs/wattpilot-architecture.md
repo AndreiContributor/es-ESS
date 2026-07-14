@@ -270,6 +270,11 @@ Future Wattpilot changes must preserve these invariants:
 
 - Venus OS must match the explicitly supported clean release (`v3.75`) before
   es-ESS starts any service or grid-setpoint side effect.
+- Invalid grid-import, telemetry-freshness, battery-assist, or startup-ratio
+  configuration must fail before MQTT, D-Bus, or service initialization. Zero
+  remains valid only for deliberately immediate/non-negative thresholds; all
+  freshness windows remain positive and raw-overhead freshness is at least the
+  controller's five-second floor.
 - Wattpilot commands must remain blocked until `fwv` telemetry exactly matches
   validated firmware `42.5`. Missing telemetry fails closed.
 - Solar.wattpilot app `2.1.0` is a commissioning baseline only; it cannot be

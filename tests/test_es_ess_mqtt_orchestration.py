@@ -119,6 +119,8 @@ class FakeMqttClient:
         self.disconnects = 0
         self.events = events
         self.name = name
+        self.tls_settings = []
+        self.tls_insecure_values = []
 
     def is_connected(self):
         return self.connected
@@ -141,6 +143,12 @@ class FakeMqttClient:
         self.disconnects += 1
         if self.events is not None:
             self.events.append("{0}-disconnect".format(self.name))
+
+    def tls_set(self, **kwargs):
+        self.tls_settings.append(kwargs)
+
+    def tls_insecure_set(self, value):
+        self.tls_insecure_values.append(value)
 
 
 class RecordingExecutor:
@@ -226,6 +234,69 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         app.threadPool.run_next()
 
         callback.assert_called_once_with(subscription)
+
+    def test_required_tls_uses_ca_and_hostname_verification(self):
+        app = self._app()
+        app.config["Mqtt"] = {
+            "SslVerification": "Required",
+            "SslCaFile": "",
+        }
+        client = FakeMqttClient()
+
+        app._configureMqttTls(
+            client, "SslVerification", "SslCaFile", "Main MQTT"
+        )
+
+        self.assertEqual(
+            client.tls_settings,
+            [{"ca_certs": None, "cert_reqs": self.es_ess.ssl.CERT_REQUIRED}],
+        )
+        self.assertEqual(client.tls_insecure_values, [False])
+
+    def test_certificate_only_tls_keeps_certificate_verification(self):
+        app = self._app()
+        app.config["Mqtt"] = {
+            "SslVerification": "CertificateOnly",
+            "SslCaFile": "/data/keys/mosquitto.crt",
+        }
+        client = FakeMqttClient()
+
+        with patch.object(self.es_ess, "w") as warning:
+            app._configureMqttTls(
+                client, "SslVerification", "SslCaFile", "Main MQTT"
+            )
+
+        self.assertEqual(
+            client.tls_settings,
+            [
+                {
+                    "ca_certs": "/data/keys/mosquitto.crt",
+                    "cert_reqs": self.es_ess.ssl.CERT_REQUIRED,
+                }
+            ],
+        )
+        self.assertEqual(client.tls_insecure_values, [True])
+        warning.assert_called_once()
+
+    def test_explicit_insecure_tls_preserves_legacy_behavior_with_warning(self):
+        app = self._app()
+        app.config["Mqtt"] = {
+            "SslVerification": "Insecure",
+            "SslCaFile": "",
+        }
+        client = FakeMqttClient()
+
+        with patch.object(self.es_ess, "w") as warning:
+            app._configureMqttTls(
+                client, "SslVerification", "SslCaFile", "Main MQTT"
+            )
+
+        self.assertEqual(
+            client.tls_settings,
+            [{"cert_reqs": self.es_ess.ssl.CERT_NONE}],
+        )
+        self.assertEqual(client.tls_insecure_values, [True])
+        warning.assert_called_once()
 
     def test_dbus_callback_failure_is_reported(self):
         app = self._app()
