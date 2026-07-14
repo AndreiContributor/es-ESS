@@ -1441,12 +1441,11 @@ Evidence:
 
 Implementation:
 
-- Treat this as an investigation gate before changing production behavior or
-  prescribing a replacement commissioning contract. Use the command-free,
-  firmware- and disconnect-gated capture utility to compare redacted firmware
-  `42.5` status before and after every Solar.wattpilot `2.1.0` setting change
-  and identify the exact protocol fields for native `Use PV surplus`, start-up
-  power, flexible tariff, current regulation, and native phase switching.
+- Gate 1 used the command-free, firmware- and disconnect-gated capture utility
+  to compare redacted firmware `42.5` status before and after reversible
+  Solar.wattpilot `2.1.0` setting changes. The validated authority inputs are
+  strict read-only `fup` (`Use PV surplus`) and `ful` (flexible tariff) booleans;
+  es-ESS does not write either undocumented setting.
 - In a supervised no-grid window, test ECO mode with native `Use PV surplus`
   disabled and flexible tariff disabled. Determine whether explicit es-ESS
   `frc`, `amp`, and `psm` commands remain authoritative or whether ECO refuses
@@ -1485,9 +1484,29 @@ Investigation progress 2026-07-14:
   phase, invalid-authority, and Manual regression sequence.
 - Removed the disproven `99 kW` README recommendation as a command-ownership
   boundary without substituting the app's ineffective `10 kW` maximum.
-- The production authority rule remains deliberately unimplemented until the
-  reversible firmware-field captures and supervised behavior evidence are
-  available.
+- Completed eight protected forward/reverse reports with the vehicle
+  disconnected. Every report recorded firmware `42.5`,
+  `vehicle_connected=false`, and `all setValue requests blocked`. The reports
+  reversibly mapped `fup` to `Use PV surplus`, `ful` to flexible tariff, `fst`
+  to start-up power (`10000`/`9900` W), and `frm` to control response
+  (`1` Default/`2` Prefer power to grid).
+- Observed that turning `Use PV surplus` off also changed `lmo` from ECO (`4`)
+  to Standard (`3`), while turning it back on did not restore ECO. Zero
+  feed-in was intentionally not changed, the Opel Corsa-e profile hid the
+  phase setting, and one-direction `cdci`/`dci` changes remain unclassified.
+- Implemented a read-only fail-closed authority guard requiring validated
+  firmware `42.5`, raw ECO, `fup=false`, and `ful=false`. Missing, malformed,
+  or conflicting telemetry blocks starts, positive current/current increases,
+  and phase-up; safe zero-current/stop remains permitted in ECO. Manual remains
+  user-owned, and Manual-to-Auto selection is rejected until both native
+  settings are observed off.
+- Added actionable D-Bus/MQTT diagnostics for authority and both native-setting
+  observations, a distinct stopped-for-authority runtime state, health-monitor
+  output, focused regression coverage, and updated operator documentation.
+- Gate 1 is complete and the original production settings/service health were
+  restored. Gate 2 vehicle-disconnected preflight and supervised active
+  one-phase/phase ownership validation remain required before closing this
+  backlog item.
 
 Files to change:
 
@@ -1583,16 +1602,17 @@ Risks and dependencies:
 
 Open questions:
 
-- Which firmware `42.5` fields authoritatively represent native PV-surplus,
-  tariff, start-up-level, and phase-switch enablement?
 - Does ECO accept forced `frc`, `amp`, and `psm` commands when both native PV
   surplus and flexible tariff are disabled?
 - Does native regulation rewrite command values after acknowledgement, and can
   that state be detected read-only before es-ESS enables Auto control?
-- Is the observed return from the operator-selected 10 kW app value to 1.4 kW
-  a persisted-setting change, an app presentation of live surplus, or another
-  protocol field? Capture both the settings screen and raw telemetry before
-  documenting it as a reset.
+- Does firmware keep `fup=false` and `ful=false` stable after GX/VRM selects
+  Auto (`lmo=4`), given that disabling native PV moved the app to Standard?
+- A firmware phase-enable field was not identified because app `2.1.0` locks
+  that control under the selected Opel Corsa-e profile. The implemented guard
+  therefore authorizes phase commands only from the two validated native
+  controller-disable flags and still requires supervised phase ownership
+  evidence before completion.
 
 Done criteria:
 

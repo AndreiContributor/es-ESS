@@ -102,8 +102,9 @@ deployment, or Wattpilot validation work:
   `/Current`, `/SetCurrent`, `/PvAllowance`, and `/PhaseModeLiteral`.
 - Wattpilot runtime-status contract paths such as `/ControlStateLiteral`,
   `/BatteryAssistActive`, `/GridImportGuardActive`, `/TelemetryHealthy`,
-  `/CompatibilityOk`, `/CompatibilityLiteral`, and expected/actual firmware
-  values.
+  `/CompatibilityOk`, `/CompatibilityLiteral`, `/CommandAuthorityOk`,
+  `/CommandAuthorityLiteral`, `/NativePvSurplusEnabled`,
+  `/FlexibleTariffEnabled`, and expected/actual firmware values.
 - Recent log entries for compatibility, dependency, controller, battery-assist,
   grid-import, phase-switch, Wattpilot command evidence, and raw-to-published
   Wattpilot mode transitions.
@@ -146,6 +147,9 @@ Healthy output normally shows:
 - Python dependencies import successfully.
 - Venus OS matches the expected clean release.
 - Compatibility status is OK after Wattpilot firmware telemetry is received.
+- Auto/Eco command ownership shows `CommandAuthorityOk=1`,
+  `NativePvSurplusEnabled=0`, and `FlexibleTariffEnabled=0` before a vehicle is
+  connected.
 - `TelemetryHealthy` is `1` during Auto/Eco decisions.
 - `GridImportGuardActive` is `0` during normal no-grid operation.
 - Battery assist, when active, remains bounded and later recovers.
@@ -161,6 +165,9 @@ Stop the active validation and inspect logs immediately if:
   `Unsupported Venus OS`, `not validated`, or `CompatibilityError`.
 - Auto/Eco charging shows sustained grid import while
   `AllowGridCharging=false`.
+- Auto/Eco reports `CommandAuthorityOk=0`; follow the actionable authority
+  literal and keep the vehicle disconnected until both native settings report
+  `0` and authority reports `1`.
 - Battery assist exceeds configured duration or shortfall expectations.
 - Manual mode produces Wattpilot start, stop, current, or phase commands.
 

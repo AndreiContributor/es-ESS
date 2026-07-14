@@ -56,18 +56,22 @@ Wi-Fi credentials, or unrelated site identifiers in the delivery package.
 
 ### 2. Verify the deployed capture files
 
-On the GX device:
+Run the capture-tool unit tests in the development checkout or CI; test files
+do not need to be copied to production. On the GX device, verify the deployed
+script syntax and compare its checksum with the reviewed artifact:
 
 ```sh
 cd /data/es-ESS
 python -m py_compile scripts/wattpilot-setting-capture.py
-python -m unittest tests.test_wattpilot_setting_capture
+sha256sum scripts/wattpilot-setting-capture.py
 ```
 
 Pass criteria:
 
 - syntax compilation succeeds;
-- all capture-tool unit tests pass;
+- the checksum matches the reviewed script (the 2026-07-14 Gate-1 artifact was
+  `7500734393d18ec7feb21f852b661cd8fc41a14b987cee14c3d8becd48280ba0`);
+- all capture-tool unit tests pass in development/CI;
 - no dependency is installed or upgraded for this procedure.
 
 ### 3. Stop es-ESS and confirm the vehicle is disconnected
@@ -93,8 +97,10 @@ the vehicle is disconnected or if the service cannot be stopped cleanly.
 ### 4. Create a protected capture directory
 
 ```sh
-install -d -m 700 /data/es-ESS-validation
+mkdir -p /data/es-ESS-validation
+chmod 700 /data/es-ESS-validation
 umask 077
+ls -ld /data/es-ESS-validation
 ```
 
 Each command below captures one direction of one app setting. The script first
@@ -200,6 +206,30 @@ Gate-1 pass criteria:
 - ambiguous or unrelated live-telemetry changes are retained as evidence but
   are not classified as settings without a reversible pair.
 
+### Gate-1 evidence recorded on 2026-07-14
+
+The production capture passed with Venus OS `v3.75`, firmware `42.5`, app
+`2.1.0`, and the vehicle disconnected for all eight reports. Every report
+recorded `all setValue requests blocked` and was protected with mode `0600`.
+
+- `fup` reversibly mapped `Use PV surplus`: `true` when enabled and `false`
+  when disabled.
+- `ful` reversibly mapped flexible tariff: `true` when enabled and `false`
+  when disabled.
+- `fst` mapped the start-up-power slider (`10000` W to `9900` W and back), but
+  this is not a command-ownership control.
+- `frm` mapped control response (`1` Default, `2` Prefer power to grid).
+- Disabling `Use PV surplus` also changed `lmo` from ECO (`4`) to Standard
+  (`3`). Re-enabling it did not restore ECO automatically; the operator
+  restored ECO deliberately.
+- `cdci`/`dci` changed in only one control-response direction and remain
+  unclassified. Zero feed-in was intentionally not changed. Phase settings
+  were unavailable because the selected Opel Corsa-e vehicle profile owns that
+  app surface.
+
+These captures justify only the strict read-only `fup=false` and `ful=false`
+authority guard. They do not authorize writes to undocumented setting fields.
+
 ### 9. Restart es-ESS without reconnecting the vehicle
 
 ```sh
@@ -229,17 +259,23 @@ diagnostic and hardware-free tests before deployment.
 
 ### A. Vehicle-disconnected preflight
 
-1. Deploy the reviewed implementation and complete its syntax, focused, config,
-   and full-suite checks.
-2. Keep the vehicle disconnected and restart es-ESS.
-3. Confirm Venus OS `v3.75`, firmware `42.5`, app `2.1.0`, fresh Wattpilot
-   telemetry, and the expected authority diagnostic.
-4. Deliberately select one invalid/conflicting native setting with the vehicle
-   disconnected.
-5. Confirm Auto/Eco reports the expected fail-closed diagnostic and does not
-   issue start, current-increase, or phase-up commands.
-6. Restore the validated setting and confirm authority becomes healthy without
-   weakening firmware or ECO-mode checks.
+1. Complete syntax, focused, config, and full-suite checks in the development
+   checkout, then deploy the reviewed files.
+2. Keep the vehicle disconnected and restart es-ESS with `Use PV surplus`
+   enabled and flexible tariff disabled. Confirm `/CommandAuthorityOk=0`,
+   `/NativePvSurplusEnabled=1`, `/FlexibleTariffEnabled=0`, and the actionable
+   instruction to disable native PV control. Confirm no start, positive-current,
+   or phase command is issued.
+3. In Solar.wattpilot, turn off `Use PV surplus`. The app may move from ECO to
+   Standard. Confirm `/NativePvSurplusEnabled=0`,
+   `/FlexibleTariffEnabled=0`, and the instruction to select Auto.
+4. Select Auto on GX/VRM. This is the supported user transition; do not use
+   Standard/Manual as an Auto-control workaround. Confirm raw `lmo=4` remains
+   stable, both native settings remain `0`, `/CommandAuthorityOk=1`, and the
+   literal reports that es-ESS is the sole Auto/Eco command owner.
+5. If either native setting changes, authority stays blocked, or any unexpected
+   `frc=On`, positive `amp`, or `psm` command appears, stop before connecting
+   the vehicle and retain the evidence.
 
 ### B. One-phase PV ownership
 

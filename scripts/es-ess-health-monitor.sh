@@ -168,6 +168,10 @@ print_wattpilot_dbus() {
         /TelemetryHealthy \
         /CompatibilityOk \
         /CompatibilityLiteral \
+        /CommandAuthorityOk \
+        /CommandAuthorityLiteral \
+        /NativePvSurplusEnabled \
+        /FlexibleTariffEnabled \
         /ExpectedVenusOsVersion \
         /ActualVenusOsVersion \
         /ExpectedWattpilotFirmware \
@@ -213,7 +217,7 @@ print_log_health() {
 
     echo
     echo "-- Recent Wattpilot safety/control events --"
-    recent_events="$(tail -n "$LOG_LINES" "$LOG_FILE" 2>/dev/null | grep -Ei 'Validated Venus OS compatibility|Battery assist|Grid import guard|Telemetry|Waiting for stable PV allowance|Starting to charge|Stopping|Stopped|Charging|NotCharging|Phase|phase|set_start_stop|Start/Stop to send|set_current|set_phase|setValue|frc=|amp=|psm=' | tail -n "$EVENT_LINES")"
+    recent_events="$(tail -n "$LOG_LINES" "$LOG_FILE" 2>/dev/null | grep -Ei 'Validated Venus OS compatibility|command authority|sole Auto/Eco command owner|Use PV surplus|flexible tariff|Battery assist|Grid import guard|Telemetry|Waiting for stable PV allowance|Starting to charge|Stopping|Stopped|Charging|NotCharging|Phase|phase|set_start_stop|Start/Stop to send|set_current|set_phase|setValue|frc=|amp=|psm=' | tail -n "$EVENT_LINES")"
     if [ -n "$recent_events" ]
     then
         echo "$recent_events"
@@ -239,6 +243,8 @@ print_interpretation_hint() {
     echo "  - Service state is up."
     echo "  - Python dependencies import successfully."
     echo "  - CompatibilityOk is 1, or CompatibilityLiteral reports validated firmware."
+    echo "  - CommandAuthorityOk is 1 before Auto/Eco charging."
+    echo "  - NativePvSurplusEnabled and FlexibleTariffEnabled are both 0."
     echo "  - TelemetryHealthy is 1 during Auto/Eco decisions."
     echo "  - GridImportGuardActive stays 0 during normal no-grid operation."
     echo "  - BatteryAssistActive is bounded and later recovers."
@@ -247,6 +253,7 @@ print_interpretation_hint() {
     echo "Stop and inspect immediately if:"
     echo "  - Service is down or restarting repeatedly."
     echo "  - Recent logs show CRITICAL, Traceback, ModuleNotFoundError, or not validated."
+    echo "  - Auto/Eco is selected while CommandAuthorityOk is 0."
     echo "  - Auto/Eco charging shows sustained grid import with AllowGridCharging=false."
     echo "  - Battery assist exceeds configured duration/shortfall expectations."
     echo "  - Manual mode produces Wattpilot start/stop/current/phase commands."

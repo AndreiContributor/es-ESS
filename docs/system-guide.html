@@ -625,14 +625,14 @@
         <thead><tr><th>Mode</th><th>Who controls it?</th><th>Energy behavior</th><th>es-ESS boundary</th></tr></thead>
         <tbody>
           <tr><td><strong>Standard / Manual</strong></td><td>Wattpilot user/app</td><td>Charges at the selected current; grid or battery may support it.</td><td>Reports state but does not continuously start, stop, current-limit or phase-switch. A one-time release clears old Auto/Eco limits when leaving Auto.</td></tr>
-          <tr><td><strong>Auto / ECO</strong></td><td>es-ESS, when ECO telemetry is confirmed</td><td>Starts from assigned real PV allowance. Optional bounded battery assist is continuation-only.</td><td>Full PV policy, freshness checks, current bounds, phase switching and grid-import guard.</td></tr>
+          <tr><td><strong>Auto / ECO</strong></td><td>es-ESS, only when firmware 42.5 reports ECO, native <em>Use PV surplus</em> is off and flexible tariff is off</td><td>Starts from assigned real PV allowance. Optional bounded battery assist is continuation-only.</td><td>Missing or conflicting authority telemetry fails closed; safe zero-current and stop commands remain available, while starts, current increases and phase-up are blocked.</td></tr>
           <tr><td><strong>Next Trip</strong></td><td>Native Wattpilot scheduling</td><td>Targets a requested energy/range by a deadline. It may use PV, stored energy or grid power to meet the trip requirement.</td><td>Not a guarantee of PV-only charging. Treat it as an explicit user override for mobility.</td></tr>
           <tr><td><strong>Flexible-tariff / low-price</strong></td><td>Native Wattpilot logic</td><td>Can intentionally charge when price is low; the stationary battery may discharge before grid import.</td><td>Detected as a native charging reason rather than taken over by the normal PV controller.</td></tr>
         </tbody>
       </table>
 
       <div class="callout warning">
-        <p>To avoid two controllers competing in Auto/Eco, place the Wattpilot in ECO mode but configure its native PV start threshold above any reachable site surplus if the app permits it (the repository documentation uses 99 kW as an example). es-ESS then owns PV start/stop decisions. Standard and Next Trip remain deliberate user choices.</p>
+        <p><strong>Single-owner requirement:</strong> with the vehicle disconnected, turn off Solar.wattpilot <em>Use PV surplus</em> and flexible tariff, then select Auto on GX/VRM. Connect the vehicle only when <code>/CommandAuthorityOk=1</code>, <code>/NativePvSurplusEnabled=0</code> and <code>/FlexibleTariffEnabled=0</code>. The native start-up-power slider—including its 10 kW maximum—does not disable native regulation and is not an authority boundary.</p>
       </div>
     </section>
 
@@ -855,7 +855,7 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
         <li><strong>Download and install es-ESS.</strong><br>Run the repository installation commands on the GX device. The installer creates the service link, adds a recovery entry to <code>/data/rc.local</code>, and copies <code>config.sample.ini</code> to <code>config.ini</code> only when no production config exists.</li>
         <li><strong>Install the Wattpilot Python dependency.</strong><br>Install <code>python3-pip</code> when needed and then <code>websocket-client</code>. Venus OS upgrades can remove extra packages, so recheck this dependency after firmware updates.</li>
         <li><strong>Configure and restart.</strong><br>Edit <code>/data/es-ESS/config.ini</code>, enable SolarOverheadDistributor first, validate its calculations, then enable FroniusWattpilot and restart gracefully.</li>
-        <li><strong>Commission with low risk.</strong><br>Start with a connected vehicle, conservative 16 A maximum, no flexible tariff, and supervision at the site. Validate one-phase operation before allowing the three-phase threshold to be reached.</li>
+        <li><strong>Commission with low risk.</strong><br>Start with the vehicle disconnected, conservative current limits, <em>Use PV surplus</em> off, flexible tariff off, and supervision at the site. Select Auto on GX/VRM and connect the vehicle only after the authority diagnostic is healthy. Validate one-phase operation before allowing the three-phase threshold to be reached.</li>
       </ol>
 
       <h3 style="margin-top:32px">GX shell commands</h3>
@@ -988,6 +988,7 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
             <li>Fronius PV production is visible and assigned to the correct AC position.</li>
             <li>Wattpilot IP, password, reported voltage and effective current limit are valid.</li>
             <li>SolarOverheadDistributor publishes zero allowance when a required input is missing.</li>
+            <li>With the vehicle disconnected, native <em>Use PV surplus</em> and flexible tariff are off and <code>/CommandAuthorityOk=1</code> after Auto is selected on GX/VRM.</li>
           </ul>
         </article>
         <article class="card">
@@ -1009,6 +1010,7 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
         <thead><tr><th>Test</th><th>Method</th><th>Expected result</th></tr></thead>
         <tbody>
           <tr><td>Manual boundary</td><td>Select Standard/Manual and change current in the Wattpilot app.</td><td>es-ESS reports the state but does not continuously counter-command the user.</td></tr>
+          <tr><td>Command authority</td><td>With the vehicle disconnected, enable native <em>Use PV surplus</em>, observe the block, turn it off, then select Auto on GX/VRM.</td><td>Invalid authority blocks starts, positive current and phase-up. Healthy authority requires ECO plus both native setting observations at <code>0</code>.</td></tr>
           <tr><td>No-surplus start</td><td>Connect the car when PV allowance is below about one-phase minimum.</td><td>Auto/Eco waits; battery assist does not create a start.</td></tr>
           <tr><td>One-phase start</td><td>Increase genuine PV above minimum for <code>MinOnOffSeconds</code>.</td><td>Charge starts on one phase at a bounded current.</td></tr>
           <tr><td>Phase-up</td><td>Hold assigned allowance above <code>ThreePhasePvSurplusStartW</code>.</td><td>Three-phase command occurs only after <code>MinPhaseSwitchSeconds</code> and is confirmed from telemetry.</td></tr>
@@ -1023,7 +1025,7 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
 
       <details>
         <summary>Where to observe detailed controller state</summary>
-        <div><p>Use the Wattpilot D-Bus service paths <code>/ControlState</code>, <code>/PhaseMode</code>, <code>/BatteryAssistActive</code>, <code>/GridImportGuardActive</code> and <code>/TelemetryHealthy</code>, or the retained MQTT equivalents below <code>es-ESS/FroniusWattpilot/RuntimeStatus/...</code>. The standard EVCS overview tile intentionally remains compatible with normal Victron status values and does not show every safety detail.</p></div>
+        <div><p>Use the Wattpilot D-Bus service paths <code>/ControlState</code>, <code>/PhaseMode</code>, <code>/BatteryAssistActive</code>, <code>/GridImportGuardActive</code>, <code>/TelemetryHealthy</code>, <code>/CommandAuthorityOk</code>, <code>/CommandAuthorityLiteral</code>, <code>/NativePvSurplusEnabled</code> and <code>/FlexibleTariffEnabled</code>, or the retained MQTT equivalents below <code>es-ESS/FroniusWattpilot/RuntimeStatus/...</code>. The standard EVCS overview tile intentionally remains compatible with normal Victron status values and does not show every safety detail.</p></div>
       </details>
       <details>
         <summary>What to check after a Venus OS update</summary>

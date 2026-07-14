@@ -88,6 +88,13 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         controller.actualWattpilotFirmware = "42.5"
         controller.wattpilotFirmwareCompatible = True
         controller._lastWattpilotCompatibilityState = (True, "42.5")
+        controller.commandAuthorityOk = True
+        controller.commandAuthorityLiteral = self.fwp.COMMAND_AUTHORITY_VALIDATED
+        controller._lastCommandAuthorityState = (
+            True,
+            self.fwp.COMMAND_AUTHORITY_VALIDATED,
+        )
+        controller.commandAuthorityForcedOff = False
         controller.dbusService = {
             "/Mode": self.fwp.VrmEvChargerControlMode.Auto.value,
             "/ModeLiteral": self.fwp.VrmEvChargerControlMode.Auto.name,
@@ -99,6 +106,8 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
             firmware="42.5",
             voltage1=230,
             mode=self.fwp.WattpilotControlMode.ECO,
+            nativePvSurplusEnabled=False,
+            flexibleTariffEnabled=False,
             set_power=Mock(),
             set_phases=Mock(),
             set_start_stop=Mock(),
@@ -176,7 +185,7 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
 
         controller.wattpilot.set_power.assert_not_called()
         controller.wattpilot.set_phases.assert_not_called()
-        self.assertIn("not in Auto/ECO mode", controller.serviceMessages[-1])
+        self.assertIn("select Auto", controller.serviceMessages[-1])
 
     def test_next_trip_mode_telemetry_fails_closed(self):
         controller = self._controller()
@@ -196,10 +205,93 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         self.assertEqual(len(controller.serviceMessages), 2)
         self.assertTrue(
             all(
-                "not in Auto/ECO mode" in message
+                "select Auto" in message
                 for message in controller.serviceMessages
             )
         )
+
+    def test_native_pv_or_tariff_blocks_positive_auto_commands(self):
+        for attribute in ("nativePvSurplusEnabled", "flexibleTariffEnabled"):
+            controller = self._controller()
+            setattr(controller.wattpilot, attribute, True)
+
+            self.assertFalse(
+                controller._froniusHandleChangedValue("/SetCurrent", 12)
+            )
+            self.assertFalse(
+                controller._froniusHandleChangedValue(
+                    "/StartStop",
+                    self.fwp.VrmEvChargerStartStop.Start.value,
+                )
+            )
+
+            controller.wattpilot.set_power.assert_not_called()
+            controller.wattpilot.set_phases.assert_not_called()
+            controller.wattpilot.set_start_stop.assert_not_called()
+
+    def test_invalid_authority_still_allows_zero_current_and_safe_stop(self):
+        controller = self._controller()
+        controller.wattpilot.nativePvSurplusEnabled = True
+
+        self.assertTrue(controller._froniusHandleChangedValue("/SetCurrent", 0))
+        self.assertTrue(
+            controller._froniusHandleChangedValue(
+                "/StartStop",
+                self.fwp.VrmEvChargerStartStop.Stop.value,
+            )
+        )
+
+        controller.wattpilot.set_power.assert_called_once_with(0)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+        controller.wattpilot.set_phases.assert_not_called()
+
+    def test_auto_selection_requires_observed_disabled_native_settings(self):
+        controller = self._controller()
+        controller.mode = self.fwp.VrmEvChargerControlMode.Manual
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+        controller.wattpilot.nativePvSurplusEnabled = True
+
+        self.assertFalse(
+            controller.switchMode(
+                self.fwp.VrmEvChargerControlMode.Manual,
+                self.fwp.VrmEvChargerControlMode.Auto,
+            )
+        )
+
+        controller.wattpilot.set_mode.assert_not_called()
+        self.assertEqual(controller.mode, self.fwp.VrmEvChargerControlMode.Manual)
+        self.assertIn("Auto selection rejected", controller.serviceMessages[-1])
+
+    def test_mode_callback_reports_rejected_auto_selection(self):
+        controller = self._controller()
+        controller.mode = self.fwp.VrmEvChargerControlMode.Manual
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+        controller.wattpilot.nativePvSurplusEnabled = True
+
+        accepted = controller._froniusHandleChangedValue(
+            "/Mode", self.fwp.VrmEvChargerControlMode.Auto.value
+        )
+
+        self.assertFalse(accepted)
+        self.assertEqual(controller.mode, self.fwp.VrmEvChargerControlMode.Manual)
+        controller.wattpilot.set_mode.assert_not_called()
+
+    def test_auto_selection_requires_validated_firmware(self):
+        controller = self._controller()
+        controller.mode = self.fwp.VrmEvChargerControlMode.Manual
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+        controller.wattpilotFirmwareCompatible = False
+
+        accepted = controller._froniusHandleChangedValue(
+            "/Mode", self.fwp.VrmEvChargerControlMode.Auto.value
+        )
+
+        self.assertFalse(accepted)
+        self.assertEqual(controller.mode, self.fwp.VrmEvChargerControlMode.Manual)
+        controller.wattpilot.set_mode.assert_not_called()
+        self.assertIn("firmware compatibility", controller.serviceMessages[-1])
 
     def test_mode_publication_correlates_matching_raw_lmo_once(self):
         controller = self._controller()
