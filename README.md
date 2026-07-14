@@ -1043,7 +1043,23 @@ SolarOverheadDistributor worker threads indefinitely.
 It can be fully configured in `/data/es-ESS/config.ini` and will be orchestrated by the SolarOverhead-Distributer itself. An example would be our *waterplay* in the front garden. It is connected through a (first-gen, dumb) shelly device, which is at least http-controllable - and I know it consumes roughly 120 Watts AND I want this to run as soon as Solar-Overhead is available, despite any battery reservation. (Doesn't make sence to wait, until the battery reached 90% Soc or more)
 
 The following lines inside `/data/es-ESS/config.ini` can be used to create such an NPC-SolarOverheadConsumer. A config section has to be created, containing
-the required request values plus some additional parameters for remote-control. Well, the secion has to be prefixed with `HttpConsumer:` or `MqttConsumer:` to identify it correctly.
+the required request values plus some additional parameters for remote-control. The section has to be prefixed with `HttpConsumer:` or `MqttConsumer:` to identify it correctly. These devices are explicitly configured; es-ESS does not discover pool pumps, heaters, Shelly devices, or other loads automatically.
+
+HTTP/MQTT NPC consumers are binary loads, so their allocation is atomic. Set
+`Request` to the complete power that the device needs while on. The distributor
+grants either the complete `Request` or `0`; it never reserves a partial
+allowance that the device cannot use. `Minimum` and `StepSize` are obsolete for
+NPC sections and are ignored by NPC allocation. Scripted consumers still use
+their published minimum and step size.
+
+For example, assume an explicitly configured 1000 W pool pump has higher
+priority than an explicitly configured 500 W heater, but only 800 W is
+available after the battery reservation. The pump cannot use a partial grant,
+so it receives `0`. The eligible lower-priority heater may receive its complete
+500 W request, leaving 300 W unassigned. This is intentional. Configure
+`Request` from the load's real steady/start operating requirement, and use only
+non-critical equipment whose on/off endpoint, status feedback, measured power,
+and safe fallback behavior have been verified.
 
 the example consumerKey is *waterplay* here.
 

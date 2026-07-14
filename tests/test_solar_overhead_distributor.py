@@ -65,6 +65,8 @@ class StubConsumer:
         self.consumerKey = key
         self.isInitialized = initialized
         self.isAutomatic = automatic
+        self.isHttpConsumer = False
+        self.isMqttConsumer = False
         self.request = 1000
         self.minimum = 500
         self.stepSize = 500
@@ -206,6 +208,145 @@ class SolarOverheadDistributorTests(unittest.TestCase):
         self.assertEqual(service.dbusService["/Calculations/OverheadAvailable"], 200)
         self.assertEqual(service.dbusService["/Calculations/OverheadAssigned"], 0)
         self.assertEqual(service.dbusService["/Calculations/OverheadRemaining"], 200)
+
+    def test_http_and_mqtt_npc_allocation_requires_complete_request(self):
+        for npc_attribute in ("isHttpConsumer", "isMqttConsumer"):
+            with self.subTest(npc_attribute=npc_attribute):
+                service = self._service()
+                consumer = StubConsumer(npc_attribute)
+                setattr(consumer, npc_attribute, True)
+                consumer.minimum = 400
+                consumer.request = 1000
+                consumer.stepSize = 1000
+                service._knownSolarOverheadConsumers = {
+                    consumer.consumerKey: consumer
+                }
+
+                insufficient = service.doAssign(
+                    overhead=999,
+                    overheadDistribution={consumer.consumerKey: 0},
+                    minBatCharge=0,
+                )
+                exact = service.doAssign(
+                    overhead=1000,
+                    overheadDistribution={consumer.consumerKey: 0},
+                    minBatCharge=0,
+                )
+                excess = service.doAssign(
+                    overhead=1300,
+                    overheadDistribution={consumer.consumerKey: 0},
+                    minBatCharge=0,
+                )
+
+                self.assertEqual(insufficient[consumer.consumerKey], 0)
+                self.assertEqual(exact[consumer.consumerKey], 1000)
+                self.assertEqual(excess[consumer.consumerKey], 1000)
+
+    def test_npc_allocation_caps_increment_to_remaining_request(self):
+        service = self._service()
+        consumer = StubConsumer("http")
+        consumer.isHttpConsumer = True
+        consumer.minimum = 400
+        consumer.request = 1000
+        consumer.stepSize = 1000
+        service._knownSolarOverheadConsumers = {consumer.consumerKey: consumer}
+
+        assigned = service.doAssign(
+            overhead=600,
+            overheadDistribution={consumer.consumerKey: 400},
+            minBatCharge=0,
+        )
+
+        self.assertEqual(assigned[consumer.consumerKey], 1000)
+
+    def test_npc_atomic_request_respects_battery_reservation_and_bypass(self):
+        service = self._service()
+        consumer = StubConsumer("http")
+        consumer.isHttpConsumer = True
+        consumer.minimum = 400
+        consumer.request = 1000
+        consumer.stepSize = 1000
+        service._knownSolarOverheadConsumers = {consumer.consumerKey: consumer}
+
+        reserved = service.doAssign(
+            overhead=1500,
+            overheadDistribution={consumer.consumerKey: 0},
+            minBatCharge=600,
+        )
+        consumer.ignoreBatReservation = True
+        bypassed = service.doAssign(
+            overhead=1000,
+            overheadDistribution={consumer.consumerKey: 0},
+            minBatCharge=600,
+        )
+
+        self.assertEqual(reserved[consumer.consumerKey], 0)
+        self.assertEqual(bypassed[consumer.consumerKey], 1000)
+
+    def test_ineligible_high_priority_npc_does_not_reserve_partial_power(self):
+        service = self._service()
+        npc = StubConsumer("pool-pump")
+        npc.isHttpConsumer = True
+        npc.priority = 10
+        npc.minimum = 400
+        npc.request = 1000
+        npc.stepSize = 1000
+        heater = StubConsumer("heater")
+        heater.isMqttConsumer = True
+        heater.priority = 20
+        heater.minimum = 200
+        heater.request = 500
+        heater.stepSize = 500
+        service._knownSolarOverheadConsumers = {
+            npc.consumerKey: npc,
+            heater.consumerKey: heater,
+        }
+
+        assigned = service.doAssign(
+            overhead=800,
+            overheadDistribution={npc.consumerKey: 0, heater.consumerKey: 0},
+            minBatCharge=0,
+        )
+
+        self.assertEqual(assigned[npc.consumerKey], 0)
+        self.assertEqual(assigned[heater.consumerKey], 500)
+
+    def test_scripted_consumer_keeps_minimum_first_allocation(self):
+        service = self._service()
+        scripted = StubConsumer("scripted")
+        scripted.minimum = 400
+        scripted.request = 1000
+        scripted.stepSize = 1000
+        service._knownSolarOverheadConsumers = {
+            scripted.consumerKey: scripted
+        }
+
+        assigned = service.doAssign(
+            overhead=800,
+            overheadDistribution={scripted.consumerKey: 0},
+            minBatCharge=0,
+        )
+
+        self.assertEqual(assigned[scripted.consumerKey], 400)
+
+    def test_update_distribution_publishes_atomic_npc_allowance(self):
+        service = self._service(grid=(-1000, 0, 0), battery_power=0)
+        consumer = StubConsumer("http")
+        consumer.isHttpConsumer = True
+        consumer.minimum = 400
+        consumer.request = 1000
+        consumer.stepSize = 1000
+        service._knownSolarOverheadConsumers[consumer.consumerKey] = consumer
+
+        service.updateDistribution()
+
+        self.assertEqual(consumer.allowance_updates, [1000])
+        self.assertEqual(
+            service.dbusService["/Calculations/OverheadAssigned"], 1000
+        )
+        self.assertEqual(
+            service.dbusService["/Calculations/OverheadRemaining"], 0
+        )
 
     def test_min_battery_charge_expression_supports_safe_soc_arithmetic(self):
         service = self._service(
@@ -464,6 +605,16 @@ class SolarOverheadDistributorTests(unittest.TestCase):
 
         self.sod.Globals.esESS.publishMainMqtt.assert_called_once_with(
             "load/set", "off"
+        )
+
+    def test_mqtt_full_allowance_turns_on(self):
+        consumer = self._mqtt_consumer()
+        self.sod.Globals.esESS.publishMainMqtt = Mock()
+
+        consumer.mqttControl()
+
+        self.sod.Globals.esESS.publishMainMqtt.assert_called_once_with(
+            "load/set", "on"
         )
 
     def test_malformed_mqtt_power_keeps_last_valid_state_and_is_visible(self):

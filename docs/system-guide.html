@@ -564,7 +564,8 @@
       <div class="formula" role="note" aria-label="Simplified overhead formula">
         <strong>raw overhead</strong> = max(0, <span class="accent">grid feed-in</span> + controlled-consumer power + <span class="accent">battery power</span>)<br>
         <span class="dim">with the repository convention: battery charging is positive; battery discharge is negative</span><br><br>
-        <strong>consumer allowance</strong> = raw overhead distributed by priority, minimum step and battery-charge reservation
+        <strong>consumer allowance</strong> = raw overhead distributed by priority and battery-charge reservation<br>
+        <span class="dim">scripted consumers use minimum/step increments; explicit HTTP/MQTT on/off loads receive their complete request or zero</span>
       </div>
 
       <div class="grid grid-3" style="margin-top:22px">
@@ -576,13 +577,17 @@
         <article class="card">
           <p class="card-kicker">2 · Allocate</p>
           <h3>Reserve and distribute</h3>
-          <p>Keep the configured battery-charge reservation, then allocate available power to automatic consumers by minimum, step size and priority.</p>
+          <p>Keep the configured battery-charge reservation, then allocate by priority. Scripted consumers use minimum/step increments; explicitly configured HTTP/MQTT on/off loads are granted their complete request or zero.</p>
         </article>
         <article class="card">
           <p class="card-kicker">3 · Command</p>
           <h3>Control only Auto/Eco</h3>
           <p>Start, stop, change current or switch phases only when Wattpilot mode telemetry confirms ECO control. Manual remains owned by the user.</p>
         </article>
+      </div>
+
+      <div class="callout warning">
+        <p><strong>Atomic on/off loads:</strong> es-ESS controls a pool pump, heater, Shelly device, or similar load only when an operator explicitly adds an <code>HttpConsumer:*</code> or <code>MqttConsumer:*</code> section. Set <code>Request</code> to the device's complete operating requirement; legacy <code>Minimum</code> and <code>StepSize</code> values do not apply to these NPC consumers. If 800 W is available, a higher-priority 1000 W pump is skipped and an eligible lower-priority 500 W heater may receive 500 W. This prevents unusable partial reservations. Verify the device's on/off endpoint, status, power reporting, and safe fallback before enabling automatic control.</p>
       </div>
 
       <figure class="diagram">
