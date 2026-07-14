@@ -128,6 +128,13 @@ the fail-closed native-controller boundary actionable without writing Wattpilot
 settings. A value of `-1` for either native setting means unavailable or
 malformed telemetry, not disabled.
 
+After the controller confirms that no vehicle is present, the runtime-status
+contract publishes `Stopped`, `/PhaseMode=0`, and
+`/PhaseModeLiteral=Unknown`. Transient raw disconnect samples inside the
+configured confirmation window retain the active state and phase. This is an
+observer-only cleanup and does not reset controller phase memory or issue a
+Wattpilot command.
+
 When changing any published D-Bus path, check README/config expectations,
 runtime-status consumers, the production health monitor, and VRM/Cerbo
 compatibility.
