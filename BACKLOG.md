@@ -42,11 +42,19 @@ Current validated state:
   assist, telemetry freshness, phase switching, reconnect handling, runtime
   status, configuration migration/validation, and graceful shutdown are
   implemented and tested.
+- Supervised Auto/Eco validation on 2026-07-14 confirmed that a phase-up
+  candidate active at `20/600s` was cleared by a confirmed physical disconnect:
+  after reconnect, without an es-ESS restart, the next candidate began at
+  `0/600s`. The same session exposed a separate commissioning/control-ownership
+  gap: native Solar.wattpilot `2.1.0` PV regulation held the EV near its 6 A,
+  1.4 kW minimum while es-ESS owned more than 5.5 kW of assigned allowance and
+  requested 16 A, with the remaining PV charging the stationary battery.
 - Manual charging remains user-controlled. Direct current/start/stop writes
   fail closed unless Wattpilot telemetry confirms ECO mode; a one-time release
   of stale Auto/Eco limits on entry to Manual is the sole approved exception.
-- The remaining Wattpilot live-validation gap is natural winter observation of
-  grid-import and stale-grid-telemetry dispatch.
+- Remaining Wattpilot work includes the native Eco/es-ESS command-ownership
+  investigation below and natural winter observation of grid-import and
+  stale-grid-telemetry dispatch.
 - The 2026-07-12 review confirmed additional crash, device-control, stale-data,
   persistence, configuration, security, and test-coverage work. Items with
   site-specific limits or uncertain Wattpilot protocol meaning retain explicit
@@ -106,8 +114,12 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   architecture and README.
 - Verification passed: affected-file syntax compilation, 128 focused
   safety/controller/backlog tests, and the full 273-test hardware-free suite.
-- Active-charging GX validation remains outstanding until a supervised daylight
-  window naturally provides sufficient PV for the phase-up scenario.
+- Active-charging GX validation passed on 2026-07-14 with Venus OS `v3.75`,
+  Wattpilot firmware `42.5`, and Solar.wattpilot app `2.1.0`. A candidate reached
+  `20/600s` at 07:39:32 UTC, physical disconnect was confirmed at 07:39:57,
+  reconnect occurred without an es-ESS restart at 07:42:37, and the next
+  candidate began at `0/600s` at 07:43:47. This proves disconnected wall-clock
+  time was not reused.
 
 ### Completed 2026-07-13 - Add Freshness Guard For Battery-Assist SOC
 
@@ -1957,6 +1969,209 @@ Done criteria:
   unchanged.
 - Full unittest suite passes.
 
+### P2 - Establish Single Auto/Eco Command Ownership Against Native Wattpilot PV Regulation
+
+Goal:
+
+Establish and validate a Solar.wattpilot `2.1.0` commissioning or controller
+contract in which es-ESS is the sole owner of Auto/Eco start, stop, current, and
+phase decisions.
+
+Problem:
+
+Wattpilot native PV-surplus regulation remains active in ECO mode and can
+compete with es-ESS commands. Raising the app's native start-up power threshold
+does not disable its closed-loop current regulation after es-ESS forces a
+charge. On the validated production system, es-ESS repeatedly requested 16 A
+from more than 5.5 kW of distributor-assigned PV, but the charger remained near
+the native 6 A / 1.4 kW minimum while the stationary battery absorbed the
+remaining PV. This defeats deterministic es-ESS current and phase control and
+can produce misleading battery-assist state even when the measured EV draw is
+fully covered by assigned allowance.
+
+The current README recommendation to place the native start threshold above
+reachable site surplus uses `99 kW` as an example. Solar.wattpilot app `2.1.0`
+offers a slider only up to 10 kW on the validated device, and production
+observation shows that the start threshold alone is not a command-ownership
+boundary. Replacing `99 kW` with `10 kW` without resolving native regulation
+would document an ineffective workaround.
+
+Evidence:
+
+- Production validation on 2026-07-14 used Venus OS `v3.75`, Wattpilot firmware
+  `42.5`, Solar.wattpilot app `2.1.0`, ECO mode, and
+  `AllowGridCharging=false`.
+- With 6.89 kW PV production, the EV drew 1.41 kW, the stationary battery
+  charged at 4.487 kW, and grid exchange stayed near zero. Solar.wattpilot
+  reported approximately 1.4 kW of PV surplus.
+- In the same session, SolarOverheadDistributor assigned 5.016-5.725 kW and
+  `FroniusWattpilot.adjustChargeForPvAllowance()` repeatedly logged 16 A
+  one-phase requests, while measured EV power remained approximately
+  1.3-1.4 kW.
+- After reconnect, es-ESS issued no new `frc=On`; the Wattpilot resumed its
+  retained start state. A short 18 W shortfall then activated battery assist
+  before allowance increased, demonstrating that native and es-ESS state can
+  interact in ways not represented by the current commissioning contract.
+- `Wattpilot.py:set_power()` sends only `amp`; `set_start_stop()` sends `frc`,
+  and `set_phases()` sends `psm`. The client does not read, validate, disable,
+  or own the app's native `Use PV surplus`, start-up level, flexible-tariff, or
+  native phase-switch settings.
+- `FroniusWattpilot.py` treats confirmed `WattpilotControlMode.ECO` as the
+  Auto/Eco command-authority condition, but ECO telemetry does not prove the
+  native PV controller is inactive.
+- `README.md` currently recommends an unreachable native threshold, for example
+  `99 kW`, as the way to prevent two controllers competing.
+- The official Fronius Wattpilot manual states that native PV mode starts at a
+  configured power level and then regulates one-phase power in 0.23 kW steps
+  and three-phase power in 0.69 kW steps. It does not define a high start-up
+  level as disabling native regulation after an external forced start:
+  <https://manuals.fronius.com/html/4204260400/en.html>.
+
+Implementation:
+
+- Treat this as an investigation gate before changing production behavior or
+  documentation. Capture raw firmware `42.5` status before and after every
+  Solar.wattpilot `2.1.0` setting change and identify the exact protocol fields
+  for native `Use PV surplus`, start-up power, flexible tariff, current
+  regulation, and native phase switching.
+- In a supervised no-grid window, test ECO mode with native `Use PV surplus`
+  disabled and flexible tariff disabled. Determine whether explicit es-ESS
+  `frc`, `amp`, and `psm` commands remain authoritative or whether ECO refuses
+  charging. A stopped charge is the safe failure; do not enable a tariff merely
+  to make the test pass.
+- Determine whether the native controller rewrites `amp`, `frc`, or `psm`
+  after an acknowledged es-ESS command, and record the command/telemetry timing
+  needed to distinguish charger enforcement from a vehicle-side current limit.
+- Based on validated evidence, choose one narrow result:
+  - a commissioning-only contract that disables native regulation while ECO
+    still accepts es-ESS commands;
+  - a readable native-setting compatibility guard that fails Auto/Eco closed
+    when competing regulation is active; or
+  - a separately approved controller/transport change if firmware `42.5`
+    provides no safe commissioning state.
+- Do not switch normal Auto/Eco operation to Standard/Manual mode, weaken the
+  ECO command boundary, enable intentional grid charging, or let battery assist
+  start a session or authorize phase-up.
+- Correct README, configuration comments, architecture, service inventory, and
+  HTML guidance only after the validated commissioning/runtime contract is
+  known. Do not replace `99 kW` with `10 kW` as an isolated documentation fix.
+
+Files to change:
+
+- `BACKLOG.md`
+- `README.md`
+- `config.sample.ini`
+- `docs/wattpilot-architecture.md`
+- `docs/service-inventory.md`
+- `docs/system-guide.html`
+- `Wattpilot.py` and `FroniusWattpilot.py`, only if the validated result
+  requires observable-setting enforcement or a controller change
+- `WattpilotRuntimeStatus.py`, only if the selected contract adds a public
+  compatibility/ownership diagnostic
+- Existing Wattpilot test files matching the selected implementation
+
+Files to add:
+
+- None expected; add a focused hardware-free test file only if no existing
+  Wattpilot client, command-boundary, policy, or runtime-status test is an
+  appropriate home.
+
+Tests:
+
+- Extend `tests/test_wattpilot_client.py` if native configuration fields are
+  parsed; cover missing, malformed, enabled, disabled, and change events from
+  recorded firmware `42.5` payload shapes.
+- Extend `tests/test_wattpilot_command_boundary.py` and
+  `tests/test_eco_pv_policy.py` for the selected authority rule. Prove Manual
+  remains command-free, missing or conflicting authority fails closed, and a
+  validated ECO state preserves existing `amp`, `frc`, and `psm` decisions.
+- If a public diagnostic is added, extend
+  `tests/test_wattpilot_runtime_status.py` and prove the observer remains
+  command-free with unchanged existing path values.
+- Extend `tests/test_config_contract.py` if a commissioning requirement or new
+  supported setting is added to `config.sample.ini`.
+- Follow the existing hardware-free Victron/D-Bus/MQTT/Wattpilot stub pattern;
+  no real charger, app, D-Bus, MQTT, or network is used in CI.
+
+Expected coverage:
+
+- Proves Auto/Eco commands are issued only under one validated authority model.
+- Proves a competing or unobservable native controller cannot silently be
+  documented as disabled by an ineffective start threshold.
+- Preserves no-grid behavior, Manual ownership, continuation-only battery
+  assist, phase timing, firmware compatibility, and existing public contracts.
+- Existing passing tests remain unchanged.
+
+Manual validation:
+
+Active charging required in a supervised daylight, no-grid window. App setting
+changes must first be made with the vehicle disconnected; raw status capture is
+log-only, but current/phase ownership requires a connected charging session.
+
+Manual test steps:
+
+1. With the vehicle disconnected, record Solar.wattpilot app version `2.1.0`,
+   firmware `42.5`, every native PV/tariff/phase setting, and the corresponding
+   raw Wattpilot status fields.
+2. Disable native `Use PV surplus` and the flexible tariff while retaining ECO
+   mode; do not select Standard or Next Trip.
+3. Reconnect only when fresh es-ESS allowance safely supports one-phase PV
+   charging and confirm no native grid-only start occurs.
+4. Correlate each es-ESS `frc` and `amp` command with acknowledgement, Wattpilot
+   set current, measured current/power, assigned allowance, grid exchange, and
+   stationary-battery power.
+5. Under naturally sufficient PV, confirm only es-ESS phase timing authorizes
+   `psm` and that no native phase transition or current rewrite races it.
+6. Reduce or wait for naturally lower PV and confirm es-ESS current reduction
+   and stop remain authoritative without intentional grid use.
+7. Restore the original app/config settings after any unsuccessful variant and
+   retain the logs needed to document the supported result.
+
+Risks and dependencies:
+
+- Disabling native PV surplus may make ECO refuse every charge, including
+  forced `frc=On`; that outcome must be recorded rather than bypassed with an
+  unsafe tariff or Manual-mode workaround.
+- Enabling or loosening a native flexible tariff can start charging from grid
+  independently of es-ESS and is outside this investigation's safe scope.
+- Writing undocumented Wattpilot configuration fields can persist across
+  restarts and alter user commissioning. Start with read-only field capture and
+  operator-controlled app changes.
+- A vehicle-side current limit can resemble native regulation; command
+  acknowledgement, requested current, and repeated behavior across app setting
+  changes must be correlated before assigning cause.
+- The P3 stopped-runtime-state item is related diagnostic cleanup but is not a
+  prerequisite for this command-ownership investigation.
+
+Open questions:
+
+- Which firmware `42.5` fields authoritatively represent native PV-surplus,
+  tariff, start-up-level, and phase-switch enablement?
+- Does ECO accept forced `frc`, `amp`, and `psm` commands when both native PV
+  surplus and flexible tariff are disabled?
+- Does native regulation rewrite command values after acknowledgement, and can
+  that state be detected read-only before es-ESS enables Auto control?
+- Is the observed return from the operator-selected 10 kW app value to 1.4 kW
+  a persisted-setting change, an app presentation of live surplus, or another
+  protocol field? Capture both the settings screen and raw telemetry before
+  documenting it as a reset.
+
+Done criteria:
+
+- A single validated Auto/Eco command owner is demonstrated on Venus OS
+  `v3.75`, firmware `42.5`, and Solar.wattpilot app `2.1.0`.
+- The charger follows es-ESS current and phase requests within documented
+  hardware/vehicle tolerances, or Auto/Eco fails closed with an actionable
+  diagnostic instead of running two controllers.
+- No native tariff or PV rule starts or sustains intentional grid charging when
+  `AllowGridCharging=false`.
+- README, sample configuration, architecture, inventory, and HTML guidance
+  describe the validated app setting and explicitly reject ineffective values.
+- Manual-mode ownership, battery-assist limits, phase timing, compatibility
+  guards, and D-Bus/MQTT contracts remain intact.
+- Focused tests and configuration-contract checks pass where applicable.
+- Full unittest suite passes.
+
 ## Suggested Implementation Order / PR Execution Queue
 
 Use this queue as the implementation order. Entries carrying the same PR-group
@@ -1968,6 +2183,9 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
+30. P2 establish single Auto/Eco command ownership against native Wattpilot PV
+    regulation — resolve the production-proven dual-controller boundary before
+    relying on further current or phase-control commissioning guidance.
 9. P2 define safe control for unclassified charging model statuses — obtain
    firmware evidence and encode explicit no-grid-safe mappings.
 10. P2 publish null and disconnected on all meter failure modes — stop frozen
@@ -2049,11 +2267,12 @@ For implementation PRs:
 - **Fault simulation, vehicle disconnected:** correlate Solar.wattpilot mode
   selection, physical mode LEDs, raw `lmo` telemetry, and `/ModeLiteral` for
   local and remote paths; confirm no unintended `psm`, `amp`, or `frc` command.
-- **Active charging required:** after the disconnect-candidate fix is
-  implemented, confirm a reconnect builds a new complete 600-second phase-up
-  interval rather than reusing disconnected wall-clock time.
 - **Active charging required:** complete supervised v3.75 Auto/Eco PV-surplus,
   no-grid, current-limit, and naturally available phase-switch validation.
+- **Active charging required:** complete the native Solar.wattpilot
+  PV-regulation versus es-ESS command-ownership investigation above before
+  treating the current-limit and phase-control commissioning contract as
+  complete.
 - **Log-only:** validate the future `velib_python` provenance/import change on
   supported Venus OS releases, including startup, D-Bus registration, MQTT
   recovery, and absence of unintended Wattpilot commands.
