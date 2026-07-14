@@ -76,7 +76,13 @@ class BaseService:
 
 
 def _install_runtime_stubs():
-    class Timeout(Exception):
+    class RequestException(Exception):
+        pass
+
+    class Timeout(RequestException):
+        pass
+
+    class ConnectionError(RequestException):
         pass
 
     dbus = _module("dbus")
@@ -84,7 +90,14 @@ def _install_runtime_stubs():
     dbus_service = _module("dbus.service")
     dbus.service = dbus_service
     _module("vedbus", VeDbusService=FakeDbusService)
-    _module("requests", exceptions=types.SimpleNamespace(Timeout=Timeout))
+    _module(
+        "requests",
+        exceptions=types.SimpleNamespace(
+            RequestException=RequestException,
+            Timeout=Timeout,
+            ConnectionError=ConnectionError,
+        ),
+    )
     _module(
         "Globals",
         esEssTagService="test",
@@ -173,6 +186,34 @@ class FroniusSmartmeterJSONTests(unittest.TestCase):
 
         self.assertEqual(service.dbusService["/Connected"], 0)
         self.assertIsNone(service.dbusService["/Ac/Power"])
+
+    def test_connection_refusal_uses_existing_failure_threshold(self):
+        service = self._service()
+        self.module.requests.get = Mock(
+            side_effect=self.module.requests.exceptions.ConnectionError("refused")
+        )
+
+        service.queryMeter()
+        self.assertEqual(service.dbusService["/Connected"], 1)
+        self.assertEqual(service.connectionErrors, 1)
+
+        service.connectionErrors = 9
+        service.queryMeter()
+        self.assertEqual(service.dbusService["/Connected"], 0)
+        self.assertIsNone(service.dbusService["/Ac/L1/Power"])
+
+    def test_partial_payload_uses_existing_failure_threshold_without_partial_publish(self):
+        service = self._service()
+        service.connectionErrors = 9
+        payload = _meter_data()
+        del payload["Body"]["Data"]["PowerReal_P_Phase_3"]
+        self.module.requests.get = Mock(return_value=FakeResponse(payload))
+
+        service.queryMeter()
+
+        self.assertEqual(service.dbusService["/Connected"], 0)
+        self.assertIsNone(service.dbusService["/Ac/L1/Power"])
+        self.assertIsNone(service.dbusService["/Ac/L2/Power"])
 
 
 if __name__ == "__main__":

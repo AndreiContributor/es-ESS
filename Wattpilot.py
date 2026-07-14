@@ -59,6 +59,8 @@ class Event(Enum):
     WS_OPEN = auto(),
 
 class Wattpilot(object):
+
+    _worker_join_timeout = 2.0
     
     carValues = {}
     alwValues = {}
@@ -390,9 +392,35 @@ class Wattpilot(object):
 
         return ret
     def connect(self):
+        stopping_worker = None
         with self._connection_lock:
             if self._wst is not None and self._wst.is_alive():
+                if not self._stop_reconnect.is_set():
+                    d(self, "Wattpilot WebSocket worker already running.")
+                    return
+                stopping_worker = self._wst
+
+        # Never wait while holding the connection lock. The old worker may be
+        # finishing a WebSocket callback that also needs normal client state.
+        if stopping_worker is not None:
+            if stopping_worker is threading.current_thread():
+                w(self, "Wattpilot reconnect requested from the stopping worker; deferring restart.")
+                return
+            stopping_worker.join(self._worker_join_timeout)
+
+        with self._connection_lock:
+            # Another caller may have completed the handoff while this caller
+            # waited for the stopping worker.
+            if self._wst is not None and self._wst is not stopping_worker and self._wst.is_alive():
                 d(self, "Wattpilot WebSocket worker already running.")
+                return
+            if stopping_worker is not None and stopping_worker.is_alive():
+                w(
+                    self,
+                    "Previous Wattpilot WebSocket worker did not stop within {0:.1f}s; reconnect deferred.".format(
+                        self._worker_join_timeout
+                    ),
+                )
                 return
 
             self._carStateReady = False
@@ -405,9 +433,10 @@ class Wattpilot(object):
         i(self, "Wattpilot WebSocket worker started")
 
     def disconnect(self, auto_reconnect=False):
-        self._auto_reconnect = auto_reconnect
-        if not auto_reconnect:
-            self._stop_reconnect.set()
+        with self._connection_lock:
+            self._auto_reconnect = auto_reconnect
+            if not auto_reconnect:
+                self._stop_reconnect.set()
 
         self._wsapp.close()
         self._connected=False

@@ -43,3 +43,4 @@ if [ ! -f "$CONFIG_TARGET" ]
 then
     cp "$CONFIG_SAMPLE" "$CONFIG_TARGET"
 fi
+chmod 600 "$CONFIG_TARGET"

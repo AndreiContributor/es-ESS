@@ -38,6 +38,10 @@ class TimeToGoCalculator(esESSService):
         
         t(self, "{0} / {1} / {2}".format(power, soc, socLimit))
 
+        if power is None or soc is None or socLimit is None:
+          d(self, "Battery telemetry is incomplete. Skipping time-to-go calculation.")
+          return True
+
         if (soc == 0):
           w(self, "SoC value of 0 reported. Can't compute time2go.")
           return

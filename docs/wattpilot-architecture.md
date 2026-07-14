@@ -50,6 +50,9 @@ It owns:
 - WebSocket connection setup and close/error/message callbacks.
 - The single Wattpilot connection worker loop, including automatic reconnect
   attempts controlled by `_auto_reconnect` and `_reconnect_interval`.
+- A bounded stop/start handoff that waits outside the connection lock before
+  replacing a worker whose stop event is already set, preserving single-worker
+  ownership during rapid disconnect/reconnect sequences.
 - Wattpilot authentication and secure message wrapping.
 - Parsing Wattpilot status messages into local client properties.
 - Recording wall-clock receipt and change timestamps for raw `lmo` mode
@@ -313,6 +316,11 @@ Future Wattpilot changes must preserve these invariants:
 - A confirmed physical vehicle disconnect must stop Auto/Eco current and phase
   control even if Wattpilot briefly continues to report a stale active charging
   model status.
+- The public runtime-status observer must also publish `Stopped` after that
+  debounced confirmed disconnect. Stale active model status or phase telemetry
+  may still describe the last session, but cannot override the controller's
+  effective no-vehicle state. Transient raw disconnect samples inside
+  `CarDisconnectConfirmSeconds` retain the active runtime state.
 - A confirmed physical vehicle disconnect also clears every pending phase-switch
   stability candidate, including its below-threshold grace timestamp. A
   reconnect must build a new complete `MinPhaseSwitchSeconds` interval from

@@ -52,7 +52,13 @@ class RootService:
 
 
 def _install_runtime_stubs():
-    class Timeout(Exception):
+    class RequestException(Exception):
+        pass
+
+    class Timeout(RequestException):
+        pass
+
+    class ConnectionError(RequestException):
         pass
 
     dbus = _module("dbus")
@@ -60,7 +66,14 @@ def _install_runtime_stubs():
     dbus_service = _module("dbus.service")
     dbus.service = dbus_service
     _module("vedbus", VeDbusService=FakeDbusService)
-    _module("requests", exceptions=types.SimpleNamespace(Timeout=Timeout))
+    _module(
+        "requests",
+        exceptions=types.SimpleNamespace(
+            RequestException=RequestException,
+            Timeout=Timeout,
+            ConnectionError=ConnectionError,
+        ),
+    )
     _module(
         "Globals",
         esEssTagService="test",
@@ -144,6 +157,38 @@ class ShellyPMInverterTests(unittest.TestCase):
         self.assertEqual(device.dbusService["/Connected"], 0)
         self.assertEqual(device.dbusService["/StatusCode"], 10)
         self.assertIsNone(device.dbusService["/Ac/Power"])
+
+    def test_connection_refusal_uses_existing_failure_threshold(self):
+        device = self._device()
+        self.module.requests.get = Mock(
+            side_effect=self.module.requests.exceptions.ConnectionError("refused")
+        )
+
+        device.queryShelly()
+        self.assertEqual(device.dbusService["/Connected"], 1)
+        self.assertEqual(device.connectionErrors, 1)
+
+        device.connectionErrors = 3
+        device.queryShelly()
+        self.assertEqual(device.dbusService["/Connected"], 0)
+
+    def test_partial_payload_uses_existing_failure_threshold_without_partial_publish(self):
+        device = self._device()
+        device.connectionErrors = 3
+        self.module.requests.get = Mock(
+            return_value=FakeResponse(
+                {
+                    "apower": 345.6,
+                    "voltage": 231.2,
+                    "aenergy": {"total": 12345},
+                }
+            )
+        )
+
+        device.queryShelly()
+
+        self.assertEqual(device.dbusService["/Connected"], 0)
+        self.assertIsNone(device.dbusService["/Ac/L2/Power"])
 
 
 if __name__ == "__main__":

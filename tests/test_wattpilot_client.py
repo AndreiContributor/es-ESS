@@ -197,6 +197,35 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
         self.assertEqual(FakeWebSocketApp.instances[0].run_forever_calls, 1)
         self.assertTrue(FakeWebSocketApp.instances[0].closed)
 
+    def test_connect_replaces_worker_that_is_already_stopping(self):
+        _install_wattpilot_client_stubs()
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_stopping_worker_handoff_under_test"
+        )
+        FakeWebSocketApp.block_run = True
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+        client._worker_join_timeout = 0.5
+
+        client.connect()
+        self.assertTrue(FakeWebSocketApp.run_started.wait(1))
+        first_worker = client._wst
+        client.disconnect(auto_reconnect=False)
+        client._auto_reconnect = True
+
+        release = threading.Timer(0.05, FakeWebSocketApp.release_run.set)
+        release.start()
+        client.connect()
+        release.join(1)
+
+        replacement_worker = client._wst
+        self.assertIsNot(replacement_worker, first_worker)
+        self.assertFalse(first_worker.is_alive())
+        self.assertTrue(replacement_worker.is_alive())
+
+        client.disconnect(auto_reconnect=False)
+        replacement_worker.join(1)
+        self.assertFalse(replacement_worker.is_alive())
+
     def test_null_awattar_current_price_does_not_break_status_parsing(self):
         _install_wattpilot_client_stubs()
         wattpilot_module = self.load_wattpilot_module(

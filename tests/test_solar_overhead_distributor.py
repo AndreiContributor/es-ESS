@@ -167,6 +167,23 @@ class SolarOverheadDistributorTests(unittest.TestCase):
             "Warning",
         )
 
+    def test_allowance_update_runs_outside_consumer_lock(self):
+        service = self._service(grid=(None, 0, 0), battery_power=0)
+        lock_states = []
+
+        class LockCheckingConsumer(StubConsumer):
+            def updateAllowance(self, allowance, distributor):
+                lock_states.append(
+                    service._knownSolarOverheadConsumersLock.locked()
+                )
+                super().updateAllowance(allowance, distributor)
+
+        service._knownSolarOverheadConsumers["load"] = LockCheckingConsumer()
+
+        self.assertTrue(service.updateDistribution())
+
+        self.assertEqual(lock_states, [False])
+
     def test_update_distribution_with_none_battery_power_zeroes_allowance(self):
         service = self._service(grid=(-100, -100, -100), battery_power=None)
         consumer = StubConsumer()
@@ -260,7 +277,7 @@ class SolarOverheadDistributorTests(unittest.TestCase):
         self.sod.e.assert_called()
         self.assertEqual(service.dbusService["/Calculations/Battery/Reservation"], 0)
 
-    def test_persist_energy_stats_holds_consumer_lock_during_iteration(self):
+    def test_persist_energy_stats_releases_consumer_lock_before_io(self):
         service = self._service()
         entered_persist = threading.Event()
         release_persist = threading.Event()
@@ -295,7 +312,7 @@ class SolarOverheadDistributorTests(unittest.TestCase):
 
         register_thread = threading.Thread(target=register_consumer)
         register_thread.start()
-        self.assertFalse(registration_done.wait(timeout=0.1))
+        self.assertTrue(registration_done.wait(timeout=0.5))
 
         release_persist.set()
         persist_thread.join(timeout=2)
@@ -307,6 +324,87 @@ class SolarOverheadDistributorTests(unittest.TestCase):
         self.assertTrue(registration_done.is_set())
         self.assertIn("new", service._knownSolarOverheadConsumers)
         self.assertEqual(service._knownSolarOverheadConsumers["slow"].persist_calls, 1)
+
+    def test_npc_validation_runs_endpoint_work_outside_consumer_lock(self):
+        service = self._service()
+        lock_states = []
+        consumer = StubConsumer("http")
+        consumer.isInitialized = True
+        consumer.isHttpConsumer = True
+        consumer.isMqttConsumer = False
+        consumer.validateHttpStatus = lambda _expected: lock_states.append(
+            service._knownSolarOverheadConsumersLock.locked()
+        )
+        consumer.httpControl = lambda: lock_states.append(
+            service._knownSolarOverheadConsumersLock.locked()
+        )
+        service._knownSolarOverheadConsumers[consumer.consumerKey] = consumer
+        service.dumpConsumerBms = Mock()
+
+        self.assertTrue(service._validateNpcConsumerStates())
+
+        self.assertEqual(lock_states, [False, False])
+
+    def test_mqtt_consumer_lookup_and_update_share_one_lock_scope(self):
+        service = self._service()
+        lock_states = []
+
+        class LockCheckingConsumer:
+            def setValue(self, _topic, _message):
+                lock_states.append(service._knownSolarOverheadConsumersLock.locked())
+
+        service._knownSolarOverheadConsumers["load"] = LockCheckingConsumer()
+
+        service.onMqttMessage(
+            None,
+            None,
+            SimpleNamespace(
+                topic="es-ESS/SolarOverheadDistributor/Requests/load/Request",
+                payload=b"500",
+            ),
+        )
+
+        self.assertEqual(lock_states, [True])
+        self.sod.c.assert_not_called()
+
+    def test_dbus_consumption_accepts_missing_request(self):
+        consumer = self.sod.SolarOverheadConsumer.__new__(
+            self.sod.SolarOverheadConsumer
+        )
+        consumer.dbusService = {}
+        consumer.consumption = 250
+        consumer.request = None
+
+        consumer.dbusReportConsumption()
+
+        self.assertEqual(consumer.dbusService["/Dc/0/Power"], 250)
+        self.assertEqual(consumer.dbusService["/Soc"], 0)
+
+    def test_energy_today_topic_publishes_today_value(self):
+        consumer = self._http_consumer()
+        consumer.isAutomatic = False
+        consumer.energyToday = 1.25
+        consumer.energyYesterday = 2.5
+        consumer.energyTotal = 9.75
+        consumer.runtimeToday = 10
+        consumer.runtimeYesterday = 20
+        consumer.runtimeTotal = 30
+        consumer.calculateEnergy = Mock()
+        consumer.dbusReportConsumption = Mock()
+        sod = SimpleNamespace(
+            publishMainMqtt=Mock(),
+            parseAndPubHttpConsumer=Mock(),
+        )
+
+        with patch.object(self.sod.Globals, "getUserTime", return_value="now", create=True):
+            consumer.updateAllowance(500, sod)
+
+        sod.publishMainMqtt.assert_any_call(
+            "es-ESS/SolarOverheadDistributor/Requests/load/Energy/energyToday",
+            1.25,
+            1,
+            True,
+        )
 
     def _http_consumer(self):
         consumer = self.sod.SolarOverheadConsumer.__new__(

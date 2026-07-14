@@ -101,48 +101,54 @@ class FroniusSmartmeterJSON(esESSService):
         
             #timeout should be half the poll frequency, so there is time to process.
             meter_r = requests.get(url = URL, timeout=(self.pollFrequencyMs/2000))
-            meter_data = meter_r.json()     
-        
-            # check for Json
-            if not meter_data:
-                e(self, "Response is not resolvable to JSON.")
-                self.connError()
-                
-            if (meter_data and meter_data['Body']['Data']['Enable']==1):
-                self.dbusService['/Connected'] = 1
-                self.connectionErrors = 0
+            meter_data = meter_r.json()
+            data = meter_data['Body']['Data']
+            if data['Enable'] != 1:
+                raise ValueError("meter payload reports Enable != 1")
 
-                #All good, evaluate and publish on dbus. 
-                self.dbusService['/Ac/L1/Voltage'] = round(meter_data['Body']['Data']['Voltage_AC_Phase_1'], 4)
-                self.dbusService['/Ac/L2/Voltage'] = round(meter_data['Body']['Data']['Voltage_AC_Phase_2'], 4)
-                self.dbusService['/Ac/L3/Voltage'] = round(meter_data['Body']['Data']['Voltage_AC_Phase_3'], 4)
-                
-                self.dbusService['/Ac/L1/Current'] = round(meter_data['Body']['Data']['Current_AC_Phase_1'], 4)
-                self.dbusService['/Ac/L2/Current'] = round(meter_data['Body']['Data']['Current_AC_Phase_2'], 4)
-                self.dbusService['/Ac/L3/Current'] = round(meter_data['Body']['Data']['Current_AC_Phase_3'], 4)
+            # Resolve every required field before changing D-Bus so a partial
+            # payload cannot leave a mixture of new and frozen measurements.
+            values = {
+                '/Ac/L1/Voltage': round(data['Voltage_AC_Phase_1'], 4),
+                '/Ac/L2/Voltage': round(data['Voltage_AC_Phase_2'], 4),
+                '/Ac/L3/Voltage': round(data['Voltage_AC_Phase_3'], 4),
+                '/Ac/L1/Current': round(data['Current_AC_Phase_1'], 4),
+                '/Ac/L2/Current': round(data['Current_AC_Phase_2'], 4),
+                '/Ac/L3/Current': round(data['Current_AC_Phase_3'], 4),
+                '/Ac/L1/PowerFactor': round(data['PowerFactor_Phase_1'], 4),
+                '/Ac/L2/PowerFactor': round(data['PowerFactor_Phase_2'], 4),
+                '/Ac/L3/PowerFactor': round(data['PowerFactor_Phase_3'], 4),
+                '/Ac/L1/Power': round(data['PowerReal_P_Phase_1'], 4),
+                '/Ac/L2/Power': round(data['PowerReal_P_Phase_2'], 4),
+                '/Ac/L3/Power': round(data['PowerReal_P_Phase_3'], 4),
+                '/Ac/Voltage12': round(data['Voltage_AC_PhaseToPhase_12'], 4),
+                '/Ac/Voltage23': round(data['Voltage_AC_PhaseToPhase_23'], 4),
+                '/Ac/Voltage31': round(data['Voltage_AC_PhaseToPhase_31'], 4),
+                '/Ac/Energy/Forward': round(data['EnergyReal_WAC_Sum_Consumed'], 4) / 1000,
+                '/Ac/Energy/Reverse': round(data['EnergyReal_WAC_Sum_Produced'], 4) / 1000,
+            }
+            values['/Ac/Power'] = round(
+                data['PowerReal_P_Phase_1']
+                + data['PowerReal_P_Phase_2']
+                + data['PowerReal_P_Phase_3'],
+                4,
+            )
 
-                self.dbusService['/Ac/L1/PowerFactor'] = round(meter_data['Body']['Data']['PowerFactor_Phase_1'], 4)
-                self.dbusService['/Ac/L2/PowerFactor'] = round(meter_data['Body']['Data']['PowerFactor_Phase_2'], 4)
-                self.dbusService['/Ac/L3/PowerFactor'] = round(meter_data['Body']['Data']['PowerFactor_Phase_3'], 4)
-                
-                self.dbusService['/Ac/L1/Power'] = round(meter_data['Body']['Data']['PowerReal_P_Phase_1'], 4)
-                self.dbusService['/Ac/L2/Power'] = round(meter_data['Body']['Data']['PowerReal_P_Phase_2'], 4)
-                self.dbusService['/Ac/L3/Power'] = round(meter_data['Body']['Data']['PowerReal_P_Phase_3'], 4)
-                self.dbusService['/Ac/Power'] = round(meter_data['Body']['Data']['PowerReal_P_Phase_1'] + meter_data['Body']['Data']['PowerReal_P_Phase_2'] + meter_data['Body']['Data']['PowerReal_P_Phase_3'], 4)
-
-                self.dbusService['/Ac/Voltage12'] = round(meter_data['Body']['Data']['Voltage_AC_PhaseToPhase_12'], 4)
-                self.dbusService['/Ac/Voltage23'] = round(meter_data['Body']['Data']['Voltage_AC_PhaseToPhase_23'], 4)
-                self.dbusService['/Ac/Voltage31'] = round(meter_data['Body']['Data']['Voltage_AC_PhaseToPhase_31'], 4)
-
-                self.dbusService['/Ac/Energy/Forward'] = round(meter_data['Body']['Data']['EnergyReal_WAC_Sum_Consumed'], 4)/1000
-                self.dbusService['/Ac/Energy/Reverse'] = round(meter_data['Body']['Data']['EnergyReal_WAC_Sum_Produced'], 4)/1000
-            else:
-                #publish null values, so it is clear, that we have issues reading the meter and OS can decide how to handle. 
-                w(self, "Can't query meter. data object not readable.")
-                self.connError()
+            for path, value in values.items():
+                self.dbusService[path] = value
+            self.dbusService['/Connected'] = 1
+            self.connectionErrors = 0
 
         except requests.exceptions.Timeout as ex:
             w(self, "Fronius Inverter did not response fast enough to sustain a poll frequency of {0} ms. Please adjust.".format(self.pollFrequencyMs))
+            self.connError()
+
+        except requests.exceptions.RequestException as ex:
+            w(self, "Fronius meter request failed: {0}".format(ex))
+            self.connError()
+
+        except (KeyError, IndexError, TypeError, ValueError) as ex:
+            e(self, "Fronius meter returned an invalid or incomplete payload: {0}".format(ex))
             self.connError()
 
         except Exception as ex:

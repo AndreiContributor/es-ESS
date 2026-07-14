@@ -24,8 +24,11 @@ fi
 
 if [ -f "$CONFIG_TARGET" ]; then
     mkdir -p "$BACKUP_DIR"
-    cp "$CONFIG_TARGET" "$BACKUP_DIR/config.ini.$TIMESTAMP"
-    echo "Backed up config.ini to $BACKUP_DIR/config.ini.$TIMESTAMP"
+    chmod 700 "$BACKUP_DIR"
+    BACKUP_TARGET="$BACKUP_DIR/config.ini.$TIMESTAMP"
+    cp "$CONFIG_TARGET" "$BACKUP_TARGET"
+    chmod 600 "$BACKUP_TARGET"
+    echo "Backed up config.ini to $BACKUP_TARGET"
 fi
 
 if [ -L "$SERVICE_LINK" ]; then

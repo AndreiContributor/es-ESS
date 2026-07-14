@@ -110,7 +110,19 @@ class MqttPVInverter(esESSService):
         try:
             #Check on-grid, else Frequency shifting will control the inverters.
             if self.noPhasesDbus.value is not None and self.socDbus.value is not None and self.socDbus.value >= self.zeroFeedinStartSoc:
-                consumption = self.consumptionL1Dbus.value + self.consumptionL2Dbus.value + self.consumptionL3Dbus.value
+                consumption_values = (
+                    self.consumptionL1Dbus.value,
+                    self.consumptionL2Dbus.value,
+                    self.consumptionL3Dbus.value,
+                )
+                if any(value is None for value in consumption_values):
+                    d(
+                        self,
+                        "Zero-feed-in consumption telemetry is incomplete; keeping the last inverter limit.",
+                    )
+                    return
+
+                consumption = sum(consumption_values)
                 target = max(consumption - self.zeroFeedinDistance, 0)
 
                 actual = {key: inv.total_power for key, inv in self.mqttPVInverters.items()}
@@ -131,11 +143,11 @@ class MqttPVInverter(esESSService):
                     if actual[key] > 0 and inv.dtuControlTopic is not None:
                         share = actual[key] / total if total > 0 else 1.0/len(self.mqttPVInverters)
                         t = inv.throttle
-                        c = share * (error / target)
-                        if c >= 0:
-                            t += min(self.zeroFeedinScaleStep, c)
+                        correction = share * (error / target)
+                        if correction >= 0:
+                            t += min(self.zeroFeedinScaleStep, correction)
                         else:
-                            t -= min(self.zeroFeedinScaleStep, c * -1)
+                            t -= min(self.zeroFeedinScaleStep, correction * -1)
 
                         t = min(max(t, 0.0), 1.0)  # Clamp to 0..1
                         inv.throttle = t

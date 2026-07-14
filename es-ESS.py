@@ -42,6 +42,8 @@ from esESSService import DbusSubscription, esESSService, WorkerThread, MqttSubsc
 DBusGMainLoop(set_as_default=True)
 
 class esESS:
+    _shutdownPublishTimeoutSeconds = 2.0
+
     def __init__(self):
         # Defense in depth for callers that construct esESS directly instead
         # of using main(). Keep this outside the broad initialization handler
@@ -548,6 +550,8 @@ class esESS:
             c(self, "Invalid configuration: file was not found or could not be read: {0}".format(config_path))
             raise SystemExit(1)
 
+        self._secureConfigPath(config_path)
+
         if (not self.config.has_section("Common")):
             c(self, "Invalid configuration: missing mandatory [Common] section")
             raise SystemExit(1)
@@ -663,8 +667,10 @@ class esESS:
 
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 
         if (loadedVersion < int(self.config["Common"]["ConfigVersion"])):
-            with open("{0}/config.ini".format(os.path.dirname(os.path.realpath(__file__))), 'w') as configfile:
+            config_path = "{0}/config.ini".format(os.path.dirname(os.path.realpath(__file__)))
+            with open(config_path, 'w') as configfile:
                 self.config.write(configfile)
+            self._secureConfigPath(config_path)
             
         else:
             i(self, "Running on most recent configuration file version: v{0}".format(loadedVersion))
@@ -673,8 +679,17 @@ class esESS:
 
     def _backupConfig(self):
         i(self, "Creating configuration v{0} backup file.".format(self.config["Common"]["ConfigVersion"]))
-        with open("{0}/config.ini.v{1}.backup".format(os.path.dirname(os.path.realpath(__file__)), self.config["Common"]["ConfigVersion"]), 'w') as configfile:
+        backup_path = "{0}/config.ini.v{1}.backup".format(os.path.dirname(os.path.realpath(__file__)), self.config["Common"]["ConfigVersion"])
+        with open(backup_path, 'w') as configfile:
             self.config.write(configfile)
+        self._secureConfigPath(backup_path)
+
+    def _secureConfigPath(self, path):
+        try:
+            os.chmod(path, 0o600)
+        except OSError as ex:
+            c(self, "Unable to restrict configuration permissions for {0}: {1}".format(path, ex))
+            raise SystemExit(1)
 
     def initialize(self):
        self.configureMqtt()
@@ -989,7 +1004,7 @@ class esESS:
     
     def publishLocalMqtt(self, topic, payload, qos=0, retain=False, forceSend=False):
         if (self.mqttThrottlePeriod == 0 or forceSend): 
-            self.localMqttClient.publish(topic, payload, qos, retain)
+            return self.localMqttClient.publish(topic, payload, qos, retain)
     
         else:
            self._localMessageCount += 1
@@ -1027,6 +1042,34 @@ class esESS:
                self.publishMainMqtt("{0}/$SYS/MqttThrottle/Local/MpsOutgoing".format(Globals.esEssTag), self._localSendCount, 0, False, True)
                self._localMessageCount = 0
                self._localSendCount = 0
+
+        return None
+
+    def _waitForMqttPublish(self, publish_result, timeout_seconds):
+        if publish_result is None:
+            w(self, "MQTT publish did not return a completion handle; continuing shutdown.")
+            return False
+
+        wait_for_publish = getattr(publish_result, "wait_for_publish", None)
+        if not callable(wait_for_publish):
+            w(self, "MQTT publish completion cannot be awaited; continuing shutdown.")
+            return False
+
+        try:
+            wait_for_publish(timeout_seconds)
+            is_published = getattr(publish_result, "is_published", None)
+            if callable(is_published) and not is_published():
+                w(
+                    self,
+                    "MQTT publish was not confirmed within {0:.1f}s; continuing shutdown.".format(
+                        timeout_seconds
+                    ),
+                )
+                return False
+            return True
+        except (RuntimeError, TypeError, ValueError) as ex:
+            w(self, "Unable to confirm MQTT publish before shutdown: {0}".format(ex))
+            return False
 
     def _isMqttClientConnected(self, client):
         if (client is None):
@@ -1075,7 +1118,19 @@ class esESS:
 
         #restore default grid set point
         i(self, "Restoring default power set point of {0}W due to SIGTERM received.".format(self._gridSetPointDefault))
-        self.publishLocalMqtt("W/{0}/settings/0/Settings/CGwacs/AcPowerSetPoint".format(self.config["Common"]["VRMPortalID"]), "{\"value\": " + str(self._gridSetPointDefault) + "}", 1 ,False)
+        restore_publish = self.publishLocalMqtt(
+            "W/{0}/settings/0/Settings/CGwacs/AcPowerSetPoint".format(
+                self.config["Common"]["VRMPortalID"]
+            ),
+            "{\"value\": " + str(self._gridSetPointDefault) + "}",
+            1,
+            False,
+            True,
+        )
+        self._waitForMqttPublish(
+            restore_publish,
+            self._shutdownPublishTimeoutSeconds,
+        )
 
         #unsubscribe any mqtt sub, so we no longer receive new messages. 
         for sublist in self._mqttSubscriptions.values():
