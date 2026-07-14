@@ -53,8 +53,9 @@ Current validated state:
   fail closed unless Wattpilot telemetry confirms ECO mode; a one-time release
   of stale Auto/Eco limits on entry to Manual is the sole approved exception.
 - Remaining Wattpilot work includes the native Eco/es-ESS command-ownership
-  investigation below and natural winter observation of grid-import and
-  stale-grid-telemetry dispatch.
+  investigation, explicit policy for unclassified charging statuses, and the
+  independent mode-boundary, battery-heartbeat, and natural winter observation
+  tasks below.
 - The 2026-07-12 review confirmed additional crash, device-control, stale-data,
   persistence, configuration, security, and test-coverage work. Items with
   site-specific limits or uncertain Wattpilot protocol meaning retain explicit
@@ -1339,12 +1340,14 @@ remaining PV. This defeats deterministic es-ESS current and phase control and
 can produce misleading battery-assist state even when the measured EV draw is
 fully covered by assigned allowance.
 
-The current README recommendation to place the native start threshold above
-reachable site surplus uses `99 kW` as an example. Solar.wattpilot app `2.1.0`
-offers a slider only up to 10 kW on the validated device, and production
+The former README recommendation placed the native start threshold above
+reachable site surplus and used `99 kW` as an example. Solar.wattpilot app
+`2.1.0` offers a slider only up to 10 kW on the validated device, and production
 observation shows that the start threshold alone is not a command-ownership
 boundary. Replacing `99 kW` with `10 kW` without resolving native regulation
-would document an ineffective workaround.
+would document an ineffective workaround. The investigation stage now labels
+the threshold as non-authoritative without prescribing an unvalidated
+replacement.
 
 Evidence:
 
@@ -1369,8 +1372,10 @@ Evidence:
 - `FroniusWattpilot.py` treats confirmed `WattpilotControlMode.ECO` as the
   Auto/Eco command-authority condition, but ECO telemetry does not prove the
   native PV controller is inactive.
-- `README.md` currently recommends an unreachable native threshold, for example
-  `99 kW`, as the way to prevent two controllers competing.
+- `README.md` previously recommended an unreachable native threshold, for
+  example `99 kW`, as the way to prevent two controllers competing. The
+  command-free investigation stage removes that claim as a safety boundary but
+  intentionally does not prescribe `10 kW` or another unvalidated replacement.
 - The official Fronius Wattpilot manual states that native PV mode starts at a
   configured power level and then regulates one-phase power in 0.23 kW steps
   and three-phase power in 0.69 kW steps. It does not define a high start-up
@@ -1379,11 +1384,11 @@ Evidence:
 
 Implementation:
 
-- Treat this as an investigation gate before changing production behavior or
-  documentation. Capture raw firmware `42.5` status before and after every
-  Solar.wattpilot `2.1.0` setting change and identify the exact protocol fields
-  for native `Use PV surplus`, start-up power, flexible tariff, current
-  regulation, and native phase switching.
+- Gate 1 used the command-free, firmware- and disconnect-gated capture utility
+  to compare redacted firmware `42.5` status before and after reversible
+  Solar.wattpilot `2.1.0` setting changes. The validated authority inputs are
+  strict read-only `fup` (`Use PV surplus`) and `ful` (flexible tariff) booleans;
+  es-ESS does not write either undocumented setting.
 - In a supervised no-grid window, test ECO mode with native `Use PV surplus`
   disabled and flexible tariff disabled. Determine whether explicit es-ESS
   `frc`, `amp`, and `psm` commands remain authoritative or whether ECO refuses
@@ -1406,6 +1411,46 @@ Implementation:
   HTML guidance only after the validated commissioning/runtime contract is
   known. Do not replace `99 kW` with `10 kW` as an isolated documentation fix.
 
+Investigation progress 2026-07-14:
+
+- Added `scripts/wattpilot-setting-capture.py`, which authenticates and requests
+  full status but installs a guard that blocks every `setValue` request. It
+  refuses firmware other than `42.5`, a missing vehicle-state baseline, or a
+  connected vehicle, and emits only changed properties with sensitive/arbitrary
+  strings redacted or fingerprinted.
+- Added hardware-free tests that cover redaction, deterministic snapshots,
+  forward/reverse diffs, firmware and disconnect gates, timeout behavior,
+  interpolation-safe credential loading, and an AST-level prohibition on every
+  Wattpilot command/pairing helper.
+- Added a two-gate operator guide covering protected evidence capture,
+  restoration, pass/fail criteria, and the later supervised no-grid current,
+  phase, invalid-authority, and Manual regression sequence.
+- Removed the disproven `99 kW` README recommendation as a command-ownership
+  boundary without substituting the app's ineffective `10 kW` maximum.
+- Completed eight protected forward/reverse reports with the vehicle
+  disconnected. Every report recorded firmware `42.5`,
+  `vehicle_connected=false`, and `all setValue requests blocked`. The reports
+  reversibly mapped `fup` to `Use PV surplus`, `ful` to flexible tariff, `fst`
+  to start-up power (`10000`/`9900` W), and `frm` to control response
+  (`1` Default/`2` Prefer power to grid).
+- Observed that turning `Use PV surplus` off also changed `lmo` from ECO (`4`)
+  to Standard (`3`), while turning it back on did not restore ECO. Zero
+  feed-in was intentionally not changed, the Opel Corsa-e profile hid the
+  phase setting, and one-direction `cdci`/`dci` changes remain unclassified.
+- Implemented a read-only fail-closed authority guard requiring validated
+  firmware `42.5`, raw ECO, `fup=false`, and `ful=false`. Missing, malformed,
+  or conflicting telemetry blocks starts, positive current/current increases,
+  and phase-up; safe zero-current/stop remains permitted in ECO. Manual remains
+  user-owned, and Manual-to-Auto selection is rejected until both native
+  settings are observed off.
+- Added actionable D-Bus/MQTT diagnostics for authority and both native-setting
+  observations, a distinct stopped-for-authority runtime state, health-monitor
+  output, focused regression coverage, and updated operator documentation.
+- Gate 1 is complete and the original production settings/service health were
+  restored. Gate 2 vehicle-disconnected preflight and supervised active
+  one-phase/phase ownership validation remain required before closing this
+  backlog item.
+
 Files to change:
 
 - `BACKLOG.md`
@@ -1419,15 +1464,20 @@ Files to change:
 - `WattpilotRuntimeStatus.py`, only if the selected contract adds a public
   compatibility/ownership diagnostic
 - Existing Wattpilot test files matching the selected implementation
+- `scripts/wattpilot-setting-capture.py`
+- `docs/wattpilot-command-ownership-validation.md`
+- `tests/test_wattpilot_setting_capture.py`
 
 Files to add:
 
-- None expected; add a focused hardware-free test file only if no existing
-  Wattpilot client, command-boundary, policy, or runtime-status test is an
-  appropriate home.
+- Investigation-stage capture script, operator guide, and focused test file
+  listed above are now present; no additional file is expected unless the
+  validated authority implementation has no appropriate existing test home.
 
 Tests:
 
+- Keep `tests/test_wattpilot_setting_capture.py` command-free and cover every
+  capture safety/redaction boundary without a charger, app, D-Bus, or network.
 - Extend `tests/test_wattpilot_client.py` if native configuration fields are
   parsed; cover missing, malformed, enabled, disabled, and change events from
   recorded firmware `42.5` payload shapes.
@@ -1495,16 +1545,17 @@ Risks and dependencies:
 
 Open questions:
 
-- Which firmware `42.5` fields authoritatively represent native PV-surplus,
-  tariff, start-up-level, and phase-switch enablement?
 - Does ECO accept forced `frc`, `amp`, and `psm` commands when both native PV
   surplus and flexible tariff are disabled?
 - Does native regulation rewrite command values after acknowledgement, and can
   that state be detected read-only before es-ESS enables Auto control?
-- Is the observed return from the operator-selected 10 kW app value to 1.4 kW
-  a persisted-setting change, an app presentation of live surplus, or another
-  protocol field? Capture both the settings screen and raw telemetry before
-  documenting it as a reset.
+- Does firmware keep `fup=false` and `ful=false` stable after GX/VRM selects
+  Auto (`lmo=4`), given that disabling native PV moved the app to Standard?
+- A firmware phase-enable field was not identified because app `2.1.0` locks
+  that control under the selected Opel Corsa-e profile. The implemented guard
+  therefore authorizes phase commands only from the two validated native
+  controller-disable flags and still requires supervised phase ownership
+  evidence before completion.
 
 Done criteria:
 
@@ -1520,6 +1571,222 @@ Done criteria:
 - Manual-mode ownership, battery-assist limits, phase timing, compatibility
   guards, and D-Bus/MQTT contracts remain intact.
 - Focused tests and configuration-contract checks pass where applicable.
+- Full unittest suite passes.
+
+### P4 - Complete Local And Remote Wattpilot Mode-Boundary Correlation
+
+Goal:
+
+Close the remaining live-observation gap between operator-selected
+Solar.wattpilot mode changes, physical charger indication, raw firmware `lmo`
+telemetry, and the public es-ESS `/ModeLiteral` state without changing command
+authority.
+
+Problem:
+
+The fixed controller path publishes a newly received raw mode transition on the
+next normal controller cycle and local same-Wi-Fi Eco/Standard transitions have
+passed production validation. Earlier remote/cloud operator timestamps were
+ambiguous, however, and the physical mode indication was not correlated with
+the same raw and public timestamps. This is an evidence gap, not a confirmed
+production defect; it must not justify a new timeout or wider command authority.
+
+Evidence:
+
+- The completed 2026-07-13 mode-telemetry item records local Eco-to-Standard
+  publication in 4.687 seconds and Standard-to-Eco publication in 3.793 seconds,
+  while explicitly declining to claim remote/cloud end-to-end latency.
+- `Wattpilot.py:326-331` exposes observer-only raw `lmo` receipt/change times.
+- `FroniusWattpilot.py:2994-3023` correlates raw mode telemetry with
+  `/ModeLiteral` publication, and `scripts/es-ess-health-monitor.sh:245`
+  describes the expected timestamp order.
+- `tests/test_wattpilot_client.py:286-324` and
+  `tests/test_wattpilot_command_boundary.py:204-239` cover raw telemetry and
+  publication correlation without real hardware.
+
+Implementation:
+
+- Treat this as an observation task. With the vehicle disconnected, capture
+  separately timed local and remote/cloud mode selections, the physical charger
+  mode indication, raw `lmo` change/receipt logs, and `/ModeLiteral` publication.
+- Confirm the existing five-second controller cadence after raw telemetry
+  arrives and confirm that Manual/default transitions issue no `psm`, `amp`, or
+  `frc` command except the already approved one-time Auto/Eco constraint release.
+- Record whether any end-to-end delay occurs before raw `lmo` reaches es-ESS or
+  after receipt. Do not introduce a generic mode-expiry timeout from app timing
+  alone.
+- If the evidence reveals a controller defect, create a separate implementation
+  item with focused tests before changing production behavior.
+
+Files to change:
+
+- `BACKLOG.md` when recording the observation result
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Existing raw-mode and command-boundary tests are the automated verifier.
+- No new test is required unless the observation exposes a production defect or
+  an unclear diagnostic contract.
+
+Expected coverage:
+
+- Distinguishes app/cloud delivery delay from es-ESS controller publication
+  delay and confirms the existing command-free Manual boundary on both paths.
+- Existing passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation in a low-risk window with the vehicle disconnected; no active
+charging is required.
+
+Manual test steps:
+
+1. Start the read-only production health monitor and record synchronized time.
+2. Select Eco and Standard locally, recording app action time, physical mode
+   indication, raw `lmo` timestamps, and `/ModeLiteral` publication.
+3. Repeat through the remote/cloud path with independently recorded timestamps.
+4. Confirm the log contains no unintended `psm`, `amp`, or `frc` command; allow
+   only the documented one-time release when leaving Auto/Eco for Manual.
+5. Record the local and remote results in this item, including any inconclusive
+   app-side timestamp.
+
+Risks and dependencies:
+
+- App and cloud timestamps can be ambiguous; raw charger telemetry is the
+  boundary for judging es-ESS latency.
+- Mode changes can affect later charging behavior, so perform them with the
+  vehicle disconnected and restore the intended commissioning mode afterward.
+- No other backlog item must land first.
+
+Open questions:
+
+- Does the remote/cloud path delay raw `lmo` delivery compared with the local
+  path on the validated app/firmware baseline?
+- Does the physical mode indication consistently agree with raw `lmo` before
+  `/ModeLiteral` is published?
+
+Done criteria:
+
+- Local and remote/cloud mode transitions have correlated operator, physical,
+  raw-telemetry, and public-state evidence on the validated baseline.
+- Any latency is assigned to the app/cloud, charger telemetry, or es-ESS
+  publication boundary without widening command authority by assumption.
+- Manual/default mode remains command-free except for the approved one-time
+  Auto/Eco constraint release.
+- Full unittest suite passes.
+
+### P4 - Live-Validate Battery-Assist SOC Heartbeat Failure
+
+Goal:
+
+Confirm on the supported GX/Wattpilot baseline that loss of the selected-battery
+activity heartbeat makes cached SOC ineligible and fails battery assist and the
+EV-priority reservation bypass closed during a naturally eligible session.
+
+Problem:
+
+Hardware-free tests prove that missing, invalid, or stale selected-battery
+activity invalidates cached SOC and clears/refuses battery assist. Production
+validation confirmed that normal `/Dc/Battery/Power` updates remain comfortably
+inside `BatterySocFreshSeconds`, but a supervised live interruption has not yet
+exercised the fail-closed branch. This is a validation gap, not evidence that the
+implemented guard is incorrect.
+
+Evidence:
+
+- The completed 2026-07-13 SOC-freshness item records a maximum observed
+  selected-battery update gap of 2.979 seconds against the 15-second configured
+  window and retains supervised heartbeat interruption as a follow-up.
+- `FroniusWattpilot.py:328-331` subscribes to selected-battery power,
+  `FroniusWattpilot.py:367-374` records its validity and timestamp, and
+  `FroniusWattpilot.py:2049-2061` rejects cached SOC when that heartbeat is
+  invalid or stale.
+- `tests/test_eco_pv_policy.py:714-797` covers fresh, missing, invalid, and stale
+  heartbeat behavior, active-assist clearing, and reservation-bypass refusal.
+- `scripts/es-ess-health-monitor.sh:181-189` provides read-only battery activity
+  observation on the GX device.
+
+Implementation:
+
+- Treat this as an attended fault-simulation task during a naturally eligible,
+  already-running Auto/Eco battery-assist window.
+- Use a reversible, site-approved method to interrupt only the selected-battery
+  activity updates long enough to cross `BatterySocFreshSeconds`; do not force
+  grid import, alter Manual charging, or disable unrelated safety telemetry.
+- Confirm active assist clears or is refused, the EV-priority battery-reservation
+  bypass remains disabled, and the controller follows existing no-grid phase-down
+  or stop behavior from the remaining fresh inputs.
+- Restore telemetry promptly and confirm eligibility recovers only through the
+  existing policy. If a defect appears, create a separate implementation item
+  with exact evidence and focused tests.
+
+Files to change:
+
+- `BACKLOG.md` when recording the observation result
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Existing SOC-heartbeat and battery-assist policy tests are the automated
+  verifier.
+- No new test is required unless the live run exposes a defect or missing
+  diagnostic state.
+
+Expected coverage:
+
+- Adds live evidence that stale selected-battery activity cannot authorize
+  battery use or reservation bypass despite a cached finite SOC.
+- Existing passing tests remain unchanged.
+
+Manual validation:
+
+Fault simulation with active charging required in an attended, naturally
+eligible battery-assist window.
+
+Manual test steps:
+
+1. Confirm Auto/Eco, `AllowGridCharging=false`, fresh grid/allowance telemetry,
+   eligible SOC, and an already-running charge; do not use this test to start a
+   charge from battery.
+2. Start the read-only health monitor and record assist, SOC, selected-battery
+   power activity, allowance, grid exchange, phase mode, and controller logs.
+3. Interrupt only the selected-battery activity heartbeat using an approved
+   reversible method and wait past `BatterySocFreshSeconds`.
+4. Confirm battery assist clears/refuses and the EV-priority reservation bypass
+   remains disabled without any Manual-mode command.
+5. Restore telemetry, confirm fresh activity returns, and record recovery under
+   the existing assist lockout/recovery policy.
+
+Risks and dependencies:
+
+- Interrupting the wrong D-Bus service or broader system telemetry could affect
+  unrelated ESS control; the exact site-approved method must be chosen before
+  execution.
+- Weather and load must create a naturally eligible running-assist window; do
+  not force unsafe grid import or battery discharge to satisfy the item.
+- The Auto/Eco command-ownership investigation should be understood when
+  interpreting charger current, but it is not required to verify that stale SOC
+  evidence disables assist and reservation bypass.
+
+Open questions:
+
+- What reversible, site-approved method can interrupt selected-battery activity
+  updates without disrupting broader ESS safety telemetry?
+
+Done criteria:
+
+- A live stale-heartbeat interval is captured past `BatterySocFreshSeconds`.
+- Battery assist and the EV-priority reservation bypass fail closed while the
+  heartbeat is stale, and Manual charging remains untouched.
+- Telemetry restoration and subsequent eligibility follow the documented
+  recovery policy.
 - Full unittest suite passes.
 
 ## Suggested Implementation Order / PR Execution Queue
@@ -1542,25 +1809,35 @@ advance the queue on the next request.
    provenance and deterministic import ownership as a separate compatibility
    change.
 
-The P4 winter grid-import dispatch validation is an observation task, not a
-code PR, and remains open independently of this queue. Complete it only under
-natural suitable low-PV conditions; do not force production grid import or
-disconnect critical telemetry to satisfy it.
+The following P4 observation tasks are not code PRs and remain open
+independently of this queue. Complete them only when their safe preconditions
+occur; an inconclusive window is preferable to forcing production behavior:
+
+- Complete local and remote Wattpilot mode-boundary correlation with the
+  vehicle disconnected.
+- Winter-validate grid-import dispatch only under natural suitable low-PV
+  conditions; do not force production grid import or disconnect critical
+  telemetry.
+- Live-validate battery-assist SOC-heartbeat failure only during a naturally
+  eligible, attended running-assist window using a site-approved reversible
+  telemetry-interruption method.
 
 Hardware validation scope for the remaining backlog:
 
-- Meter, MQTT, and HTTP failure-path items require controlled low-risk fault
-  simulation; they do not require forced grid import.
-- Wattpilot SOC/status behavior changes require focused hardware-free tests and
-  only supervised active-charging validation where the relevant state can occur
-  naturally.
-- The P1 Venus OS Auto/Eco validation requires supervised daylight active
-  charging for final PV-surplus verification.
+- The P2 native-PV command-ownership investigation requires supervised daylight
+  active charging after read-only protocol-field capture with the vehicle
+  disconnected.
+- Unclassified Wattpilot charging statuses require firmware evidence before a
+  policy change; unit tests remain the primary verifier if a rare status cannot
+  be reproduced safely.
+- The P4 automatic-NPC allocation fix requires low-risk validation with a
+  non-critical automatic consumer.
 - The P4 `velib_python` audit requires log-only startup and D-Bus registration
   validation on the supported Venus OS release; active charging is not
   required.
-- The P4 winter validation requires an active Auto/Eco charging session to
-  observe real grid-import phase-down or stop behavior.
+- The independent observation items carry their own fault-simulation or
+  active-charging preconditions and must not be forced merely to close the
+  backlog.
 
 ## Verification Plan
 
@@ -1582,24 +1859,25 @@ For implementation PRs:
 
 ## Outstanding Manual Validation
 
-- **Fault simulation, vehicle disconnected:** correlate Solar.wattpilot mode
-  selection, physical mode LEDs, raw `lmo` telemetry, and `/ModeLiteral` for
-  local and remote paths; confirm no unintended `psm`, `amp`, or `frc` command.
-- **Active charging required:** complete supervised v3.75 Auto/Eco PV-surplus,
-  no-grid, current-limit, and naturally available phase-switch validation.
-- **Active charging required:** complete the native Solar.wattpilot
-  PV-regulation versus es-ESS command-ownership investigation above before
-  treating the current-limit and phase-control commissioning contract as
-  complete.
+The authoritative manual work is now attached to the corresponding open item:
+
+- **Fault simulation, vehicle disconnected:** complete local and remote
+  Wattpilot mode-boundary correlation.
+- **Active charging required:** establish single Auto/Eco command ownership
+  against native Solar.wattpilot PV regulation.
 - **Log-only:** validate the future `velib_python` provenance/import change on
-  supported Venus OS releases, including startup, D-Bus registration, MQTT
-  recovery, and absence of unintended Wattpilot commands.
-- **Active charging required:** observe natural winter/low-PV grid-import or
-  stale-grid-telemetry dispatch with `AllowGridCharging=false`; do not force an
-  unsafe import or telemetry outage.
-- **Fault simulation, active charging required:** during a naturally eligible
-  battery-assist window, interrupt SOC updates and confirm assist clears/refuses,
-  the battery-reservation bypass remains disabled, and Manual charging is
-  untouched.
+  the supported Venus OS release.
+- **Active charging required under natural conditions:** winter-validate
+  grid-import or stale-grid-telemetry dispatch with
+  `AllowGridCharging=false`.
+- **Fault simulation with active charging:** live-validate battery-assist
+  SOC-heartbeat failure during a naturally eligible window.
+
+The general Venus OS `v3.75` daylight Auto/Eco PV-surplus, no-grid, battery-
+assist, current-reduction, and naturally available phase-switch validation is
+complete and is not a separate outstanding item. The native-PV command-
+ownership gap discovered during that validation remains open under its own P2
+item.
+
 - The complete operator behavior checklist remains in README and the safety
   invariants remain in `docs/wattpilot-architecture.md`.

@@ -22,6 +22,14 @@ validation, `scripts/es-ess-health-monitor.sh` reads the public service state
 and Wattpilot D-Bus/runtime-status contract without issuing commands. Its
 installation and interpretation notes live in `docs/es-ess-health-monitor.md`.
 
+For the separate native-PV command-ownership investigation,
+`scripts/wattpilot-setting-capture.py` authenticates with the vehicle
+disconnected, blocks every `setValue` request, compares two full-status
+snapshots around one operator-controlled app setting change, and emits only
+redacted/fingerprinted property differences. The procedure and pass/fail gates
+live in `docs/wattpilot-command-ownership-validation.md`. This is evidence
+collection only and does not widen Auto/Eco command authority.
+
 ## Module Responsibilities
 
 ### `RuntimeCompatibility.py`
@@ -55,6 +63,9 @@ It owns:
   ownership during rapid disconnect/reconnect sequences.
 - Wattpilot authentication and secure message wrapping.
 - Parsing Wattpilot status messages into local client properties.
+- Strict read-only parsing of firmware `42.5` native-command settings `fup`
+  (`Use PV surplus`) and `ful` (flexible tariff). Non-booleans and reconnect
+  gaps become unavailable rather than truthy/falsy guesses.
 - Recording wall-clock receipt and change timestamps for raw `lmo` mode
   telemetry so delayed external mode transitions can be diagnosed.
 - Sending direct Wattpilot protocol updates such as `amp`, `frc`, `psm`, and
@@ -115,6 +126,13 @@ It owns:
   owns command side effects, D-Bus/MQTT publication, service messages, and
   mutable timers.
 - Wattpilot command issuing through the `Wattpilot` client.
+- Read-only command-authority evaluation. Positive current, start, phase-up,
+  and normal Auto/Eco dispatch require ECO plus `fup=false` and `ful=false`;
+  missing or conflicting settings fail closed while zero-current and safe stop
+  remain available.
+- Rejection of a Manual-to-Auto request until both native command competitors
+  are observed disabled. The user-requested transition may then send `lmo=4`;
+  any firmware-side re-enable blocks authority again.
 - Wattpilot shutdown behavior during es-ESS termination.
 
 This file remains the place where command side effects are allowed. Refactors
@@ -214,7 +232,9 @@ the Wattpilot controller.
 
 It owns:
 
-- The named controller states used to describe each `_update()` branch.
+- The named controller states used to describe each `_update()` branch,
+  including command-authority blocking before grid, phase, disconnect, or
+  model-status dispatch.
 - Model-status classification for charging and not-charging Wattpilot states.
 - Pure selection of the next controller branch from an input snapshot.
 - Formatting of selector inputs for diagnostics and tests.
@@ -243,8 +263,9 @@ dashboards, Cerbo extensions, MQTT consumers, and diagnostics.
 It owns:
 
 - Runtime-status D-Bus paths such as `/ControlState`, `/PhaseMode`,
-  `/BatteryAssistActive`, `/GridImportGuardActive`, `/TelemetryHealthy`, and
-  the expected/actual runtime compatibility paths.
+  `/BatteryAssistActive`, `/GridImportGuardActive`, `/TelemetryHealthy`,
+  `/CommandAuthorityOk`, `/CommandAuthorityLiteral`, the strict native-setting
+  observations, and the expected/actual runtime compatibility paths.
 - Matching MQTT runtime-status publication under
   `es-ESS/FroniusWattpilot/RuntimeStatus`.
 - Observation of controller transitions and Wattpilot transport health.
@@ -277,6 +298,11 @@ Future Wattpilot changes must preserve these invariants:
   controller's five-second floor.
 - Wattpilot commands must remain blocked until `fwv` telemetry exactly matches
   validated firmware `42.5`. Missing telemetry fails closed.
+- Auto/Eco command authority additionally requires raw ECO telemetry,
+  `fup=false`, and `ful=false`. Missing/malformed fields, native PV enabled, or
+  flexible tariff enabled must block positive current, start, phase-up, and
+  normal control dispatch. A safe zero-current/stop remains permitted only in
+  confirmed ECO; Manual remains user-controlled.
 - Solar.wattpilot app `2.1.0` is a commissioning baseline only; it cannot be
   asserted from the local es-ESS runtime.
 - The Wattpilot WebSocket query value `version=1.2.9` is a protocol/client
@@ -292,10 +318,12 @@ Future Wattpilot changes must preserve these invariants:
   is still arriving. es-ESS may infer the reported phase from finite live power,
   but it must not issue `psm`, `amp`, or `frc`; idle automatic-phase
   initialization is limited to explicitly confirmed ECO mode.
-- Writable EV-charger `/SetCurrent` and `/StartStop` commands may issue
-  Wattpilot current, phase, start, or stop commands only when Wattpilot mode
-  telemetry confirms ECO mode. Missing or Manual/default mode telemetry must
-  fail closed. `/Mode` selection is a separate explicit mode-change path.
+- Writable EV-charger positive `/SetCurrent` and Start `/StartStop` commands
+  may issue Wattpilot current, phase, or start commands only when command
+  authority is validated. Zero current and Stop remain safe reductions in
+  confirmed ECO. Missing or Manual/default mode telemetry must fail closed.
+  Manual-to-Auto `/Mode` selection is rejected until `fup` and `ful` are both
+  observed false; leaving Auto for Manual retains the approved one-time release.
 - Auto/Eco mode is PV-surplus driven and must not intentionally use grid power
   when `AllowGridCharging=false`.
 - `AllowGridCharging=true` may continue an already-running Auto/Eco charge
@@ -362,6 +390,12 @@ Future Wattpilot changes must preserve these invariants:
   command-free. Monitoring tools may read the runtime-status contract, service
   state, selected config values and logs, but must not write Wattpilot, D-Bus,
   MQTT, service or configuration state.
+- Keep `scripts/wattpilot-setting-capture.py` command-free. It may authenticate,
+  request complete status, and compare redacted property snapshots only while
+  the vehicle is disconnected. It must reject unvalidated firmware, a missing
+  vehicle-state baseline, or a connected vehicle, and must never call
+  `setValue`, Wattpilot command helpers, pairing methods, or configuration
+  writes.
 - Raw `lmo` receipt/change timestamps are diagnostic transport facts only.
   They must not be treated as a generic mode-expiry timeout or independently
   widen Wattpilot command authority without hardware evidence and an approved

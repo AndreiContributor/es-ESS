@@ -339,6 +339,45 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
         self.assertIn("previous=ECO", mode_messages[-1])
         self.assertIn("mode=Default", mode_messages[-1])
 
+    def test_native_command_settings_require_strict_booleans_and_reset(self):
+        _install_wattpilot_client_stubs()
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_native_authority_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+
+        client._Wattpilot__on_message(
+            client._wsapp,
+            json.dumps(
+                {
+                    "type": "fullStatus",
+                    "partial": False,
+                    "status": {"fup": False, "ful": False},
+                }
+            ),
+        )
+
+        self.assertIs(client.nativePvSurplusEnabled, False)
+        self.assertIs(client.flexibleTariffEnabled, False)
+
+        client._Wattpilot__on_message(
+            client._wsapp,
+            json.dumps(
+                {
+                    "type": "deltaStatus",
+                    "status": {"fup": 0, "ful": "false"},
+                }
+            ),
+        )
+        self.assertIsNone(client.nativePvSurplusEnabled)
+        self.assertIsNone(client.flexibleTariffEnabled)
+
+        client._nativePvSurplusEnabled = False
+        client._flexibleTariffEnabled = False
+        client.disconnect(auto_reconnect=False)
+        self.assertIsNone(client.nativePvSurplusEnabled)
+        self.assertIsNone(client.flexibleTariffEnabled)
+
     def test_command_guard_blocks_every_state_changing_update(self):
         _install_wattpilot_client_stubs()
         wattpilot_module = self.load_wattpilot_module(

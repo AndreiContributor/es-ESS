@@ -102,10 +102,10 @@ a protocol/client identifier. It is not the Solar.wattpilot mobile app version
 and must not be changed to `2.1.0`.
 
 On a Wattpilot mismatch es-ESS intentionally sends no best-effort stop command,
-because command semantics are precisely what is unvalidated. Keep the native
-Wattpilot ECO start threshold above reachable site surplus, use the Wattpilot
+because command semantics are precisely what is unvalidated. Use the Wattpilot
 app to stop or select Manual when necessary, and restore firmware `42.5` before
-returning Auto/Eco control to es-ESS. Fronius documents that stored firmware can
+returning Auto/Eco control to es-ESS. A high native start threshold is not a
+command-ownership boundary. Fronius documents that stored firmware can
 be selected again after an update and that the mobile app may also need an
 update after firmware changes.
 
@@ -551,11 +551,23 @@ Before enabling Auto/Eco PV control:
 - Enable both `FroniusWattpilot` and
   [SolarOverheadDistributor](#solaroverheaddistributor). Without the
   distributor, Wattpilot Auto/Eco requests do not receive a PV allowance.
-- Put Wattpilot in `ECO` mode in the Fronius app. es-ESS Auto/Eco control is
-  active only when Wattpilot is in that mode.
-- Set Wattpilot's native PV-start threshold to a value that will not be reached,
-  for example `99 kW`, so the native Wattpilot ECO logic does not compete with
-  es-ESS.
+- With the vehicle disconnected, turn off the Solar.wattpilot app's native
+  `Use PV surplus` and flexible-tariff switches. Firmware `42.5` exposes these
+  as `fup=false` and `ful=false`. Missing, malformed, or enabled values block
+  es-ESS Auto/Eco commands.
+- Disabling native PV may move the wallbox from Eco to Standard. After both
+  native switches are off, select Auto from GX/VRM. es-ESS permits that
+  user-requested `lmo=4` transition only when both settings are confirmed off.
+  Do not connect the vehicle until `/CommandAuthorityOk=1`.
+- Do not treat Wattpilot's native PV-start threshold as a command-ownership
+  boundary. Production evidence with firmware `42.5` and Solar.wattpilot app
+  `2.1.0` showed that native PV regulation can still hold charging near its
+  minimum after es-ESS forces a start and requests more current. The exact
+  `10 kW` maximum remains only a start-up power setting and is not an authority
+  control.
+- Before changing native PV, tariff, phase, or control-response settings, use
+  the command-free discovery and supervised validation procedure in
+  [docs/wattpilot-command-ownership-validation.md](docs/wattpilot-command-ownership-validation.md).
 - Keep the Wattpilot app's own cable/current limits correct. es-ESS will not
   raise charging beyond the configured per-phase limits or the
   Wattpilot-reported effective limit.
@@ -569,14 +581,16 @@ current selection maps to phase mode like this:
 - Selecting `18` to `48` A requests three-phase charging at one third of the
   selected total current per phase.
 
-These direct current and start/stop controls are accepted only while Wattpilot
-telemetry confirms ECO mode. When Wattpilot is in normal Manual/default mode,
-or when mode telemetry is unavailable, es-ESS rejects `/SetCurrent` and
-`/StartStop` writes and leaves the Manual session under Wattpilot app/user
-control. The VRM `/Mode` selector can still intentionally switch between
-Manual and Auto/ECO. When Manual is selected, es-ESS sends a one-time release
-of its previous Auto/Eco phase/current limits, then leaves subsequent Manual
-charging under Wattpilot app/user control.
+Positive direct-current requests and start commands are accepted only while
+Wattpilot telemetry confirms ECO mode, `fup=false`, and `ful=false`. Missing or
+conflicting authority telemetry fails closed. A zero-current request or stop
+remains available in confirmed ECO mode so a conflicting controller can be
+stopped safely; phase-up and current increase remain blocked. When Wattpilot is
+in normal Manual/default mode, es-ESS rejects current/start/stop writes and
+leaves the session under Wattpilot app/user control. The VRM `/Mode` selector
+can switch Manual to Auto/ECO only after both native settings are confirmed
+off. Selecting Manual still sends the one-time release of previous Auto/Eco
+phase/current limits, then leaves subsequent Manual charging user-controlled.
 
 For diagnosis of externally selected mode delays, es-ESS logs timestamped raw
 Wattpilot `lmo` changes and the matching `/ModeLiteral` publication. These
@@ -770,6 +784,13 @@ timestamps. It does not write D-Bus, MQTT, config, service state or Wattpilot
 control values. Installation, mode-boundary validation, and interpretation
 steps are documented in
 [docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
+
+Native Solar.wattpilot PV/tariff/phase setting discovery uses the separate
+command-free `scripts/wattpilot-setting-capture.py` utility with the vehicle
+disconnected and es-ESS stopped. Its two-gate procedure, redaction rules,
+automated checks, restoration steps, and later active-charging validation are
+documented in
+[docs/wattpilot-command-ownership-validation.md](docs/wattpilot-command-ownership-validation.md).
 
 ### Low Price Charging. 
 Wattpilot supports the function to charge due to cheap grid prices, you can use the builtin feature as you are used to. es-ESS will then detect,
@@ -1313,6 +1334,10 @@ The following D-Bus values are published on the existing
 | `/BatteryAssistActive` | Integer | `1` only during the optional, time-limited battery bridge; otherwise `0`. |
 | `/GridImportGuardActive` | Integer | `1` while the Auto/Eco grid-import guard is active; otherwise `0`. |
 | `/TelemetryHealthy` | Integer | `1` when the telemetry needed for the current control mode is healthy; otherwise `0`. |
+| `/CommandAuthorityOk` | Integer | `1` only when firmware is validated, raw mode is ECO, and native PV/tariff command competitors are both disabled. |
+| `/CommandAuthorityLiteral` | String | Actionable authority state, including which Solar.wattpilot setting must be changed. |
+| `/NativePvSurplusEnabled` | Integer | Strict `fup` observation: `1` enabled, `0` disabled, `-1` unavailable or malformed. |
+| `/FlexibleTariffEnabled` | Integer | Strict `ful` observation: `1` enabled, `0` disabled, `-1` unavailable or malformed. |
 
 `/ControlState` and `/ControlStateLiteral` always represent the same state:
 
@@ -1329,8 +1354,9 @@ The following D-Bus values are published on the existing
 | 8 | `Stopped for grid import` |
 | 9 | `Stopped for stale telemetry` |
 | 10 | `Fault` |
+| 11 | `Stopped: command authority blocked` |
 
-All fourteen runtime-status values are mirrored to retained main-MQTT topics:
+All eighteen runtime-status values are mirrored to retained main-MQTT topics:
 
 ```text
 es-ESS/FroniusWattpilot/RuntimeStatus/ControlState
@@ -1342,6 +1368,10 @@ es-ESS/FroniusWattpilot/RuntimeStatus/GridImportGuardActive
 es-ESS/FroniusWattpilot/RuntimeStatus/TelemetryHealthy
 es-ESS/FroniusWattpilot/RuntimeStatus/CompatibilityOk
 es-ESS/FroniusWattpilot/RuntimeStatus/CompatibilityLiteral
+es-ESS/FroniusWattpilot/RuntimeStatus/CommandAuthorityOk
+es-ESS/FroniusWattpilot/RuntimeStatus/CommandAuthorityLiteral
+es-ESS/FroniusWattpilot/RuntimeStatus/NativePvSurplusEnabled
+es-ESS/FroniusWattpilot/RuntimeStatus/FlexibleTariffEnabled
 es-ESS/FroniusWattpilot/RuntimeStatus/ExpectedVenusOsVersion
 es-ESS/FroniusWattpilot/RuntimeStatus/ActualVenusOsVersion
 es-ESS/FroniusWattpilot/RuntimeStatus/ExpectedWattpilotFirmware
@@ -1351,9 +1381,9 @@ es-ESS/FroniusWattpilot/RuntimeStatus/ValidatedWattpilotAppVersion
 
 All runtime-status MQTT topics are retained. The status is republished
 immediately when a charge starts or stops, a phase change starts or finishes,
-the grid-import guard changes, required telemetry becomes stale or healthy,
-battery assist changes, the Wattpilot disconnects or reconnects, or the
-controller enters a fault state.
+the grid-import guard or command-authority state changes, required telemetry
+becomes stale or healthy, battery assist changes, the Wattpilot disconnects or
+reconnects, or the controller enters a fault state.
 
 For an active charge, `/PhaseMode` and the phase-qualified charging state use
 the Wattpilot's live L1/L2/L3 power telemetry. This keeps Manual mode accurate
@@ -1383,6 +1413,7 @@ usable controller cycle is available:
 /ControlState = 0
 /ControlStateLiteral = Stopped
 /TelemetryHealthy = 0
+/CommandAuthorityOk = 0
 ```
 
 This is an unavailable-startup state, not `Stopped for stale telemetry`.

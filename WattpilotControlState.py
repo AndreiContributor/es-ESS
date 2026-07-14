@@ -8,6 +8,7 @@ NOT_CHARGING_STATUS_VALUES = frozenset([4, 5, 6, 16, 17, 18, 22, 24])
 
 class WattpilotControlState(Enum):
     TRANSPORT_UNAVAILABLE = "transport_unavailable"
+    COMMAND_AUTHORITY_BLOCKED = "command_authority_blocked"
     GRID_TELEMETRY_UNSAFE = "grid_telemetry_unsafe"
     GRID_IMPORT_PHASE_DOWN = "grid_import_phase_down"
     GRID_IMPORT_STOP = "grid_import_stop"
@@ -24,6 +25,7 @@ class WattpilotControlState(Enum):
 class ControlStateInputs:
     transport_unavailable: bool = False
     auto_mode: bool = False
+    command_authority_ok: bool = True
     allow_grid_charging: bool = False
     grid_telemetry_fresh: bool = True
     grid_import_limit_exceeded: bool = False
@@ -39,6 +41,9 @@ class ControlStateInputs:
 def select_control_state(inputs):
     if inputs.transport_unavailable:
         return WattpilotControlState.TRANSPORT_UNAVAILABLE
+
+    if inputs.auto_mode and not inputs.command_authority_ok:
+        return WattpilotControlState.COMMAND_AUTHORITY_BLOCKED
 
     if (
         inputs.auto_mode
@@ -79,15 +84,16 @@ def select_control_state(inputs):
 
 def describe_control_inputs(inputs):
     return (
-        "transport_unavailable={0}, auto_mode={1}, allow_grid_charging={2}, "
-        "grid_telemetry_fresh={3}, grid_import_limit_exceeded={4}, "
-        "current_phase_mode={5}, phase_down_for_pv_dip={6}, "
-        "pending_phase_status={7}, effective_car_connected={8}, "
-        "model_status_value={9}, external_low_price={10}, "
-        "phase_switching={11}"
+        "transport_unavailable={0}, auto_mode={1}, command_authority_ok={2}, "
+        "allow_grid_charging={3}, grid_telemetry_fresh={4}, "
+        "grid_import_limit_exceeded={5}, current_phase_mode={6}, "
+        "phase_down_for_pv_dip={7}, pending_phase_status={8}, "
+        "effective_car_connected={9}, model_status_value={10}, "
+        "external_low_price={11}, phase_switching={12}"
     ).format(
         inputs.transport_unavailable,
         inputs.auto_mode,
+        inputs.command_authority_ok,
         inputs.allow_grid_charging,
         inputs.grid_telemetry_fresh,
         inputs.grid_import_limit_exceeded,

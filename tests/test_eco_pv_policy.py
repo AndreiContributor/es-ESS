@@ -214,6 +214,13 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.actualWattpilotFirmware = "42.5"
         controller.wattpilotFirmwareCompatible = True
         controller._lastWattpilotCompatibilityState = (True, "42.5")
+        controller.commandAuthorityOk = True
+        controller.commandAuthorityLiteral = self.fwp.COMMAND_AUTHORITY_VALIDATED
+        controller._lastCommandAuthorityState = (
+            True,
+            self.fwp.COMMAND_AUTHORITY_VALIDATED,
+        )
+        controller.commandAuthorityForcedOff = False
         controller.config = {
             "FroniusWattpilot": {
                 "VRMInstanceID_OverheadRequest": "42",
@@ -237,6 +244,8 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             connected=True,
             startState=self.fwp.WattpilotStartStop.Off,
             mode=self.fwp.WattpilotControlMode.ECO,
+            nativePvSurplusEnabled=False,
+            flexibleTariffEnabled=False,
             modelStatus=SimpleNamespace(value=4),
             set_power=Mock(),
             set_phases=Mock(),
@@ -1180,6 +1189,35 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.set_start_stop.assert_called_once_with(
             self.fwp.WattpilotStartStop.Off
         )
+
+    def test_invalid_native_authority_selects_safe_stop_without_phase_command(self):
+        controller = self._controller()
+        controller.wattpilot.nativePvSurplusEnabled = True
+        controller.commandAuthorityLiteral = (
+            self.fwp.COMMAND_AUTHORITY_DISABLE_NATIVE_PV
+        )
+        controller.wattpilot.power = 1400
+        controller.wattpilot.startState = self.fwp.WattpilotStartStop.On
+        controller.wattpilotReportsActiveCharge = Mock(return_value=True)
+        controller.reportVRMStatus = Mock()
+
+        selected, pending, _inputs = controller.selectControlState(
+            effectiveCarConnected=True,
+            gridTelemetryFresh=True,
+        )
+        self.assertEqual(
+            selected,
+            self.fwp.ControlStates.WattpilotControlState.COMMAND_AUTHORITY_BLOCKED,
+        )
+
+        self.assertTrue(
+            controller.dispatchControlState(selected, True, pending)
+        )
+        controller.wattpilot.set_power.assert_called_once_with(0)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+        controller.wattpilot.set_phases.assert_not_called()
 
     def test_current_cap_below_minimum_stops_auto_eco_charging(self):
         controller = self._controller()
