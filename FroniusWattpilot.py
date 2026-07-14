@@ -83,6 +83,9 @@ class FroniusWattpilot (esESSService):
         self.batteryAssistMaxShortfallW = float(
             settings.get("BatteryAssistMaxShortfallW", 3000)
         )
+        self.batterySocFreshSeconds = max(
+            1, int(settings.get("BatterySocFreshSeconds", 15))
+        )
         # After the maximum bridge time is reached, require a sustained period
         # where PV fully covers the active EV demand before battery assist may
         # be used again. This prevents repeated 300-second assist windows
@@ -226,7 +229,10 @@ class FroniusWattpilot (esESSService):
 
         # Populated in initDbusSubscriptions().
         self.batterySocDbus = None
+        self.batterySocValid = False
         self.batteryPowerDbus = None
+        self.batteryTelemetryValid = False
+        self.batteryTelemetryUpdatedAt = 0
         self.gridL1Dbus = None
         self.gridL2Dbus = None
         self.gridL3Dbus = None
@@ -315,10 +321,14 @@ class FroniusWattpilot (esESSService):
 
     def initDbusSubscriptions(self):
         self.batterySocDbus = self.registerDbusSubscription(
-            "com.victronenergy.system", "/Dc/Battery/Soc"
+            "com.victronenergy.system", "/Dc/Battery/Soc",
+            callback=self.onBatterySocTelemetry,
+            initialValueDefault=None,
         )
         self.batteryPowerDbus = self.registerDbusSubscription(
-            "com.victronenergy.system", "/Dc/Battery/Power"
+            "com.victronenergy.system", "/Dc/Battery/Power",
+            callback=self.onBatteryPowerTelemetry,
+            initialValueDefault=None,
         )
         self.gridL1Dbus = self.registerDbusSubscription(
             "com.victronenergy.system", "/Ac/Grid/L1/Power",
@@ -343,6 +353,24 @@ class FroniusWattpilot (esESSService):
         )
         self.registerMqttSubscription(
             self.mqttRawOverheadTopic, callback=self.onMqttMessage
+        )
+
+    def onBatterySocTelemetry(self, subscription):
+        self.recordBatterySocTelemetry(subscription.value)
+
+    def recordBatterySocTelemetry(self, value):
+        """Record whether the selected system-battery SOC is usable."""
+        self.batterySocValid, _ = DecisionInputs.telemetry_sample(
+            value, time.time()
+        )
+
+    def onBatteryPowerTelemetry(self, subscription):
+        self.recordBatteryPowerTelemetry(subscription.value)
+
+    def recordBatteryPowerTelemetry(self, value):
+        """Timestamp selected-battery activity used to trust cached SOC."""
+        self.batteryTelemetryValid, self.batteryTelemetryUpdatedAt = (
+            DecisionInputs.telemetry_sample(value, time.time())
         )
 
     def onGridL1Telemetry(self, subscription):
@@ -2018,6 +2046,17 @@ class FroniusWattpilot (esESSService):
         )
 
     def batterySoc(self):
+        if not DecisionInputs.timestamped_value_is_fresh(
+            getattr(self, "batteryTelemetryValid", False),
+            getattr(self, "batteryTelemetryUpdatedAt", 0),
+            self.batterySocFreshSeconds,
+            time.time(),
+        ):
+            return None
+
+        if not getattr(self, "batterySocValid", False):
+            return None
+
         return self.dbusValue(self.batterySocDbus, None)
 
     def rawPvOverheadW(self):

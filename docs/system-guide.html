@@ -653,11 +653,12 @@ AllowGridCharging=<span class="value">false</span></pre>
         <article class="card battery">
           <p class="card-kicker">Recommended example</p>
           <h3>Bounded battery assist</h3>
-          <p>A running charge may survive a short cloud when SOC, shortfall and time remain within limits. The maintained 1 kW shortfall default smooths small dips while making current reduction, phase-down or stop happen earlier when the EV would otherwise lean hard on the home battery.</p>
+          <p>A running charge may survive a short cloud when SOC is valid, selected-battery activity is recent, and shortfall and time remain within limits. Venus OS does not periodically republish an unchanged SOC value, so finite <code>/Dc/Battery/Power</code> updates provide the heartbeat used to trust the cached SOC. Missing or invalid SOC, or a missing, invalid or stale heartbeat, fails closed. The maintained 1 kW shortfall default smooths small dips while making current reduction, phase-down or stop happen earlier when the EV would otherwise lean hard on the home battery.</p>
           <pre>BatteryAssistEnabled=<span class="value">true</span>
 BatteryAssistSocMin=<span class="value">50</span>
 BatteryAssistMaxSeconds=<span class="value">600</span>
 BatteryAssistMaxShortfallW=<span class="value">1000</span>
+BatterySocFreshSeconds=<span class="value">15</span>
 BatteryAssistRecoverySeconds=<span class="value">120</span>
 AllowGridCharging=<span class="value">false</span></pre>
         </article>
@@ -666,7 +667,7 @@ AllowGridCharging=<span class="value">false</span></pre>
       <h3 style="margin-top:30px">What the recommended example permits</h3>
       <ul class="checklist">
         <li>Only an already-running Auto/Eco session can receive assistance.</li>
-        <li>SOC must remain at or above 50%.</li>
+        <li>SOC must remain at or above 50% and must have been received within 15 seconds.</li>
         <li>The calculated PV shortfall must not exceed 1 kW with the maintained daily-use default.</li>
         <li>One assist window lasts no more than 600 seconds.</li>
         <li>PV must fully recover for 120 seconds before another locked-out assist window becomes available.</li>
@@ -678,7 +679,7 @@ AllowGridCharging=<span class="value">false</span></pre>
         <p><strong>Energy scale:</strong> 1 kW for 600 seconds is at most about <strong>0.17 kWh</strong> before conversion losses—around 0.5% of a 32 kWh nominal battery bank. The actual amount is usually lower because assistance tracks only the shortfall. Raising this value makes the EV tolerate larger PV dips but also allows more home-battery discharge before the controller reduces current, phases down or stops.</p>
       </div>
 
-      <p><code>EvPriorityOverBatteryCharge=true</code> is not battery discharge assistance. Above <code>EvPriorityMinSoc</code>, it allows real PV that would otherwise charge the stationary battery to be redirected to the connected EV. The controller still requires an actual distributor allowance for a new start.</p>
+      <p><code>EvPriorityOverBatteryCharge=true</code> is not battery discharge assistance. Above <code>EvPriorityMinSoc</code>, it allows real PV that would otherwise charge the stationary battery to be redirected to the connected EV. This bypass and battery assist both require valid SOC plus a finite selected-battery <code>/Dc/Battery/Power</code> update within <code>BatterySocFreshSeconds</code>; missing or invalid SOC, or missing, invalid or stale battery activity, disables them for that cycle. The controller still requires an actual distributor allowance for a new start.</p>
     </section>
 
     <section id="setpoint">
@@ -774,6 +775,7 @@ BatteryAssistEnabled=<span class="value">true</span>
 BatteryAssistSocMin=<span class="value">50</span>
 BatteryAssistMaxSeconds=<span class="value">600</span>
 BatteryAssistMaxShortfallW=<span class="value">1000</span>
+BatterySocFreshSeconds=<span class="value">15</span>
 BatteryAssistRecoverySeconds=<span class="value">120</span>
 
 AllowGridCharging=<span class="value">false</span>
@@ -798,7 +800,7 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
         <article class="card">
           <h3>Battery reservation</h3>
           <p><code>MinBatteryCharge</code> is a desired PV reservation for stationary-battery charging, evaluated from SOC. It is not a BMS current limit. With the example curve, reservation is high at lower SOC and approaches 250 W near 99%.</p>
-          <p>If <code>EvPriorityOverBatteryCharge=true</code> and SOC is high enough, a connected Auto/Eco Wattpilot may ignore that reservation to take real PV. It still cannot start from battery power.</p>
+          <p>If <code>EvPriorityOverBatteryCharge=true</code>, SOC is high enough, and selected-battery activity is recent, a connected Auto/Eco Wattpilot may ignore that reservation to take real PV. Missing or invalid SOC, or a missing, invalid or older-than-<code>BatterySocFreshSeconds</code> battery-power heartbeat, disables the bypass. It still cannot start from battery power.</p>
         </article>
         <article class="card">
           <h3>Current and phase thresholds</h3>
@@ -814,10 +816,10 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
         <ol class="steps">
           <li><strong>Below the one-phase minimum: wait.</strong><br>At 6 A and about 230 V, one-phase charging needs approximately 1.38 kW of assigned PV. Below that level Auto/Eco remains stopped. Battery assist cannot create a new charging session.</li>
           <li><strong>Hold enough PV for 60 seconds: start on one or three phases.</strong><br>When fresh assigned allowance meets the electrical minimum for <code>MinOnOffSeconds=60</code>, charging starts at a bounded current. It starts on one phase below <code>ThreePhasePvSurplusStartW=4500</code>, or directly on three phases when at least 4,500 W is already assigned. This direct start matches normal Wattpilot behavior and does not use the running-session 1-to-3 timer.</li>
-          <li><strong>If a cloud passes on one phase: bridge, reduce or stop.</strong><br>For an already-running charge, eligible battery assist may hold the existing one-phase current for up to <code>BatteryAssistMaxSeconds=600</code> when SOC is at least 50%, shortfall is no greater than 1,000 W, grid import remains within the safety limit, and telemetry is fresh. If PV recovers, assist clears and one-phase charging continues. If the deficit persists but assigned PV still supports approximately 1.38 kW, charging reduces to a PV-supported current; below that minimum it stops after <code>AllowanceDropGraceSeconds=15</code>. An assist timeout remains locked out until PV fully covers EV demand for 120 seconds or the car disconnects. A later restart again requires sufficient assigned PV for 60 seconds.</li>
+          <li><strong>If a cloud passes on one phase: bridge, reduce or stop.</strong><br>For an already-running charge, eligible battery assist may hold the existing one-phase current for up to <code>BatteryAssistMaxSeconds=600</code> when SOC is at least 50%, selected-battery power activity is no older than <code>BatterySocFreshSeconds=15</code>, shortfall is no greater than 1,000 W, grid import remains within the safety limit, and telemetry is fresh. Missing or invalid SOC, or a missing, invalid or stale battery heartbeat, clears/refuses assist. If PV recovers, assist clears and one-phase charging continues. If the deficit persists but assigned PV still supports approximately 1.38 kW, charging reduces to a PV-supported current; below that minimum it stops after <code>AllowanceDropGraceSeconds=15</code>. An assist timeout remains locked out until PV fully covers EV demand for 120 seconds or the car disconnects. A later restart again requires sufficient assigned PV for 60 seconds.</li>
           <li><strong>While already charging on one phase, hold 4,500 W for 10 minutes: become eligible for three phases.</strong><br>Once assigned allowance reaches <code>ThreePhasePvSurplusStartW=4500</code>, the shared <code>MinPhaseSwitchSeconds=600</code> timer begins. On the normal adjustment path, a dip shorter than <code>SurplusDropGraceSeconds=30</code> preserves the candidate only above the effective three-phase floor; a deeper or longer normally evaluated dip resets it. If bounded battery assist is actively holding the existing one-phase charge, an already-started candidate timer is intentionally left running even through a deeper dip, potentially for up to <code>BatteryAssistMaxSeconds=600</code>. Assist cannot create the candidate or switch phases. Fresh assigned allowance must recover to the full 4,500 W before the controller can command and confirm three-phase mode. The 4,500 W default remains above the normal three-phase 6 A floor while making phase-up less conservative than a 5,000 W threshold.</li>
           <li><strong>With sufficient PV: stay on three phases.</strong><br>There is no maximum three-phase duration. Charging can remain in that mode indefinitely while assigned PV stays above the effective phase-down threshold.</li>
-          <li><strong>A cloud lowers PV: bridge the running charge when safe.</strong><br>The configured stop threshold is <code>ThreePhasePvSurplusStopW=4100</code>, but the effective threshold is the greater of 4,100 W and the three-phase electrical minimum—about 4.14 kW at 230 V and 6 A. With battery SOC at least <code>BatteryAssistSocMin=50</code> and shortfall no greater than <code>BatteryAssistMaxShortfallW=1000</code>, battery assist may bridge the already-running charge for at most <code>BatteryAssistMaxSeconds=600</code>. A higher shortfall setting is more tolerant of clouds but allows deeper battery contribution before reduction or phase-down.</li>
+          <li><strong>A cloud lowers PV: bridge the running charge when safe.</strong><br>The configured stop threshold is <code>ThreePhasePvSurplusStopW=4100</code>, but the effective threshold is the greater of 4,100 W and the three-phase electrical minimum—about 4.14 kW at 230 V and 6 A. With valid battery SOC at least <code>BatteryAssistSocMin=50</code>, selected-battery power activity no older than <code>BatterySocFreshSeconds=15</code>, and shortfall no greater than <code>BatteryAssistMaxShortfallW=1000</code>, battery assist may bridge the already-running charge for at most <code>BatteryAssistMaxSeconds=600</code>. A higher shortfall setting is more tolerant of clouds but allows deeper battery contribution before reduction or phase-down.</li>
           <li><strong>PV recovers during the bridge: remain on three phases.</strong><br>The phase-down candidate is cancelled when assigned PV again supports three phases. Full PV coverage for <code>BatteryAssistRecoverySeconds=120</code> satisfies the configured assist-recovery condition.</li>
           <li><strong>The deficit persists: reduce phase or stop.</strong><br>After the shared phase timer, the controller switches to one phase when fresh allowance can support it; otherwise it stops. If SOC falls below 50%, the shortfall exceeds 1,000 W, assist times out, or telemetry becomes unsafe, no-grid protection may reduce phase or stop before the normal 10-minute wait completes.</li>
           <li><strong>Later phase-up normally requires stability again.</strong><br>After a completed phase-down, a new 1-to-3 candidate again uses the shared 600-second stability/cooldown setting. During an eligible one-phase battery bridge, however, an existing candidate may mature while PV is low; if fresh allowance then recovers to at least 4,500 W, the controller may switch without starting another complete 600-second interval. The full threshold at the command boundary prevents a battery-only phase-up.</li>
@@ -1006,7 +1008,7 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
           <tr><td>Cloud bridge</td><td>Reduce PV so shortfall is under 1 kW while SOC is above 50%.</td><td>Existing charge is held temporarily; runtime status shows assist active. Larger shortfalls should reduce current, phase down or stop earlier.</td></tr>
           <tr><td>Assist timeout</td><td>Keep the shortfall present beyond 600 seconds.</td><td>Assist locks out; controller reduces to one phase or stops according to fresh allowance.</td></tr>
           <tr><td>Grid guard</td><td>Supervised test causing import above 300 W for 15 seconds.</td><td>No-grid Auto/Eco stops or safely reduces; Manual remains user-controlled.</td></tr>
-          <tr><td>Telemetry failure</td><td>Temporarily interrupt grid or allowance telemetry.</td><td>New Auto/Eco start is blocked; running no-grid Auto/Eco fails safe.</td></tr>
+          <tr><td>Telemetry failure</td><td>Temporarily interrupt grid, allowance or selected-battery telemetry.</td><td>New Auto/Eco start is blocked for required grid/allowance data; invalid SOC or stale battery activity clears/refuses assist and reservation bypass. Manual remains user-controlled.</td></tr>
           <tr><td>Network recovery</td><td>Restart or disconnect Wattpilot networking.</td><td>Status becomes unavailable, then reconnects without duplicate control workers.</td></tr>
           <tr><td>Grid failure</td><td>Installer-supervised outage test.</td><td>House backup follows the certified ESS design; EV Auto/Eco must not be assumed available.</td></tr>
         </tbody>

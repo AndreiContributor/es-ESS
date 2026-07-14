@@ -93,6 +93,40 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-13 - Add Freshness Guard For Battery-Assist SOC
+
+- Production GX validation found that unchanged SOC is not periodically
+  republished by either `com.victronenergy.system` or the selected Pylontech
+  service, contradicting the original SOC-callback freshness model. The system
+  service did publish selected-battery power activity 26 times in 30 seconds;
+  the Pylontech service published power activity 23 times in 30 seconds.
+- Corrected the guard to require finite system SOC plus a finite selected-
+  battery `/Dc/Battery/Power` update within the dedicated, positive
+  `BatterySocFreshSeconds=15` window. Existing configurations retain the same
+  default. A perfectly unchanged power value can conservatively disable the
+  features, but cannot authorize charging from stale evidence.
+- Missing or invalid SOC, or a missing, invalid, or stale battery-activity
+  heartbeat, clears/refuses battery assist and disables the EV-priority
+  battery-reservation bypass for that cycle. Eligible inputs preserve the
+  existing continuation-only thresholds, duration, shortfall, recovery, and
+  phase behavior; Manual charging remains unchanged.
+- Documented the fail-closed SOC contract in the maintained sample, README,
+  Wattpilot architecture, read-only health monitor, and HTML system guide.
+- Added hardware-free valid/invalid SOC, fresh/boundary/stale/invalid battery
+  heartbeat, unchanged-SOC recovery, missing initial D-Bus defaults,
+  active-assist clearing, reservation-bypass, compatible-default, and invalid-
+  config regressions. All 284 tests, application/test Python syntax, shell
+  syntax, and whitespace checks passed.
+- Live GX validation on 2026-07-14 observed 36 selected-battery power updates
+  in 45 seconds with a maximum 2.979-second gap, well inside the configured
+  15-second window. With SOC unchanged at 74%, an already-running one-phase
+  Auto/Eco charge sustained battery assist for at least 75 seconds across
+  34-321 W shortfalls while the grid remained at net export. This confirms the
+  corrected heartbeat prevents false SOC expiry without changing the bounded,
+  continuation-only assist contract.
+- Supervised battery-heartbeat interruption during a naturally eligible active
+  Auto/Eco charge remains a manual fault-simulation follow-up.
+
 ### Completed 2026-07-13 - Fix Delayed Wattpilot Mode Telemetry At The Manual Boundary
 
 - Added observer-only raw `lmo` receive/change timestamps and correlated
@@ -808,77 +842,6 @@ Done criteria:
 - The bounds and their source are explicitly approved and documented.
 - Combined setpoints are clamped and every clamp is observable.
 - In-range additive behavior and request ownership remain unchanged.
-- Full unittest suite passes.
-
-### P2 - Add Freshness Guard For Battery-Assist SOC
-
-Goal:
-
-Prevent battery assist and battery-priority bypass from relying on stale SOC.
-
-Problem:
-
-Grid phases are receive-time tracked, but the SOC subscription has no callback
-or timestamp. A retained high SOC can authorize a bounded assist window after
-the real battery has crossed its configured floor.
-
-Evidence:
-
-- `FroniusWattpilot.py:317-320` registers SOC/battery power without callbacks.
-- `batterySoc()` at line 2005 returns the cached value directly.
-- `shouldIgnoreBatteryReservation()` and `startOrContinueBatteryAssist()` use it.
-
-Implementation:
-
-- Track SOC validity and receive time in the controller.
-- Treat missing, invalid, or stale SOC as ineligible for assist and reservation
-  bypass.
-- Keep helpers pure and preserve Manual ownership, continuation-only assist,
-  thresholds, duration, shortfall, recovery, and command boundaries.
-
-Files to change:
-
-- `FroniusWattpilot.py`
-- `WattpilotDecisionInputs.py` if a generic freshness helper is appropriate
-- `docs/wattpilot-architecture.md`
-- `config.sample.ini` and `README.md` only if a new setting is approved.
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Extend controller decision tests for fresh, stale, invalid, and missing SOC;
-  confirm stale SOC cannot activate assist or reservation bypass.
-
-Expected coverage:
-
-- Proves SOC-dependent safety decisions fail closed while existing fresh-SOC
-  behavior remains unchanged.
-
-Manual validation:
-
-Fault simulation during a supervised active charge.
-
-Manual test steps:
-
-1. Interrupt SOC updates during an eligible assist scenario.
-2. Confirm assist clears/refuses and Manual charging is untouched.
-
-Risks and dependencies:
-
-- An overly short freshness window may reject normally slow SOC updates.
-- Read and update the Wattpilot architecture contract in the implementation.
-
-Open questions:
-
-- Reuse `GridTelemetryFreshSeconds` or introduce a dedicated SOC freshness
-  setting based on observed GX update cadence?
-
-Done criteria:
-
-- Missing/stale SOC cannot authorize assist or battery-reservation bypass.
 - Full unittest suite passes.
 
 ### P2 - Define Safe Control For Unclassified Charging Model Statuses
@@ -2098,8 +2061,6 @@ advance the queue on the next request.
 
 27. P1 reset Wattpilot phase-switch candidates on confirmed disconnect — close
     the production-observed timer leak before other controller work.
-8. P2 add freshness guard for battery-assist SOC — fail closed when the SOC
-   used by assist or battery-priority bypass is stale.
 9. P2 define safe control for unclassified charging model statuses — obtain
    firmware evidence and encode explicit no-grid-safe mappings.
 10. P2 publish null and disconnected on all meter failure modes — stop frozen
@@ -2192,5 +2153,9 @@ For implementation PRs:
 - **Active charging required:** observe natural winter/low-PV grid-import or
   stale-grid-telemetry dispatch with `AllowGridCharging=false`; do not force an
   unsafe import or telemetry outage.
+- **Fault simulation, active charging required:** during a naturally eligible
+  battery-assist window, interrupt SOC updates and confirm assist clears/refuses,
+  the battery-reservation bypass remains disabled, and Manual charging is
+  untouched.
 - The complete operator behavior checklist remains in README and the safety
   invariants remain in `docs/wattpilot-architecture.md`.

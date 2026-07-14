@@ -25,8 +25,12 @@ class esESSService(ABC):
     def initDbusSubscriptions(self):
         pass
 
-    def registerDbusSubscription(self, serviceName, dbusPath, callback=None):
-        sub = DbusSubscription(self, serviceName, dbusPath, callback)
+    def registerDbusSubscription(
+        self, serviceName, dbusPath, callback=None, initialValueDefault=0
+    ):
+        sub = DbusSubscription(
+            self, serviceName, dbusPath, callback, initialValueDefault
+        )
         Globals.esESS.registerDbusSubscription(sub)
         return sub
 
@@ -94,11 +98,19 @@ class DbusSubscription:
     def buildValueKey(serviceName, dbusPath):
         return "{0}{1}".format(".".join(serviceName.split('.')[:3]), dbusPath)
 
-    def __init__(self, requestingService, serviceName, dbusPath, callback=None):
+    def __init__(
+        self,
+        requestingService,
+        serviceName,
+        dbusPath,
+        callback=None,
+        initialValueDefault=0,
+    ):
         self.commonServiceName = ".".join(serviceName.split('.')[:3])
         self.serviceName = serviceName
         self.dbusPath = dbusPath
         self.callback = callback
+        self.initialValueDefault = initialValueDefault
         self.value = None
         self.requestingService = requestingService
 
