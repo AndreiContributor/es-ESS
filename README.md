@@ -553,9 +553,16 @@ Before enabling Auto/Eco PV control:
   distributor, Wattpilot Auto/Eco requests do not receive a PV allowance.
 - Put Wattpilot in `ECO` mode in the Fronius app. es-ESS Auto/Eco control is
   active only when Wattpilot is in that mode.
-- Set Wattpilot's native PV-start threshold to a value that will not be reached,
-  for example `99 kW`, so the native Wattpilot ECO logic does not compete with
-  es-ESS.
+- Do not treat Wattpilot's native PV-start threshold as a command-ownership
+  boundary. Production evidence with firmware `42.5` and Solar.wattpilot app
+  `2.1.0` showed that native PV regulation can still hold charging near its
+  minimum after es-ESS forces a start and requests more current. The exact
+  native-setting contract remains under validation; do not replace the former
+  unreachable-threshold recommendation with the app's `10 kW` maximum as an
+  assumed fix.
+- Before changing native PV, tariff, phase, or control-response settings, use
+  the command-free discovery and supervised validation procedure in
+  [docs/wattpilot-command-ownership-validation.md](docs/wattpilot-command-ownership-validation.md).
 - Keep the Wattpilot app's own cable/current limits correct. es-ESS will not
   raise charging beyond the configured per-phase limits or the
   Wattpilot-reported effective limit.
@@ -770,6 +777,13 @@ timestamps. It does not write D-Bus, MQTT, config, service state or Wattpilot
 control values. Installation, mode-boundary validation, and interpretation
 steps are documented in
 [docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
+
+Native Solar.wattpilot PV/tariff/phase setting discovery uses the separate
+command-free `scripts/wattpilot-setting-capture.py` utility with the vehicle
+disconnected and es-ESS stopped. Its two-gate procedure, redaction rules,
+automated checks, restoration steps, and later active-charging validation are
+documented in
+[docs/wattpilot-command-ownership-validation.md](docs/wattpilot-command-ownership-validation.md).
 
 ### Low Price Charging. 
 Wattpilot supports the function to charge due to cheap grid prices, you can use the builtin feature as you are used to. es-ESS will then detect,

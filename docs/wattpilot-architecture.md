@@ -22,6 +22,14 @@ validation, `scripts/es-ess-health-monitor.sh` reads the public service state
 and Wattpilot D-Bus/runtime-status contract without issuing commands. Its
 installation and interpretation notes live in `docs/es-ess-health-monitor.md`.
 
+For the separate native-PV command-ownership investigation,
+`scripts/wattpilot-setting-capture.py` authenticates with the vehicle
+disconnected, blocks every `setValue` request, compares two full-status
+snapshots around one operator-controlled app setting change, and emits only
+redacted/fingerprinted property differences. The procedure and pass/fail gates
+live in `docs/wattpilot-command-ownership-validation.md`. This is evidence
+collection only and does not widen Auto/Eco command authority.
+
 ## Module Responsibilities
 
 ### `RuntimeCompatibility.py`
@@ -362,6 +370,12 @@ Future Wattpilot changes must preserve these invariants:
   command-free. Monitoring tools may read the runtime-status contract, service
   state, selected config values and logs, but must not write Wattpilot, D-Bus,
   MQTT, service or configuration state.
+- Keep `scripts/wattpilot-setting-capture.py` command-free. It may authenticate,
+  request complete status, and compare redacted property snapshots only while
+  the vehicle is disconnected. It must reject unvalidated firmware, a missing
+  vehicle-state baseline, or a connected vehicle, and must never call
+  `setValue`, Wattpilot command helpers, pairing methods, or configuration
+  writes.
 - Raw `lmo` receipt/change timestamps are diagnostic transport facts only.
   They must not be treated as a generic mode-expiry timeout or independently
   widen Wattpilot command authority without hardware evidence and an approved
