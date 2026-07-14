@@ -8,6 +8,7 @@ class WattpilotControlStateTests(unittest.TestCase):
         values = {
             "transport_unavailable": False,
             "auto_mode": True,
+            "command_authority_ok": True,
             "allow_grid_charging": False,
             "grid_telemetry_fresh": True,
             "grid_import_limit_exceeded": False,
@@ -50,6 +51,32 @@ class WattpilotControlStateTests(unittest.TestCase):
         )
 
         self.assertEqual(selected, states.WattpilotControlState.GRID_TELEMETRY_UNSAFE)
+
+    def test_invalid_command_authority_wins_before_grid_and_charge_states(self):
+        selected = states.select_control_state(
+            self._inputs(
+                command_authority_ok=False,
+                grid_telemetry_fresh=False,
+                grid_import_limit_exceeded=True,
+                model_status_value=3,
+            )
+        )
+
+        self.assertEqual(
+            selected,
+            states.WattpilotControlState.COMMAND_AUTHORITY_BLOCKED,
+        )
+
+    def test_manual_mode_ignores_auto_command_authority_state(self):
+        selected = states.select_control_state(
+            self._inputs(
+                auto_mode=False,
+                command_authority_ok=False,
+                model_status_value=3,
+            )
+        )
+
+        self.assertEqual(selected, states.WattpilotControlState.CHARGING)
 
     def test_manual_mode_does_not_enter_auto_grid_safety_states(self):
         selected = states.select_control_state(

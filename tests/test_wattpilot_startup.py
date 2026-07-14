@@ -153,6 +153,12 @@ def _install_fronius_startup_stubs(warnings, errors, wattpilot_state=None):
             )
             self.firmware = wattpilot_state.get("firmware")
             self.carConnected = wattpilot_state.get("car_connected", False)
+            self.nativePvSurplusEnabled = wattpilot_state.get(
+                "native_pv_surplus_enabled"
+            )
+            self.flexibleTariffEnabled = wattpilot_state.get(
+                "flexible_tariff_enabled"
+            )
             self.phase_commands = []
             self.command_guard = None
 
@@ -203,6 +209,12 @@ class WattpilotStartupTests(unittest.TestCase):
         controller.actualWattpilotFirmware = None
         controller.wattpilotFirmwareCompatible = False
         controller._lastWattpilotCompatibilityState = None
+        controller.commandAuthorityOk = False
+        controller.commandAuthorityLiteral = (
+            fronius_module.COMMAND_AUTHORITY_UNAVAILABLE
+        )
+        controller._lastCommandAuthorityState = None
+        controller.commandAuthorityForcedOff = False
         return controller, fronius_module, warnings, errors, messages
 
     def test_wattpilot_energy_counter_exists_before_first_status_update(self):
@@ -280,6 +292,8 @@ class WattpilotStartupTests(unittest.TestCase):
                     "power1": 0,
                     "power2": 0,
                     "power3": 0,
+                    "native_pv_surplus_enabled": False,
+                    "flexible_tariff_enabled": False,
                 },
             )
         )
@@ -336,6 +350,8 @@ class WattpilotStartupTests(unittest.TestCase):
                     "power1": 0,
                     "power2": 0,
                     "power3": 0,
+                    "native_pv_surplus_enabled": False,
+                    "flexible_tariff_enabled": False,
                 },
             )
         )
@@ -352,6 +368,40 @@ class WattpilotStartupTests(unittest.TestCase):
         self.assertEqual(controller.wattpilot.phase_commands, [0])
         self.assertIn(
             "Currently not charging. Negotiating automatic phase mode.",
+            messages,
+        )
+
+    def test_eco_idle_startup_with_native_pv_enabled_is_command_free(self):
+        controller, fronius_module, warnings, errors, messages = (
+            self._fronius_startup_controller(
+                "fronius_eco_invalid_authority_startup_under_test",
+                {
+                    "connected": True,
+                    "car_state_ready": True,
+                    "mode": "ECO",
+                    "firmware": "42.5",
+                    "car_connected": False,
+                    "power1": 0,
+                    "power2": 0,
+                    "power3": 0,
+                    "native_pv_surplus_enabled": True,
+                    "flexible_tariff_enabled": False,
+                },
+            )
+        )
+
+        controller.initFinalize()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(warnings, [])
+        self.assertEqual(
+            controller.mode,
+            fronius_module.VrmEvChargerControlMode.Auto,
+        )
+        self.assertEqual(controller.wattpilot.phase_commands, [])
+        self.assertIn(
+            "Auto/Eco phase negotiation blocked until native Wattpilot "
+            "PV and tariff controls are disabled.",
             messages,
         )
 

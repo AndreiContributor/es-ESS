@@ -46,7 +46,11 @@ missing, qualified, or different version exits with status
 separately requires firmware `42.5` from
 `fwv` telemetry before its common `setValue` command boundary opens. The
 Solar.wattpilot app `2.1.0` baseline is operator-verified because the app version
-is not visible to es-ESS.
+is not visible to es-ESS. Auto/Eco control has a second, narrower command-
+authority boundary: strict firmware telemetry must report ECO mode,
+`fup=false` (`Use PV surplus` disabled), and `ful=false` (flexible tariff
+disabled). Missing, malformed, or conflicting native-setting telemetry blocks
+starts, current increases, and phase-up while retaining safe stop commands.
 
 The runtime also owns the shared D-Bus monitor, main MQTT client, local Venus
 MQTT client, worker scheduling, service messages, and combined grid-setpoint
@@ -75,7 +79,7 @@ flag is set to `true`.
 | `TimeToGoCalculator` | `TimeToGoCalculator.py` | `[TimeToGoCalculator]`, `[Common]` | Calculates battery time-to-go when the system does not provide it. | Reads Victron system battery power, SOC, and active SOC limit D-Bus paths; skips incomplete telemetry without publishing stale calculations, then resumes local/main MQTT publication when all inputs recover. |
 | `FroniusSmartmeterJSON` | `FroniusSmartmeterJSON.py` | `[FroniusSmartmeterJSON]` | Exposes a Fronius smart meter as a Victron grid meter. | Polls the Fronius JSON API over HTTP and publishes a `com.victronenergy.grid` D-Bus service. |
 | `MqttExporter` | `MqttExporter.py` | `MqttExporter:*` | Exports selected D-Bus values to main MQTT. | Subscribes to configured D-Bus service/path pairs and republishes on configured MQTT topics on change or at 1 s, 10 s, or 60 s intervals. |
-| `FroniusWattpilot` | `FroniusWattpilot.py` | `[FroniusWattpilot]` | Integrates and controls a Fronius Wattpilot EV charger. | Owns Victron EV-charger D-Bus paths, including session energy/time compatibility paths, Wattpilot WebSocket commands through `Wattpilot.py`, SolarOverheadDistributor requests, grid telemetry safety checks, runtime-status publication, and shutdown behavior. The underlying `Wattpilot.py` client owns a single worker reconnect loop for WebSocket outages. See `docs/wattpilot-architecture.md` before changing it. |
+| `FroniusWattpilot` | `FroniusWattpilot.py` | `[FroniusWattpilot]` | Integrates and controls a Fronius Wattpilot EV charger. | Owns Victron EV-charger D-Bus paths, including session energy/time compatibility paths, Wattpilot WebSocket commands through `Wattpilot.py`, SolarOverheadDistributor requests, grid telemetry safety checks, read-only native `fup`/`ful` command-authority enforcement, runtime-status publication, and shutdown behavior. The underlying `Wattpilot.py` client owns a single worker reconnect loop for WebSocket outages. See `docs/wattpilot-architecture.md` before changing it. |
 | `MqttTemperature` | `MqttTemperature.py` | `MqttTemperature:*` | Exposes MQTT temperature sensors in VRM/D-Bus. | Subscribes to configured MQTT value, humidity, and pressure topics; publishes one `com.victronenergy.temperature` D-Bus service per configured sensor. |
 | `NoBatToEV` | `NoBatToEV.py` | `[NoBatToEV]`, `[Common]` | Offloads EV load to grid-setpoint requests so an AC-out EV charge does not drain the home battery. | Reads Victron system consumption, PV, phase-count, optional relay, and EV-charger power data; registers or revokes shared grid-setpoint requests through the es-ESS runtime. |
 | `Shelly3EMGrid` | `Shelly3EMGrid.py` | `[Shelly3EMGrid]` | Exposes a Shelly 3EM as a Victron grid meter. | Polls the Shelly HTTP status API and publishes a `com.victronenergy.grid` D-Bus service; net-meter counters use atomic persistence, corrupt-value recovery, and exclude unknown failed-poll intervals. |
@@ -116,6 +120,13 @@ surfaces are the EV-charger detail paths (`/StatusLiteral`, `/CustomName`),
 the Wattpilot runtime-status D-Bus/MQTT contract, es-ESS service messages, and
 SolarOverheadDistributor consumer messages. The standard Venus/GX EVCS overview
 tile is not forced with synthetic `/Status` or `/Mode` values.
+
+The runtime-status contract also exposes `/CommandAuthorityOk`,
+`/CommandAuthorityLiteral`, `/NativePvSurplusEnabled`, and
+`/FlexibleTariffEnabled` on D-Bus and retained MQTT. These observer paths make
+the fail-closed native-controller boundary actionable without writing Wattpilot
+settings. A value of `-1` for either native setting means unavailable or
+malformed telemetry, not disabled.
 
 When changing any published D-Bus path, check README/config expectations,
 runtime-status consumers, the production health monitor, and VRM/Cerbo

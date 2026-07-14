@@ -16,6 +16,7 @@ from WattpilotRuntimeStatus import (
     CONTROL_STATE_CHARGING_3_PHASE,
     CONTROL_STATE_FAULT,
     CONTROL_STATE_STOPPED,
+    CONTROL_STATE_STOPPED_FOR_COMMAND_AUTHORITY,
     CONTROL_STATE_STOPPED_FOR_GRID_IMPORT,
     CONTROL_STATE_STOPPED_FOR_STALE_TELEMETRY,
     CONTROL_STATE_SWITCHING_TO_1_PHASE,
@@ -86,6 +87,8 @@ class FakeWattpilot:
         self.handlers = {}
         self.connect_calls = 0
         self.command_calls = []
+        self.nativePvSurplusEnabled = False
+        self.flexibleTariffEnabled = False
 
     def add_event_handler(self, event, callback):
         self.handlers.setdefault(event, []).append(callback)
@@ -135,6 +138,11 @@ class FroniusWattpilot:
         self.isIdleMode = False
         self.effectiveCarConnected = True
         self.wattpilotDashboardTransportUnavailable = False
+        self.command_authority_ok = True
+        self.command_authority_literal = "Validated"
+
+    def commandAuthorityStatus(self):
+        return self.command_authority_ok, self.command_authority_literal
 
     def initDbusService(self):
         self.dbusService = VeDbusService("com.victronenergy.evcharger.test", register=False)
@@ -354,6 +362,10 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
             "/TelemetryHealthy",
             "/CompatibilityOk",
             "/CompatibilityLiteral",
+            "/CommandAuthorityOk",
+            "/CommandAuthorityLiteral",
+            "/NativePvSurplusEnabled",
+            "/FlexibleTariffEnabled",
             "/ExpectedVenusOsVersion",
             "/ActualVenusOsVersion",
             "/ExpectedWattpilotFirmware",
@@ -384,6 +396,30 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
         self.assertEqual(controller.dbusService["/TelemetryHealthy"], 0)
         self.assertEqual(controller.dbusService["/ExpectedWattpilotFirmware"], "42.5")
         self.assertEqual(controller.dbusService["/ActualWattpilotFirmware"], "42.6")
+
+    def test_invalid_command_authority_is_actionable_and_command_free(self):
+        controller, _reporter = self.make_controller()
+        controller.command_authority_ok = False
+        controller.command_authority_literal = (
+            "Blocked: disable Use PV surplus in Solar.wattpilot"
+        )
+        controller.wattpilot.nativePvSurplusEnabled = True
+
+        self.publish(controller, "WaitingForSun")
+
+        self.assert_state(
+            controller,
+            CONTROL_STATE_STOPPED_FOR_COMMAND_AUTHORITY,
+            "Stopped: command authority blocked",
+        )
+        self.assertEqual(controller.dbusService["/CommandAuthorityOk"], 0)
+        self.assertEqual(
+            controller.dbusService["/CommandAuthorityLiteral"],
+            controller.command_authority_literal,
+        )
+        self.assertEqual(controller.dbusService["/NativePvSurplusEnabled"], 1)
+        self.assertEqual(controller.dbusService["/FlexibleTariffEnabled"], 0)
+        self.assertEqual(controller.wattpilot.command_calls, [])
 
     def test_every_required_control_state(self):
         def one_phase(controller):
@@ -770,6 +806,10 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
             "TelemetryHealthy",
             "CompatibilityOk",
             "CompatibilityLiteral",
+            "CommandAuthorityOk",
+            "CommandAuthorityLiteral",
+            "NativePvSurplusEnabled",
+            "FlexibleTariffEnabled",
             "ExpectedVenusOsVersion",
             "ActualVenusOsVersion",
             "ExpectedWattpilotFirmware",

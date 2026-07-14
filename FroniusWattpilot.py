@@ -29,6 +29,24 @@ from esESSService import esESSService
 WATTPILOT_BASE_CUSTOM_NAME = "Fronius Wattpilot"
 WATTPILOT_UNAVAILABLE_STATUS_LITERAL = "Wattpilot not accessible"
 WATTPILOT_UNAVAILABLE_CUSTOM_NAME = "Wattpilot not reachable"
+COMMAND_AUTHORITY_UNAVAILABLE = (
+    "Blocked: native Wattpilot command settings unavailable"
+)
+COMMAND_AUTHORITY_FIRMWARE = (
+    "Blocked: Wattpilot firmware compatibility unavailable"
+)
+COMMAND_AUTHORITY_DISABLE_NATIVE_PV = (
+    "Blocked: disable Use PV surplus in Solar.wattpilot"
+)
+COMMAND_AUTHORITY_DISABLE_TARIFF = (
+    "Blocked: disable flexible tariff in Solar.wattpilot"
+)
+COMMAND_AUTHORITY_SELECT_AUTO = (
+    "Ready: select Auto on GX/VRM after native controls are disabled"
+)
+COMMAND_AUTHORITY_VALIDATED = (
+    "Validated: es-ESS is the sole Auto/Eco command owner"
+)
 
 class FroniusWattpilot (esESSService):
     
@@ -52,6 +70,10 @@ class FroniusWattpilot (esESSService):
         self.actualWattpilotFirmware = None
         self.wattpilotFirmwareCompatible = False
         self._lastWattpilotCompatibilityState = None
+        self.commandAuthorityOk = False
+        self.commandAuthorityLiteral = COMMAND_AUTHORITY_UNAVAILABLE
+        self._lastCommandAuthorityState = None
+        self.commandAuthorityForcedOff = False
         self.minimumOnOffSeconds = int(settings["MinOnOffSeconds"])
         self.minimumPhaseSwitchSeconds = int(settings["MinPhaseSwitchSeconds"])
 
@@ -476,12 +498,21 @@ class FroniusWattpilot (esESSService):
             self.publishServiceMessage(self, "Currently charging on 1 phase.")
         else:
             self.currentPhaseMode = 0
-            if self.wattpilot.mode == WattpilotControlMode.ECO:
+            if (
+                self.wattpilot.mode == WattpilotControlMode.ECO
+                and self.wattpilotAutoControlAuthorityOk()
+            ):
                 self.publishServiceMessage(
                     self,
                     "Currently not charging. Negotiating automatic phase mode."
                 )
                 self.wattpilot.set_phases(0)  # autoselect
+            elif self.wattpilot.mode == WattpilotControlMode.ECO:
+                self.publishServiceMessage(
+                    self,
+                    "Auto/Eco phase negotiation blocked until native Wattpilot "
+                    "PV and tariff controls are disabled."
+                )
             else:
                 self.publishServiceMessage(
                     self,
@@ -494,11 +525,19 @@ class FroniusWattpilot (esESSService):
         i(self, "User/cerbo/vrm updated " + str(path) + " to " + str(value))
 
         if path == "/SetCurrent":
-            if not self.wattpilotAutoControlSelected():
+            requestedCurrent = int(value)
+            if requestedCurrent <= 0:
+                if not self.wattpilotAutoControlSelected():
+                    self.rejectDirectWattpilotCommand(path)
+                    return False
+                self.wattpilot.set_power(0)
+                self.dumpEvChargerInfo()
+                return True
+
+            if not self.wattpilotAutoControlAuthorityOk():
                 self.rejectDirectWattpilotCommand(path)
                 return False
 
-            requestedCurrent = int(value)
             maxCurrent = self.getEffectiveMaxCurrent()
 
             # Never round a device-reported cap below the configured minimum
@@ -524,11 +563,15 @@ class FroniusWattpilot (esESSService):
                     self.wattpilot.set_power(ampPerPhase)
 
         elif path == "/StartStop":
-            if not self.wattpilotAutoControlSelected():
+            state = VrmEvChargerStartStop(value)
+            if state == VrmEvChargerStartStop.Stop:
+                if not self.wattpilotAutoControlSelected():
+                    self.rejectDirectWattpilotCommand(path)
+                    return False
+            elif not self.wattpilotAutoControlAuthorityOk():
                 self.rejectDirectWattpilotCommand(path)
                 return False
 
-            state = VrmEvChargerStartStop(value)
             self.dbusService["/StartStopLiteral"] = state.name
 
             if state == VrmEvChargerStartStop.Start:
@@ -539,7 +582,9 @@ class FroniusWattpilot (esESSService):
         elif path == "/Mode":
             priorMode = self.mode
             newMode = VrmEvChargerControlMode(value)
-            self.switchMode(priorMode, newMode)
+            if not self.switchMode(priorMode, newMode):
+                self.dumpEvChargerInfo()
+                return False
 
         self.dumpEvChargerInfo()
         return True
@@ -553,12 +598,57 @@ class FroniusWattpilot (esESSService):
 
         return wattpilotMode == WattpilotControlMode.ECO
 
+    def nativeCommandSettingsStatus(self):
+        """Return whether firmware 42.5 native command competitors are off."""
+        wattpilot = getattr(self, "wattpilot", None)
+        nativePv = getattr(wattpilot, "nativePvSurplusEnabled", None)
+        flexibleTariff = getattr(wattpilot, "flexibleTariffEnabled", None)
+
+        if type(nativePv) is not bool or type(flexibleTariff) is not bool:
+            return False, COMMAND_AUTHORITY_UNAVAILABLE
+        if nativePv:
+            return False, COMMAND_AUTHORITY_DISABLE_NATIVE_PV
+        if flexibleTariff:
+            return False, COMMAND_AUTHORITY_DISABLE_TARIFF
+        return True, COMMAND_AUTHORITY_SELECT_AUTO
+
+    def commandAuthorityStatus(self):
+        """Return the read-only single-owner Auto/Eco authority state."""
+        if not bool(getattr(self, "wattpilotFirmwareCompatible", False)):
+            return False, COMMAND_AUTHORITY_FIRMWARE
+        settingsOk, literal = self.nativeCommandSettingsStatus()
+        if not settingsOk:
+            return False, literal
+        if not self.wattpilotAutoControlSelected():
+            return False, COMMAND_AUTHORITY_SELECT_AUTO
+        return True, COMMAND_AUTHORITY_VALIDATED
+
+    def refreshCommandAuthorityStatus(self):
+        """Publish only authority transitions; control remains in the selector."""
+        ok, literal = self.commandAuthorityStatus()
+        self.commandAuthorityOk = ok
+        self.commandAuthorityLiteral = literal
+        state = (ok, literal)
+        if state != self._lastCommandAuthorityState:
+            self.publishServiceMessage(self, literal)
+            if ok:
+                i(self, literal)
+                self.commandAuthorityForcedOff = False
+            else:
+                w(self, literal)
+            self._lastCommandAuthorityState = state
+        return ok
+
+    def wattpilotAutoControlAuthorityOk(self):
+        """Require ECO plus disabled native PV and tariff command ownership."""
+        ok, _literal = self.commandAuthorityStatus()
+        return ok
+
     def rejectDirectWattpilotCommand(self, path):
+        _ok, authorityLiteral = self.commandAuthorityStatus()
         self.publishServiceMessage(
             self,
-            "Ignored {0} command because Wattpilot is not in Auto/ECO mode.".format(
-                path
-            )
+            "Ignored {0} command. {1}.".format(path, authorityLiteral)
         )
         self.dumpEvChargerInfo()
 
@@ -585,6 +675,24 @@ class FroniusWattpilot (esESSService):
         
         self.publishServiceMessage(self, "Switching Mode from {0} to {1}.".format(fromMode, toMode))
 
+        if (
+            fromMode == VrmEvChargerControlMode.Manual
+            and toMode == VrmEvChargerControlMode.Auto
+        ):
+            if not bool(getattr(self, "wattpilotFirmwareCompatible", False)):
+                settingsOk, literal = False, COMMAND_AUTHORITY_FIRMWARE
+            else:
+                settingsOk, literal = self.nativeCommandSettingsStatus()
+            if not settingsOk:
+                self.publishServiceMessage(
+                    self,
+                    "Auto selection rejected. {0}.".format(literal)
+                )
+                self.mode = fromMode
+                self.dbusService["/Mode"] = fromMode.value
+                self.dbusService["/ModeLiteral"] = fromMode.name
+                return False
+
         if (toMode == VrmEvChargerControlMode.Auto or toMode == VrmEvChargerControlMode.Manual):
             self.mode = toMode
             self.dbusService["/Mode"] = toMode.value
@@ -600,10 +708,13 @@ class FroniusWattpilot (esESSService):
                 self.wattpilot.set_mode(WattpilotControlMode.Default)
                 self.releaseAutoControlLimitsForManualMode()
 
+            return True
+
         elif (toMode == VrmEvChargerControlMode.Scheduled):
             #Scheduled Charge - this is not used. We use this to temorary wakeup wattpilot, if in Hibernate mode. 
             self.wakeUpWattpilot()
             self.switchMode(VrmEvChargerControlMode.Scheduled, fromMode)
+        return False
          
     def wakeUpWattpilot(self):
        if self.wattpilot.connected:
@@ -650,6 +761,7 @@ class FroniusWattpilot (esESSService):
         return ControlStates.ControlStateInputs(
             transport_unavailable=transportUnavailable,
             auto_mode=self.mode == VrmEvChargerControlMode.Auto,
+            command_authority_ok=self.wattpilotAutoControlAuthorityOk(),
             allow_grid_charging=self.allowGridCharging,
             grid_telemetry_fresh=gridTelemetryFresh,
             grid_import_limit_exceeded=gridImportLimitExceeded,
@@ -719,6 +831,9 @@ class FroniusWattpilot (esESSService):
         if selectedState == state.TRANSPORT_UNAVAILABLE:
             return self._handleTransportUnavailable()
 
+        if selectedState == state.COMMAND_AUTHORITY_BLOCKED:
+            return self._handleCommandAuthorityBlocked()
+
         if selectedState == state.GRID_TELEMETRY_UNSAFE:
             return self._handleGridTelemetryUnsafe()
 
@@ -752,6 +867,14 @@ class FroniusWattpilot (esESSService):
 
     def _handleTransportUnavailable(self):
         return self._handleUnknownControlState()
+
+    def _handleCommandAuthorityBlocked(self):
+        if self.wattpilotReportsActiveCharge():
+            self.reportVRMStatus(VrmEvChargerStatus.StopCharging)
+        else:
+            self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+        self.forceStopForInvalidCommandAuthority()
+        return True
 
     def _handleGridTelemetryUnsafe(self):
         self.publishServiceMessage(
@@ -952,6 +1075,8 @@ class FroniusWattpilot (esESSService):
                 self.clearChargeCompleteHold("manual mode selected")
                 if priorMode == VrmEvChargerControlMode.Auto:
                     self.releaseAutoControlLimitsForManualMode()
+
+            self.refreshCommandAuthorityStatus()
 
             self.reportStartStopValue(
                 VrmEvChargerStartStop.Start
@@ -2598,6 +2723,35 @@ class FroniusWattpilot (esESSService):
             self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Stop.name
         except Exception:
             pass
+
+    def forceStopForInvalidCommandAuthority(self):
+        """Stop without phase commands when a native controller may compete."""
+        self.surplusSince = 0
+        self.surplusBelowMinimumSince = 0
+        self.allowanceBelowMinimumSince = 0
+        self.clearBatteryAssist()
+        self.clearPowerTransitionGrace()
+        self.clearPendingPhaseSwitch()
+        self.clearPhaseSwitchCandidate()
+
+        chargerStillActive = (
+            self.wattpilot.power is not None and self.wattpilot.power > 0
+        )
+        needsStop = (
+            not self.commandAuthorityForcedOff
+            or self.wattpilot.startState != WattpilotStartStop.Off
+            or chargerStillActive
+        )
+        if needsStop:
+            self.wattpilot.set_power(0)
+            self.wattpilot.set_start_stop(WattpilotStartStop.Off)
+            self.lastOnOffTime = time.time()
+
+        self.commandAuthorityForcedOff = True
+        self.noAllowanceForcedOff = True
+        self.currentPhaseMode = 0
+        self.dbusService["/StartStop"] = VrmEvChargerStartStop.Stop.value
+        self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Stop.name
 
     def forceStopForNoAllowance(self):
         # Strict policy after the allowance debounce expires: stop and retain

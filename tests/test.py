@@ -189,6 +189,13 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.actualWattpilotFirmware = "42.5"
         controller.wattpilotFirmwareCompatible = True
         controller._lastWattpilotCompatibilityState = (True, "42.5")
+        controller.commandAuthorityOk = True
+        controller.commandAuthorityLiteral = self.fwp.COMMAND_AUTHORITY_VALIDATED
+        controller._lastCommandAuthorityState = (
+            True,
+            self.fwp.COMMAND_AUTHORITY_VALIDATED,
+        )
+        controller.commandAuthorityForcedOff = False
         controller.config = {
             "FroniusWattpilot": {
                 "VRMInstanceID_OverheadRequest": "42",
@@ -211,6 +218,8 @@ class WattpilotControlRegressionTests(unittest.TestCase):
             connected=True,
             startState=0,
             mode=1,
+            nativePvSurplusEnabled=False,
+            flexibleTariffEnabled=False,
             modelStatus=SimpleNamespace(value=4),
             set_power=Mock(),
             set_phases=Mock(),

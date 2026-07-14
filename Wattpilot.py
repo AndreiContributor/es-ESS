@@ -300,6 +300,16 @@ class Wattpilot(object):
         return self._startingPower
 
     @property
+    def nativePvSurplusEnabled(self):
+        """Return the validated firmware ``fup`` boolean, or None."""
+        return self._nativePvSurplusEnabled
+
+    @property
+    def flexibleTariffEnabled(self):
+        """Return the validated firmware ``ful`` boolean, or None."""
+        return self._flexibleTariffEnabled
+
+    @property
     def AccessState(self):
         return self._AccessState
 
@@ -424,6 +434,7 @@ class Wattpilot(object):
                 return
 
             self._carStateReady = False
+            self._reset_command_authority_telemetry()
             self._stop_reconnect.clear()
             self._wst = threading.Thread(target=self.__connection_worker)
             self._wst.daemon = True
@@ -440,6 +451,7 @@ class Wattpilot(object):
 
         self._wsapp.close()
         self._connected=False
+        self._reset_command_authority_telemetry()
         self.__call_event_handler(Event.WP_DISCONNECT)
         i(self, "Wattpilot disconnected")
 
@@ -621,6 +633,10 @@ class Wattpilot(object):
             self._energyCounterTotal = value
         elif name=="fte":
             self._startingPower = value
+        elif name=="fup":
+            self._nativePvSurplusEnabled = value if type(value) is bool else None
+        elif name=="ful":
+            self._flexibleTariffEnabled = value if type(value) is bool else None
         elif name=="ama":
             self._ampLimit = value
         elif name=="frc":
@@ -783,6 +799,7 @@ class Wattpilot(object):
 
     def __on_close(self,wsapp,code,msg):
         self._connected=False
+        self._reset_command_authority_telemetry()
         self.__call_event_handler(Event.WS_CLOSE, wsapp, code, msg)
 
     def __on_message(self, wsapp, message):
@@ -844,6 +861,8 @@ class Wattpilot(object):
         self._amps3=None
         self._ampLimit=None
         self._startingPower=None
+        self._nativePvSurplusEnabled=None
+        self._flexibleTariffEnabled=None
         self._energyCounterSinceStart=None
         self._power1=None
         self._power2=None
@@ -885,4 +904,9 @@ class Wattpilot(object):
         )
         self.__call_event_handler(Event.WP_INIT)
         i(self, "Wattpilot " + str(self.serial) + " initialized")
+
+    def _reset_command_authority_telemetry(self):
+        """Fail closed until a new connection reports both native settings."""
+        self._nativePvSurplusEnabled = None
+        self._flexibleTariffEnabled = None
 

@@ -29,6 +29,7 @@ CONTROL_STATE_BATTERY_ASSIST = 7
 CONTROL_STATE_STOPPED_FOR_GRID_IMPORT = 8
 CONTROL_STATE_STOPPED_FOR_STALE_TELEMETRY = 9
 CONTROL_STATE_FAULT = 10
+CONTROL_STATE_STOPPED_FOR_COMMAND_AUTHORITY = 11
 
 CONTROL_STATE_LITERALS = {
     CONTROL_STATE_STOPPED: "Stopped",
@@ -42,6 +43,7 @@ CONTROL_STATE_LITERALS = {
     CONTROL_STATE_STOPPED_FOR_GRID_IMPORT: "Stopped for grid import",
     CONTROL_STATE_STOPPED_FOR_STALE_TELEMETRY: "Stopped for stale telemetry",
     CONTROL_STATE_FAULT: "Fault",
+    CONTROL_STATE_STOPPED_FOR_COMMAND_AUTHORITY: "Stopped: command authority blocked",
 }
 
 RUNTIME_STATUS_MQTT_PREFIX = "es-ESS/FroniusWattpilot/RuntimeStatus"
@@ -65,6 +67,10 @@ RUNTIME_STATUS_DBUS_DEFAULTS = {
     "/TelemetryHealthy": 0,
     "/CompatibilityOk": 0,
     "/CompatibilityLiteral": "Unverified",
+    "/CommandAuthorityOk": 0,
+    "/CommandAuthorityLiteral": "Unverified",
+    "/NativePvSurplusEnabled": -1,
+    "/FlexibleTariffEnabled": -1,
     "/ExpectedVenusOsVersion": RuntimeCompatibility.VALIDATED_VENUS_OS_VERSIONS_LITERAL,
     "/ActualVenusOsVersion": "Unavailable",
     "/ExpectedWattpilotFirmware": RuntimeCompatibility.VALIDATED_WATTPILOT_FIRMWARE,
@@ -82,6 +88,10 @@ RUNTIME_STATUS_TOPIC_SUFFIXES = {
     "/TelemetryHealthy": "TelemetryHealthy",
     "/CompatibilityOk": "CompatibilityOk",
     "/CompatibilityLiteral": "CompatibilityLiteral",
+    "/CommandAuthorityOk": "CommandAuthorityOk",
+    "/CommandAuthorityLiteral": "CommandAuthorityLiteral",
+    "/NativePvSurplusEnabled": "NativePvSurplusEnabled",
+    "/FlexibleTariffEnabled": "FlexibleTariffEnabled",
     "/ExpectedVenusOsVersion": "ExpectedVenusOsVersion",
     "/ActualVenusOsVersion": "ActualVenusOsVersion",
     "/ExpectedWattpilotFirmware": "ExpectedWattpilotFirmware",
@@ -105,6 +115,10 @@ class RuntimeStatusSnapshot:
     telemetry_healthy: int
     compatibility_ok: int
     compatibility_literal: str
+    command_authority_ok: int
+    command_authority_literal: str
+    native_pv_surplus_enabled: int
+    flexible_tariff_enabled: int
     expected_venus_os_version: str
     actual_venus_os_version: str
     expected_wattpilot_firmware: str
@@ -122,6 +136,10 @@ class RuntimeStatusSnapshot:
             "/TelemetryHealthy": self.telemetry_healthy,
             "/CompatibilityOk": self.compatibility_ok,
             "/CompatibilityLiteral": self.compatibility_literal,
+            "/CommandAuthorityOk": self.command_authority_ok,
+            "/CommandAuthorityLiteral": self.command_authority_literal,
+            "/NativePvSurplusEnabled": self.native_pv_surplus_enabled,
+            "/FlexibleTariffEnabled": self.flexible_tariff_enabled,
             "/ExpectedVenusOsVersion": self.expected_venus_os_version,
             "/ActualVenusOsVersion": self.actual_venus_os_version,
             "/ExpectedWattpilotFirmware": self.expected_wattpilot_firmware,
@@ -500,6 +518,10 @@ class WattpilotRuntimeStatusReporter:
             telemetry_healthy=0,
             compatibility_ok=0,
             compatibility_literal="Unverified",
+            command_authority_ok=0,
+            command_authority_literal="Unverified",
+            native_pv_surplus_enabled=-1,
+            flexible_tariff_enabled=-1,
             expected_venus_os_version=RuntimeCompatibility.VALIDATED_VENUS_OS_VERSIONS_LITERAL,
             actual_venus_os_version="Unavailable",
             expected_wattpilot_firmware=RuntimeCompatibility.VALIDATED_WATTPILOT_FIRMWARE,
@@ -525,6 +547,9 @@ class WattpilotRuntimeStatusReporter:
     def snapshot(self) -> RuntimeStatusSnapshot:
         phase_mode, phase_literal = self._phase_mode()
         compatibility_ok = int(self._compatibility_ok())
+        command_authority_ok, command_authority_literal = self._command_authority()
+        native_pv_surplus_enabled = self._strict_bool_state("nativePvSurplusEnabled")
+        flexible_tariff_enabled = self._strict_bool_state("flexibleTariffEnabled")
         telemetry_healthy = int(
             self._telemetry_healthy() and bool(compatibility_ok)
         )
@@ -562,6 +587,10 @@ class WattpilotRuntimeStatusReporter:
             compatibility_literal=(
                 "Validated" if compatibility_ok else "Blocked: version mismatch or unavailable"
             ),
+            command_authority_ok=int(command_authority_ok),
+            command_authority_literal=command_authority_literal,
+            native_pv_surplus_enabled=native_pv_surplus_enabled,
+            flexible_tariff_enabled=flexible_tariff_enabled,
             expected_venus_os_version=str(
                 getattr(
                     self.controller,
@@ -609,6 +638,9 @@ class WattpilotRuntimeStatusReporter:
             return CONTROL_STATE_STOPPED
 
         auto_mode = self._is_auto_mode()
+        command_authority_ok, _literal = self._command_authority()
+        if auto_mode and not command_authority_ok:
+            return CONTROL_STATE_STOPPED_FOR_COMMAND_AUTHORITY
         if not self._wattpilot_connected():
             return CONTROL_STATE_STOPPED
 
@@ -705,6 +737,23 @@ class WattpilotRuntimeStatusReporter:
         if hasattr(self.controller, "wattpilotFirmwareCompatible"):
             return bool(getattr(self.controller, "wattpilotFirmwareCompatible"))
         return True
+
+    def _command_authority(self) -> Tuple[bool, str]:
+        method = getattr(self.controller, "commandAuthorityStatus", None)
+        if callable(method):
+            try:
+                ok, literal = method()
+                return bool(ok), str(literal)
+            except Exception:
+                return False, "Blocked: command authority unavailable"
+        return True, "Validated"
+
+    def _strict_bool_state(self, attribute: str) -> int:
+        wattpilot = getattr(self.controller, "wattpilot", None)
+        value = getattr(wattpilot, attribute, None)
+        if type(value) is not bool:
+            return -1
+        return int(value)
 
     def _telemetry_healthy(self) -> bool:
         if not self.runtime_state_ready or not self._wattpilot_connected():
