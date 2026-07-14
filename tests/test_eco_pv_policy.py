@@ -465,6 +465,80 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.set_phases.assert_called_once_with(2)
         controller.wattpilot.set_power.assert_called_once_with(7)
 
+    def test_transient_disconnect_preserves_phase_up_candidate(self):
+        controller = self._controller()
+        controller.phaseSwitchCandidateMode = 2
+        controller.phaseSwitchCandidateSince = 100
+        controller.phaseSwitchBelowThresholdSince = 105
+        controller.lastConfirmedCarConnected = True
+        controller.wattpilot.carConnected = False
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.updateEffectiveCarConnection())
+        with patch.object(self.fwp.time, "time", return_value=110):
+            effective_connected = controller.updateEffectiveCarConnection()
+
+        self.assertTrue(effective_connected)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 2)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 100)
+        self.assertEqual(controller.phaseSwitchBelowThresholdSince, 105)
+
+    def test_confirmed_disconnect_requires_a_new_phase_up_stability_timer(self):
+        controller = self._controller()
+        controller.minimumPhaseSwitchSeconds = 120
+        controller.lastPhaseSwitchTime = -120
+        self._set_allowance(controller, 4200, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(controller.phaseSwitchCandidateMode, 2)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 100)
+        controller.phaseSwitchBelowThresholdSince = 105
+        controller.wattpilot.set_power.reset_mock()
+
+        with patch.object(self.fwp.time, "time", return_value=110):
+            result = controller._handleDisconnected()
+
+        self.assertFalse(result)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 0)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 0)
+        self.assertEqual(controller.phaseSwitchBelowThresholdSince, 0)
+        self.assertEqual(controller.lastPhaseSwitchTime, -120)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+
+        controller.wattpilot.carConnected = True
+        controller.lastConfirmedCarConnected = True
+        controller.effectiveCarConnected = True
+        self._set_allowance(controller, 4200, 220)
+        with patch.object(self.fwp.time, "time", return_value=220):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 2)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 220)
+        controller.wattpilot.set_phases.assert_not_called()
+
+        self._set_allowance(controller, 4200, 339)
+        with patch.object(self.fwp.time, "time", return_value=339):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        controller.wattpilot.set_phases.assert_not_called()
+
+        self._set_allowance(controller, 4200, 340)
+        with patch.object(self.fwp.time, "time", return_value=340):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(
+            status,
+            self.fwp.VrmEvChargerStatus.SwitchingTo3Phase,
+        )
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+
     def test_short_safe_phase_up_dip_preserves_candidate_timer(self):
         controller = self._controller()
         controller.minimumPhaseSwitchSeconds = 120

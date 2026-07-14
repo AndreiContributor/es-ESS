@@ -313,6 +313,12 @@ Future Wattpilot changes must preserve these invariants:
 - A confirmed physical vehicle disconnect must stop Auto/Eco current and phase
   control even if Wattpilot briefly continues to report a stale active charging
   model status.
+- A confirmed physical vehicle disconnect also clears every pending phase-switch
+  stability candidate, including its below-threshold grace timestamp. A
+  reconnect must build a new complete `MinPhaseSwitchSeconds` interval from
+  fresh assigned PV; transient false connection telemetry inside
+  `CarDisconnectConfirmSeconds` does not clear the candidate, and the last
+  confirmed phase-command cooldown remains unchanged.
 - Raw overhead may help with a safe three-to-one fallback, but must not start
   charging or authorize a phase-up.
 - Assigned Wattpilot allowance is authoritative for whether the consumer owns

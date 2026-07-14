@@ -800,6 +800,7 @@ class FroniusWattpilot (esESSService):
         self.clearChargeCompleteHold("car disconnected")
         self.clearPowerTransitionGrace()
         self.clearPendingPhaseSwitch()
+        self.clearPhaseSwitchCandidate()
         # Safety telemetry was published before state dispatch in this duty
         # cycle. Republish the cleared values now because idle mode may defer
         # the next normal update for up to five minutes.

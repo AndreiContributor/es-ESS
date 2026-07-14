@@ -93,6 +93,22 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-13 - Reset Wattpilot Phase-Switch Candidates On Confirmed Disconnect
+
+- Confirmed disconnect now clears the phase-switch candidate mode, stability
+  timestamp, and below-threshold grace without issuing a Wattpilot command or
+  resetting the last confirmed phase-command cooldown.
+- Transient false connection telemetry inside `CarDisconnectConfirmSeconds`
+  continues to preserve the candidate, while reconnect must build a new full
+  `MinPhaseSwitchSeconds` interval from fresh assigned PV.
+- Added handler characterization and end-to-end disconnect/reconnect timer
+  regressions, and documented the confirmed-disconnect contract in the
+  architecture and README.
+- Verification passed: affected-file syntax compilation, 128 focused
+  safety/controller/backlog tests, and the full 273-test hardware-free suite.
+- Active-charging GX validation remains outstanding until a supervised daylight
+  window naturally provides sufficient PV for the phase-up scenario.
+
 ### Completed 2026-07-13 - Add Freshness Guard For Battery-Assist SOC
 
 - Production GX validation found that unchanged SOC is not periodically
@@ -533,113 +549,6 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   full tests passed. MQTT/orchestration reliability remained separate in PR 4.
 
 ## Backlog
-
-### P1 - Reset Wattpilot Phase-Switch Candidates On Confirmed Disconnect
-
-Goal:
-
-Require a new continuous-PV phase-up interval after a confirmed vehicle
-disconnect so stale phase-switch eligibility cannot command a reconnecting car.
-
-Problem:
-
-The confirmed-disconnect handler clears pending phase commands and transition
-state but leaves `phaseSwitchCandidateSince` intact. Idle mode then stops normal
-controller evaluation, so an old one-to-three candidate can mature while no car
-is connected. On reconnect, one fresh allowance cycle can issue the three-phase
-command instead of rebuilding the configured continuous-condition timer.
-
-Evidence:
-
-- Production log evidence from 2026-07-13 shows a phase-up candidate beginning
-  at 09:30:48 UTC, confirmed disconnect at 09:34:08, reconnect at 09:48:59,
-  and a physical one-to-three switch at 09:49:04 after only one fresh
-  distributor cycle. PV was sufficient, so no grid-use incident occurred, but
-  the configured 600-second continuous-condition rule was bypassed.
-- `FroniusWattpilot.py:_handleDisconnected()` clears battery assist, transition
-  grace, and the pending phase switch but does not call
-  `clearPhaseSwitchCandidate()`.
-- `adjustChargeForPvAllowance()` reuses the retained candidate timestamp once
-  fresh allowance reaches the full phase-up threshold.
-- `tests/test_wattpilot_dispatch.py` characterizes disconnect resets but does
-  not require the phase-switch candidate to clear, and the Eco/PV policy tests
-  do not cover disconnect/reconnect between candidate creation and phase-up.
-
-Implementation:
-
-- Call `clearPhaseSwitchCandidate()` only from the confirmed-disconnect handler.
-- Preserve `lastPhaseSwitchTime`, the 15-second transient-disconnect confirmation,
-  current/phase command ownership, and the intentional battery-assist rule that
-  may retain an existing candidate during an already-running charge.
-- Require reconnect to receive fresh assigned allowance and build a new full
-  `MinPhaseSwitchSeconds` candidate before a one-to-three command.
-- Document candidate reset as part of the confirmed-disconnect safety contract.
-
-Files to change:
-
-- `FroniusWattpilot.py`
-- `docs/wattpilot-architecture.md`
-- `README.md`
-- `BACKLOG.md`
-- `tests/test_wattpilot_dispatch.py`
-- `tests/test_eco_pv_policy.py`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Extend the disconnect-handler characterization to require
-  `clearPhaseSwitchCandidate()` exactly once after confirmed disconnect.
-- Add a hardware-free policy regression that creates a one-to-three candidate,
-  confirms disconnect, reconnects with full fresh PV, proves no phase command
-  occurs before a new complete timer, and proves phase-up is allowed afterward.
-- Use the existing isolated Victron/D-Bus/MQTT/Wattpilot stub pattern; no real
-  broker, D-Bus, WebSocket, or hardware is used in CI.
-
-Expected coverage:
-
-- Proves disconnected wall-clock time cannot satisfy phase-up stability and
-  reconnect requires a new continuous-PV interval.
-- Existing passing tests remain unchanged.
-
-Manual validation:
-
-Active charging required in a supervised daylight window with sufficient PV;
-do not force grid import or alter unrelated ESS behavior.
-
-Manual test steps:
-
-1. Start a normal one-phase Auto/Eco charge and allow a phase-up candidate to
-   begin without letting it mature.
-2. Disconnect the vehicle long enough for the configured confirmation period.
-3. Reconnect while full phase-up PV is naturally available.
-4. Confirm no three-phase command occurs until a new complete
-   `MinPhaseSwitchSeconds` interval has elapsed.
-
-Risks and dependencies:
-
-- Clearing too early on transient telemetry could create unnecessary phase-up
-  delay; reset only after physical disconnect is confirmed.
-- Do not reset `lastPhaseSwitchTime` or alter candidate preservation during an
-  eligible battery-assist bridge for an already-running charge.
-- No other backlog item must land first.
-
-Open questions:
-
-- None; production telemetry proves the state leak and the documented
-  continuous-condition timer defines the required reset.
-
-Done criteria:
-
-- Confirmed disconnect clears every phase-switch candidate without issuing a
-  Wattpilot command.
-- Reconnect cannot phase-up until fresh assigned PV satisfies a new complete
-  stability interval.
-- Transient disconnect handling, Manual ownership, no-grid safety, bounded
-  battery assist, and public runtime-status contracts remain unchanged.
-- Full unittest suite passes.
 
 ### P3 - Publish Stopped Runtime State After Confirmed Vehicle Disconnect
 
@@ -2059,8 +1968,6 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-27. P1 reset Wattpilot phase-switch candidates on confirmed disconnect — close
-    the production-observed timer leak before other controller work.
 9. P2 define safe control for unclassified charging model statuses — obtain
    firmware evidence and encode explicit no-grid-safe mappings.
 10. P2 publish null and disconnected on all meter failure modes — stop frozen
