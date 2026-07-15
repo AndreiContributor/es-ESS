@@ -52,11 +52,14 @@ Current validated state:
 - Manual charging remains user-controlled. Direct current/start/stop writes
   fail closed unless Wattpilot telemetry confirms ECO mode; a one-time release
   of stale Auto/Eco limits on entry to Manual is the sole approved exception.
-- The native Eco/es-ESS command-ownership guard is implemented and merged on
-  `main`; supervised daylight validation of that boundary remains open.
-  Additional Wattpilot work includes explicit policy for unclassified charging
-  statuses and the independent mode-boundary, battery-heartbeat, and natural
-  winter observation tasks below.
+- The native Eco/es-ESS command-ownership guard is implemented, merged on
+  `main`, and live-validated on 2026-07-15. With native PV surplus and flexible
+  tariff disabled, VRM web Auto selection established sole-owner authority;
+  supervised one-phase current control, phase-up, safe phase-down, Manual
+  release, and final disconnected restoration all passed without intentional
+  grid charging. Additional Wattpilot work includes explicit policy for
+  unclassified charging statuses and the independent mode-boundary,
+  battery-heartbeat, and natural winter observation tasks below.
 - The 2026-07-12 review confirmed additional crash, device-control, stale-data,
   persistence, configuration, security, and test-coverage work. Items with
   site-specific limits or uncertain Wattpilot protocol meaning retain explicit
@@ -102,6 +105,36 @@ Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
+### Completed 2026-07-15 - Live-Validate Implemented Auto/Eco Command Ownership
+
+- Completed Gate 2 on production Venus OS `v3.75`, Wattpilot firmware `42.5`,
+  and Solar.wattpilot app `2.1.0` with `AllowGridCharging=false`.
+- With the vehicle disconnected and native `Use PV surplus` enabled, the
+  runtime reported `/CommandAuthorityOk=0`, identified the conflicting native
+  setting, and issued no positive-current or phase command. After both native
+  PV and flexible tariff were disabled, selecting Auto from the VRM web EVCS
+  tile produced stable raw `lmo=4`, both native observations at `0`, and
+  `/CommandAuthorityOk=1`.
+- Supervised active charging followed es-ESS one-phase requests from 13 A
+  through 16 A without a native current rewrite. The es-ESS 600-second
+  candidate alone authorized the transition to three phases, live telemetry
+  confirmed three-phase charging, and a later assigned-allowance loss produced
+  a safe confirmed phase-down. Grid guard remained inactive, grid exchange
+  stayed near the normal target, and the only observed battery assist was a
+  small bounded continuation bridge while the home battery remained charging.
+- Standard/Manual selection produced the approved one-time release without
+  repeated control commands. Solar.wattpilot app `2.1.0` could not reselect Eco
+  with both native Eco options disabled, so the validated commissioning path is
+  VRM web dashboard -> EVCS tile/module -> Auto. Firmware status `114` and its
+  persistent orange/yellow Eco LED flash are documented as an expected visual
+  artifact only while authority and telemetry remain healthy.
+- The window ended with the vehicle disconnected, Auto selected, zero EV
+  power/current, stopped control state, unknown phase, healthy telemetry,
+  validated compatibility, sole-owner authority, and no recent errors. Unsafe
+  authority-loss simulation during an active charge was deliberately not
+  forced; the disconnected conflicting-authority preflight plus automated
+  command-boundary tests provide the fail-closed evidence.
 
 ### Completed 2026-07-14 - Clear Public Wattpilot Phase State After Confirmed Disconnect
 
@@ -1331,7 +1364,7 @@ Done criteria:
   unchanged.
 - Full unittest suite passes.
 
-### P2 - Live-Validate Implemented Auto/Eco Command Ownership
+#### Implementation record - completed 2026-07-15: Live-Validate Implemented Auto/Eco Command Ownership
 
 Goal:
 
@@ -1344,9 +1377,10 @@ Implementation status:
 - The fail-closed authority implementation is merged on `main` through PR #70
   (`c01a783`). Hardware-free command-boundary, policy, runtime-status,
   configuration-contract, and full-suite verification passed before merge.
-- Gate 1 command-free setting capture is complete. Only Gate 2
-  vehicle-disconnected preflight and supervised daylight active-charging
-  validation remain before this item can close.
+- Gate 1 command-free setting capture and Gate 2 vehicle-disconnected preflight
+  plus supervised daylight active-charging validation are complete. The final
+  production state restored sole-owner Auto authority with the vehicle
+  disconnected.
 
 Problem:
 
@@ -1466,10 +1500,13 @@ Investigation progress 2026-07-14:
 - Added actionable D-Bus/MQTT diagnostics for authority and both native-setting
   observations, a distinct stopped-for-authority runtime state, health-monitor
   output, focused regression coverage, and updated operator documentation.
-- Gate 1 is complete and the original production settings/service health were
-  restored. Gate 2 vehicle-disconnected preflight and supervised active
-  one-phase/phase ownership validation remain required before closing this
-  backlog item.
+- Gate 1 completed the protected setting capture. Gate 2 on 2026-07-15 proved
+  the disconnected invalid-authority block, sole-owner Auto commissioning,
+  es-ESS current ownership across 13-16 A, the full 600-second phase-up
+  candidate and telemetry-confirmed three-phase transition, safe phase-down,
+  bounded assist behavior, Manual one-time release, and final disconnected
+  restoration. No intentional grid charging or native command rewrite was
+  observed.
 
 Files to change:
 
@@ -1540,19 +1577,21 @@ Risks and dependencies:
 - The stopped/phase runtime-state cleanup is completed observer behavior and is
   independent of this command-ownership validation.
 
-Open questions:
+Resolved questions:
 
-- Does ECO accept forced `frc`, `amp`, and `psm` commands when both native PV
-  surplus and flexible tariff are disabled?
-- Does native regulation rewrite command values after acknowledgement, and can
-  that state be detected read-only before es-ESS enables Auto control?
-- Does firmware keep `fup=false` and `ful=false` stable after GX/VRM selects
-  Auto (`lmo=4`), given that disabling native PV moved the app to Standard?
-- A firmware phase-enable field was not identified because app `2.1.0` locks
-  that control under the selected Opel Corsa-e profile. The implemented guard
-  therefore authorizes phase commands only from the two validated native
-  controller-disable flags and still requires supervised phase ownership
-  evidence before completion.
+- ECO accepted es-ESS `frc`, `amp`, and `psm` commands with native PV surplus
+  and flexible tariff disabled. Charging followed changing 13-16 A requests
+  and the es-ESS-timed phase transition.
+- Native regulation did not rewrite the acknowledged es-ESS current or phase
+  requests during the supervised window. Read-only `fup`/`ful` observations and
+  raw ECO mode provided the pre-command authority gate.
+- Firmware kept `fup=false` and `ful=false` stable after VRM web selected Auto
+  (`lmo=4`). Solar.wattpilot app `2.1.0` cannot select Eco with both options off;
+  VRM web dashboard -> EVCS tile/module -> Auto is the validated transition.
+- The selected Opel Corsa-e profile still hides the app phase control, but live
+  evidence showed that only the es-ESS 600-second candidate issued phase-up and
+  that telemetry confirmed both the three-phase result and later safe
+  phase-down.
 
 Done criteria:
 
@@ -1797,9 +1836,6 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-30. P2 live-validate implemented Auto/Eco command ownership — confirm the
-    merged fail-closed native-controller boundary during supervised daylight
-    charging before closing its commissioning guidance.
 9. P2 define safe control for unclassified charging model statuses — obtain
    firmware evidence and encode explicit no-grid-safe mappings.
 24. P4 audit and pin the Victron `velib_python` dependency — establish v3.75
@@ -1821,9 +1857,6 @@ occur; an inconclusive window is preferable to forcing production behavior:
 
 Hardware validation scope for the remaining backlog:
 
-- The P2 implemented native-PV command-ownership guard requires supervised
-  daylight active charging after the completed read-only protocol-field capture
-  and a vehicle-disconnected preflight.
 - Unclassified Wattpilot charging statuses require firmware evidence before a
   policy change; unit tests remain the primary verifier if a rare status cannot
   be reproduced safely.
@@ -1860,8 +1893,6 @@ The authoritative manual work is now attached to the corresponding open item:
 
 - **Fault simulation, vehicle disconnected:** complete local and remote
   Wattpilot mode-boundary correlation.
-- **Active charging required:** live-validate the implemented single Auto/Eco
-  command-ownership guard against native Solar.wattpilot PV regulation.
 - **Log-only:** validate the future `velib_python` provenance/import change on
   the supported Venus OS release.
 - **Active charging required under natural conditions:** winter-validate
@@ -1873,8 +1904,7 @@ The authoritative manual work is now attached to the corresponding open item:
 The general Venus OS `v3.75` daylight Auto/Eco PV-surplus, no-grid, battery-
 assist, current-reduction, and naturally available phase-switch validation is
 complete and is not a separate outstanding item. The native-PV command-
-ownership guard is implemented; its supervised Gate 2 live validation remains
-open under its own P2 item.
+ownership guard and its supervised Gate 2 live validation are also complete.
 
 - The complete operator behavior checklist remains in README and the safety
   invariants remain in `docs/wattpilot-architecture.md`.

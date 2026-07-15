@@ -556,9 +556,20 @@ Before enabling Auto/Eco PV control:
   as `fup=false` and `ful=false`. Missing, malformed, or enabled values block
   es-ESS Auto/Eco commands.
 - Disabling native PV may move the wallbox from Eco to Standard. After both
-  native switches are off, select Auto from GX/VRM. es-ESS permits that
-  user-requested `lmo=4` transition only when both settings are confirmed off.
-  Do not connect the vehicle until `/CommandAuthorityOk=1`.
+  native switches are off, select Auto from the VRM web dashboard: click the
+  EVCS tile/module and use its mode control. The VRM mobile app did not expose
+  this mode control during operator validation on 2026-07-15. Solar.wattpilot
+  app `2.1.0` also refuses to activate Eco while both Eco options are off, so
+  it cannot perform this transition. es-ESS permits the VRM-requested `lmo=4`
+  transition only when both settings are confirmed off. Do not connect the
+  vehicle until `/CommandAuthorityOk=1`.
+- Firmware `42.5` reports native status `114` whenever raw Eco mode is active
+  while both native PV surplus and flexible tariff are disabled. The Eco LED
+  therefore flashes orange/yellow and may continue flashing while es-ESS is
+  successfully charging. This is an expected single-owner commissioning
+  artifact when `/CommandAuthorityOk=1`, both native-setting paths are `0`, and
+  telemetry is healthy; it does not authorize ignoring a red LED, another
+  status code, unhealthy telemetry, or lost command authority.
 - Do not treat Wattpilot's native PV-start threshold as a command-ownership
   boundary. Production evidence with firmware `42.5` and Solar.wattpilot app
   `2.1.0` showed that native PV regulation can still hold charging near its
