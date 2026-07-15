@@ -54,7 +54,10 @@ starts, current increases, and phase-up while retaining safe stop commands.
 
 The runtime also owns the shared D-Bus monitor, main MQTT client, local Venus
 MQTT client, worker scheduling, service messages, and combined grid-setpoint
-requests.
+requests. Both MQTT clients start with non-blocking initial connections and
+bounded reconnect backoff, so broker boot ordering does not terminate es-ESS.
+Successful main-broker connections and reconnects republish the retained
+runtime identity/status metadata before restoring main subscriptions.
 
 Logging bootstrap makes one bounded, read-only `GetValue` query to
 `com.victronenergy.settings` `/Settings/System/TimeZone`. That named Venus

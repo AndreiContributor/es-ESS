@@ -215,6 +215,13 @@ the credential-bearing file cannot be secured.
 | [Services]               | ShellyPMInverter                 | Flag, if [ShellyPMInverter](#shellypminverter) is enabled.                                                      | Boolean       | true                         |
 | [Services]               | MqttPVInverter            | Flag, if [MqttPvInverter](#mqttpvinverter) is enabled.                                            | Boolean       | true                         |
 
+Main and local MQTT connections start asynchronously with bounded automatic
+reconnect backoff. If either broker is not yet listening during GX startup,
+es-ESS continues initialization after the bounded startup wait and restores
+retained runtime metadata and subscriptions when the broker becomes available.
+Repeated failures remain visible in deduplicated logs; TLS verification and
+authentication policies are not weakened during retry.
+
 #### Startup value validation
 
 After applying configuration migrations, es-ESS validates safety-sensitive
