@@ -17,8 +17,9 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional, TextIO
 
@@ -134,6 +135,8 @@ class ProgressReporter:
 LOG_LINE_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2}) "
     r"(?P<time>\d{2}:\d{2}:\d{2}),(?P<millis>\d+) "
+    r"(?:\(UTC(?P<offset_sign>[+-])(?P<offset_hours>\d{1,2})"
+    r"(?::(?P<offset_minutes>\d{2}))?\) )?"
     r"(?P<level>[A-Z_]+) (?P<message>.*)$"
 )
 ALLOWANCE_RE = re.compile(
@@ -337,12 +340,41 @@ class AuditResult:
         return asdict(self)
 
 
+def _localize_wall_datetime(value: datetime) -> datetime:
+    """Attach the device's historical local offset to a naive wall time."""
+    seconds = time.mktime(value.timetuple()) + value.microsecond / 1_000_000
+    return datetime.fromtimestamp(seconds).astimezone()
+
+
 def parse_log_timestamp(match: re.Match[str]) -> datetime:
     base = datetime.strptime(
         f"{match.group('date')} {match.group('time')}", "%Y-%m-%d %H:%M:%S"
     )
     millis_text = match.group("millis")[:3].ljust(3, "0")
-    return base + timedelta(milliseconds=int(millis_text))
+    base += timedelta(milliseconds=int(millis_text))
+
+    if match.group("offset_sign") is None:
+        return _localize_wall_datetime(base)
+
+    hours = int(match.group("offset_hours"))
+    minutes = int(match.group("offset_minutes") or "0")
+    offset = timedelta(hours=hours, minutes=minutes)
+    if match.group("offset_sign") == "-":
+        offset = -offset
+    return base.replace(tzinfo=timezone(offset))
+
+
+def _align_window_to_timestamp(
+    timestamp: datetime, window_start: datetime, window_end: datetime
+) -> tuple[datetime, datetime]:
+    if timestamp.tzinfo is not None and window_start.tzinfo is None:
+        return (
+            _localize_wall_datetime(window_start),
+            _localize_wall_datetime(window_end),
+        )
+    if timestamp.tzinfo is None and window_start.tzinfo is not None:
+        return window_start.replace(tzinfo=None), window_end.replace(tzinfo=None)
+    return window_start, window_end
 
 
 def _load_log_path(
@@ -377,7 +409,10 @@ def _load_log_path(
             if match:
                 current_record = None
                 timestamp = parse_log_timestamp(match)
-                if not (window_start <= timestamp < window_end):
+                comparable_start, comparable_end = _align_window_to_timestamp(
+                    timestamp, window_start, window_end
+                )
+                if not (comparable_start <= timestamp < comparable_end):
                     continue
                 record = LogRecord(
                     timestamp=timestamp,
@@ -468,7 +503,7 @@ def resolve_window(
     hours: Optional[float],
     now: Optional[datetime] = None,
 ) -> tuple[str, datetime, datetime, str]:
-    now = now or datetime.now()
+    now = now or datetime.now().astimezone()
     if hours is not None:
         if hours < 24:
             raise ValueError("--hours must be at least 24 for a complete report")
@@ -487,8 +522,14 @@ def resolve_window(
             raise ValueError("--date must be today, yesterday, or YYYY-MM-DD")
         selected = parsed.date()
 
-    start = datetime.combine(selected, datetime.min.time())
-    end = start + timedelta(days=1)
+    wall_start = datetime.combine(selected, datetime.min.time())
+    wall_end = wall_start + timedelta(days=1)
+    if now.tzinfo is None:
+        start = wall_start
+        end = wall_end
+    else:
+        start = _localize_wall_datetime(wall_start)
+        end = _localize_wall_datetime(wall_end)
     return selected.isoformat(), start, end, "calendar-day"
 
 
@@ -498,7 +539,20 @@ def coverage_problem(
     window_end: datetime,
     now: Optional[datetime] = None,
 ) -> Optional[str]:
-    now = now or datetime.now()
+    if records:
+        window_start, window_end = _align_window_to_timestamp(
+            records[0].timestamp, window_start, window_end
+        )
+    if now is None:
+        now = (
+            datetime.now().astimezone()
+            if window_end.tzinfo is not None
+            else datetime.now()
+        )
+    elif window_end.tzinfo is not None and now.tzinfo is None:
+        now = _localize_wall_datetime(now)
+    elif window_end.tzinfo is None and now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
     if window_end > now:
         return (
             "The selected calendar day has not finished. Analyze yesterday after "
@@ -547,6 +601,10 @@ def calculate_coverage_metadata(
     window_start: datetime,
     analysis_cutoff: datetime,
 ) -> tuple[float, float, float]:
+    if records:
+        window_start, analysis_cutoff = _align_window_to_timestamp(
+            records[0].timestamp, window_start, analysis_cutoff
+        )
     elapsed_seconds = max(
         0.0, (analysis_cutoff - window_start).total_seconds()
     )
@@ -2575,7 +2633,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         enabled=not args.no_progress and sys.stderr.isatty()
     )
     progress.update(0, "Reading configuration")
-    report_now = datetime.now()
+    report_now = datetime.now().astimezone()
     config_path = Path(args.config)
     settings, config_warnings = load_settings(config_path)
     if settings.log_level not in VERBOSE_LOG_LEVELS:

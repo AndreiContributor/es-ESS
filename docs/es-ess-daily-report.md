@@ -23,6 +23,7 @@ To prepare production evidence:
 ```ini
 [Common]
 LogLevel=APP_DEBUG
+LogRetentionDays=10
 ```
 
 Restart es-ESS, leave it running for at least one complete day, and analyze
@@ -37,6 +38,9 @@ An `INFO` log, a filtered `grep` excerpt, or a truncated historical file is not
 enough evidence. A partial-today report clearly identifies its requested
 period, analysis cutoff, first/last evidence, evidence duration, span coverage,
 and the next midnight when a complete calendar-day report becomes available.
+Choose `LogRetentionDays` long enough to cover the dates you intend to analyze.
+The current local day counts toward that setting; the maintained value `10`
+keeps `current.log` plus at most nine dated daily rotations.
 
 ## Read-Only Boundary
 
@@ -55,6 +59,12 @@ rejects service control and every D-Bus operation except the allowlisted
 without invoking even those optional read commands. Each snapshot command has a
 two-second timeout. After three consecutive D-Bus timeouts, remaining snapshot
 paths are marked unavailable and historical analysis continues.
+
+New log records use local wall time with the applicable offset, for example
+`2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG ...`. The analyzer uses that offset
+to order records and calculate durations across daylight-saving changes. It
+continues to accept pre-upgrade records that do not contain an offset, so a
+rotation window spanning the upgrade remains readable.
 
 ## Install And Run
 

@@ -162,7 +162,8 @@ and every backup are restricted to owner-only access (`0600`); the external
 backup directory is restricted to `0700` because these files can contain MQTT
 and Wattpilot credentials.
 
-Tail current log file (log file rotated daily, 14 days kept, see [logging](#logging) for more details): 
+Tail the current log file (rotated at local midnight and retained according to
+`[Common] LogRetentionDays`, see [logging](#logging) for details):
 ```
 tail -f -n 20 /data/log/es-ESS/current.log
 ```
@@ -182,9 +183,10 @@ the credential-bearing file cannot be secured.
 | Section                  | Value name           |  Descripion                                                                                            | Type          | Example Value                |
 | ------------------------ | ---------------------|------------------------------------------------------------------------------------------------------- | ------------- |------------------------------|
 | [Common]                 | LogLevel             | LogLevel to use. See [Logging](#logging) use `INFO` if you are unsure.                                 | String        | INFO                         |  
+| [Common]                 | LogRetentionDays     | Number of local calendar days retained, including the active `current.log`. Must be greater than `0`. | Integer       | 10                           |
 | [Common]                 | NumberOfThreads      | Number of Threads to use. 3-XX depending on enabled service count.                                     | Integer       | 5                            |
 | [Common]                 | ServiceMessageCount  | Number of ServiceMessages to publish on Mqtt. See [Service Messages](#service-messages)                | Integer       | 50                           |
-| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 11                           |
+| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 12                           |
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
 | [Common]                 | BatteryMaxChargeInWh | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
@@ -242,7 +244,8 @@ configuration errors are logged at CRITICAL level and startup exits with status
   `ZeroFeedinScaleStep` must be in `(0, 1]`, `ZeroFeedinDistance` must be
   non-negative, and `ZeroFeedinStartSoc` must be in `0..100`.
 - `[Common] NumberOfThreads` and `HttpRequestTimeout` must be greater than `0`.
-  The finite grid-setpoint bounds must contain `DefaultPowerSetPoint`.
+  `LogRetentionDays` must be an integer greater than `0`. The finite
+  grid-setpoint bounds must contain `DefaultPowerSetPoint`.
 
 #### MQTT TLS verification
 
@@ -1349,13 +1352,32 @@ separate implementation, safety review, documentation, and test task.
 
 ### Logging
 es-ESS can log a lot of information helpfull to debug things. For this, the loglevel in the configuration can be adjusted.
-The log file is placed in `/data/logs/es-ESS/current.log` and rotated every day at midnight (UTC). A total of 14 log files is kept, then recycled.
+The log file is placed in `/data/log/es-ESS/current.log` and rotated at local
+midnight. Every line uses the GX device's local wall time and includes the UTC
+offset that applied at that instant, for example:
+
+```text
+2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG ...
+```
+
+The offset follows the device timezone and daylight-saving rules. In Romania,
+for example, the same format reports `(UTC+2)` during winter. This makes the
+repeated autumn hour unambiguous without changing elapsed-time control logic.
+
+`[Common] LogRetentionDays` controls local-calendar retention and defaults to
+`10`. The active `current.log` counts as the current day, so a value of `10`
+keeps at most that file plus nine dated rotations. Expired dated logs are
+removed at startup and after daily rollover. There is deliberately no
+size-based cutoff, because truncating a diagnostic day could discard evidence
+needed by the daily report. Monitor available `/data` storage while running
+verbose levels for stability testing.
 
 > :warning: Having es-ESS running at log level `TRACE` for a long time will produce huge log files and negatively impact system performance. This will log all incoming and outgoing values, we are talking about thausands of lines of log per minute here, depending on enabled services. Rather usefull for development purpose with single service(s) enabled. 
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
 | [Common]    | LogLevel |  Options: TRACE, DEBUG, APP_DEBUG, INFO, WARNING, ERROR, CRITICAL | String | INFO |
+| [Common]    | LogRetentionDays | Local calendar days retained, including `current.log`; must be greater than `0`. | Integer | 10 |
 
 `APP_DEBUG` is a level higher than regular `DEBUG`, so this will surpress Debug messages of third party modules as long as they obey the setup log level.
 
@@ -1375,7 +1397,7 @@ Additionally there are the following configuration options available:
 | ---------- | ---------|---- | ------------- |--|
 | [Common]    | NumberOfThreads |  Number of threads, es-ESS should use. | int | 5 |
 | [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 50 |
-| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 11 |
+| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 12 |
 | [Common]    | HttpRequestTimeout | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers. | double | 5 |
 
 ### Service Messages

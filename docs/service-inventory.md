@@ -33,8 +33,8 @@ and active `[Services]` bootstrap keys and their conversion types before
 constructing MQTT clients, threads, D-Bus services, or integration services.
 It also validates bounded/cross-field Wattpilot values, positive service update
 intervals, positive device polling intervals, MQTT PV stale/zero-feed-in
-values, common thread/HTTP values, TLS trust modes, and configured combined
-grid-setpoint bounds. Invalid bootstrap values are
+values, common thread/HTTP/log-retention values, TLS trust modes, and
+configured combined grid-setpoint bounds. Invalid bootstrap values are
 logged together at CRITICAL level and startup exits with status 1; optional
 sections and settings that already have runtime defaults remain compatible when
 absent.

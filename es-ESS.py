@@ -17,6 +17,85 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
 import ssl
 
+
+DEFAULT_LOG_RETENTION_DAYS = 10
+
+
+def _formatUtcOffset(offset):
+  totalMinutes = int((offset or datetime.timedelta(0)).total_seconds() / 60)
+  sign = "+" if totalMinutes >= 0 else "-"
+  hours, minutes = divmod(abs(totalMinutes), 60)
+  if minutes:
+    return "(UTC{0}{1}:{2:02d})".format(sign, hours, minutes)
+  return "(UTC{0}{1})".format(sign, hours)
+
+
+class LocalTimezoneLogFormatter(logging.Formatter):
+  def formatTime(self, record, datefmt=None):
+    localTime = datetime.datetime.fromtimestamp(record.created).astimezone()
+    timestamp = localTime.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
+    return "{0},{1:03d} {2}".format(
+      timestamp,
+      int(record.msecs),
+      _formatUtcOffset(localTime.utcoffset()),
+    )
+
+
+class LocalCalendarTimedRotatingFileHandler(TimedRotatingFileHandler):
+  def __init__(self, filename, retentionDays):
+    self.retentionDays = retentionDays
+    super().__init__(
+      filename,
+      when="midnight",
+      interval=1,
+      backupCount=retentionDays,
+      utc=False,
+    )
+
+  def _datedLogFiles(self):
+    directory = os.path.dirname(self.baseFilename)
+    prefix = os.path.basename(self.baseFilename) + "."
+    datedFiles = []
+    try:
+      names = os.listdir(directory)
+    except OSError:
+      return datedFiles
+
+    for name in names:
+      if (not name.startswith(prefix)):
+        continue
+      suffix = name[len(prefix):]
+      try:
+        logDate = datetime.datetime.strptime(suffix, "%Y-%m-%d").date()
+      except ValueError:
+        continue
+      datedFiles.append((logDate, os.path.join(directory, name)))
+    return sorted(datedFiles)
+
+  def getFilesToDelete(self):
+    datedFiles = self._datedLogFiles()
+    today = datetime.datetime.now().astimezone().date()
+    oldestRetainedDate = today - datetime.timedelta(days=self.retentionDays - 1)
+    expired = [path for logDate, path in datedFiles if logDate < oldestRetainedDate]
+    retained = [
+      (logDate, path)
+      for logDate, path in datedFiles
+      if logDate >= oldestRetainedDate
+    ]
+    maximumRotatedFiles = max(0, self.retentionDays - 1)
+    excessCount = max(0, len(retained) - maximumRotatedFiles)
+    excess = [path for _logDate, path in retained[:excessCount]]
+    return sorted(set(expired + excess))
+
+  def pruneExpiredLogs(self):
+    failures = []
+    for path in self.getFilesToDelete():
+      try:
+        os.remove(path)
+      except OSError as ex:
+        failures.append((path, ex))
+    return failures
+
 if sys.version_info.major == 2:
     import gobject # type: ignore
 else:
@@ -490,6 +569,17 @@ class esESS:
         if common_number_of_threads is not None and common_number_of_threads <= 0:
             invalid("Common", "NumberOfThreads", "must be greater than 0", common_number_of_threads)
 
+        log_retention_days = integer(
+            "Common", "LogRetentionDays", DEFAULT_LOG_RETENTION_DAYS
+        )
+        if log_retention_days is not None and log_retention_days <= 0:
+            invalid(
+                "Common",
+                "LogRetentionDays",
+                "must be greater than 0",
+                log_retention_days,
+            )
+
         http_request_timeout = number("Common", "HttpRequestTimeout", 5)
         if http_request_timeout is not None and http_request_timeout <= 0:
             invalid("Common", "HttpRequestTimeout", "must be greater than 0", http_request_timeout)
@@ -600,6 +690,7 @@ class esESS:
         required_options = {
             "Common": (
                 "LogLevel",
+                "LogRetentionDays",
                 "NumberOfThreads",
                 "ServiceMessageCount",
                 "VRMPortalID",
@@ -701,6 +792,7 @@ class esESS:
 
         integer("Common", "NumberOfThreads")
         integer("Common", "ServiceMessageCount")
+        integer("Common", "LogRetentionDays")
         number("Common", "DefaultPowerSetPoint")
         integer("Mqtt", "Port")
         if (self.config.has_option("Mqtt", "ThrottlePeriod")):
@@ -904,6 +996,15 @@ class esESS:
                 "Insecure" if localTlsEnabled else "Required",
             )
             self._setConfigDefault("Mqtt", "LocalSslCaFile", "")
+
+        version = 12
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+            self._setConfigDefault(
+                "Common", "LogRetentionDays", str(DEFAULT_LOG_RETENTION_DAYS)
+            )
 
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 
         if (loadedVersion < int(self.config["Common"]["ConfigVersion"])):
@@ -1469,13 +1570,38 @@ def configureLogging(config):
       logLevelString = "INFO"
   logLevel = logging.getLevelName(logLevelString)
 
-  logging.basicConfig(format='%(asctime)s,%(msecs)d %(levelname)s %(message)s',
-                      datefmt='%Y-%m-%d %H:%M:%S',
-                      level=logLevel,
-                      handlers=[
-                        TimedRotatingFileHandler(logDir + "/current.log", when="midnight", interval=1, backupCount=14),
-                        logging.StreamHandler()
-                      ])
+  rawRetentionDays = config.get(
+      "Common", "LogRetentionDays", fallback=str(DEFAULT_LOG_RETENTION_DAYS)
+  )
+  try:
+      logRetentionDays = int(rawRetentionDays)
+      if (logRetentionDays <= 0):
+          raise ValueError()
+  except (TypeError, ValueError):
+      # Full configuration validation reports the invalid setting after
+      # fallback logging is available.
+      logRetentionDays = DEFAULT_LOG_RETENTION_DAYS
+
+  logFormatter = LocalTimezoneLogFormatter(
+      fmt='%(asctime)s %(levelname)s %(message)s',
+      datefmt='%Y-%m-%d %H:%M:%S',
+  )
+  fileHandler = LocalCalendarTimedRotatingFileHandler(
+      logDir + "/current.log", logRetentionDays
+  )
+  streamHandler = logging.StreamHandler()
+  fileHandler.setFormatter(logFormatter)
+  streamHandler.setFormatter(logFormatter)
+
+  logging.basicConfig(
+      level=logLevel,
+      handlers=[fileHandler, streamHandler]
+  )
+
+  for path, exception in fileHandler.pruneExpiredLogs():
+      logging.warning(
+          "Unable to remove expired es-ESS log %s: %s", path, exception
+      )
   
 
   import Helper

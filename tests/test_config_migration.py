@@ -1,6 +1,7 @@
 """Regression tests for es-ESS configuration migrations."""
 
 import configparser
+import logging
 import importlib.util
 import sys
 import tempfile
@@ -202,7 +203,8 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
+        self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["Common"]["GridSetPointMinW"], "0")
         self.assertEqual(migrated["Common"]["GridSetPointMaxW"], "0")
@@ -219,6 +221,7 @@ class ConfigMigrationTests(unittest.TestCase):
             backups,
             [
                 "config.ini.v10.backup",
+                "config.ini.v11.backup",
                 "config.ini.v6.backup",
                 "config.ini.v7.backup",
                 "config.ini.v8.backup",
@@ -237,7 +240,8 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
+        self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["NoBatToEV"]["UseRelay"], "-1")
         self.assertEqual(migrated["MqttPvInverter"]["EnableZeroFeedin"], "false")
@@ -267,7 +271,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["Services"]["Shelly3EMGrid"], "true")
         self.assertEqual(migrated["Services"]["ShellyPMInverter"], "true")
@@ -290,7 +294,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "12")
 
     def test_version_10_removes_obsolete_phase_switch_delay(self):
@@ -306,14 +310,21 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
         self.assertEqual(
             migrated["FroniusWattpilot"]["MinPhaseSwitchSeconds"], "600"
         )
         self.assertFalse(
             migrated.has_option("FroniusWattpilot", "PhaseSwitchDelaySeconds")
         )
-        self.assertEqual(backups, ["config.ini.v10.backup", "config.ini.v9.backup"])
+        self.assertEqual(
+            backups,
+            [
+                "config.ini.v10.backup",
+                "config.ini.v11.backup",
+                "config.ini.v9.backup",
+            ],
+        )
 
     def test_version_11_makes_legacy_tls_compatibility_explicit(self):
         migrated, backups = self._run_migration(
@@ -328,13 +339,113 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "11")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
         self.assertEqual(migrated["Common"]["GridSetPointMinW"], "-50")
         self.assertEqual(migrated["Common"]["GridSetPointMaxW"], "-50")
         self.assertEqual(migrated["Mqtt"]["SslVerification"], "Insecure")
         self.assertEqual(migrated["Mqtt"]["LocalSslVerification"], "Required")
         self.assertEqual(migrated["Mqtt"]["SslCaFile"], "")
-        self.assertEqual(backups, ["config.ini.v10.backup"])
+        self.assertEqual(
+            backups, ["config.ini.v10.backup", "config.ini.v11.backup"]
+        )
+
+    def test_version_12_adds_default_log_retention_without_changing_level(self):
+        migrated, backups = self._run_migration(
+            """
+            [Common]
+            ConfigVersion=11
+            LogLevel=APP_DEBUG
+            """
+        )
+
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
+        self.assertEqual(migrated["Common"]["LogLevel"], "APP_DEBUG")
+        self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
+        self.assertEqual(backups, ["config.ini.v11.backup"])
+
+    def test_version_12_preserves_existing_log_retention(self):
+        migrated, _backups = self._run_migration(
+            """
+            [Common]
+            ConfigVersion=11
+            LogRetentionDays=21
+            """
+        )
+
+        self.assertEqual(migrated["Common"]["LogRetentionDays"], "21")
+
+
+class LoggingConfigurationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _install_runtime_stubs()
+        cls.es_ess = _load_es_ess_module()
+
+    def test_formatter_uses_local_time_with_human_readable_utc_offset(self):
+        record = logging.LogRecord(
+            "es-ess", 11, __file__, 1, "diagnostic", (), None
+        )
+        record.levelname = "APP_DEBUG"
+        record.created = 1784130130.123
+        record.msecs = 123
+        local_time = self.es_ess.datetime.datetime.fromtimestamp(
+            record.created
+        ).astimezone()
+        expected = "{0},123 {1} APP_DEBUG diagnostic".format(
+            local_time.strftime("%Y-%m-%d %H:%M:%S"),
+            self.es_ess._formatUtcOffset(local_time.utcoffset()),
+        )
+        formatter = self.es_ess.LocalTimezoneLogFormatter(
+            "%(asctime)s %(levelname)s %(message)s",
+            "%Y-%m-%d %H:%M:%S",
+        )
+
+        self.assertEqual(formatter.format(record), expected)
+
+    def test_offset_format_supports_whole_and_partial_hour_timezones(self):
+        timedelta = self.es_ess.datetime.timedelta
+
+        self.assertEqual(self.es_ess._formatUtcOffset(timedelta(hours=3)), "(UTC+3)")
+        self.assertEqual(self.es_ess._formatUtcOffset(timedelta(hours=-5)), "(UTC-5)")
+        self.assertEqual(
+            self.es_ess._formatUtcOffset(timedelta(hours=5, minutes=30)),
+            "(UTC+5:30)",
+        )
+
+    def test_retention_keeps_current_day_plus_nine_local_day_logs(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_log = Path(tmp_dir) / "current.log"
+            handler = self.es_ess.LocalCalendarTimedRotatingFileHandler(
+                str(base_log), 10
+            )
+            try:
+                today = self.es_ess.datetime.datetime.now().astimezone().date()
+                rotated = {}
+                for age in range(1, 13):
+                    path = Path(
+                        "{0}.{1}".format(
+                            base_log,
+                            (today - self.es_ess.datetime.timedelta(days=age)).isoformat(),
+                        )
+                    )
+                    path.write_text("log\n", encoding="utf-8")
+                    rotated[age] = path
+                unrelated = Path(str(base_log) + ".backup")
+                unrelated.write_text("keep\n", encoding="utf-8")
+
+                failures = handler.pruneExpiredLogs()
+
+                self.assertEqual(failures, [])
+                self.assertTrue(base_log.exists())
+                for age in range(1, 10):
+                    self.assertTrue(rotated[age].exists(), age)
+                for age in range(10, 13):
+                    self.assertFalse(rotated[age].exists(), age)
+                self.assertTrue(unrelated.exists())
+                retained_logs = [base_log] + [rotated[age] for age in range(1, 10)]
+                self.assertEqual(sum(path.exists() for path in retained_logs), 10)
+            finally:
+                handler.close()
 
 
 class ConfigValueValidationTests(unittest.TestCase):
@@ -378,6 +489,7 @@ class ConfigValueValidationTests(unittest.TestCase):
         wattpilot["BatteryAssistRecoverySeconds"] = "0"
         wattpilot["StartupTelemetryRatio"] = "1"
         app.config["Common"]["NumberOfThreads"] = "1"
+        app.config["Common"]["LogRetentionDays"] = "1"
         app.config["Common"]["HttpRequestTimeout"] = "0.1"
         app.config["Common"]["GridSetPointMinW"] = "-100"
         app.config["Common"]["GridSetPointMaxW"] = "100"
@@ -406,6 +518,7 @@ class ConfigValueValidationTests(unittest.TestCase):
     def test_runtime_bootstrap_aggregates_missing_structure(self):
         app = self._app_with_sample_config()
         app.config.remove_option("Common", "NumberOfThreads")
+        app.config.remove_option("Common", "LogRetentionDays")
         app.config.remove_section("Mqtt")
         app.config.remove_option("Services", "MqttExporter")
 
@@ -415,8 +528,9 @@ class ConfigValueValidationTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 1)
         messages = [call.args[1] for call in critical.call_args_list]
-        self.assertEqual(len(messages), 3)
+        self.assertEqual(len(messages), 4)
         self.assertTrue(any("NumberOfThreads" in message for message in messages))
+        self.assertTrue(any("LogRetentionDays" in message for message in messages))
         self.assertTrue(any("[Mqtt] section" in message for message in messages))
         self.assertTrue(any("MqttExporter" in message for message in messages))
 
@@ -425,6 +539,7 @@ class ConfigValueValidationTests(unittest.TestCase):
         app.config["Common"]["LogLevel"] = "LOUD"
         app.config["Common"]["NumberOfThreads"] = "many"
         app.config["Common"]["ServiceMessageCount"] = "many"
+        app.config["Common"]["LogRetentionDays"] = "many"
         app.config["Common"]["DefaultPowerSetPoint"] = "nan"
         app.config["Mqtt"]["Port"] = "mqtt"
         app.config["Mqtt"]["SslEnabled"] = "perhaps"
@@ -437,11 +552,12 @@ class ConfigValueValidationTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 1)
         messages = [call.args[1] for call in critical.call_args_list]
-        self.assertEqual(len(messages), 8)
+        self.assertEqual(len(messages), 9)
         for key in (
             "LogLevel",
             "NumberOfThreads",
             "ServiceMessageCount",
+            "LogRetentionDays",
             "DefaultPowerSetPoint",
             "Port",
             "SslEnabled",
@@ -541,6 +657,7 @@ class ConfigValueValidationTests(unittest.TestCase):
             ("FroniusWattpilot", "StartupTelemetryRatio", "0"),
             ("FroniusWattpilot", "StartupTelemetryRatio", "1.01"),
             ("Common", "NumberOfThreads", "0"),
+            ("Common", "LogRetentionDays", "0"),
             ("Common", "HttpRequestTimeout", "0"),
             ("MqttPvInverter", "StaleTimeoutSeconds", "4"),
             ("MqttPvInverter", "ZeroFeedinScaleStep", "0"),

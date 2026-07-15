@@ -8,7 +8,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -628,6 +628,29 @@ NoBatToEV=false
             )
         self.assertEqual(total, 4)
         self.assertEqual([record.message for record in records], ["before", "duplicate", "after"])
+
+    def test_offset_timestamp_orders_repeated_dst_hour_by_actual_instant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "current.log"
+            path.write_text(
+                "2026-10-25 03:30:00,000 (UTC+3) APP_DEBUG summer occurrence\n"
+                "2026-10-25 03:15:00,000 (UTC+2) APP_DEBUG winter occurrence\n",
+                encoding="utf-8",
+            )
+            records, total = AUDIT.load_log_window(
+                [path],
+                datetime(2026, 10, 25, tzinfo=timezone.utc),
+                datetime(2026, 10, 26, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(total, 2)
+        self.assertEqual(
+            [record.message for record in records],
+            ["summer occurrence", "winter occurrence"],
+        )
+        self.assertEqual(
+            (records[1].timestamp - records[0].timestamp).total_seconds(), 45 * 60
+        )
 
     def test_malformed_and_truncated_log_input_is_tolerated_but_not_complete(self):
         with tempfile.TemporaryDirectory() as directory:
