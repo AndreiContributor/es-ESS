@@ -1660,17 +1660,25 @@ Done criteria:
 - TLS/authentication failures remain actionable and do not fall back insecurely.
 - Full unittest suite passes.
 
-### P1 - Gate Experimental Zero-Feed-In On Confirmed Grid Connection
+### Completed 2026-07-15 - Gate Experimental Zero-Feed-In On Confirmed Grid Connection
 
-Implementation status (2026-07-15):
+Completion record:
 
 - Implemented in `48fe83a`. Commands now require an explicitly connected grid
   or shore AC input; missing, malformed, genset, off-grid, and transition states
   issue no new OpenDTU command and preserve the last nonpersistent limit so
   frequency shifting remains authoritative.
-- Hardware-free transition/recovery and full-suite verification pass. The
-  isolated hardware-in-the-loop check below remains the only completion
-  condition; production-grid disconnection is explicitly prohibited.
+- Hardware-free confirmed-grid, second-input shore, missing, malformed,
+  disconnected, transition, and recovery coverage passes together with the
+  full hardware-free suite.
+- The operator confirmed that no separate GX/OpenDTU/inverter staging setup is
+  available. Production has `MqttPVInverter=false`; neither it nor experimental
+  zero-feed-in will be enabled merely to force this test, and the production
+  grid will not be disconnected.
+- Closure is an explicit acceptance of the implemented, default-disabled guard
+  without hardware-in-the-loop evidence; it is not recorded as hardware
+  validation. README retains the isolated procedure that must be completed by
+  any site choosing to commission experimental zero-feed-in later.
 
 Goal:
 
@@ -2458,10 +2466,7 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-1. P1 - Gate Experimental Zero-Feed-In On Confirmed Grid Connection —
-   implementation is complete; close after isolated hardware-in-the-loop
-   validation without disconnecting the production grid.
-2. P1 - Make Initial MQTT Connections Resilient — implementation is complete;
+1. P1 - Make Initial MQTT Connections Resilient — implementation is complete;
    close after a low-risk GX test-broker refusal/recovery exercise.
 
 ## Verification Plan
@@ -2492,10 +2497,6 @@ safety branches:
 - Fault simulation, low-risk window: start es-ESS while a test main or local
   MQTT broker is unavailable, restore it, and confirm one clean recovery with
   subscriptions and status publication restored.
-- Hardware-in-the-loop, isolated test setup only: validate that experimental
-  zero-feed-in commands are suppressed when the authoritative grid-connected
-  state is false, missing, or stale. Do not disconnect the production grid for
-  this test.
 - Hibernate remote control was resolved as documentation-only unsupported
   behavior while disconnected; no hardware action remains.
 - Hardware not needed: documentation-contract, exact D-Bus read-allowlist, and

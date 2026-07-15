@@ -455,6 +455,51 @@ explicitly connected grid/shore AC input through the matching
 input state sends no OpenDTU command and keeps the last nonpersistent limit so
 off-grid frequency shifting remains the active controller.
 
+### Isolated zero-feed-in validation
+
+`EnableZeroFeedin` is experimental and sends real OpenDTU limit commands. Do
+not enable it merely to test this guard on a production energy system, and do
+not disconnect the production grid. If no separate GX/OpenDTU/inverter setup is
+available, leave both `MqttPVInverter` and `EnableZeroFeedin` disabled.
+
+Commission the guard only on an isolated setup whose inverter output and AC
+input can be changed safely:
+
+1. Back up the staging configuration, use a dedicated OpenDTU control topic,
+   then enable `MqttPVInverter` and `EnableZeroFeedin` on that staging GX.
+2. Subscribe to
+   `<DtuControlTopic>/cmd/limit_nonpersistent_relative` and retain the es-ESS
+   log. With the staging AC input connected, verify the matching systemcalc
+   input reports `Source=1` (grid) or `Source=3` (shore) and `Connected=1`:
+
+   ```sh
+   for input in 0 1; do
+       for field in Source Connected; do
+           path="/Ac/In/$input/$field"
+           printf '%-24s ' "$path"
+           dbus -y com.victronenergy.system "$path" GetValue
+       done
+   done
+   ```
+
+3. Provide valid inverter, consumption, and SOC telemetry and confirm normal
+   zero-feed-in limit messages are published while grid connection is
+   explicitly confirmed.
+4. Disconnect only the isolated staging AC input. Confirm its `Connected` value
+   becomes `0` (or the source/connection evidence becomes unavailable), then
+   observe the control topic for at least 30 seconds, covering three normal
+   zero-feed-in worker cycles. No new limit message may be published; the last
+   nonpersistent limit remains unchanged so the inverter's supported off-grid
+   frequency control stays authoritative.
+5. Restore the staging AC input. Confirm limit messages resume only after a
+   fresh matching `Source` and `Connected=1` are visible. Restore the original
+   staging configuration afterward.
+
+Hardware-free tests cover confirmed grid, second-input shore, disconnected,
+missing, malformed, transition, and recovery states. They do not replace the
+isolated commissioning check for a site that chooses to enable this
+experimental controller.
+
 An inverter that publishes no MQTT message for `StaleTimeoutSeconds` is marked
 disconnected, its D-Bus measurements are nulled, and its cached phase power is
 cleared so frozen production cannot influence zero-feed-in calculations. The
