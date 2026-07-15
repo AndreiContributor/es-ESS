@@ -80,6 +80,7 @@ Cerbo GX running Venus OS v3.75 build `20260624163305`:
 | Component | Approved version | Runtime enforcement |
 | --- | --- | --- |
 | Venus OS on the GX device | `v3.75` | This exact clean release is required before es-ESS constructs services, connects MQTT, or writes the grid setpoint. A missing or different version exits with status 1. Qualifiers such as `v3.75~1` do not match the clean release. |
+| Victron `velib_python` | Pinned bundled composite | `VelibDependency.py` verifies the canonical SHA-256 hashes in `velib_python-master/PINNED.json` and makes that repository-relative directory the only permitted import source. Startup fails before D-Bus registration if the pin is missing, modified, or mixed with the Venus OS system copy. |
 | Fronius Wattpilot firmware | `42.5` | Read from Wattpilot `fwv` telemetry. Until it matches exactly, every es-ESS Wattpilot `setValue` command is blocked and Auto/Eco reports a compatibility fault. Other es-ESS services may continue. |
 | Fronius Solar.wattpilot mobile app | `2.1.0` | Commissioning baseline only. The app version is not exposed to es-ESS and cannot be checked automatically. |
 
@@ -97,6 +98,16 @@ stored-firmware and manual rollback procedures, see
 If a rollback boots an older Venus OS release, restore an es-ESS checkout whose
 `RuntimeCompatibility.py` explicitly supports that firmware before starting
 services.
+
+The bundled `velib_python-master` directory name is retained for deployment
+compatibility; it is not an unpinned checkout of upstream `master`. The four
+runtime files are a documented composite of exact official Victron commits,
+recorded with their Git blob IDs and canonical SHA-256 hashes in
+`velib_python-master/PINNED.json`. Do not copy files from the Venus OS system
+directory or update from upstream `master` in place. Audit a proposed upstream
+revision, update the manifest and dependency-contract tests together, run the
+full hardware-free suite, then complete a log-only startup and D-Bus
+registration check on the supported Venus OS release before accepting it.
 
 The `?version=1.2.9` value used by the optional Wattpilot cloud WebSocket URL is
 a protocol/client identifier. It is not the Solar.wattpilot mobile app version
@@ -804,11 +815,11 @@ INTERVAL_SECONDS=10 MAX_SAMPLES=120 /data/es-ESS/scripts/es-ess-health-monitor.s
 ```
 
 The script reads service state, Venus OS version, Python dependency imports,
-selected config keys, Wattpilot D-Bus/runtime-status paths, disk usage and
-recent controller logs, including raw `lmo` and `/ModeLiteral` transition
-timestamps. It does not write D-Bus, MQTT, config, service state or Wattpilot
-control values. Installation, mode-boundary validation, and interpretation
-steps are documented in
+the pinned `velib_python` integrity/import source, selected config keys,
+Wattpilot D-Bus/runtime-status paths, disk usage and recent controller logs,
+including raw `lmo` and `/ModeLiteral` transition timestamps. It does not write
+D-Bus, MQTT, config, service state or Wattpilot control values. Installation,
+mode-boundary validation, and interpretation steps are documented in
 [docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
 
 ### es-ESS daily report

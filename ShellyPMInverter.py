@@ -10,8 +10,9 @@ import requests # type: ignore
 import os
 import sys
 
-# victron
-sys.path.insert(1, '/opt/victronenergy/dbus-systemcalc-py/ext/velib_python')
+# Victron D-Bus dependency
+from VelibDependency import activate_velib_python
+activate_velib_python()
 from vedbus import VeDbusService # type: ignore
 
 # esEss imports

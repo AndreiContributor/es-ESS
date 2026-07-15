@@ -24,8 +24,9 @@ else:
 
 import paho.mqtt.client as mqtt # type: ignore
 
-# victronr
-sys.path.insert(1, '/data/es-ESS/velib_python-master')
+# Victron D-Bus dependency
+from VelibDependency import activate_velib_python
+activate_velib_python()
 from vedbus import VeDbusService # type: ignore
 from dbusmonitor import DbusMonitor # type: ignore
 from dbus.mainloop.glib import DBusGMainLoop # type: ignore

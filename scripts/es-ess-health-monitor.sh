@@ -76,6 +76,19 @@ check_python_dependencies() {
     fi
 }
 
+check_velib_dependency() {
+    velib_status="$(
+        cd "$APP_DIR" 2>/dev/null &&
+        python -c "from VelibDependency import activate_velib_python, compare_velib_directory; manifest = activate_velib_python(); import vedbus, dbusmonitor, settingsdevice, ve_utils; comparison = compare_velib_directory('/opt/victronenergy/dbus-systemcalc-py/ext/velib_python'); print('{} | {} | Venus OS copy: {}'.format(manifest['selection'], vedbus.__file__, ', '.join('{}={}'.format(name, 'match' if state else ('different' if state is False else 'missing')) for name, state in sorted(comparison.items()))))" 2>&1
+    )"
+    if [ "$?" -eq 0 ]
+    then
+        echo "OK: $velib_status"
+    else
+        echo "WARN: $velib_status"
+    fi
+}
+
 print_runtime() {
     version="$(read_first_line /opt/victronenergy/version)"
     print_kv "Venus OS version" "$version"
@@ -105,6 +118,7 @@ print_runtime() {
     esac
 
     print_kv "Python dependencies" "$(check_python_dependencies)"
+    print_kv "Pinned velib_python" "$(check_velib_dependency)"
 
     if [ -e "$APP_DIR" ]
     then
