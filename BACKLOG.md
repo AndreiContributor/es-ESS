@@ -1552,6 +1552,796 @@ Done criteria:
 - Focused tests and configuration-contract checks pass where applicable.
 - Full unittest suite passes.
 
+### P1 - Make Initial MQTT Connections Resilient
+
+Goal:
+
+Allow es-ESS to survive a main or local MQTT broker that is not yet listening
+during process startup and recover without depending on a process crash/restart
+loop.
+
+Problem:
+
+Both MQTT clients use blocking `connect()` before `loop_start()`. An initial
+socket or TLS connection failure can therefore raise before Paho's background
+network loop owns reconnect behavior. The source TODO calls out the local
+broker boot race, but the same ordering exists for main/local and TLS/plain
+branches.
+
+Evidence:
+
+- `es-ESS.py:339-351` connects the main client before starting its loop.
+- `es-ESS.py:370-385` contains the startup-race TODO and connects the local
+  client before starting its loop.
+- `tests/test_es_ess_mqtt_orchestration.py` covers routing after connect and
+  reconnect callbacks, but not recovery from an initial connection refusal.
+
+Implementation:
+
+- Characterize the supported Paho callback/API variants already handled by the
+  runtime.
+- Move initial main/local connection ownership to a non-blocking or explicitly
+  bounded retry path that lets the existing loop recover when the broker
+  appears.
+- Preserve main/local client separation, TLS trust policies, last-will/status
+  topics, reconnect subscriptions, orderly shutdown, and fail-closed runtime
+  compatibility checks.
+- Do not hide permanent DNS, certificate, authentication, or configuration
+  failures; keep actionable, deduplicated diagnostics.
+
+Files to change:
+
+- `es-ESS.py`
+- `docs/service-inventory.md` if startup/recovery semantics change materially
+- `README.md` if operator-visible recovery guidance changes
+- `BACKLOG.md` on completion
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_es_ess_mqtt_orchestration.py` for initial main/local
+  refusal, TLS/plain parity, later recovery, subscription restoration, and
+  non-duplicated loops/callbacks.
+- Cover permanent failure diagnostics and graceful shutdown before a first
+  successful connection.
+- Use fake Paho clients only; no real broker or network.
+
+Expected coverage:
+
+- Proves broker startup ordering cannot terminate es-ESS before reconnect
+  ownership begins.
+- Proves existing main/local routing, TLS configuration, retained status, and
+  shutdown behavior remain unchanged after recovery.
+
+Manual validation:
+
+Fault simulation in a low-risk GX window; no charging or other hardware action
+is required.
+
+Manual test steps:
+
+1. Temporarily keep the local broker unavailable while starting es-ESS.
+2. Confirm the process remains supervised and reports bounded connection
+   diagnostics rather than repeatedly crashing.
+3. Restore the broker and confirm both MQTT clients, subscriptions, services,
+   and grid-setpoint publication recover once without duplicate callbacks.
+4. Repeat for a deliberately unavailable test main broker without exposing
+   production credentials.
+
+Risks and dependencies:
+
+- Starting services before MQTT is ready can expose assumptions that were
+  previously hidden by blocking startup; tests must characterize queued
+  publications and registration order.
+- Do not weaken certificate or authentication failures into silent retries.
+- No other backlog item must land first.
+
+Open questions:
+
+- Whether the supported Paho versions are best served by `connect_async()` or
+  a small explicit initial-retry owner; select from tests and GX behavior, not
+  assumption.
+
+Done criteria:
+
+- Main and local MQTT initial unavailability no longer terminates startup.
+- Later broker availability restores the correct subscriptions and status.
+- TLS/authentication failures remain actionable and do not fall back insecurely.
+- Full unittest suite passes.
+
+### P1 - Gate Experimental Zero-Feed-In On Confirmed Grid Connection
+
+Goal:
+
+Prevent experimental OpenDTU throttle commands when the GX is off-grid or its
+grid-connected state is missing or uncertain.
+
+Problem:
+
+`MqttPVInverter._dtuZeroFeedin()` treats a non-`None`
+`/Ac/ActiveIn/NumberOfPhases` value as its on-grid condition. Phase-count
+availability does not by itself prove that the grid is connected, so the
+experimental controller can compete with the intended off-grid frequency-
+shifting behavior. The feature is disabled by default, limiting current
+exposure but not removing the device-control gap when enabled.
+
+Evidence:
+
+- `MqttPVInverter.py:68-70` contains the explicit TODO for a grid-connected
+  value and subscribes only to active-input phase count.
+- `MqttPVInverter.py:117-165` permits throttle calculations whenever phase
+  count is non-`None` and SOC meets the configured threshold.
+- `tests/test_mqtt_pv_inverter.py` covers zero target, proportional scaling,
+  incomplete consumption, stale data, and recovery, but has no off-grid or
+  unknown-grid-state scenario.
+
+Implementation:
+
+- Identify and validate the authoritative grid-connected D-Bus path available
+  on the supported Venus OS `v3.75` baseline.
+- Subscribe to that path and require an explicit connected state before any
+  zero-feed-in throttle publication.
+- Define a fail-safe no-command/limit-release behavior for missing, malformed,
+  disconnected, and recovery transitions based on OpenDTU/frequency-shifting
+  ownership; do not guess a protocol value.
+- Preserve the existing disabled default, stale-inverter handling, zero-target
+  behavior, configuration keys, and shared grid-setpoint ownership.
+
+Files to change:
+
+- `MqttPVInverter.py`
+- `README.md`
+- `config.sample.ini` only if a new setting is demonstrably required
+- `docs/service-inventory.md`
+- `BACKLOG.md` on completion
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_mqtt_pv_inverter.py` for confirmed on-grid, confirmed
+  off-grid, missing/malformed state, startup `None`, transition to off-grid,
+  and recovery to on-grid.
+- Prove no OpenDTU command is issued from uncertain/off-grid evidence and
+  normal on-grid proportional/zero-target behavior remains unchanged.
+- Extend config migration/contract tests only if configuration changes.
+
+Expected coverage:
+
+- Proves experimental inverter limiting cannot take control from off-grid
+  frequency shifting based only on a cached phase count.
+- Proves recovery requires a fresh, explicit connected state.
+
+Manual validation:
+
+Fault simulation on staging or hardware-in-the-loop only. Do not disconnect
+the production grid solely to complete this item.
+
+Manual test steps:
+
+1. With zero-feed-in enabled on a safe test system, record confirmed on-grid
+   throttle behavior.
+2. Simulate or observe grid-connected state becoming unavailable/off-grid.
+3. Confirm es-ESS issues no conflicting OpenDTU throttle command and the
+   inverter's supported off-grid control remains authoritative.
+4. Restore grid state and confirm normal control resumes only after fresh
+   connected telemetry.
+
+Risks and dependencies:
+
+- The exact D-Bus path and value semantics must be verified on Venus OS
+  `v3.75`; choosing the wrong signal could disable valid control or interfere
+  with island operation.
+- Hardware validation must not create an unsafe production outage.
+- No other backlog item must land first.
+
+Open questions:
+
+- Which Venus OS `v3.75` service/path is the authoritative, sufficiently fresh
+  grid-connected signal for this controller?
+- Whether off-grid transition should leave the last nonpersistent limit or
+  explicitly release it depends on validated OpenDTU behavior.
+
+Done criteria:
+
+- Only confirmed on-grid state authorizes zero-feed-in throttle commands.
+- Missing/off-grid state fails safely without competing with frequency shifting.
+- The maintained sample and user guidance describe the gate accurately.
+- Full unittest suite passes.
+
+### P2 - Restore End-To-End Time-To-Go Publication
+
+Goal:
+
+Make `TimeToGoCalculator` publish a calculated value through a mechanism that
+is verified on Venus OS `v3.75` and visible in the intended GX/VRM surface.
+
+Problem:
+
+The service calculates time-to-go and publishes MQTT messages, but its direct
+D-Bus publication is commented out and README still labels the feature broken
+since Venus OS 3.50. Hardware-free tests currently prove only that the existing
+MQTT helper calls occur, not that Venus accepts or displays the value.
+
+Evidence:
+
+- `TimeToGoCalculator.py:64-70` contains the unresolved D-Bus publication TODO,
+  commented-out publisher, and current local/main MQTT calls.
+- `README.md:267-298` simultaneously marks the service Production Ready and
+  warns that it is broken since 3.50.
+- `tests/test_time_to_go_calculator.py` covers calculation, incomplete inputs,
+  and MQTT calls without a Venus D-Bus/VRM integration contract.
+
+Implementation:
+
+- Establish from the supported Venus OS `v3.75` interface which service owns
+  `/Dc/Battery/TimeToGo` and the supported write/publication mechanism.
+- Characterize the current local MQTT topic and payload on a GX before
+  replacing or retaining it.
+- Implement the narrow verified publication path while preserving calculation
+  units, missing-input behavior, main-MQTT diagnostic output, and service
+  lifecycle.
+- Do not create a competing D-Bus service or write an unrelated system path to
+  force a UI value.
+
+Files to change:
+
+- `TimeToGoCalculator.py`
+- `README.md`
+- `docs/service-inventory.md` if its D-Bus/MQTT contract changes
+- `BACKLOG.md` on completion
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_time_to_go_calculator.py` for the selected publication
+  boundary, exact path/topic and payload, charge/discharge values, zero power,
+  missing telemetry, failure handling, and recovery.
+- Add a stubbed D-Bus publisher/service only if that is the validated Venus
+  mechanism; never require real hardware in unittest.
+
+Expected coverage:
+
+- Proves calculations reach the selected integration boundary correctly and
+  incomplete telemetry cannot overwrite the last valid value.
+- Existing main-MQTT diagnostics remain compatible unless explicitly
+  documented otherwise.
+
+Manual validation:
+
+Log-only and read-only GX/VRM observation; no charging or hardware manipulation
+is required.
+
+Manual test steps:
+
+1. Enable the service on Venus OS `v3.75` with stable battery telemetry.
+2. Observe discharge and charge calculations in logs/main MQTT.
+3. Confirm the same value appears at the authoritative D-Bus path and intended
+   GX/VRM surface with correct seconds/format.
+4. Briefly observe an unavailable input and confirm the last valid value is not
+   replaced by an invalid calculation.
+
+Risks and dependencies:
+
+- Writing the wrong Venus namespace can be ignored silently or conflict with
+  systemcalc ownership.
+- The README warning must remain until live GX/VRM validation succeeds.
+- No other backlog item must land first.
+
+Open questions:
+
+- What publication mechanism does Venus OS `v3.75` accept for this system
+  value, and which UI surface is the required success criterion?
+
+Done criteria:
+
+- A documented, supported publication mechanism is implemented and covered.
+- Live GX/VRM evidence confirms the calculated value is visible and updates.
+- The contradictory README status is corrected only after that evidence.
+- Full unittest suite passes.
+
+### P2 - Decide And Align Wattpilot Hibernate-Mode Remote Control
+
+Goal:
+
+Establish one supported contract for remote mode/wake control while Wattpilot
+hibernate is enabled, then make code and documentation agree with it.
+
+Problem:
+
+The controller records that switching mode can fail while hibernating. README
+both says Scheduled Charging does not help because the Wattpilot immediately
+hibernates again and presents Scheduled Charging as the wake-up path. The
+maintained default is `HibernateMode=false`, but enabled installations lack a
+single reliable operator contract.
+
+Evidence:
+
+- `FroniusWattpilot.py:673-676` contains the unresolved hibernate mode-switch
+  TODO.
+- `README.md:492` says Scheduled Charging does not resolve the known issue.
+- `README.md:603` and `README.md:676` describe Scheduled Charging as the
+  supported wake-up action.
+- `config.sample.ini:126-131` says Scheduled Charging forces a wake-up.
+
+Implementation:
+
+- First reproduce the disconnected hibernate/VRM transition on the validated
+  firmware/app baseline without a vehicle and record raw `lmo`, transport, and
+  public mode timing.
+- Choose one narrow result: implement a bounded wake/keepalive transition, or
+  explicitly declare remote mode control unsupported while hibernate is
+  enabled.
+- If code changes, keep WebSocket reconnect ownership in `Wattpilot.py` and
+  command policy in `FroniusWattpilot.py`; callbacks remain command-free.
+- Preserve Manual ownership, the one-time Manual release exception, Auto/Eco
+  command-authority checks, no-grid behavior, and the disabled default.
+
+Files to change:
+
+- `README.md`
+- `config.sample.ini`
+- `FroniusWattpilot.py` and/or `Wattpilot.py` only if implementation is chosen
+- `docs/wattpilot-architecture.md` if command/reconnect responsibilities change
+- `docs/service-inventory.md` if reconnect behavior changes
+- `docs/system-guide.html`
+- `BACKLOG.md` on completion
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_wattpilot_command_boundary.py`,
+  `tests/test_wattpilot_client.py`, and/or `tests/test_wattpilot_runtime_status.py`
+  according to the selected contract.
+- Cover disconnected hibernate, Scheduled request, bounded wake failure,
+  recovery, no duplicate workers, Manual no-command behavior, and authority
+  rejection before Auto.
+
+Expected coverage:
+
+- Proves the selected hibernate contract is deterministic and cannot widen
+  Auto/Eco or Manual command authority.
+- Proves documentation no longer promises mutually incompatible behavior.
+
+Manual validation:
+
+Fault simulation with the vehicle disconnected in a low-risk window.
+
+Manual test steps:
+
+1. Enable hibernate with the vehicle disconnected and wait for the documented
+   idle state.
+2. Request Scheduled/Auto/Manual only through the documented VRM surface.
+3. Correlate request delivery, WebSocket wake/reconnect, raw mode, public mode,
+   and absence of unintended current/start/phase commands.
+4. Confirm timeout/failure behavior is bounded and actionable.
+
+Risks and dependencies:
+
+- An automatic keepalive can defeat the purpose of hibernate or create
+  reconnect-worker overlap.
+- A mode transition must never command normal Manual charging or bypass native
+  `fup`/`ful` authority checks.
+- Complete this decision before finalizing hibernate text in the documentation
+  alignment item.
+
+Open questions:
+
+- Should remote mode control be supported at all while hibernate is enabled,
+  or is documented incompatibility the intended product boundary?
+
+Done criteria:
+
+- One hibernate remote-control contract is selected from reproduced evidence.
+- Code, sample, README, architecture, inventory, and HTML guidance agree where
+  applicable.
+- Manual and Auto/Eco safety invariants remain covered.
+- Full unittest suite passes.
+
+### P3 - Audit And Enforce Maintained Documentation Contracts
+
+Goal:
+
+Make every maintained documentation surface agree with runtime service names,
+`config.sample.ini`, current defaults/examples, and supported behavior, with
+automated checks for high-value contracts.
+
+Problem:
+
+The prior alignment review spot-checked only a subset of values and incorrectly
+reported the documentation clean. README contains confirmed service-name,
+section-name, copy/paste, default/example, and hibernate contradictions. The
+HTML guide and service inventory match the checked Wattpilot values/service
+names today, but were not audited comprehensively and should not be assumed
+correct from shallow checks.
+
+Evidence:
+
+- `README.md:320` documents the nonexistent plural `MqttTemperatures` service
+  flag instead of `MqttTemperature`.
+- `README.md:354` documents `[MattExporter:uniqueKey]` instead of
+  `[MqttExporter:uniqueKey]`.
+- `README.md:1051` tells Shelly PM users to enable `Shelly3EMGrid`.
+- `README.md:682`, `README.md:697`, and `README.md:701-704` drift from
+  maintained Wattpilot sample values such as `EvPriorityMinSoc=50`,
+  `SurplusDropGraceSeconds=30`, and charge-completion thresholds.
+- `docs/system-guide.html:793-817` currently matches those checked sample
+  values; `docs/service-inventory.md:112-119` currently names the checked
+  active services correctly.
+- `tests/test_config_contract.py` checks the global README active-service table
+  but not each service-specific configuration row or maintained HTML values.
+
+Implementation:
+
+- Compare README, `config.sample.ini`, the HTML guide, service inventory, and
+  runtime service loading line-by-line for service flags, section names, keys,
+  example/default values, units, supported ranges, active/dormant status, and
+  integration contracts.
+- Correct confirmed mismatches without changing runtime behavior or defaults.
+- Treat site examples explicitly as examples; do not silently convert them
+  into defaults.
+- Extend contract tests for canonical service-specific flag/section names and
+  the high-value Wattpilot values duplicated in maintained documentation.
+- Resolve hibernate text from the dedicated decision item rather than guessing.
+
+Files to change:
+
+- `README.md`
+- `docs/system-guide.html`
+- `docs/service-inventory.md`
+- `config.sample.ini` only if the audit proves the canonical sample is wrong
+- `tests/test_config_contract.py`
+- `BACKLOG.md` on completion
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_config_contract.py` for singular runtime service flags,
+  service-specific section prefixes, Shelly PM enable guidance, documented
+  Wattpilot defaults/examples, and active/dormant inventory alignment.
+- Keep checks semantic and narrowly parsed rather than snapshotting entire
+  prose or HTML files.
+
+Expected coverage:
+
+- Proves the previously missed service/config mismatches cannot recur silently.
+- Proves maintained Wattpilot examples remain aligned where they are intended
+  to represent sample defaults.
+
+Manual validation:
+
+Hardware not needed; review rendered Markdown/HTML after automated checks.
+
+Manual test steps:
+
+1. Run the configuration-contract tests.
+2. Render README and `docs/system-guide.html` and inspect tables, links, code
+   blocks, and special characters.
+3. Confirm no runtime/configuration file changed merely to match stale prose.
+
+Risks and dependencies:
+
+- Over-broad prose snapshot tests would be brittle; test exact contracts only.
+- Changing a documented example can be mistaken for a runtime default change;
+  label intent explicitly.
+- The hibernate decision item should land first or provide the exact text used
+  here.
+
+Open questions:
+
+- Which README table values are intentionally site-shaped examples rather than
+  maintained defaults? Preserve that distinction during the audit.
+
+Done criteria:
+
+- All four maintained surfaces are fully audited and confirmed mismatches fixed.
+- Automated tests cover service names, section names, and selected duplicated
+  defaults/contracts.
+- Rendered documentation remains readable and internally consistent.
+- Full unittest suite passes.
+
+### P3 - Restrict Daily-Report D-Bus Reads To Exact Paths
+
+Goal:
+
+Make the daily report's read-only subprocess boundary permit only the exact
+service/path pairs used by its current snapshot and timezone functions.
+
+Problem:
+
+`_run_readonly_command()` restricts commands to `GetValue` and a small service
+set, but accepts any slash-prefixed Wattpilot/system path. Current callsites use
+fixed tuples, so this is not an active vulnerability; it is a latent defense-
+in-depth gap if the helper is later reused with dynamic input.
+
+Evidence:
+
+- `scripts/es-ess-daily-report.py:883-909` checks the exact settings timezone
+  path but only `startswith("/")` for Wattpilot/system services.
+- `scripts/es-ess-daily-report.py:65-90` defines the actual Wattpilot snapshot
+  path tuple.
+- `tests/test_es_ess_daily_report.py:501-558` rejects writes and the wrong
+  settings path but accepts only one example Wattpilot read; arbitrary
+  Wattpilot/system read rejection is not covered.
+
+Implementation:
+
+- Define an immutable set of exact `(service, path)` pairs from
+  `SNAPSHOT_DBUS_PATHS` plus the Venus timezone pair.
+- Remove the unused generic system-service allowance unless an actual fixed
+  read requires it.
+- Keep `svstat`, `GetValue`, two-second timeouts, timeout circuit breaker, and
+  command-free analyzer isolation unchanged.
+
+Files to change:
+
+- `scripts/es-ess-daily-report.py`
+- `tests/test_es_ess_daily_report.py`
+- `docs/es-ess-daily-report.md` only if the documented read set changes
+- `BACKLOG.md` on completion
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_es_ess_daily_report.py` to accept every declared snapshot
+  path and the exact timezone path.
+- Reject arbitrary Wattpilot paths, all generic system paths, other services,
+  writes, extra arguments, and non-absolute paths without invoking the runner.
+
+Expected coverage:
+
+- Proves future callsites cannot expand D-Bus read scope accidentally.
+- Preserves the existing command-free monitoring contract and snapshot output.
+
+Manual validation:
+
+Hardware not needed; unit tests are the verifier. An optional log-only GX run
+may confirm the same snapshot fields remain available.
+
+Manual test steps:
+
+1. Run focused daily-report tests.
+2. Optionally run one current snapshot on GX and confirm all documented paths
+   still populate without an allowlist rejection.
+
+Risks and dependencies:
+
+- Adding a new legitimate snapshot path will require an intentional allowlist
+  and test update.
+- No other backlog item must land first.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Only exact current D-Bus reads can reach `subprocess.run()`.
+- Existing snapshot and timezone behavior remains unchanged.
+- Full unittest suite passes.
+
+### P4 - Evaluate Low-Risk Lifecycle And Diagnostic-Script Hygiene
+
+Goal:
+
+Decide from evidence whether three low-severity script internals merit narrow
+hardening without changing supported runtime behavior.
+
+Problem:
+
+The emergency/uninstall scripts do not use the PID/start-time verification in
+`restart.sh`; the daily report uses private `ConfigParser` internals to avoid
+inherited defaults; and its current dependency snapshot names only Paho and
+websocket. Exact process matching, intentional uninstall semantics, explicit
+configuration warnings, and the validated dependency scope make these hygiene
+observations rather than confirmed production defects.
+
+Evidence:
+
+- `kill_me.sh:4-6` and `uninstall.sh:15-21` use exact-command `pgrep` followed
+  by signals; `restart.sh:14-65` also records `/proc/<pid>/stat` start time.
+- `scripts/es-ess-daily-report.py:816-825` uses private `_sections` and
+  `_convert_to_boolean` so `[DEFAULT]` documentation keys are not interpreted
+  as service flags.
+- `scripts/es-ess-daily-report.py:1056-1068` reports only `paho.mqtt.client`
+  and `websocket` dependency availability.
+
+Implementation:
+
+- Audit each observation separately and close any part whose current behavior
+  is already the safer supported contract.
+- If useful, share the verified PID/start-time predicate with lifecycle scripts
+  without weakening emergency-stop or uninstall behavior.
+- Replace private ConfigParser access only with a public approach that still
+  excludes inherited `[DEFAULT]` keys exactly.
+- Either label the dependency result explicitly as the Wattpilot external
+  dependency subset or derive checks from enabled services without importing
+  production modules or initiating network/device access.
+
+Files to change:
+
+- `kill_me.sh`, `uninstall.sh`, and/or `restart.sh` only for an approved
+  lifecycle change
+- `scripts/es-ess-daily-report.py`
+- `tests/test_es_ess_daily_report.py`
+- lifecycle/orchestration tests as appropriate
+- relevant script documentation if output or semantics change
+- `BACKLOG.md` on completion
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Preserve exact process-command and start-time behavior with shell/static
+  lifecycle tests if PID hardening proceeds.
+- Extend daily-report tests for `[DEFAULT]` exclusion using only public parser
+  behavior and for explicitly scoped dependency output.
+- Keep all tests hardware-free and command/network-free.
+
+Expected coverage:
+
+- Proves any accepted cleanup preserves emergency, uninstall, configuration,
+  and read-only diagnostic semantics.
+- Allows evidence-based closure without code when a proposed cleanup has no
+  practical or compatibility benefit.
+
+Manual validation:
+
+Hardware not needed for parser/dependency changes. Any lifecycle change needs a
+log-only staging/GX uninstall or restart rehearsal with configuration backup
+verified first.
+
+Manual test steps:
+
+1. Run focused script and orchestration tests.
+2. If lifecycle code changes, exercise it only on staging or after confirming a
+   current external `config.ini` backup.
+3. Confirm only the exact es-ESS process is signaled and uninstall backup/
+   cleanup behavior remains unchanged.
+
+Risks and dependencies:
+
+- Refactoring emergency/uninstall process selection can reduce reliability for
+  negligible practical benefit.
+- Public ConfigParser alternatives may reintroduce inherited defaults.
+- A broad dependency scanner can import side-effectful production modules;
+  retain `find_spec()`-style read-only checks.
+- No other backlog item must land first.
+
+Open questions:
+
+- Whether each of the three observations is worth changing after focused audit;
+  code change is not required merely to close this conditional item.
+
+Done criteria:
+
+- Each observation has an explicit keep/change decision with evidence.
+- Any accepted change is narrow, tested, and documented without widening
+  process or dependency behavior.
+- Full unittest suite passes.
+
+### P4 - Measure Daily-Report Peak Memory And Add Bounds Only If Needed
+
+Goal:
+
+Confirm that the revised daily report has safe memory headroom on the supported
+GX baseline and add explicit resource bounds only if measurement demonstrates
+a real need.
+
+Problem:
+
+The revised loader streams files and the analyzer avoids prior quadratic scans,
+but retains every selected `LogRecord`; traceback continuations can also grow a
+single record without an explicit size limit. Production successfully processed
+195,892 records, so this is a conditional resource investigation rather than a
+confirmed defect. Arbitrary truncation could discard safety evidence and would
+be worse than the current behavior.
+
+Evidence:
+
+- `scripts/es-ess-daily-report.py:489-545` reads line-by-line but retains
+  selected records and appends continuation text to the current record.
+- `BACKLOG.md:140-162` records the final 195,892-record GX run in 1m16s and a
+  synthetic 189,000-record analysis benchmark after the performance rewrite.
+- No current constant or test defines maximum line, continuation, record count,
+  byte budget, or peak resident memory.
+
+Implementation:
+
+- Measure peak RSS, available memory, input bytes/lines, retained records,
+  loader time, and analysis time on a representative large APP_DEBUG day while
+  es-ESS remains running.
+- If headroom is adequate, record the evidence and close without production
+  changes.
+- If not, design bounded line/continuation/record or byte handling from measured
+  limits. Any skipped/truncated evidence must force an explicit `INCOMPLETE`
+  result, report exact counts/bytes, preserve JSON validity, and never silently
+  claim `GOOD`.
+- Do not reintroduce full-file reads, quadratic scans, or size-based deletion of
+  source logs.
+
+Files to change:
+
+- `BACKLOG.md` for measurement-only closure
+- `scripts/es-ess-daily-report.py`, `tests/test_es_ess_daily_report.py`,
+  `docs/es-ess-daily-report.md`, README, and HTML guide only if bounds are
+  justified and implemented
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- For measurement-only closure, rerun focused daily-report tests and retain the
+  GX measurement summary.
+- If bounds are implemented, add oversized single-line, long continuation,
+  record/byte-boundary, explicit `INCOMPLETE`, progress, JSON, and normal-large-
+  input regression tests.
+
+Expected coverage:
+
+- Establishes whether the theoretical unbounded structures are an operational
+  risk on the supported GX rather than assuming from source size.
+- If limits land, proves evidence loss is always visible and cannot yield a
+  false successful report.
+
+Manual validation:
+
+Log-only and safe in production: run the read-only report while measuring the
+process and confirming es-ESS stays healthy.
+
+Manual test steps:
+
+1. Select a retained APP_DEBUG day at least as large as the validated
+   approximately 195,000-record workload.
+2. Record report peak RSS, free memory, input size/lines, retained records,
+   loader/analysis duration, exit result, and es-ESS PID/health before and after.
+3. Decide from measured headroom whether implementation is required.
+4. If bounds are later added, repeat and confirm any triggered limit reports
+   `INCOMPLETE` with exact truncation evidence.
+
+Risks and dependencies:
+
+- Arbitrary limits can discard the evidence the report exists to analyze.
+- Running multiple large reports concurrently can distort memory evidence;
+  measure one controlled process.
+- The final threshold, if any, requires observed GX memory headroom rather than
+  a desktop-derived constant.
+- No other backlog item must land first.
+
+Open questions:
+
+- What minimum free-memory headroom should be retained on the production Cerbo
+  GX while the report runs?
+
+Done criteria:
+
+- Peak memory and system headroom are recorded on a representative GX workload.
+- The item closes measurement-only when headroom is safe, or measured,
+  transparent `INCOMPLETE` bounds are implemented and documented.
+- es-ESS remains healthy throughout the validation.
+- Full unittest suite passes.
+
 ## Suggested Implementation Order / PR Execution Queue
 
 Use this queue as the implementation order. Entries carrying the same PR-group
@@ -1563,8 +2353,22 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-No implementation PR items remain in the queue.
-No independent observation tasks remain open.
+1. P1 - Gate Experimental Zero-Feed-In On Confirmed Grid Connection — close the
+   device-control gap before lower-risk reliability and documentation work.
+2. P1 - Make Initial MQTT Connections Resilient — prevent broker boot ordering
+   from terminating the service bundle.
+3. P2 - Restore End-To-End Time-To-Go Publication — repair the explicitly broken
+   active helper and validate its Venus integration contract.
+4. P2 - Decide And Align Wattpilot Hibernate-Mode Remote Control — settle the
+   product/safety contract before final documentation alignment.
+5. P3 - Audit And Enforce Maintained Documentation Contracts — correct known
+   drift and add narrow automated guards after the hibernate decision.
+6. P3 - Restrict Daily-Report D-Bus Reads To Exact Paths — close the latent
+   read-boundary gap with a small isolated hardening change.
+7. P4 - Evaluate Low-Risk Lifecycle And Diagnostic-Script Hygiene — retain only
+   evidence-backed cleanup and permit no-change closure.
+8. P4 - Measure Daily-Report Peak Memory And Add Bounds Only If Needed — perform
+   the optional GX observation last and implement bounds only from evidence.
 
 ## Verification Plan
 
@@ -1586,9 +2390,29 @@ For implementation PRs:
 
 ## Outstanding Manual Validation
 
-No outstanding manual validation remains. Do not force grid import, interrupt
+The new queue introduces the following conditional or implementation-stage
+manual checks. Do not force grid import, disconnect a production grid, interrupt
 critical telemetry, or alter the production energy system solely to reproduce
-already-covered safety branches.
+safety branches:
+
+- Fault simulation, low-risk window: start es-ESS while a test main or local
+  MQTT broker is unavailable, restore it, and confirm one clean recovery with
+  subscriptions and status publication restored.
+- Hardware-in-the-loop, isolated test setup only: validate that experimental
+  zero-feed-in commands are suppressed when the authoritative grid-connected
+  state is false, missing, or stale. Do not disconnect the production grid for
+  this test.
+- Log-only/live GX observation: after the TimeToGo repair, confirm a natural
+  discharge publishes plausible values through the intended D-Bus/MQTT path and
+  returns to the unavailable sentinel when inputs cease to qualify.
+- Wattpilot hardware, only if remote hibernate recovery is implemented: verify
+  bounded wake/control behavior in Auto/Eco and unchanged Manual ownership. A
+  documentation-only resolution needs no hardware action.
+- Hardware not needed: documentation-contract, exact D-Bus read-allowlist, and
+  lifecycle-script changes are covered by focused automated/static checks.
+- Log-only production observation: measure peak RSS for the daily report on a
+  representative GX log set; add truncation bounds only if the evidence justifies
+  them and make any resulting incomplete analysis explicit.
 
 The general Venus OS `v3.75` daylight Auto/Eco PV-surplus, no-grid, battery-
 assist, current-reduction, and naturally available phase-switch validation is
