@@ -672,8 +672,21 @@ optional running-session grid fallback:
 - After a sustained phase-down interval, es-ESS changes to one phase when fresh PV supports it. If PV is below the one-phase minimum, bounded battery assist or allowed grid fallback may keep the running charge active; without either source, charging stops.
 - Battery assist is optional and may only bridge a short cloud for an **already-running** charge. It is limited by valid SOC, recent selected-battery activity, shortfall-power, duration, and PV-recovery settings; it cannot create a new charging session. Missing or invalid SOC, or a missing, invalid, or older-than-`BatterySocFreshSeconds` `/Dc/Battery/Power` update, clears/refuses assist and also disables the `EvPriorityOverBatteryCharge` reservation bypass for that cycle. The maintained `BatteryAssistMaxShortfallW=1000` default favors daily battery protection: small dips are bridged, while larger deficits reduce current, phase down, or stop earlier. To cover the full phase waiting interval, `BatteryAssistMaxSeconds` must be at least `MinPhaseSwitchSeconds`.
 - Auto/Eco stops when sustained grid import exceeds `GridImportStopW` for `GridImportStopSeconds`. With `AllowGridCharging=false`, Auto/Eco therefore does not intentionally use grid power. Very short transients can still appear before the guard threshold and timer are reached.
+- Wattpilot protocol model-status values `8`-`11` and `13`-`14` are explicit active-charging reasons. In Auto/Eco they follow the same PV/no-grid control path as other active charging states, after command-authority, telemetry, grid-import, phase, and disconnect safety gates. In Manual mode they are reporting-only and never authorize es-ESS charger commands.
 - `MinOnOffSeconds` applies to normal starts and stops. `MinPhaseSwitchSeconds` is the single shared stability and cooldown setting for both phase directions; no-grid safety may still reduce phase or stop earlier when a running deficit cannot be bridged.
 - Normal Wattpilot `Manual` mode remains under the user's control and is not changed by this Auto/Eco policy.
+
+Rare protocol charging statuses are logged at INFO on entry, change, and exit;
+an unchanged status is not repeated every controller cycle. Long-running logs
+can be searched with:
+
+```sh
+grep -F "Wattpilot special charging model status" /data/log/es-ESS/current.log
+```
+
+Each entry includes the numeric status, protocol name, mode, selected control
+state, effective vehicle connection, measured charging power, and command-
+authority result. Exit records include the next status and observed duration.
 
 ### Auto/Eco telemetry fail-safe
 

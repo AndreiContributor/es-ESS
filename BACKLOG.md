@@ -61,9 +61,8 @@ Current validated state:
   bypassed `AllowanceDropGraceSeconds`; the controller and hardware-free tests
   now preserve truthful allowance telemetry while debouncing that fallback,
   with supervised live revalidation still open below. Additional Wattpilot
-  work includes explicit policy for unclassified charging statuses and the
-  independent mode-boundary, battery-heartbeat, and natural winter observation
-  tasks below.
+  work includes the independent mode-boundary, battery-heartbeat, and natural
+  winter observation tasks below.
 - The 2026-07-12 review confirmed additional crash, device-control, stale-data,
   persistence, configuration, security, and test-coverage work. Items with
   site-specific limits or uncertain Wattpilot protocol meaning retain explicit
@@ -142,6 +141,24 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   authority-loss simulation during an active charge was deliberately not
   forced; the disconnected conflicting-authority preflight plus automated
   command-boundary tests provide the fail-closed evidence.
+
+### Completed 2026-07-14 - Define Safe Control For Protocol Charging Model Statuses
+
+- Used the upstream firmware API classification of `modelStatus` as the reason
+  charging is allowed or denied: values `8`-`11` and `13`-`14` are explicitly
+  named `ChargingBecause...` and now follow the shared active-charging path.
+- Preserved selector precedence so Auto/Eco command-authority, no-grid
+  telemetry/import, phase, and confirmed-disconnect guards still win; Manual
+  handling remains reporting-only and command-free.
+- Added transition-only INFO diagnostics with the stable marker
+  `Wattpilot special charging model status`, including status, protocol name,
+  selected state, context, exit destination, and observed duration without
+  five-second polling spam.
+- Added focused selector, controller, dispatch/logging, and runtime-observer
+  coverage for all six values. Rare live firmware `42.5` reproduction was not
+  forced; future natural occurrences can be found in long-running INFO logs.
+- Verification passed: changed-file syntax, 95 focused tests, the full
+  370-test hardware-free suite including backlog audit, and whitespace checks.
 
 ### Completed 2026-07-14 - Clear Public Wattpilot Phase State After Confirmed Disconnect
 
@@ -887,79 +904,6 @@ Done criteria:
 - The bounds and their source are explicitly approved and documented.
 - Combined setpoints are clamped and every clamp is observable.
 - In-range additive behavior and request ownership remain unchanged.
-- Full unittest suite passes.
-
-### P2 - Define Safe Control For Unclassified Charging Model Statuses
-
-Goal:
-
-Give Wattpilot model statuses 8-11 and 13-14 an explicit verified controller
-policy instead of silently routing them to `UNKNOWN`.
-
-Problem:
-
-The enum names describe charging conditions, but the control-state sets omit
-them. The `UNKNOWN` handler performs no PV-following or explicit safety action.
-Blindly mapping every status to normal charging is also unsafe without protocol
-or live evidence.
-
-Evidence:
-
-- `WattpilotControlState.py:5-6` omits values 8-11 and 13-14.
-- `enums.py:63-69` names them AutomaticStop/Fallback charging states.
-- `select_control_state()` falls through to `UNKNOWN`.
-
-Implementation:
-
-- Establish each status's observed/protocol meaning for firmware `42.5`.
-- Choose explicit PV-following or fail-safe stop behavior per status.
-- Keep selection pure and side effects in `FroniusWattpilot.py`; preserve Manual
-  ownership and no-grid safety.
-
-Files to change:
-
-- `WattpilotControlState.py`
-- `FroniusWattpilot.py` only if a new explicit handler is required
-- `docs/wattpilot-architecture.md`
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Extend `tests/test_wattpilot_control_state.py` and dispatch tests for all six
-  statuses in Auto/no-grid and Manual contexts using hardware-free stubs.
-
-Expected coverage:
-
-- Proves every known charging status has deliberate behavior and cannot bypass
-  PV/no-grid policy; existing mappings remain unchanged.
-
-Manual validation:
-
-Active charging only if one of these rare statuses occurs naturally; unit tests
-are the primary verifier.
-
-Manual test steps:
-
-1. Capture firmware `42.5` telemetry/log evidence if a listed status occurs.
-2. Confirm the selected controller state matches the approved policy.
-
-Risks and dependencies:
-
-- Incorrect classification could stop a valid session or permit unintended
-  power use.
-- Protocol/observed evidence must precede implementation.
-
-Open questions:
-
-- Which of statuses 8-11 and 13-14 are safe to PV-follow, and which must stop in
-  Auto/no-grid mode?
-
-Done criteria:
-
-- All six statuses have evidence-backed, tested control-state mappings.
 - Full unittest suite passes.
 
 #### Implementation record - completed in Group B: Fix PV Inverter Stale Window And Cached-Power Contribution
@@ -1950,8 +1894,6 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-9. P2 define safe control for unclassified charging model statuses — obtain
-   firmware evidence and encode explicit no-grid-safe mappings.
 24. P4 audit and pin the Victron `velib_python` dependency — establish v3.75
    provenance and deterministic import ownership as a separate compatibility
    change.
@@ -1973,9 +1915,6 @@ inconclusive window is preferable to forcing production behavior:
 
 Hardware validation scope for the remaining backlog:
 
-- Unclassified Wattpilot charging statuses require firmware evidence before a
-  policy change; unit tests remain the primary verifier if a rare status cannot
-  be reproduced safely.
 - The P4 automatic-NPC allocation fix requires low-risk validation with a
   non-critical automatic consumer.
 - The P4 `velib_python` audit requires log-only startup and D-Bus registration

@@ -74,6 +74,8 @@ class FroniusWattpilot (esESSService):
         self.commandAuthorityLiteral = COMMAND_AUTHORITY_UNAVAILABLE
         self._lastCommandAuthorityState = None
         self.commandAuthorityForcedOff = False
+        self._lastObservedModelStatusValue = None
+        self._protocolChargingStatusSince = 0
         self.minimumOnOffSeconds = int(settings["MinOnOffSeconds"])
         self.minimumPhaseSwitchSeconds = int(settings["MinPhaseSwitchSeconds"])
 
@@ -964,6 +966,63 @@ class FroniusWattpilot (esESSService):
         )
         return False
 
+    def modelStatusName(self, modelStatusValue):
+        modelStatus = getattr(self.wattpilot, "modelStatus", None)
+        name = getattr(modelStatus, "name", None)
+        if name and getattr(modelStatus, "value", None) == modelStatusValue:
+            return name
+        try:
+            return WattpilotModelStatus(modelStatusValue).name
+        except (TypeError, ValueError, AttributeError):
+            return "Unknown"
+
+    def logProtocolChargingStatusTransition(self, selectedState, inputs):
+        """Log rare protocol-defined charging states without duty-cycle spam."""
+        currentValue = getattr(inputs, "model_status_value", None)
+        previousValue = getattr(self, "_lastObservedModelStatusValue", None)
+        if currentValue == previousValue:
+            return
+
+        now = time.time()
+        if ControlStates.is_protocol_charging_status(previousValue):
+            observedSeconds = max(
+                0,
+                int(now - getattr(self, "_protocolChargingStatusSince", now)),
+            )
+            i(
+                self,
+                "Wattpilot special charging model status exited: "
+                "model_status={0} name={1} next_model_status={2} "
+                "observed_seconds={3}.".format(
+                    previousValue,
+                    self.modelStatusName(previousValue),
+                    currentValue if currentValue is not None else "<unavailable>",
+                    observedSeconds,
+                ),
+            )
+
+        if ControlStates.is_protocol_charging_status(currentValue):
+            self._protocolChargingStatusSince = now
+            i(
+                self,
+                "Wattpilot special charging model status entered: "
+                "model_status={0} name={1} mode={2} selected_state={3} "
+                "effective_car_connected={4} power_kw={5} "
+                "command_authority_ok={6}.".format(
+                    currentValue,
+                    self.modelStatusName(currentValue),
+                    getattr(self.mode, "name", self.mode),
+                    getattr(selectedState, "value", selectedState),
+                    getattr(inputs, "effective_car_connected", None),
+                    getattr(getattr(self, "wattpilot", None), "power", None),
+                    getattr(inputs, "command_authority_ok", None),
+                ),
+            )
+        else:
+            self._protocolChargingStatusSince = 0
+
+        self._lastObservedModelStatusValue = currentValue
+
     def refreshWattpilotFirmwareCompatibility(self):
         actual = None
         if self.wattpilot is not None:
@@ -1095,6 +1154,7 @@ class FroniusWattpilot (esESSService):
                 effectiveCarConnected,
                 gridTelemetryFresh,
             )
+            self.logProtocolChargingStatusTransition(selectedState, _inputs)
             shouldReturn = self.dispatchControlState(
                 selectedState,
                 effectiveCarConnected,
@@ -2024,7 +2084,7 @@ class FroniusWattpilot (esESSService):
         status = getattr(self.wattpilot, "modelStatus", None)
         statusValue = getattr(status, "value", None)
         return (
-            statusValue in [3, 12, 15, 19, 20]
+            ControlStates.is_active_charging_status(statusValue)
             or self.powerTransitionUntil > time.time()
         )
 

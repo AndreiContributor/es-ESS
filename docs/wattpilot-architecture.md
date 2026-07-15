@@ -236,6 +236,12 @@ It owns:
   including command-authority blocking before grid, phase, disconnect, or
   model-status dispatch.
 - Model-status classification for charging and not-charging Wattpilot states.
+  The [upstream API specification](https://github.com/goecharger/go-eCharger-API-v2/blob/main/API_KEYS_FIRMWARE/apikeys-en.md)
+  defines `modelStatus` as the reason charging is currently allowed or denied
+  and labels values `8`-`11` and `13`-`14` as
+  `ChargingBecause...`; es-ESS therefore classifies all six as active charging.
+  This classification is applied only after command-authority, no-grid
+  telemetry/import, pending-phase, and confirmed-disconnect gates.
 - Pure selection of the next controller branch from an input snapshot.
 - Formatting of selector inputs for diagnostics and tests.
 
@@ -254,6 +260,11 @@ grid-import checks, grid import is evaluated before pending phase-switch
 reconciliation, and pending phase-switch reconciliation is evaluated before
 disconnect/model-status routing. The selector then chooses the explicit state,
 and the controller dispatches that state to the existing side-effect handlers.
+The controller also owns transition-only INFO diagnostics for protocol charging
+statuses `8`-`11` and `13`-`14`. It logs entry, a change between those values,
+and exit with the stable text `Wattpilot special charging model status`; it does
+not log every five-second controller cycle. The selector and shared
+classification helpers remain pure and log-free.
 
 ### `WattpilotRuntimeStatus.py`
 
@@ -346,6 +357,10 @@ Future Wattpilot changes must preserve these invariants:
   controller can issue the phase command.
 - Fresh grid telemetry and fresh allowance data are required for no-grid
   Auto/Eco decisions.
+- Protocol charging statuses `8`-`11` and `13`-`14` follow the normal active
+  charging branch. They cannot bypass command-authority, stale-grid,
+  grid-import, pending-phase, or confirmed-disconnect guards. In Manual mode
+  they change reporting only and do not grant es-ESS command authority.
 - A fresh distributor allowance below the usable minimum, including a truthful
   atomic `0 W` assignment during an already-running three-phase charge, must
   remain truthfully published on `/PvAllowance`. The controller may retain the

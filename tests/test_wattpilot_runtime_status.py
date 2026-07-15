@@ -550,6 +550,17 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
         self.assert_phase_mode(controller, 1, "1 phase")
         self.assertEqual(controller.wattpilot.command_calls, [])
 
+    def test_protocol_defined_charging_statuses_are_active_without_power(self):
+        for model_status_value in (8, 9, 10, 11, 13, 14):
+            with self.subTest(model_status_value=model_status_value):
+                controller, reporter = self.make_controller()
+                controller.wattpilot.power = 0
+                controller.wattpilot.modelStatus = SimpleNamespace(
+                    value=model_status_value
+                )
+
+                self.assertTrue(reporter._charge_is_active("Connected"))
+
     def test_incomplete_live_phase_telemetry_uses_existing_controller_fallback(self):
         controller, _reporter = self.make_controller()
         controller.mode = Mode("Manual")

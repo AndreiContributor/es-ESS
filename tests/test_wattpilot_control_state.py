@@ -4,6 +4,8 @@ import WattpilotControlState as states
 
 
 class WattpilotControlStateTests(unittest.TestCase):
+    PROTOCOL_CHARGING_STATUS_VALUES = (8, 9, 10, 11, 13, 14)
+
     def _inputs(self, **overrides):
         values = {
             "transport_unavailable": False,
@@ -144,6 +146,79 @@ class WattpilotControlStateTests(unittest.TestCase):
             states.select_control_state(self._inputs(model_status_value=24)),
             states.WattpilotControlState.NOT_CHARGING,
         )
+
+    def test_protocol_defined_charging_statuses_select_charging(self):
+        for model_status_value in self.PROTOCOL_CHARGING_STATUS_VALUES:
+            with self.subTest(model_status_value=model_status_value):
+                self.assertTrue(
+                    states.is_protocol_charging_status(model_status_value)
+                )
+                self.assertTrue(states.is_active_charging_status(model_status_value))
+                self.assertEqual(
+                    states.select_control_state(
+                        self._inputs(model_status_value=model_status_value)
+                    ),
+                    states.WattpilotControlState.CHARGING,
+                )
+
+    def test_auto_safety_gates_precede_protocol_defined_charging_statuses(self):
+        safety_cases = (
+            (
+                {"transport_unavailable": True},
+                states.WattpilotControlState.TRANSPORT_UNAVAILABLE,
+            ),
+            (
+                {"command_authority_ok": False},
+                states.WattpilotControlState.COMMAND_AUTHORITY_BLOCKED,
+            ),
+            (
+                {"grid_telemetry_fresh": False},
+                states.WattpilotControlState.GRID_TELEMETRY_UNSAFE,
+            ),
+            (
+                {"grid_import_limit_exceeded": True},
+                states.WattpilotControlState.GRID_IMPORT_STOP,
+            ),
+            (
+                {"pending_phase_status": True},
+                states.WattpilotControlState.PENDING_PHASE_SWITCH,
+            ),
+            (
+                {"effective_car_connected": False},
+                states.WattpilotControlState.DISCONNECTED,
+            ),
+        )
+        for model_status_value in self.PROTOCOL_CHARGING_STATUS_VALUES:
+            for overrides, expected in safety_cases:
+                with self.subTest(
+                    model_status_value=model_status_value,
+                    expected=expected,
+                ):
+                    self.assertEqual(
+                        states.select_control_state(
+                            self._inputs(
+                                model_status_value=model_status_value,
+                                **overrides
+                            )
+                        ),
+                        expected,
+                    )
+
+    def test_manual_protocol_defined_charging_statuses_ignore_auto_safety_gates(self):
+        for model_status_value in self.PROTOCOL_CHARGING_STATUS_VALUES:
+            with self.subTest(model_status_value=model_status_value):
+                self.assertEqual(
+                    states.select_control_state(
+                        self._inputs(
+                            auto_mode=False,
+                            command_authority_ok=False,
+                            grid_telemetry_fresh=False,
+                            grid_import_limit_exceeded=True,
+                            model_status_value=model_status_value,
+                        )
+                    ),
+                    states.WattpilotControlState.CHARGING,
+                )
 
     def test_special_model_statuses_select_external_and_phase_switching(self):
         self.assertEqual(
