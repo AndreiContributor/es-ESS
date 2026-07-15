@@ -35,6 +35,16 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+find_python() {
+    if command_exists python
+    then
+        echo "python"
+    elif command_exists python3
+    then
+        echo "python3"
+    fi
+}
+
 read_first_line() {
     file="$1"
     if [ -r "$file" ]
@@ -68,18 +78,28 @@ dbus_get() {
 }
 
 check_python_dependencies() {
-    if python -c "import paho.mqtt.client, websocket" >/dev/null 2>&1
+    python_bin="$(find_python)"
+    if [ -z "$python_bin" ]
     then
-        echo "OK: paho.mqtt.client and websocket import"
+        echo "WARN: neither python nor python3 is available"
+    elif "$python_bin" -c "import paho.mqtt.client, websocket" >/dev/null 2>&1
+    then
+        echo "OK: paho.mqtt.client and websocket import via $python_bin"
     else
-        echo "WARN: Python dependency import failed"
+        echo "WARN: Python dependency import failed via $python_bin"
     fi
 }
 
 check_velib_dependency() {
+    python_bin="$(find_python)"
+    if [ -z "$python_bin" ]
+    then
+        echo "WARN: neither python nor python3 is available"
+        return
+    fi
     velib_status="$(
         cd "$APP_DIR" 2>/dev/null &&
-        python -c "from VelibDependency import activate_velib_python, compare_velib_directory; manifest = activate_velib_python(); import vedbus, dbusmonitor, settingsdevice, ve_utils; comparison = compare_velib_directory('/opt/victronenergy/dbus-systemcalc-py/ext/velib_python'); print('{} | {} | Venus OS copy: {}'.format(manifest['selection'], vedbus.__file__, ', '.join('{}={}'.format(name, 'match' if state else ('different' if state is False else 'missing')) for name, state in sorted(comparison.items()))))" 2>&1
+        "$python_bin" -c "from VelibDependency import activate_velib_python, compare_velib_directory; manifest = activate_velib_python(); import vedbus, dbusmonitor, settingsdevice, ve_utils; comparison = compare_velib_directory('/opt/victronenergy/dbus-systemcalc-py/ext/velib_python'); print('{} | {} | Venus OS copy: {}'.format(manifest['selection'], vedbus.__file__, ', '.join('{}={}'.format(name, 'match' if state else ('different' if state is False else 'missing')) for name, state in sorted(comparison.items()))))" 2>&1
     )"
     if [ "$?" -eq 0 ]
     then
@@ -117,7 +137,7 @@ print_runtime() {
             ;;
     esac
 
-    print_kv "Python dependencies" "$(check_python_dependencies)"
+    print_kv "Wattpilot Python dependencies" "$(check_python_dependencies)"
     print_kv "Pinned velib_python" "$(check_velib_dependency)"
 
     if [ -e "$APP_DIR" ]

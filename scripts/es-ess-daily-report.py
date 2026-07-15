@@ -88,6 +88,11 @@ SNAPSHOT_DBUS_PATHS = (
     "/ActualWattpilotFirmware",
     "/ValidatedWattpilotAppVersion",
 )
+READONLY_DBUS_PAIRS = frozenset(
+    (DEFAULT_WATTPILOT_DBUS_SERVICE, path) for path in SNAPSHOT_DBUS_PATHS
+) | frozenset(
+    {(DEFAULT_SETTINGS_DBUS_SERVICE, VENUS_TIMEZONE_DBUS_PATH)}
+)
 SNAPSHOT_COMMAND_TIMEOUT_SECONDS = 2
 SNAPSHOT_MAX_CONSECUTIVE_TIMEOUTS = 3
 PROGRESS_BAR_WIDTH = 24
@@ -803,25 +808,40 @@ def _get_bool(
         return fallback
 
 
+class ConfigurationReadError(RuntimeError):
+    """Configuration exists but cannot be safely read or parsed."""
+
+
 def load_settings(path: Path) -> tuple[AuditSettings, list[str]]:
     warnings: list[str] = []
     parser = configparser.ConfigParser(interpolation=None)
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             parser.read_file(handle)
-    except (OSError, configparser.Error) as exc:
-        warnings.append(f"cannot read configuration: {exc}; using safe fallbacks")
+    except FileNotFoundError as exc:
+        warnings.append(f"configuration is missing: {exc}; using safe fallbacks")
         return AuditSettings(), warnings
+    except OSError as exc:
+        raise ConfigurationReadError(
+            f"cannot open configuration {path}: {exc}"
+        ) from exc
+    except configparser.Error as exc:
+        raise ConfigurationReadError(
+            f"cannot parse configuration {path}: {exc}"
+        ) from exc
 
     enabled_services: list[str] = []
     if parser.has_section("Services"):
-        # ConfigParser.items() includes inherited [DEFAULT] documentation
-        # values. Inspect only keys explicitly declared in [Services].
-        for key, value in parser._sections.get("Services", {}).items():
+        # ConfigParser's public mapping/items APIs include inherited [DEFAULT]
+        # values. The private section dictionary is deliberately retained here
+        # because it is the only parser-owned representation of keys explicitly
+        # declared in [Services]; replacing it would reclassify documentation
+        # defaults as service flags.
+        for key in parser._sections.get("Services", {}):
             try:
-                if parser._convert_to_boolean(value):
+                if parser.getboolean("Services", key):
                     enabled_services.append(key)
-            except ValueError:
+            except (configparser.Error, ValueError):
                 warnings.append(f"[Services] {key} is not a valid boolean")
     else:
         warnings.append("[Services] section missing; enabled services unavailable")
@@ -885,7 +905,7 @@ def _run_readonly_command(
     runner=subprocess.run,
     timeout_seconds: int = SNAPSHOT_COMMAND_TIMEOUT_SECONDS,
 ) -> tuple[bool, str]:
-    """Run only the two explicitly allowlisted read operations."""
+    """Run only exact service-status and D-Bus read operations."""
     if not args:
         return False, "empty command"
     if args[0] == "svstat":
@@ -895,17 +915,7 @@ def _run_readonly_command(
             len(args) == 5
             and args[1] == "-y"
             and args[4] == "GetValue"
-            and args[2]
-            in {
-                DEFAULT_WATTPILOT_DBUS_SERVICE,
-                "com.victronenergy.system",
-                DEFAULT_SETTINGS_DBUS_SERVICE,
-            }
-            and args[3].startswith("/")
-            and (
-                args[2] != DEFAULT_SETTINGS_DBUS_SERVICE
-                or args[3] == VENUS_TIMEZONE_DBUS_PATH
-            )
+            and (args[2], args[3]) in READONLY_DBUS_PAIRS
         )
     else:
         allowed = False
@@ -1541,11 +1551,16 @@ class EsEssDailyReport:
         if snapshot.dependencies != "available":
             self.add(
                 "FAIL",
-                "current dependencies",
-                f"Required Python dependencies are {snapshot.dependencies}.",
+                "Wattpilot external dependencies",
+                "Wattpilot external Python dependencies are "
+                f"{snapshot.dependencies}.",
             )
         else:
-            self.add("PASS", "current dependencies", "Required Python dependencies are available.")
+            self.add(
+                "PASS",
+                "Wattpilot external dependencies",
+                "Wattpilot external Python dependencies are available.",
+            )
 
         dbus = snapshot.dbus_values
         if dbus.get("/CompatibilityOk") not in (None, "unavailable", "1"):
@@ -2743,7 +2758,8 @@ def render_human(result: AuditResult) -> str:
         "----------------------------------",
         f"Captured={result.current_snapshot.captured_at}",
         f"Service={result.current_snapshot.service_state}",
-        f"Dependencies={result.current_snapshot.dependencies}",
+        "WattpilotExternalDependencies="
+        f"{result.current_snapshot.dependencies}",
     ]
     if result.inputs.full_window_available_at:
         lines.insert(
@@ -2882,7 +2898,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     progress.update(0, "Reading configuration")
     config_path = Path(args.config)
-    settings, config_warnings = load_settings(config_path)
+    try:
+        settings, config_warnings = load_settings(config_path)
+    except ConfigurationReadError as exc:
+        progress.stop("Stopped: configuration read failed")
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return EXIT_INPUT_ERROR
     if settings.log_level not in VERBOSE_LOG_LEVELS:
         reason = (
             f"[Common] LogLevel is {settings.log_level or 'missing'}, but APP_DEBUG "

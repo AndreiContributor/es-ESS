@@ -866,13 +866,15 @@ For a longer observation window with a saved log:
 INTERVAL_SECONDS=10 MAX_SAMPLES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh | tee /data/es-ess-health-$(date +%Y%m%d-%H%M%S).log
 ```
 
-The script reads service state, Venus OS version, Python dependency imports,
+The script reads service state, Venus OS version, Wattpilot Python dependency imports,
 the pinned `velib_python` integrity/import source, selected config keys,
 Wattpilot D-Bus/runtime-status paths, disk usage and recent controller logs,
 including raw `lmo` and `/ModeLiteral` transition timestamps. It does not write
 D-Bus, MQTT, config, service state or Wattpilot control values. Installation,
 mode-boundary validation, and interpretation steps are documented in
 [docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
+The monitor uses `python` when available and falls back to `python3` for both
+dependency checks.
 
 ### es-ESS daily report
 
@@ -903,7 +905,10 @@ The read-only analyzer automatically includes `current.log` and dated rotations.
 It makes one bounded, allowlisted `GetValue` query for the authoritative Venus
 `/Settings/System/TimeZone`, then optionally reads current service/D-Bus
 snapshots. It never writes D-Bus, MQTT, Wattpilot, configuration, or service
-state. Historical dates require `[Common] LogLevel=APP_DEBUG` (or more verbose)
+state. Only the exact declared Wattpilot snapshot paths and timezone pair are
+accepted. An unreadable or malformed existing config is an input error instead
+of silently selecting all defaults. Historical dates require
+`[Common] LogLevel=APP_DEBUG` (or more verbose)
 across a complete requested window. `--date today` analyzes the Venus-local day
 from local midnight through execution and remains `INCOMPLETE` unless it detects
 an `ANOMALY`; it prints the report timezone, requested period, cutoff, evidence
