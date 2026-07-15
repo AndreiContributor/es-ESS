@@ -883,13 +883,15 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.set_phases.assert_called_once_with(1)
         controller.wattpilot.set_start_stop.assert_not_called()
 
-    def test_no_grid_phase_down_is_immediate_when_battery_soc_is_too_low(self):
+    def test_no_grid_phase_down_waits_for_grace_when_shortfall_is_too_large(self):
         controller = self._controller()
         controller.currentPhaseMode = 2
         controller.minimumPhaseSwitchSeconds = 600
         controller.wattpilot.power = 3.6
-        controller.wattpilot.amp = 6
-        controller.batterySocDbus.value = 59
+        controller.wattpilot.amp = 16
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
+        controller.batterySocDbus.value = 80
+        controller.batteryAssistMaxShortfallW = 1000
         controller.mqttRawOverheadW = 2000
         controller.mqttRawOverheadUpdatedAt = 100
         self._set_allowance(controller, 0, 100)
@@ -897,8 +899,55 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         with patch.object(self.fwp.time, "time", return_value=100):
             status = controller.controlAutomaticCharging()
 
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 2)
+        self.assertFalse(controller.batteryAssistActive)
+        controller.wattpilot.set_phases.assert_not_called()
+
+        controller.mqttRawOverheadUpdatedAt = 115
+        self._set_allowance(controller, 0, 115)
+        with patch.object(self.fwp.time, "time", return_value=115):
+            status = controller.controlAutomaticCharging()
+
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo1Phase)
         controller.wattpilot.set_phases.assert_called_once_with(1)
+
+    def test_transient_zero_allowance_recovers_without_three_phase_change(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.minimumPhaseSwitchSeconds = 600
+        controller.wattpilot.power = 4.0
+        controller.wattpilot.amp = 16
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
+        controller.batterySocDbus.value = 80
+        controller.batteryAssistMaxShortfallW = 1000
+        controller.mqttRawOverheadW = 3912
+        controller.mqttRawOverheadUpdatedAt = 100
+        self._set_allowance(controller, 0, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging()
+            controller.publishSafetyTelemetry()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 2)
+        self.assertEqual(controller.dbusService["/PvAllowance"], 0)
+        self.assertEqual(controller.allowanceBelowMinimumSince, 100)
+        self.assertFalse(controller.batteryAssistActive)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+
+        controller.mqttRawOverheadW = 6309
+        controller.mqttRawOverheadUpdatedAt = 105
+        self._set_allowance(controller, 6309, 105)
+        with patch.object(self.fwp.time, "time", return_value=105):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 2)
+        self.assertEqual(controller.allowanceBelowMinimumSince, 0)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
 
     def test_stale_high_raw_overhead_cannot_desync_three_phase_controller_state(self):
         controller = self._controller()
@@ -981,12 +1030,21 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.currentPhaseMode = 2
         controller.wattpilot.power = 4.2
         controller.wattpilot.amp = 6
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
         controller.batterySocDbus.value = 59
         controller.mqttRawOverheadW = 1000
         controller.mqttRawOverheadUpdatedAt = 100
         self._set_allowance(controller, 0, 100)
 
         with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        controller.wattpilot.set_start_stop.assert_not_called()
+
+        controller.mqttRawOverheadUpdatedAt = 115
+        self._set_allowance(controller, 0, 115)
+        with patch.object(self.fwp.time, "time", return_value=115):
             status = controller.controlAutomaticCharging()
 
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)

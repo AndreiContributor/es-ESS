@@ -1382,9 +1382,11 @@ class FroniusWattpilot (esESSService):
 
         # Use one shared stability interval for both phase directions. During
         # a sustained three-phase PV deficit, keep the existing phase command
-        # only while bounded battery assist is eligible or grid fallback is
-        # explicitly allowed. A no-grid session that cannot bridge safely
-        # reduces to one phase immediately when possible, otherwise it stops.
+        # while bounded battery assist is eligible, grid fallback is explicitly
+        # allowed, or the short allowance-drop debounce is active. A no-grid
+        # session that cannot bridge safely reduces to one phase or stops after
+        # that debounce expires. Grid telemetry and import guards remain
+        # immediate and execute outside this allowance-only grace.
         phaseDownStatus = self.controlThreePhasePvDeficit()
         if phaseDownStatus is not None:
             return phaseDownStatus
@@ -2083,8 +2085,8 @@ class FroniusWattpilot (esESSService):
         """Hold an active session briefly while awaiting a fresh allowance.
 
         The grid-import guard remains immediate. This helper only avoids an
-        unnecessary stop when the distributor and Wattpilot workers execute in
-        the opposite order for one or two cycles.
+        unnecessary phase reduction or stop when the distributor and Wattpilot
+        workers execute in the opposite order for one or two cycles.
         """
         if self.hasMinimumAllowance() or not self.canChargeAtMinimumCurrent():
             self.allowanceBelowMinimumSince = 0
@@ -2099,8 +2101,9 @@ class FroniusWattpilot (esESSService):
             self.allowanceBelowMinimumSince = now
             self.publishServiceMessage(
                 self,
-                "EV allowance fell below the one-phase minimum. Waiting up to "
-                "{0}s for a refreshed distributor allowance before stopping.".format(
+                "EV allowance fell below the usable minimum. Waiting up to "
+                "{0}s for a refreshed distributor allowance before reducing "
+                "phase or stopping.".format(
                     self.allowanceDropGraceSeconds
                 )
             )
@@ -2287,6 +2290,7 @@ class FroniusWattpilot (esESSService):
         assignedAllowance = max(0.0, float(self.allowance))
         threePhaseThreshold = self.phaseDownThresholdW()
         if assignedAllowance >= threePhaseThreshold:
+            self.allowanceBelowMinimumSince = 0
             self.clearPhaseSwitchCandidate()
             return None
 
@@ -2310,6 +2314,18 @@ class FroniusWattpilot (esESSService):
 
         if not fallbackAvailable:
             self.clearBatteryAssist()
+
+            # The distributor truthfully reports 0 W when a three-phase
+            # atomic minimum cannot be assigned. A single such sample can be
+            # caused by worker ordering or a passing cloud. Keep the existing
+            # phase/current command for the configured allowance debounce,
+            # but do not replace or inflate the public 0 W allowance. An
+            # explicit one-phase-capable assignment bypasses this hold and can
+            # reduce phase immediately. Stale grid telemetry and sustained
+            # grid import are handled before this method and are never delayed.
+            if self.allowanceStopGraceActive():
+                return VrmEvChargerStatus.Charging
+
             self.clearPhaseSwitchCandidate()
             if onePhasePvW >= self.minimumChargePower():
                 return self.switchToOnePhaseForPvDip()

@@ -55,11 +55,15 @@ Current validated state:
 - The native Eco/es-ESS command-ownership guard is implemented, merged on
   `main`, and live-validated on 2026-07-15. With native PV surplus and flexible
   tariff disabled, VRM web Auto selection established sole-owner authority;
-  supervised one-phase current control, phase-up, safe phase-down, Manual
-  release, and final disconnected restoration all passed without intentional
-  grid charging. Additional Wattpilot work includes explicit policy for
-  unclassified charging statuses and the independent mode-boundary,
-  battery-heartbeat, and natural winter observation tasks below.
+  supervised one-phase current control, phase-up, Manual release, and final
+  disconnected restoration all passed without intentional grid charging. A
+  later single-cycle atomic `0 W` assignment exposed that three-phase fallback
+  bypassed `AllowanceDropGraceSeconds`; the controller and hardware-free tests
+  now preserve truthful allowance telemetry while debouncing that fallback,
+  with supervised live revalidation still open below. Additional Wattpilot
+  work includes explicit policy for unclassified charging statuses and the
+  independent mode-boundary, battery-heartbeat, and natural winter observation
+  tasks below.
 - The 2026-07-12 review confirmed additional crash, device-control, stale-data,
   persistence, configuration, security, and test-coverage work. Items with
   site-specific limits or uncertain Wattpilot protocol meaning retain explicit
@@ -119,10 +123,13 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 - Supervised active charging followed es-ESS one-phase requests from 13 A
   through 16 A without a native current rewrite. The es-ESS 600-second
   candidate alone authorized the transition to three phases, live telemetry
-  confirmed three-phase charging, and a later assigned-allowance loss produced
-  a safe confirmed phase-down. Grid guard remained inactive, grid exchange
-  stayed near the normal target, and the only observed battery assist was a
-  small bounded continuation bridge while the home battery remained charging.
+  confirmed three-phase charging, and a later single-cycle atomic `0 W`
+  assigned allowance produced a confirmed phase-down. That fallback was safe
+  but exposed a separate bypass of `AllowanceDropGraceSeconds`, now covered by
+  the follow-up controller fix and the live-validation item below. Grid guard
+  remained inactive, grid exchange stayed near the normal target, and the only
+  observed battery assist was a small bounded continuation bridge while the
+  home battery remained charging.
 - Standard/Manual selection produced the approved one-time release without
   repeated control commands. Solar.wattpilot app `2.1.0` could not reselect Eco
   with both native Eco options disabled, so the validated commissioning path is
@@ -692,6 +699,113 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   this isolated allocator correction.
 
 ## Backlog
+
+### P1 - Live-Validate Three-Phase Allowance-Drop Grace
+
+Priority rationale:
+
+This is the remaining production check for a safety-sensitive controller fix
+derived from a live three-phase event. The automated behavior is complete, but
+the updated command timing should be observed on the validated charger before
+the item is closed.
+
+Goal:
+
+Confirm that one fresh atomic `0 W` Wattpilot allowance during an already-
+running three-phase Auto/Eco charge does not immediately issue a phase-down or
+stop command, while a sustained deficit and all grid safety guards retain their
+documented behavior.
+
+Problem:
+
+At 07:17:10 UTC on 2026-07-15, SolarOverheadDistributor truthfully assigned
+`0 W` because the active atomic three-phase minimum was unavailable for one
+cycle. The controller bypassed `AllowanceDropGraceSeconds=15` in its
+three-phase-deficit path and immediately changed to one phase even though the
+next distributor cycle could serve a one-phase request. One passing-cloud or
+worker-ordering sample therefore reset an otherwise valid three-phase session.
+
+Evidence:
+
+- Production logs showed assigned allowance fall from `6309 W` to `0 W` at
+  07:17:10 while raw overhead remained approximately `3912 W`, followed by an
+  immediate phase-down command.
+- `FroniusWattpilot.controlThreePhasePvDeficit()` previously reduced phase or
+  stopped before calling the existing allowance-drop grace helper.
+- The updated controller retains the existing phase/current only during the
+  configured allowance debounce, keeps `/PvAllowance` truthfully at `0 W`, and
+  does not delay stale-grid or grid-import safety handling.
+
+Implementation:
+
+- Completed in `FroniusWattpilot.py`: apply the existing running-session
+  allowance debounce before unbridged three-phase reduction or stop.
+- Recovery to a three-phase-capable allowance clears the debounce timer.
+- A fresh explicit one-phase-capable assignment still permits immediate safe
+  phase reduction; bounded battery assist and grid fallback remain unchanged.
+- Documentation and hardware-free regression coverage describe the telemetry,
+  timing, and safety precedence.
+
+Files changed:
+
+- `FroniusWattpilot.py`
+- `tests/test_eco_pv_policy.py`
+- `config.sample.ini`
+- `README.md`
+- `docs/wattpilot-architecture.md`
+- `docs/system-guide.html`
+- `docs/wattpilot-command-ownership-validation.md`
+- `BACKLOG.md`
+
+Tests:
+
+- A transient fresh `0 W` assignment retains three-phase and sends no phase or
+  stop command while `/PvAllowance` remains `0`.
+- Recovery inside the configured grace clears the timer without a phase
+  command.
+- Sustained insufficient allowance phase-reduces or stops at the exact grace
+  boundary according to one-phase PV availability.
+- Existing grid-import-guard precedence, battery-assist bounds, Manual-mode
+  ownership, config contracts, and the full 364-test hardware-free suite remain
+  green.
+
+Manual validation:
+
+Required on the approved Venus OS `v3.75`, Wattpilot firmware `42.5`, and
+Solar.wattpilot app `2.1.0` baseline during a naturally suitable supervised PV
+window. Do not force grid import or disconnect required telemetry.
+
+Manual test steps:
+
+1. Confirm native PV surplus and flexible tariff are off, select Auto from the
+   VRM web EVCS tile, and verify sole-owner authority and fresh telemetry.
+2. While charging on three phases, run the read-only health/log monitor and
+   wait for a natural short allowance drop.
+3. If one fresh `0 W` assignment recovers inside the configured 30-second
+   grace, confirm phase
+   remains three, no phase/stop command appears, and `/PvAllowance` still
+   reports `0` for that sample.
+4. If a deficit naturally persists to 30 seconds, confirm phase reduction or
+   stop follows current one-phase PV availability.
+5. Stop immediately if grid import is sustained, telemetry becomes stale, or
+   authority is lost; those guards must not wait for allowance grace.
+
+Risks and dependencies:
+
+- During the explicit 30-second allowance grace, Victron ESS may temporarily
+  supply an EV shortfall. This is bounded by the short configured debounce and
+  does not authorize a new charge or phase-up.
+- A suitable transient cannot be scheduled safely; an inconclusive supervised
+  window should remain open rather than forcing production conditions.
+
+Done criteria:
+
+- Live logs prove transient recovery retains three-phase with truthful `0 W`
+  allowance publication and no intervening phase/stop command.
+- Sustained-deficit behavior is observed naturally or remains covered by the
+  deterministic hardware-free boundary tests without unsafe fault creation.
+- Grid telemetry/import safeguards and Manual ownership remain unchanged.
+- Full unittest suite passes.
 
 #### Implementation record - completed in Group B: Define Safe Grid-Setpoint Bounds
 
@@ -1842,10 +1956,12 @@ advance the queue on the next request.
    provenance and deterministic import ownership as a separate compatibility
    change.
 
-The following P4 observation tasks are not code PRs and remain open
-independently of this queue. Complete them only when their safe preconditions
-occur; an inconclusive window is preferable to forcing production behavior:
+The following observation tasks are not code PRs and remain open independently
+of this queue. Complete them only when their safe preconditions occur; an
+inconclusive window is preferable to forcing production behavior:
 
+- Live-validate the three-phase allowance-drop grace during a naturally
+  suitable supervised PV window.
 - Complete local and remote Wattpilot mode-boundary correlation with the
   vehicle disconnected.
 - Winter-validate grid-import dispatch only under natural suitable low-PV
@@ -1891,6 +2007,9 @@ For implementation PRs:
 
 The authoritative manual work is now attached to the corresponding open item:
 
+- **Active charging under natural conditions:** live-validate the
+  three-phase allowance-drop grace without forcing grid import or telemetry
+  failure.
 - **Fault simulation, vehicle disconnected:** complete local and remote
   Wattpilot mode-boundary correlation.
 - **Log-only:** validate the future `velib_python` provenance/import change on
