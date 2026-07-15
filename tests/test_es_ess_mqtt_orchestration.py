@@ -121,6 +121,9 @@ class FakeMqttClient:
         self.name = name
         self.tls_settings = []
         self.tls_insecure_values = []
+        self.async_connections = []
+        self.reconnect_delays = []
+        self.loop_starts = 0
 
     def is_connected(self):
         return self.connected
@@ -149,6 +152,15 @@ class FakeMqttClient:
 
     def tls_insecure_set(self, value):
         self.tls_insecure_values.append(value)
+
+    def reconnect_delay_set(self, min_delay, max_delay):
+        self.reconnect_delays.append((min_delay, max_delay))
+
+    def connect_async(self, **kwargs):
+        self.async_connections.append(kwargs)
+
+    def loop_start(self):
+        self.loop_starts += 1
 
 
 class RecordingExecutor:
@@ -194,6 +206,7 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         app.localMqttClientConnected = False
         app._sigTermInvoked = False
         app._shutdownMqttDisconnectsLogged = set()
+        app._mqttConnectionFailures = {}
         app._mqttSubscriptions = {}
         app._dbusSubscriptions = {}
         app._services = {}
@@ -201,6 +214,63 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         app.mqttThrottlePeriod = 0
         app.config = {"Common": {"ServiceMessageCount": "3"}}
         return app
+
+    def test_initial_mqtt_connection_is_async_with_bounded_backoff(self):
+        app = self._app()
+        client = FakeMqttClient(connected=False)
+
+        app._startMqttClient(client, "broker.example", 8883)
+
+        self.assertEqual(client.reconnect_delays, [(1, 120)])
+        self.assertEqual(
+            client.async_connections,
+            [{"host": "broker.example", "port": 8883}],
+        )
+        self.assertEqual(client.loop_starts, 1)
+
+    def test_initial_connection_failure_is_deduplicated_and_recovers(self):
+        app = self._app(main_connected=False)
+        app.mainMqttClientConnected = True
+
+        with patch.object(self.es_ess, "e") as error_log, patch.object(
+            self.es_ess.time, "time", side_effect=(100, 101, 401)
+        ):
+            app.onMainMqttConnectFail(None, None)
+            app.onMainMqttConnectFail(None, None)
+            app.onMainMqttConnectFail(None, None)
+
+        self.assertFalse(app.mainMqttClientConnected)
+        self.assertEqual(error_log.call_count, 2)
+
+        app.onMainMqttConnect(None, None, None, 0)
+
+        self.assertTrue(app.mainMqttClientConnected)
+        self.assertNotIn("Main", app._mqttConnectionFailures)
+        published_topics = {entry[0] for entry in app.mainMqttClient.publishes}
+        self.assertIn("es-ESS/$SYS/Status", published_topics)
+        self.assertIn("es-ESS/$SYS/Version", published_topics)
+
+    def test_failed_connack_keeps_retry_state_actionable(self):
+        app = self._app(local_connected=False)
+
+        with patch.object(self.es_ess, "e") as error_log:
+            app.onLocalMqttConnect(None, None, None, 5)
+
+        self.assertFalse(app.localMqttClientConnected)
+        error_log.assert_called_once()
+        self.assertIn("CONNACK 5", error_log.call_args.args[1])
+
+    def test_disconnect_callbacks_clear_connection_flags(self):
+        app = self._app()
+        app.mainMqttClientConnected = True
+        app.localMqttClientConnected = True
+
+        with patch.object(self.es_ess, "w"), patch.object(self.es_ess, "i"):
+            app.onMainMqttDisconnect(None, None, 1)
+            app.onLocalMqttDisconnect(None, None, 1)
+
+        self.assertFalse(app.mainMqttClientConnected)
+        self.assertFalse(app.localMqttClientConnected)
 
     def test_dbus_callback_is_submitted_without_inline_execution(self):
         app = self._app()

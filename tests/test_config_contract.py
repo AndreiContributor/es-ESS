@@ -94,6 +94,38 @@ def _sample_wattpilot_config_keys():
     return set(config._sections["FroniusWattpilot"].keys()) - {"__name__"}
 
 
+def _sample_wattpilot_config():
+    config = configparser.ConfigParser()
+    config.optionxform = str
+    config.read(ROOT / "config.sample.ini", encoding="utf-8")
+    return dict(config["FroniusWattpilot"])
+
+
+def _readme_wattpilot_examples():
+    rows = {}
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    for line in readme.splitlines():
+        if not line.startswith("| [FroniusWattpilot]"):
+            continue
+        columns = [column.strip() for column in line.split("|")]
+        rows[columns[2]] = columns[-2]
+    return rows
+
+
+def _system_guide_wattpilot_examples():
+    guide = (ROOT / "docs" / "system-guide.html").read_text(encoding="utf-8")
+    block = guide.split(
+        '<span class="comment">[FroniusWattpilot]</span>', 1
+    )[1].split("</pre>", 1)[0]
+    return dict(
+        re.findall(
+            r'^([A-Za-z][A-Za-z0-9]*)=<span class="value">([^<]*)</span>',
+            block,
+            re.M,
+        )
+    )
+
+
 def _runtime_service_names():
     source = (ROOT / "es-ESS.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -170,6 +202,71 @@ class ConfigContractTests(unittest.TestCase):
                 self.assertEqual(
                     sorted(required_keys - set(config[section].keys())), []
                 )
+
+    def test_readme_wattpilot_examples_match_maintained_sample(self):
+        sample = _sample_wattpilot_config()
+        documented = _readme_wattpilot_examples()
+        expected_keys = {
+            key for key in sample if not key.startswith("devComment")
+        }
+
+        self.assertEqual(set(documented), expected_keys)
+        self.assertEqual(documented, {key: sample[key] for key in expected_keys})
+
+    def test_system_guide_wattpilot_examples_match_maintained_sample(self):
+        sample = _sample_wattpilot_config()
+        documented = _system_guide_wattpilot_examples()
+        placeholders = {"Host", "Password"}
+
+        self.assertGreater(len(documented), 20)
+        for key, value in documented.items():
+            if key not in placeholders:
+                with self.subTest(key=key):
+                    self.assertEqual(value, sample[key])
+
+    def test_service_specific_readme_examples_use_runtime_names(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        mqtt_temperature = readme.split("# MqttTemperatures", 1)[1].split(
+            "# MqttExporter", 1
+        )[0]
+        shelly_pm = readme.split("# ShellyPMInverter", 1)[1].split(
+            "# MqttPvInverter", 1
+        )[0]
+
+        self.assertIn("| [Services]    | MqttTemperature |", mqtt_temperature)
+        self.assertNotIn("| [Services]    | MqttTemperatures |", mqtt_temperature)
+        self.assertIn("`[MqttExporter:uniqueKey]`", readme)
+        self.assertNotIn("`[MattExporter:uniqueKey]`", readme)
+        self.assertIn("| [Services]    | ShellyPMInverter", shelly_pm)
+        self.assertNotIn("| [Services]    | Shelly3EMGrid", shelly_pm)
+
+    def test_hibernate_contract_is_consistent_in_maintained_docs(self):
+        documents = {
+            "README.md": (ROOT / "README.md").read_text(encoding="utf-8"),
+            "config.sample.ini": (ROOT / "config.sample.ini").read_text(
+                encoding="utf-8"
+            ),
+            "docs/system-guide.html": (
+                ROOT / "docs" / "system-guide.html"
+            ).read_text(encoding="utf-8"),
+            "docs/service-inventory.md": (
+                ROOT / "docs" / "service-inventory.md"
+            ).read_text(encoding="utf-8"),
+        }
+
+        for name, content in documents.items():
+            with self.subTest(document=name):
+                self.assertIn("unsupported", content)
+                self.assertIn("best-effort status probe", content)
+
+        self.assertNotIn(
+            "VRM Scheduled Charging forces a wake-up",
+            documents["config.sample.ini"],
+        )
+        self.assertNotIn(
+            "You can force a wakeup",
+            documents["README.md"],
+        )
 
 
 if __name__ == "__main__":

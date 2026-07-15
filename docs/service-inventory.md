@@ -54,7 +54,10 @@ starts, current increases, and phase-up while retaining safe stop commands.
 
 The runtime also owns the shared D-Bus monitor, main MQTT client, local Venus
 MQTT client, worker scheduling, service messages, and combined grid-setpoint
-requests.
+requests. Both MQTT clients start with non-blocking initial connections and
+bounded reconnect backoff, so broker boot ordering does not terminate es-ESS.
+Successful main-broker connections and reconnects republish the retained
+runtime identity/status metadata before restoring main subscriptions.
 
 Logging bootstrap makes one bounded, read-only `GetValue` query to
 `com.victronenergy.settings` `/Settings/System/TimeZone`. That named Venus
@@ -108,15 +111,15 @@ flag is set to `true`.
 | Service | Module | Primary config | Main role | Integration boundaries |
 | --- | --- | --- | --- | --- |
 | `SolarOverheadDistributor` | `SolarOverheadDistributor.py` | `[SolarOverheadDistributor]`, `[Common]`, `HttpConsumer:*`, `MqttConsumer:*` | Calculates available PV surplus, battery reservation, and per-consumer allowances. | Reads Victron system grid and battery D-Bus paths, publishes settings and fake battery reservation D-Bus services, and subscribes/publishes under `es-ESS/SolarOverheadDistributor/Requests/...`. Scripted consumers retain minimum/step allocation. Explicitly configured HTTP/MQTT NPC loads are not discovered automatically and receive their complete `Request` or zero before bounded `[Common] HttpRequestTimeout` control work runs outside the shared consumer-map lock. |
-| `TimeToGoCalculator` | `TimeToGoCalculator.py` | `[TimeToGoCalculator]`, `[Common]` | Calculates battery time-to-go when the system does not provide it. | Reads Victron system battery power, SOC, and active SOC limit D-Bus paths; skips incomplete telemetry without publishing stale calculations, then resumes local/main MQTT publication when all inputs recover. |
+| `TimeToGoCalculator` | `TimeToGoCalculator.py` | `[TimeToGoCalculator]`, `[Common]` | Calculates a diagnostic battery time-to-go estimate. | Reads Victron system battery power, SOC, and active SOC limit D-Bus paths; skips incomplete telemetry without publishing stale calculations, then publishes the estimate only to main MQTT. It does not write the system-owned `/Dc/Battery/TimeToGo` path or a battery-service `/TimeToGo` path. |
 | `FroniusSmartmeterJSON` | `FroniusSmartmeterJSON.py` | `[FroniusSmartmeterJSON]` | Exposes a Fronius smart meter as a Victron grid meter. | Polls the Fronius JSON API over HTTP and publishes a `com.victronenergy.grid` D-Bus service. |
 | `MqttExporter` | `MqttExporter.py` | `MqttExporter:*` | Exports selected D-Bus values to main MQTT. | Subscribes to configured D-Bus service/path pairs and republishes on configured MQTT topics on change or at 1 s, 10 s, or 60 s intervals. |
-| `FroniusWattpilot` | `FroniusWattpilot.py` | `[FroniusWattpilot]` | Integrates and controls a Fronius Wattpilot EV charger. | Owns Victron EV-charger D-Bus paths, including session energy/time compatibility paths, Wattpilot WebSocket commands through `Wattpilot.py`, SolarOverheadDistributor requests, grid telemetry safety checks, read-only native `fup`/`ful` command-authority enforcement, runtime-status publication, and shutdown behavior. The underlying `Wattpilot.py` client owns a single worker reconnect loop for WebSocket outages. See `docs/wattpilot-architecture.md` before changing it. |
+| `FroniusWattpilot` | `FroniusWattpilot.py` | `[FroniusWattpilot]` | Integrates and controls a Fronius Wattpilot EV charger. | Owns Victron EV-charger D-Bus paths, including session energy/time compatibility paths, Wattpilot WebSocket commands through `Wattpilot.py`, SolarOverheadDistributor requests, grid telemetry safety checks, read-only native `fup`/`ful` command-authority enforcement, runtime-status publication, and shutdown behavior. The underlying `Wattpilot.py` client owns a single worker reconnect loop for WebSocket outages. With `HibernateMode=true`, es-ESS intentionally disconnects while no EV is present; VRM mode changes are unsupported while disconnected, and Scheduled is only a best-effort status probe. See `docs/wattpilot-architecture.md` before changing it. |
 | `MqttTemperature` | `MqttTemperature.py` | `MqttTemperature:*` | Exposes MQTT temperature sensors in VRM/D-Bus. | Subscribes to configured MQTT value, humidity, and pressure topics; publishes one `com.victronenergy.temperature` D-Bus service per configured sensor. |
 | `NoBatToEV` | `NoBatToEV.py` | `[NoBatToEV]`, `[Common]` | Offloads EV load to grid-setpoint requests so an AC-out EV charge does not drain the home battery. | Reads Victron system consumption, PV, phase-count, optional relay, and EV-charger power data; registers or revokes shared grid-setpoint requests through the es-ESS runtime. |
 | `Shelly3EMGrid` | `Shelly3EMGrid.py` | `[Shelly3EMGrid]` | Exposes a Shelly 3EM as a Victron grid meter. | Polls the Shelly HTTP status API and publishes a `com.victronenergy.grid` D-Bus service; net-meter counters use atomic persistence, corrupt-value recovery, and exclude unknown failed-poll intervals. |
 | `ShellyPMInverter` | `ShellyPMInverter.py` | `ShellyPMInverter:*` | Exposes one or more Shelly PM devices as PV inverters. | Polls Shelly Gen2 HTTP RPC status endpoints and publishes one `com.victronenergy.pvinverter` D-Bus service per configured device. |
-| `MqttPVInverter` | `MqttPVInverter.py` | `[MqttPvInverter]`, `MqttPVInverter:*` | Exposes MQTT-reported PV inverters in VRM/D-Bus. | Subscribes to configured MQTT voltage, current, power, and energy topics; publishes `com.victronenergy.pvinverter` D-Bus services; optionally publishes OpenDTU limit commands for experimental zero-feed-in control. A zero target still publishes `0%`; incomplete consumption telemetry keeps the last limit, while a fully silent inverter is invalidated after the configured timeout and contributes zero cached power. |
+| `MqttPVInverter` | `MqttPVInverter.py` | `[MqttPvInverter]`, `MqttPVInverter:*` | Exposes MQTT-reported PV inverters in VRM/D-Bus. | Subscribes to configured MQTT voltage, current, power, and energy topics; publishes `com.victronenergy.pvinverter` D-Bus services; optionally publishes OpenDTU limit commands for experimental zero-feed-in control. Commands require a Venus systemcalc AC input whose source is grid/shore and whose matching `/Ac/In/0..1/Connected` value is explicitly `1`; missing, malformed, or off-grid state keeps the last nonpersistent limit so frequency shifting retains control. A zero target still publishes `0%`; incomplete consumption telemetry keeps the last limit, while a fully silent inverter is invalidated after the configured timeout and contributes zero cached power. |
 
 ## Dormant Or Commented Services
 
@@ -189,9 +192,9 @@ Services consume Victron system state through `DbusSubscription` registered via
 ### MQTT boundaries
 
 The main MQTT broker is used for es-ESS status, configured exports, MQTT-backed
-sensors/inverters, and SolarOverheadDistributor requests. The local Venus MQTT
-broker is used for writes to Venus settings or system values, such as
-TimeToGoCalculator and grid-setpoint commands.
+sensors/inverters, SolarOverheadDistributor requests, and the diagnostic
+TimeToGoCalculator estimate. The local Venus MQTT broker is used for writes to
+Venus settings or system values, such as grid-setpoint commands.
 
 When TLS is enabled, each client has an explicit trust mode. `Required` uses
 certificate and hostname verification with either system trust or a configured

@@ -671,9 +671,9 @@ class FroniusWattpilot (esESSService):
         self.wattpilot.set_power(self.getEffectiveMaxCurrent())
 
     def switchMode(self, fromMode:VrmEvChargerControlMode, toMode:VrmEvChargerControlMode):
-        # TODO: When we are in hibernate mode, and attempting to switch mode, it fails, because of 
-        #       Hibernate. Maybe needs resolution? WakeUp + KeepAlive? -> Would need a generally different
-        #       pattern to enter / leave hibernation than the current one. 
+        # Hibernate intentionally disconnects while no EV is present. Remote
+        # mode changes are unsupported during that interval; Scheduled below is
+        # only a best-effort status probe, not a keep-awake/control contract.
         d("FroniusWattpilot", "Switching Mode from {0} to {1}.".format(fromMode, toMode))
         
         self.publishServiceMessage(self, "Switching Mode from {0} to {1}.".format(fromMode, toMode))

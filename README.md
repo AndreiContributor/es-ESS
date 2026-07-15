@@ -25,7 +25,7 @@ system for at least 10ish years, there will be plenty of updates and/or bugfixes
 # Table of Contents
 - [Setup](#setup) - General setup process and requirements for es-ESS.
 - [Developer Notes](#developer-notes) - Contributor guidance and Wattpilot architecture boundaries.
-- [TimeToGoCalculator](#timetogocalculator) - Tiny helper filling out the `Time to Go` field in VRM, when BMS do not report this value.
+- [TimeToGoCalculator](#timetogocalculator) - Publishes a diagnostic battery time-to-go estimate to main MQTT.
 - [MqttTemperatures](#mqtttemperatures) - Display various temperature sensors you have on mqtt in VRM.
 - [MqttExporter](#mqttexporter) - Export selected values form dbus to your MQTT-Server.
 - [MqttPvInverter](#mqttpvinverter) - Use values available on mqtt to mimic a PVInverter in VenusOS
@@ -215,6 +215,13 @@ the credential-bearing file cannot be secured.
 | [Services]               | ShellyPMInverter                 | Flag, if [ShellyPMInverter](#shellypminverter) is enabled.                                                      | Boolean       | true                         |
 | [Services]               | MqttPVInverter            | Flag, if [MqttPvInverter](#mqttpvinverter) is enabled.                                            | Boolean       | true                         |
 
+Main and local MQTT connections start asynchronously with bounded automatic
+reconnect backoff. If either broker is not yet listening during GX startup,
+es-ESS continues initialization after the bounded startup wait and restores
+retained runtime metadata and subscriptions when the broker becomes available.
+Repeated failures remain visible in deduplicated logs; TLS verification and
+authentication policies are not weakened during retry.
+
 #### Startup value validation
 
 After applying configuration migrations, es-ESS validates safety-sensitive
@@ -264,36 +271,38 @@ falls back from verified TLS.
 
 > :warning: NOTE: I recommend to enable one service after each other and finalize configuration, before enabling another one. Else configuration may become a bit clumsy and error-prone.
 
-# TimeToGoCalculator 
+# TimeToGoCalculator
 
-> :white_check_mark: Production Ready
-
-> :warning: This is currently broken since 3.50.
+> :information_source: Diagnostic MQTT output only
 
 <img align="right" src="https://github.com/realdognose/es-ESS/blob/main/img/TimeToGo.png" /> 
 
 #### Overview
 
-Some BMS - say the majority of them - don't provide values for the `Time to go`-Value visible in VRM. This is an important figure when looking at a dashboard. This helper script 
-fills that gap and calculates the time, when BMS don't. Calculation is done in both directions: 
+Some BMS do not provide a time-to-go estimate. This helper calculates an
+estimate and publishes it to the main MQTT topic
+`es-ESS/TimeToGoCalculator/TimeToGo`. Calculation is done in both directions:
 
 - **When discharging**: Time based on current discharge rate until the active SoC Limit is reached.
 - **When charging**: Time based on current charge rate until 100% SoC is reached. 
 
 If power, state of charge, or the active state-of-charge limit is temporarily
 unavailable, the calculator skips that cycle without replacing the last valid
-time-to-go value. Calculation resumes automatically when all inputs recover.
+diagnostic value. Calculation resumes automatically when all inputs recover.
+
+On Venus OS v3.75, `dbus-systemcalc-py` owns
+`/Dc/Battery/TimeToGo` and reads the value from `/TimeToGo` on the selected
+battery service. TimeToGoCalculator does not own either D-Bus service and does
+not inject a value into that system path. VRM time-to-go therefore remains
+unavailable unless the selected battery/BMS service publishes `/TimeToGo`.
 
 #### Configuration
 
-TimeToGoCalculatore requires your local mqtt to be enabled, either in plain or ssl mode.<br />
 TimeToGoCalculator requires a few variables to be set in `/data/es-ESS/config.ini`: 
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
-| [Common]    | VRMPortalID |  Your portal ID to access values on mqtt / dbus |String | VRM0815 |
 | [Common]  | BatteryCapacityInWh  | Your batteries capacity in Wh.  | Integer| 28000 |
-| [Mqtt]     | LocalSslEnabled | Flag, if local Mqtt is SSL or plain. | Boolean | true |
 | [Services]    | TimeToGoCalculator | Flag, if the service should be enabled or not | Boolean | true |
 | [TimeToGoCalculator]  | UpdateInterval | Time in milliseconds for TimeToGo calculations. Must be greater than `0`; smaller values reduce flickering when a BMS sends `null`, but also run the calculation more frequently. | Integer  | 1000 |
 
@@ -317,7 +326,7 @@ MqttTemperatures requires a few variables to be set in `/data/es-ESS/config.ini`
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
-| [Services]    | MqttTemperatures | Flag, if the service should be enabled or not | Boolean | true |
+| [Services]    | MqttTemperature | Flag, if the service should be enabled or not | Boolean | true |
 | [MqttTemperature:XYZ]  | VRMInstanceID |  VRMInstanceId to be used on dbus | Integer  | 1000 |
 | [MqttTemperature:XYZ]  | CustomName |  Custom name to be used for this sensor | String  | MPPT2 Wiring |
 | [MqttTemperature:XYZ]  | Topic |  Topic on Mqtt, delivering the measurement value. | String  | Devices/d1Garden/Sensors/TEMP/Value |
@@ -351,7 +360,7 @@ MqttExporter requires a few variables to be set in `/data/es-ESS/config.ini`:
 
 For every value you want to export, you have to create a additional section, specifying export-conditions. This is quite a bunch of work, but generally only done once. 
 
-Each section needs to match the pattern `[MattExporter:uniqueKey]` where uniqueKey should be an unique identifier.
+Each section needs to match the pattern `[MqttExporter:uniqueKey]` where uniqueKey should be an unique identifier.
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
@@ -440,6 +449,57 @@ Zero-feed-in calculation requires all three consumption phases. If one phase is
 temporarily unavailable, es-ESS keeps the last inverter limit and skips that
 cycle until complete telemetry returns.
 
+Zero-feed-in commands are issued only while Venus systemcalc reports an
+explicitly connected grid/shore AC input through the matching
+`/Ac/In/0..1/Source` and `/Connected` paths. Missing, malformed, or disconnected
+input state sends no OpenDTU command and keeps the last nonpersistent limit so
+off-grid frequency shifting remains the active controller.
+
+### Isolated zero-feed-in validation
+
+`EnableZeroFeedin` is experimental and sends real OpenDTU limit commands. Do
+not enable it merely to test this guard on a production energy system, and do
+not disconnect the production grid. If no separate GX/OpenDTU/inverter setup is
+available, leave both `MqttPVInverter` and `EnableZeroFeedin` disabled.
+
+Commission the guard only on an isolated setup whose inverter output and AC
+input can be changed safely:
+
+1. Back up the staging configuration, use a dedicated OpenDTU control topic,
+   then enable `MqttPVInverter` and `EnableZeroFeedin` on that staging GX.
+2. Subscribe to
+   `<DtuControlTopic>/cmd/limit_nonpersistent_relative` and retain the es-ESS
+   log. With the staging AC input connected, verify the matching systemcalc
+   input reports `Source=1` (grid) or `Source=3` (shore) and `Connected=1`:
+
+   ```sh
+   for input in 0 1; do
+       for field in Source Connected; do
+           path="/Ac/In/$input/$field"
+           printf '%-24s ' "$path"
+           dbus -y com.victronenergy.system "$path" GetValue
+       done
+   done
+   ```
+
+3. Provide valid inverter, consumption, and SOC telemetry and confirm normal
+   zero-feed-in limit messages are published while grid connection is
+   explicitly confirmed.
+4. Disconnect only the isolated staging AC input. Confirm its `Connected` value
+   becomes `0` (or the source/connection evidence becomes unavailable), then
+   observe the control topic for at least 30 seconds, covering three normal
+   zero-feed-in worker cycles. No new limit message may be published; the last
+   nonpersistent limit remains unchanged so the inverter's supported off-grid
+   frequency control stays authoritative.
+5. Restore the staging AC input. Confirm limit messages resume only after a
+   fresh matching `Source` and `Connected=1` are visible. Restore the original
+   staging configuration afterward.
+
+Hardware-free tests cover confirmed grid, second-input shore, disconnected,
+missing, malformed, transition, and recovery states. They do not replace the
+isolated commissioning check for a site that chooses to enable this
+experimental controller.
+
 An inverter that publishes no MQTT message for `StaleTimeoutSeconds` is marked
 disconnected, its D-Bus measurements are nulled, and its cached phase power is
 cleared so frozen production cannot influence zero-feed-in calculations. The
@@ -489,7 +549,10 @@ Seamless Integration through all layers:
 # FroniusWattpilot
 
 > :white_check_mark: Production Ready. 
-> Known Issue: When no EV is connected AND Hibernate Mode is enabled, control through VRM doesn't work. Waking up Wattpilot through the "scheduled charge" option isn't helping, wattpilot will immediately go into hibernation again. 
+> Hibernate contract: when `HibernateMode=true` and no EV is connected, es-ESS
+> intentionally disconnects from Wattpilot and remote mode changes through VRM
+> are unsupported. Scheduled mode can trigger a best-effort status probe, but it
+> is not a supported keep-awake or remote-control path.
 
 ### Overview
 
@@ -600,18 +663,20 @@ Before enabling Auto/Eco PV control:
 - Keep the Wattpilot app's own cable/current limits correct. es-ESS will not
   raise charging beyond the configured per-phase limits or the
   Wattpilot-reported effective limit.
-- Use `Scheduled Charging` in VRM only as the wake-up path when hibernate is
-  enabled.
+- Keep `HibernateMode=false` when disconnected remote mode control is required.
+  With hibernate enabled, Scheduled is only a best-effort status probe and does
+  not make remote mode changes supported.
 
 Android VRM widget mode controls follow the Victron numeric order: Manual `0`,
 Auto `1`, Scheduled `2`. From Manual, press right once to request Auto; from
 Auto, press left once to request Manual. Pressing right while already in Auto
-requests Scheduled, which es-ESS uses only as a temporary Wattpilot wake-up
-path before returning to the previous mode. The widget can therefore appear
-unresponsive to right-from-Auto even though it sent the Scheduled request; do
-not use that direction to test Auto-to-Manual switching. Keep the vehicle
-disconnected during these commissioning transitions because selecting Manual
-returns charging ownership to Wattpilot.
+requests Scheduled, which es-ESS treats as a best-effort status probe before
+returning to the previous mode. It is not a supported keep-awake path when
+hibernate is enabled. The widget can therefore appear unresponsive to
+right-from-Auto even though it sent the Scheduled request; do not use that
+direction to test Auto-to-Manual switching. Keep the vehicle disconnected
+during these commissioning transitions because selecting Manual returns
+charging ownership to Wattpilot.
 
 VRM widget actions require the installation's real-time VRM connection. If the
 widget reports `MQTT connection failed`, `failed to send MQTT action`, or that
@@ -673,13 +738,13 @@ commands. The GX capture is
 | [FroniusWattpilot]  | Position | Position, where the Wattpilot is connected to. Options: 0:=ac-out, 1:=ac-in | Integer  | 0 |
 | [FroniusWattpilot]  | Host | hostname / ip of Wattpilot | String  | 10.10.20.47 |
 | [FroniusWattpilot]  | Password | Password of Wattpilot | String  | password |
-| [FroniusWattpilot]  | HibernateMode | When the car is disconnected, es-ESS will switch into idle mode, stop doing heavy lifting. Connection to wattpilot remains established and VRM control enabled. <br /><br />With hibernate enabled, wattpilot will also be disconnected, and connected every 5 minutes for a car-state-check. This greatly reduces the number of incoming socket messages from wattpilot by about 95% per day, but causes an delay of up to 5 minutes when the car is connected.<br /><br />You can force a wakeup by switching to *Scheduled charging* in VRM at any time. | Boolean  | false |
+| [FroniusWattpilot]  | HibernateMode | When `false`, idle polling keeps the Wattpilot connection available. When `true`, es-ESS intentionally disconnects while no EV is connected and reconnects about every five minutes for a status probe, which can delay car detection. Remote mode changes through VRM are unsupported while disconnected; Scheduled is only a best-effort probe, not a supported keep-awake/control path. | Boolean  | false |
 | [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. Must be within `6..32 A`. | Integer (A) | 6 |
 | [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. Must be within `6..32 A` and at least `MinCurrentPerPhase`; the controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. Must be greater than `ThreePhasePvSurplusStopW`. The maintained 4500 W default is above the typical 3-phase 6 A electrical floor while matching observed Wattpilot-app-style behavior more closely than a very conservative 5000 W threshold. | Integer (W) | 4500 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStopW | PV threshold below which Auto/Eco falls back from 3 phases to 1 phase when one-phase charging is still supportable. Must be lower than `ThreePhasePvSurplusStartW`. | Integer (W) | 4100 |
 | [FroniusWattpilot] | EvPriorityOverBatteryCharge | Lets Wattpilot use real PV that would otherwise charge the battery while the car is connected in Auto mode. This does not allow battery-to-EV charging from a stopped state. | Boolean | true |
-| [FroniusWattpilot] | EvPriorityMinSoc | Minimum battery SOC required before EV priority over battery charging is allowed. | Number (%) | 60 |
+| [FroniusWattpilot] | EvPriorityMinSoc | Minimum battery SOC required before EV priority over battery charging is allowed. | Number (%) | 50 |
 | [FroniusWattpilot] | BatteryAssistEnabled | Enables the optional short battery bridge for an already-running Auto/Eco charge. | Boolean | true |
 | [FroniusWattpilot] | BatteryAssistSocMin | Minimum battery SOC required before battery assist can be used. Must be within `0..100`. | Number (%) | 50 |
 | [FroniusWattpilot] | BatteryAssistMaxSeconds | Maximum duration for one battery-assist window. Use at least `MinPhaseSwitchSeconds` when battery should be able to bridge the full phase-down waiting interval. Must be greater than `0` when enabled. | Integer (seconds) | 600 |
@@ -694,12 +759,12 @@ commands. The GX capture is
 | [FroniusWattpilot] | GridTelemetryFreshSeconds | Positive maximum age of each required grid-power value (L1, L2, and L3) while no-grid Auto/Eco control is enabled. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | AllowanceDropGraceSeconds | Non-negative grace period before an already-running Auto/Eco session is phase-reduced or stopped for an insufficient or stale allowance. A fresh truthful `0 W` allowance remains published as `0 W`; this setting only debounces the controller response. Stale grid telemetry and the grid-import guard are not delayed. The maintained 30-second profile tolerates short cloud dips without extending allowance freshness. | Integer (seconds) | 30 |
 | [FroniusWattpilot] | CarDisconnectConfirmSeconds | Non-negative time a disconnected car-state reading must remain stable before es-ESS accepts it as a disconnect. | Integer (seconds) | 15 |
-| [FroniusWattpilot] | SurplusDropGraceSeconds | Non-negative grace period before continuous low surplus resets the Auto/Eco start timer. On the normal current-adjustment path it also preserves an active 1-to-3 candidate through a shorter-than-grace dip only while allowance remains above the effective three-phase floor. Eligible battery assist may leave an already-existing candidate timer running through its bounded bridge, including a deeper dip; it cannot create the candidate or issue a phase command. Full phase-up allowance is always required at the command boundary. | Integer (seconds) | 20 |
+| [FroniusWattpilot] | SurplusDropGraceSeconds | Non-negative grace period before continuous low surplus resets the Auto/Eco start timer. On the normal current-adjustment path it also preserves an active 1-to-3 candidate through a shorter-than-grace dip only while allowance remains above the effective three-phase floor. Eligible battery assist may leave an already-existing candidate timer running through its bounded bridge, including a deeper dip; it cannot create the candidate or issue a phase command. Full phase-up allowance is always required at the command boundary. | Integer (seconds) | 30 |
 | [FroniusWattpilot] | StartupGraceSeconds | Non-negative time after a start or phase switch where commanded EV demand may be reported while Wattpilot telemetry catches up. | Integer (seconds) | 60 |
 | [FroniusWattpilot] | StartupTelemetryRatio | Fraction of commanded demand that Wattpilot telemetry must reach before startup grace is considered satisfied. Must be greater than `0` and at most `1`. | Number | 0.80 |
 | [FroniusWattpilot] | RawOverheadFreshSeconds | Maximum age of raw distributor overhead used only for safe 3-to-1 fallback decisions. Must be at least `5`. | Integer (seconds) | 15 |
-| [FroniusWattpilot] | ChargeCompletePowerThresholdW | Sustained low EV power treated as charge-complete hold instead of restarting Auto/Eco PV control. | Number (W) | 100 |
-| [FroniusWattpilot] | ChargeCompleteConfirmSeconds | Time low EV power must remain below `ChargeCompletePowerThresholdW` before charge-complete hold starts. | Integer (seconds) | 120 |
+| [FroniusWattpilot] | ChargeCompletePowerThresholdW | Sustained low EV power treated as charge-complete hold instead of restarting Auto/Eco PV control. | Number (W) | 120 |
+| [FroniusWattpilot] | ChargeCompleteConfirmSeconds | Time low EV power must remain below `ChargeCompletePowerThresholdW` before charge-complete hold starts. | Integer (seconds) | 300 |
 | [FroniusWattpilot] | ChargeCompleteResumePowerW | EV power above this value starts the confirmation for leaving charge-complete hold. | Number (W) | 300 |
 | [FroniusWattpilot] | ChargeCompleteResumeSeconds | Time EV power must remain above `ChargeCompleteResumePowerW` before charge-complete hold clears. | Integer (seconds) | 30 |
 
@@ -846,13 +911,15 @@ For a longer observation window with a saved log:
 INTERVAL_SECONDS=10 MAX_SAMPLES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh | tee /data/es-ess-health-$(date +%Y%m%d-%H%M%S).log
 ```
 
-The script reads service state, Venus OS version, Python dependency imports,
+The script reads service state, Venus OS version, Wattpilot Python dependency imports,
 the pinned `velib_python` integrity/import source, selected config keys,
 Wattpilot D-Bus/runtime-status paths, disk usage and recent controller logs,
 including raw `lmo` and `/ModeLiteral` transition timestamps. It does not write
 D-Bus, MQTT, config, service state or Wattpilot control values. Installation,
 mode-boundary validation, and interpretation steps are documented in
 [docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
+The monitor uses `python` when available and falls back to `python3` for both
+dependency checks.
 
 ### es-ESS daily report
 
@@ -883,7 +950,10 @@ The read-only analyzer automatically includes `current.log` and dated rotations.
 It makes one bounded, allowlisted `GetValue` query for the authoritative Venus
 `/Settings/System/TimeZone`, then optionally reads current service/D-Bus
 snapshots. It never writes D-Bus, MQTT, Wattpilot, configuration, or service
-state. Historical dates require `[Common] LogLevel=APP_DEBUG` (or more verbose)
+state. Only the exact declared Wattpilot snapshot paths and timezone pair are
+accepted. An unreadable or malformed existing config is an input error instead
+of silently selecting all defaults. Historical dates require
+`[Common] LogLevel=APP_DEBUG` (or more verbose)
 across a complete requested window. `--date today` analyzes the Venus-local day
 from local midnight through execution and remains `INCOMPLETE` unless it detects
 an `ANOMALY`; it prints the report timezone, requested period, cutoff, evidence
@@ -1048,7 +1118,7 @@ ShellyPMInverter requires a few variables to be set in `/data/es-ESS/config.ini`
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
-| [Services]    | Shelly3EMGrid   | Flag, if the service should be enabled or not | Boolean | true |
+| [Services]    | ShellyPMInverter   | Flag, if the service should be enabled or not | Boolean | true |
 
 After enabling the service in general, you need to create 1 additional config-section per shelly to use. 
 each config Section needs to match the pattern `[ShellyPMInverter:aUniqueKey]` and contain the following values: 

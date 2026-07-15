@@ -454,6 +454,39 @@ NoBatToEV=false
             ["froniuswattpilot", "solaroverheaddistributor"],
         )
 
+    def test_missing_config_uses_explicit_safe_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings, warnings = AUDIT.load_settings(
+                Path(directory) / "missing-config.ini"
+            )
+
+        self.assertEqual(settings, AUDIT.AuditSettings())
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("configuration is missing", warnings[0])
+
+    def test_unreadable_config_is_not_masked_by_defaults(self):
+        path = Path("permission-denied-config.ini")
+        with mock.patch.object(
+            Path, "open", side_effect=PermissionError("access denied")
+        ):
+            with self.assertRaisesRegex(
+                AUDIT.ConfigurationReadError, "cannot open configuration"
+            ):
+                AUDIT.load_settings(path)
+
+    def test_malformed_config_is_an_input_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.ini"
+            path.write_text("[broken\nkey=value\n", encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                exit_code = AUDIT.main(
+                    ["--config", str(path), "--no-progress"]
+                )
+
+        self.assertEqual(exit_code, AUDIT.EXIT_INPUT_ERROR)
+        self.assertIn("cannot parse configuration", stderr.getvalue())
+
     def test_json_result_is_serializable(self):
         result = self._run(
             [
@@ -524,6 +557,85 @@ NoBatToEV=false
         self.assertTrue(ok)
         self.assertEqual(value, "1")
         self.assertEqual(runner.call_args.args[0][-1], "GetValue")
+
+    def test_readonly_command_allowlist_accepts_every_snapshot_path(self):
+        completed = mock.Mock(returncode=0, stdout="1\n", stderr="")
+        runner = mock.Mock(return_value=completed)
+
+        for path in AUDIT.SNAPSHOT_DBUS_PATHS:
+            with self.subTest(path=path):
+                ok, value = AUDIT._run_readonly_command(
+                    [
+                        "dbus",
+                        "-y",
+                        AUDIT.DEFAULT_WATTPILOT_DBUS_SERVICE,
+                        path,
+                        "GetValue",
+                    ],
+                    runner=runner,
+                )
+                self.assertTrue(ok)
+                self.assertEqual(value, "1")
+
+        self.assertEqual(runner.call_count, len(AUDIT.SNAPSHOT_DBUS_PATHS))
+
+    def test_readonly_command_allowlist_rejects_every_undeclared_pair(self):
+        runner = mock.Mock()
+        rejected_commands = (
+            [
+                "dbus",
+                "-y",
+                AUDIT.DEFAULT_WATTPILOT_DBUS_SERVICE,
+                "/Mode",
+                "GetValue",
+            ],
+            [
+                "dbus",
+                "-y",
+                "com.victronenergy.system",
+                "/Dc/Battery/Power",
+                "GetValue",
+            ],
+            [
+                "dbus",
+                "-y",
+                "com.victronenergy.battery.example",
+                "/Soc",
+                "GetValue",
+            ],
+            [
+                "dbus",
+                "-y",
+                AUDIT.DEFAULT_WATTPILOT_DBUS_SERVICE,
+                "Connected",
+                "GetValue",
+            ],
+            [
+                "dbus",
+                "-y",
+                AUDIT.DEFAULT_WATTPILOT_DBUS_SERVICE,
+                "/Connected",
+                "SetValue",
+            ],
+            [
+                "dbus",
+                "-y",
+                AUDIT.DEFAULT_WATTPILOT_DBUS_SERVICE,
+                "/Connected",
+                "GetValue",
+                "extra",
+            ],
+        )
+
+        for command in rejected_commands:
+            with self.subTest(command=command):
+                ok, message = AUDIT._run_readonly_command(
+                    command, runner=runner
+                )
+                self.assertFalse(ok)
+                self.assertIn("read-only allowlist", message)
+
+        runner.assert_not_called()
 
     def test_timezone_query_allowlist_accepts_only_exact_settings_path(self):
         completed = mock.Mock(
@@ -648,6 +760,40 @@ NoBatToEV=false
         )
         self.assertEqual(set(snapshot.dbus_values.values()), {"unavailable"})
         self.assertEqual(updates[-1][0], updates[-1][1])
+
+    def test_dependency_result_is_labeled_as_wattpilot_external_subset(self):
+        records = self._records([self._line("12:00:00", "heartbeat")])
+        report = self._audit(records)
+        report.current_snapshot = AUDIT.CurrentSnapshot(
+            captured_at="2026-07-15T12:00:01",
+            service_state="/service/es-ESS: up (pid 123) 10 seconds",
+            dependencies="missing: websocket",
+            dbus_values={},
+            available=True,
+        )
+
+        result = report.run()
+        findings = [
+            finding
+            for finding in result.findings
+            if finding.check == "Wattpilot external dependencies"
+        ]
+
+        self.assertEqual(len(findings), 1)
+        self.assertIn("Wattpilot external Python", findings[0].message)
+        self.assertIn(
+            "WattpilotExternalDependencies=missing: websocket",
+            AUDIT.render_human(result),
+        )
+
+    def test_health_monitor_falls_back_to_python3(self):
+        monitor = (
+            ROOT / "scripts" / "es-ess-health-monitor.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("elif command_exists python3", monitor)
+        self.assertIn('"$python_bin" -c', monitor)
+        self.assertNotIn("\n        python -c", monitor)
 
     def test_human_session_current_adjustments_are_compact(self):
         summary = AUDIT._summarize_current_adjustments(

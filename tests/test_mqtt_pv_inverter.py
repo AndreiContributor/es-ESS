@@ -151,7 +151,10 @@ class MqttPVInverterTests(unittest.TestCase):
         inverter.l2power = 0
         inverter.l3power = 0
         inverter._throttle = 0.5
-        service.noPhasesDbus = self._dbus(3)
+        service.acInput0SourceDbus = self._dbus(1)
+        service.acInput0ConnectedDbus = self._dbus(1)
+        service.acInput1SourceDbus = self._dbus(2)
+        service.acInput1ConnectedDbus = self._dbus(0)
         service.socDbus = self._dbus(100)
         service.consumptionL1Dbus = self._dbus(0)
         service.consumptionL2Dbus = self._dbus(0)
@@ -203,6 +206,64 @@ class MqttPVInverterTests(unittest.TestCase):
                 self.module.c.assert_not_called()
                 self.module.d.assert_called()
                 self.module.d.reset_mock()
+
+    def test_zero_feedin_requires_explicit_connected_grid_input(self):
+        scenarios = (
+            (None, None, None, None),
+            (1, 0, 2, 1),
+            ("grid", 1, 2, 0),
+            (1, "connected", 2, 0),
+            (2, 1, 0, 0),
+        )
+        for input0_source, input0_connected, input1_source, input1_connected in scenarios:
+            with self.subTest(
+                input0=(input0_source, input0_connected),
+                input1=(input1_source, input1_connected),
+            ):
+                service, inverter = self._service()
+                service.acInput0SourceDbus.value = input0_source
+                service.acInput0ConnectedDbus.value = input0_connected
+                service.acInput1SourceDbus.value = input1_source
+                service.acInput1ConnectedDbus.value = input1_connected
+                previous_publications = list(service.published)
+
+                service._dtuZeroFeedin()
+
+                self.assertEqual(inverter.throttle, 0.5)
+                self.assertEqual(service.published, previous_publications)
+                self.module.c.assert_not_called()
+                self.module.d.assert_called()
+                self.module.d.reset_mock()
+
+    def test_zero_feedin_accepts_connected_grid_on_second_input(self):
+        service, inverter = self._service()
+        service.acInput0ConnectedDbus.value = 0
+        service.acInput1SourceDbus.value = 3
+        service.acInput1ConnectedDbus.value = 1
+        service.consumptionL1Dbus.value = 250
+
+        service._dtuZeroFeedin()
+
+        self.assertEqual(inverter.throttle, 0.55)
+        self.assertTrue(service.published)
+
+    def test_zero_feedin_offgrid_transition_holds_then_recovers(self):
+        service, inverter = self._service()
+        service.consumptionL1Dbus.value = 250
+
+        service._dtuZeroFeedin()
+        self.assertEqual(inverter.throttle, 0.55)
+        publications_after_grid_control = list(service.published)
+
+        service.acInput0ConnectedDbus.value = 0
+        service._dtuZeroFeedin()
+        self.assertEqual(inverter.throttle, 0.55)
+        self.assertEqual(service.published, publications_after_grid_control)
+
+        service.acInput0ConnectedDbus.value = 1
+        service._dtuZeroFeedin()
+        self.assertEqual(inverter.throttle, 0.6000000000000001)
+        self.assertGreater(len(service.published), len(publications_after_grid_control))
 
     def test_zero_feedin_unexpected_error_keeps_critical_logger_callable(self):
         service, _inverter = self._service()

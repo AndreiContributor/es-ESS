@@ -56,8 +56,11 @@ The tool reads only:
 
 It never writes D-Bus, MQTT, Wattpilot settings, configuration, files, or
 service state. It does not import the es-ESS controller. The command helper
-rejects service control and every D-Bus operation except the allowlisted
-`GetValue` reads. Use `--no-current-snapshot` to skip the optional service and
+rejects service control and every D-Bus operation except the exact Wattpilot
+snapshot and Venus-timezone service/path pairs declared by the tool. The
+dependency result is explicitly limited to the Wattpilot external Python
+dependencies, Paho MQTT and websocket-client. Use `--no-current-snapshot` to
+skip the optional service and
 runtime-status snapshot; the required read-only timezone query still runs so
 `today`, `yesterday`, explicit dates, and local-midnight boundaries agree with
 logging even when the service process runs in UTC. Each command has a two-second
@@ -65,6 +68,10 @@ timeout. After three consecutive snapshot timeouts, remaining optional snapshot
 paths are marked unavailable and historical analysis continues. If the timezone
 query or timezone database is unavailable, the report warns, uses OS-local time,
 and cannot silently claim a complete authoritative calendar window.
+
+A missing configuration produces safe fallbacks and an incomplete prerequisite
+result. A configuration that exists but cannot be opened or parsed is an input
+error; the report stops instead of silently analyzing with all-default settings.
 
 New log records use the Venus `/Settings/System/TimeZone` wall time with the
 applicable offset, for example

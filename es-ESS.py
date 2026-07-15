@@ -264,6 +264,7 @@ class esESS:
             self.localMqttClient:mqtt.Client = None
             self.mainMqttClientConnected = False
             self.localMqttClientConnected = False
+            self._mqttConnectionFailures = {}
             self.mqttThrottlePeriod = 0
 
             if ("ThrottlePeriod" in self.config["Mqtt"]):
@@ -322,6 +323,7 @@ class esESS:
         i(Globals.esEssTag, "MQTT: Connecting to broker: {0}".format(config["Mqtt"]["Host"]))
         self.mainMqttClient.on_disconnect = self.onMainMqttDisconnect
         self.mainMqttClient.on_connect = self.onMainMqttConnect
+        self.mainMqttClient.on_connect_fail = self.onMainMqttConnectFail
 
         if 'User' in config['Mqtt'] and 'Password' in config['Mqtt'] and config['Mqtt']['User'] != '' and config['Mqtt']['Password'] != '':
             self.mainMqttClient.username_pw_set(username=config['Mqtt']['User'], password=config['Mqtt']['Password'])
@@ -336,28 +338,23 @@ class esESS:
                 "SslCaFile",
                 "Main MQTT",
             )
-            self.mainMqttClient.connect(
-                host=config["Mqtt"]["Host"],
-                port=int(config["Mqtt"]["Port"])
+            self._startMqttClient(
+                self.mainMqttClient,
+                config["Mqtt"]["Host"],
+                int(config["Mqtt"]["Port"]),
             )
-            
         else:
             i(self, "Connecting to broker: {0}://{1}:{2}".format("tcp", config["Mqtt"]["Host"], config["Mqtt"]["Port"]))
-            self.mainMqttClient.connect(
-                host=config["Mqtt"]["Host"],
-                port=int(config["Mqtt"]["Port"])
+            self._startMqttClient(
+                self.mainMqttClient,
+                config["Mqtt"]["Host"],
+                int(config["Mqtt"]["Port"]),
             )
-
-        self.mainMqttClient.loop_start()
-        self.mainMqttClient.publish("es-ESS/$SYS/Status", "Online", 2, True)
-        self.mainMqttClient.publish("es-ESS/$SYS/Version", Globals.currentVersionString, 2, True)
-        self.mainMqttClient.publish("es-ESS/$SYS/ConnectionTime", time.time(), 2, True)
-        self.mainMqttClient.publish("es-ESS/$SYS/ConnectionDateTime", str(datetime.datetime.now()), 2, True)
-        self.mainMqttClient.publish("es-ESS/$SYS/Github", "https://github.com/realdognose/es-ESS", 2, True)
 
         #local mqtt
         self.localMqttClient.on_disconnect = self.onLocalMqttDisconnect
         self.localMqttClient.on_connect = self.onLocalMqttConnect
+        self.localMqttClient.on_connect_fail = self.onLocalMqttConnectFail
 
         if (self.config["Mqtt"]["LocalSslEnabled"].lower() == "true"):
             i(self, "Connecting to broker: {0}://{1}:{2}".format("tcp-ssl", "localhost", 8883))
@@ -367,22 +364,69 @@ class esESS:
                 "LocalSslCaFile",
                 "Local MQTT",
             )
-            #TODO: After a system reboot, es-ESS is starting faster than the local mqtt, which might lead to connection issues. 
-            #      Either loop in a try/error, or sth.
-            #      Similiar issues might occur for the dbus service, if devices are not yet registered?
-            self.localMqttClient.connect(
-                host="localhost",
-                port=8883
+            self._startMqttClient(
+                self.localMqttClient,
+                "localhost",
+                8883,
             )
-            
         else:
             i(self, "Connecting to broker: {0}://{1}:{2}".format("tcp", "localhost", 1883))
-            self.localMqttClient.connect(
-                host="localhost",
-                port=1883
+            self._startMqttClient(
+                self.localMqttClient,
+                "localhost",
+                1883,
             )
 
-        self.localMqttClient.loop_start()
+    def _startMqttClient(self, client, host, port):
+        client.reconnect_delay_set(min_delay=1, max_delay=120)
+        client.connect_async(host=host, port=port)
+        client.loop_start()
+
+    def _publishMainMqttConnectionMetadata(self):
+        self.mainMqttClient.publish("es-ESS/$SYS/Status", "Online", 2, True)
+        self.mainMqttClient.publish(
+            "es-ESS/$SYS/Version", Globals.currentVersionString, 2, True
+        )
+        self.mainMqttClient.publish(
+            "es-ESS/$SYS/ConnectionTime", time.time(), 2, True
+        )
+        self.mainMqttClient.publish(
+            "es-ESS/$SYS/ConnectionDateTime",
+            str(datetime.datetime.now()),
+            2,
+            True,
+        )
+        self.mainMqttClient.publish(
+            "es-ESS/$SYS/Github",
+            "https://github.com/realdognose/es-ESS",
+            2,
+            True,
+        )
+
+    def _recordMqttConnectionFailure(self, clientName, detail):
+        now = time.time()
+        failures = getattr(self, "_mqttConnectionFailures", {})
+        previous = failures.get(clientName)
+        if previous is not None and previous[0] == detail and now - previous[1] < 300:
+            return
+
+        failures[clientName] = (detail, now)
+        self._mqttConnectionFailures = failures
+        e(
+            self,
+            "{0} MQTT connection failed ({1}); automatic retry remains active. "
+            "Verify broker address, port, credentials, and TLS trust settings.".format(
+                clientName, detail
+            ),
+        )
+
+    def onMainMqttConnectFail(self, client, userdata):
+        self.mainMqttClientConnected = False
+        self._recordMqttConnectionFailure("Main", "TCP/TLS connection unavailable")
+
+    def onLocalMqttConnectFail(self, client, userdata):
+        self.localMqttClientConnected = False
+        self._recordMqttConnectionFailure("Local", "TCP/TLS connection unavailable")
 
     def _configureMqttTls(self, client, verificationOption, caFileOption, label):
         verification = self.config["Mqtt"].get(
@@ -419,6 +463,8 @@ class esESS:
         if rc == 0:
             i(self, "Connected to MQTT broker!")
             self.mainMqttClientConnected = True
+            self._mqttConnectionFailures.pop("Main", None)
+            self._publishMainMqttConnectionMetadata()
 
             #Check, if we need to subscribe again.
             for (key, sublist) in self._mqttSubscriptions.items():
@@ -428,12 +474,14 @@ class esESS:
                         self.mainMqttClient.subscribe(sub.topic, sub.qos)
                         self.mainMqttClient.message_callback_add(sub.topic, sub.callback)
         else:
-            e(self, "Failed to connect, return code %d\n", rc)
+            self.mainMqttClientConnected = False
+            self._recordMqttConnectionFailure("Main", "CONNACK {0}".format(rc))
     
     def onLocalMqttConnect(self, client, userdata, flags, rc):
         if rc == 0:
             i(self, "Connected to MQTT broker!")
             self.localMqttClientConnected = True
+            self._mqttConnectionFailures.pop("Local", None)
             
             #Check, if we need to subscribe again.
             for (key, sublist) in self._mqttSubscriptions.items():
@@ -443,7 +491,8 @@ class esESS:
                         self.localMqttClient.subscribe(sub.topic, sub.qos)
                         self.localMqttClient.message_callback_add(sub.topic, sub.callback)
         else:
-            e(self, "Failed to connect, return code %d\n", rc)
+            self.localMqttClientConnected = False
+            self._recordMqttConnectionFailure("Local", "CONNACK {0}".format(rc))
 
     def _logShutdownMqttDisconnect(self, clientName):
         loggedClients = getattr(self, "_shutdownMqttDisconnectsLogged", set())
@@ -457,6 +506,7 @@ class esESS:
         i(self, "{0} MQTT automatic reconnect is disabled during graceful shutdown.".format(clientName))
 
     def onMainMqttDisconnect(self, client, userdata, rc):
+        self.mainMqttClientConnected = False
         if (self._sigTermInvoked):
             self._logShutdownMqttDisconnect("Main")
             return
@@ -469,6 +519,7 @@ class esESS:
             w(self, "Automatic reconnect is disabled.")
 
     def onLocalMqttDisconnect(self, client, userdata, rc):
+        self.localMqttClientConnected = False
         if (self._sigTermInvoked):
             self._logShutdownMqttDisconnect("Local")
             return
@@ -1158,8 +1209,14 @@ class esESS:
     def initialize(self):
        self.configureMqtt()
 
-       Helper.waitTimeout(lambda: self.mainMqttClientConnected, 30) or e(self, "Unable to connect to main mqtt wthin 30 seconds...  offline or credentials wrong?")
-       Helper.waitTimeout(lambda: self.localMqttClientConnected, 30) or e(self, "Unable to connect to wattpilot wthin 30 seconds...offline or credentials wrong?")
+       Helper.waitTimeout(
+           lambda: self.mainMqttClientConnected and self.localMqttClientConnected,
+           30,
+       )
+       if not self.mainMqttClientConnected:
+           e(self, "Unable to connect to main MQTT within 30 seconds; startup will continue while automatic retry remains active.")
+       if not self.localMqttClientConnected:
+           e(self, "Unable to connect to local MQTT within 30 seconds; startup will continue while automatic retry remains active.")
 
        self.publishServiceMessage(self, "es-ESS is starting up...")
 

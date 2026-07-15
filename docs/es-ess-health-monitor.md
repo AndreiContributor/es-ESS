@@ -94,7 +94,8 @@ deployment, or Wattpilot validation work:
 
 - Venus OS version, expected runtime baseline, and service uptime.
 - `/data/es-ESS`, `/service/es-ESS`, and `/data/rc.local` persistence.
-- Python dependency imports for `paho.mqtt.client` and `websocket`.
+- Wattpilot dependency imports for `paho.mqtt.client` and `websocket`, using
+  `python` when available and falling back to `python3`.
 - Pinned bundled `velib_python` integrity, the resolved `vedbus` import path,
   and a read-only per-file comparison with the Venus OS system copy.
 - Disk usage for `/` and `/data`.
