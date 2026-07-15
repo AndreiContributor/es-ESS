@@ -21,6 +21,8 @@ import Globals
 from esESSService import esESSService
 
 class MqttPVInverter(esESSService):
+    GRID_AC_INPUT_SOURCES = frozenset((1, 3))
+
     def __init__(self):
         esESSService.__init__(self)
         self.mqttPVInverters: Dict[str, MqttPVInverterInstance] = {}
@@ -65,8 +67,21 @@ class MqttPVInverter(esESSService):
         self.consumptionL2Dbus  = self.registerDbusSubscription("com.victronenergy.system", "/Ac/Consumption/L2/Power")
         self.consumptionL3Dbus  = self.registerDbusSubscription("com.victronenergy.system", "/Ac/Consumption/L3/Power")
 
-        #TODO: Need Grid Connected Value to determine if we are actually grid connected. 
-        self.noPhasesDbus       = self.registerDbusSubscription("com.victronenergy.system", "/Ac/ActiveIn/NumberOfPhases")
+        # systemcalc exposes up to two AC inputs. Source 1 (grid) and source 3
+        # (shore) are grid-connected inputs; the matching Connected value must
+        # explicitly be 1 before OpenDTU control may run.
+        self.acInput0SourceDbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Ac/In/0/Source"
+        )
+        self.acInput0ConnectedDbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Ac/In/0/Connected"
+        )
+        self.acInput1SourceDbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Ac/In/1/Source"
+        )
+        self.acInput1ConnectedDbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Ac/In/1/Connected"
+        )
         self.socDbus            = self.registerDbusSubscription("com.victronenergy.system", "/Dc/Battery/Soc")
 
         #Need PV Disabled Value to eventually shutdown inverters completly. 
@@ -116,8 +131,17 @@ class MqttPVInverter(esESSService):
     
     def _dtuZeroFeedin(self):
         try:
-            #Check on-grid, else Frequency shifting will control the inverters.
-            if self.noPhasesDbus.value is not None and self.socDbus.value is not None and self.socDbus.value >= self.zeroFeedinStartSoc:
+            # Off-grid frequency shifting owns inverter control. Missing,
+            # malformed, or disconnected AC-input telemetry therefore sends no
+            # OpenDTU command and leaves the last nonpersistent limit unchanged.
+            if not self._isGridConnected():
+                d(
+                    self,
+                    "Zero-feed-in grid connection is not confirmed; keeping the last inverter limit.",
+                )
+                return
+
+            if self.socDbus.value is not None and self.socDbus.value >= self.zeroFeedinStartSoc:
                 consumption_values = (
                     self.consumptionL1Dbus.value,
                     self.consumptionL2Dbus.value,
@@ -164,6 +188,16 @@ class MqttPVInverter(esESSService):
                     inv.throttle = 1.0
         except Exception as ex:
             c(self, "Exception during zero feedin calculation", exc_info=ex)
+
+    def _isGridConnected(self):
+        ac_inputs = (
+            (self.acInput0SourceDbus.value, self.acInput0ConnectedDbus.value),
+            (self.acInput1SourceDbus.value, self.acInput1ConnectedDbus.value),
+        )
+        return any(
+            source in self.GRID_AC_INPUT_SOURCES and connected == 1
+            for source, connected in ac_inputs
+        )
 
 class MqttPVInverterInstance:
     def __init__(self, rootService:MqttPVInverter, key, configValues):

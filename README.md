@@ -440,6 +440,12 @@ Zero-feed-in calculation requires all three consumption phases. If one phase is
 temporarily unavailable, es-ESS keeps the last inverter limit and skips that
 cycle until complete telemetry returns.
 
+Zero-feed-in commands are issued only while Venus systemcalc reports an
+explicitly connected grid/shore AC input through the matching
+`/Ac/In/0..1/Source` and `/Connected` paths. Missing, malformed, or disconnected
+input state sends no OpenDTU command and keeps the last nonpersistent limit so
+off-grid frequency shifting remains the active controller.
+
 An inverter that publishes no MQTT message for `StaleTimeoutSeconds` is marked
 disconnected, its D-Bus measurements are nulled, and its cached phase power is
 cleared so frozen production cannot influence zero-feed-in calculations. The
