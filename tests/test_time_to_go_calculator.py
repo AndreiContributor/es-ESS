@@ -36,7 +36,6 @@ def _config():
         {
             "Common": {
                 "BatteryCapacityInWh": "10000",
-                "VRMPortalID": "portal-id",
             },
             "TimeToGoCalculator": {"UpdateInterval": "1000"},
         }
@@ -82,7 +81,6 @@ class TimeToGoCalculatorTests(unittest.TestCase):
         service.powerDbus = SimpleNamespace(value=power)
         service.socDbus = SimpleNamespace(value=soc)
         service.socLimitDbus = SimpleNamespace(value=soc_limit)
-        service.publishLocalMqtt = Mock()
         service.publishMainMqtt = Mock()
         return service
 
@@ -93,21 +91,16 @@ class TimeToGoCalculatorTests(unittest.TestCase):
 
                 self.assertTrue(service.updateTimeToGo())
 
-                service.publishLocalMqtt.assert_not_called()
                 service.publishMainMqtt.assert_not_called()
                 self.module.c.assert_not_called()
                 self.module.d.assert_called()
                 self.module.d.reset_mock()
 
-    def test_discharge_calculation_publishes_existing_topics(self):
+    def test_discharge_calculation_publishes_main_diagnostic_topic(self):
         service = self._service(power=-1000, soc=80, soc_limit=20)
 
         self.assertTrue(service.updateTimeToGo())
 
-        service.publishLocalMqtt.assert_called_once_with(
-            "N/portal-id/system/0/Dc/Battery/TimeToGo",
-            '{"value": 21600}',
-        )
         service.publishMainMqtt.assert_called_once_with(
             "es-ESS/TimeToGoCalculator/TimeToGo",
             21600,
@@ -124,6 +117,25 @@ class TimeToGoCalculatorTests(unittest.TestCase):
             "es-ESS/TimeToGoCalculator/TimeToGo",
             7199,
         )
+
+    def test_zero_power_or_zero_soc_skips_without_critical_error(self):
+        for power, soc in ((0, 80), (-1000, 0)):
+            with self.subTest(power=power, soc=soc):
+                service = self._service(power=power, soc=soc)
+
+                self.assertTrue(service.updateTimeToGo())
+
+                service.publishMainMqtt.assert_not_called()
+                self.module.c.assert_not_called()
+                self.module.c.reset_mock()
+
+    def test_main_mqtt_publish_failure_is_logged_without_stopping_worker(self):
+        service = self._service()
+        service.publishMainMqtt.side_effect = RuntimeError("broker unavailable")
+
+        self.assertTrue(service.updateTimeToGo())
+
+        self.module.c.assert_called_once()
 
 
 if __name__ == "__main__":

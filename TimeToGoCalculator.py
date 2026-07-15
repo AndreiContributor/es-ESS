@@ -44,7 +44,7 @@ class TimeToGoCalculator(esESSService):
 
         if (soc == 0):
           w(self, "SoC value of 0 reported. Can't compute time2go.")
-          return
+          return True
 
         remainingCapacity = (socLimit/100.0) * self.capacity
         missingCapacity = (1 - soc/100.0) * self.capacity  
@@ -61,12 +61,10 @@ class TimeToGoCalculator(esESSService):
 
         #d(self, "=> TimeToGo (s): {0}s".format(remaining))
         
-        #Inject calculated value to dbus. 
         if (remaining is not None):
-          #TODO: Figure out why dbus publishing is not working :( )
-          #self.timeToGoDbus.publish(int(remaining))
-
-          self.publishLocalMqtt("N/{0}/system/0/Dc/Battery/TimeToGo".format(self.config["Common"]["VRMPortalID"]), "{\"value\": " + str(int(remaining)) + "}")
+          # Venus systemcalc owns /Dc/Battery/TimeToGo and sources it from the
+          # selected battery service's /TimeToGo path. This helper does not own
+          # either service, so publish the estimate as diagnostics only.
           self.publishMainMqtt("{0}/{1}/TimeToGo".format(Globals.esEssTag, self.__class__.__name__), int(remaining))
 
       except Exception as e:

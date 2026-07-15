@@ -25,7 +25,7 @@ system for at least 10ish years, there will be plenty of updates and/or bugfixes
 # Table of Contents
 - [Setup](#setup) - General setup process and requirements for es-ESS.
 - [Developer Notes](#developer-notes) - Contributor guidance and Wattpilot architecture boundaries.
-- [TimeToGoCalculator](#timetogocalculator) - Tiny helper filling out the `Time to Go` field in VRM, when BMS do not report this value.
+- [TimeToGoCalculator](#timetogocalculator) - Publishes a diagnostic battery time-to-go estimate to main MQTT.
 - [MqttTemperatures](#mqtttemperatures) - Display various temperature sensors you have on mqtt in VRM.
 - [MqttExporter](#mqttexporter) - Export selected values form dbus to your MQTT-Server.
 - [MqttPvInverter](#mqttpvinverter) - Use values available on mqtt to mimic a PVInverter in VenusOS
@@ -271,36 +271,38 @@ falls back from verified TLS.
 
 > :warning: NOTE: I recommend to enable one service after each other and finalize configuration, before enabling another one. Else configuration may become a bit clumsy and error-prone.
 
-# TimeToGoCalculator 
+# TimeToGoCalculator
 
-> :white_check_mark: Production Ready
-
-> :warning: This is currently broken since 3.50.
+> :information_source: Diagnostic MQTT output only
 
 <img align="right" src="https://github.com/realdognose/es-ESS/blob/main/img/TimeToGo.png" /> 
 
 #### Overview
 
-Some BMS - say the majority of them - don't provide values for the `Time to go`-Value visible in VRM. This is an important figure when looking at a dashboard. This helper script 
-fills that gap and calculates the time, when BMS don't. Calculation is done in both directions: 
+Some BMS do not provide a time-to-go estimate. This helper calculates an
+estimate and publishes it to the main MQTT topic
+`es-ESS/TimeToGoCalculator/TimeToGo`. Calculation is done in both directions:
 
 - **When discharging**: Time based on current discharge rate until the active SoC Limit is reached.
 - **When charging**: Time based on current charge rate until 100% SoC is reached. 
 
 If power, state of charge, or the active state-of-charge limit is temporarily
 unavailable, the calculator skips that cycle without replacing the last valid
-time-to-go value. Calculation resumes automatically when all inputs recover.
+diagnostic value. Calculation resumes automatically when all inputs recover.
+
+On Venus OS v3.75, `dbus-systemcalc-py` owns
+`/Dc/Battery/TimeToGo` and reads the value from `/TimeToGo` on the selected
+battery service. TimeToGoCalculator does not own either D-Bus service and does
+not inject a value into that system path. VRM time-to-go therefore remains
+unavailable unless the selected battery/BMS service publishes `/TimeToGo`.
 
 #### Configuration
 
-TimeToGoCalculatore requires your local mqtt to be enabled, either in plain or ssl mode.<br />
 TimeToGoCalculator requires a few variables to be set in `/data/es-ESS/config.ini`: 
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
-| [Common]    | VRMPortalID |  Your portal ID to access values on mqtt / dbus |String | VRM0815 |
 | [Common]  | BatteryCapacityInWh  | Your batteries capacity in Wh.  | Integer| 28000 |
-| [Mqtt]     | LocalSslEnabled | Flag, if local Mqtt is SSL or plain. | Boolean | true |
 | [Services]    | TimeToGoCalculator | Flag, if the service should be enabled or not | Boolean | true |
 | [TimeToGoCalculator]  | UpdateInterval | Time in milliseconds for TimeToGo calculations. Must be greater than `0`; smaller values reduce flickering when a BMS sends `null`, but also run the calculation more frequently. | Integer  | 1000 |
 

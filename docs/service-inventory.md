@@ -111,7 +111,7 @@ flag is set to `true`.
 | Service | Module | Primary config | Main role | Integration boundaries |
 | --- | --- | --- | --- | --- |
 | `SolarOverheadDistributor` | `SolarOverheadDistributor.py` | `[SolarOverheadDistributor]`, `[Common]`, `HttpConsumer:*`, `MqttConsumer:*` | Calculates available PV surplus, battery reservation, and per-consumer allowances. | Reads Victron system grid and battery D-Bus paths, publishes settings and fake battery reservation D-Bus services, and subscribes/publishes under `es-ESS/SolarOverheadDistributor/Requests/...`. Scripted consumers retain minimum/step allocation. Explicitly configured HTTP/MQTT NPC loads are not discovered automatically and receive their complete `Request` or zero before bounded `[Common] HttpRequestTimeout` control work runs outside the shared consumer-map lock. |
-| `TimeToGoCalculator` | `TimeToGoCalculator.py` | `[TimeToGoCalculator]`, `[Common]` | Calculates battery time-to-go when the system does not provide it. | Reads Victron system battery power, SOC, and active SOC limit D-Bus paths; skips incomplete telemetry without publishing stale calculations, then resumes local/main MQTT publication when all inputs recover. |
+| `TimeToGoCalculator` | `TimeToGoCalculator.py` | `[TimeToGoCalculator]`, `[Common]` | Calculates a diagnostic battery time-to-go estimate. | Reads Victron system battery power, SOC, and active SOC limit D-Bus paths; skips incomplete telemetry without publishing stale calculations, then publishes the estimate only to main MQTT. It does not write the system-owned `/Dc/Battery/TimeToGo` path or a battery-service `/TimeToGo` path. |
 | `FroniusSmartmeterJSON` | `FroniusSmartmeterJSON.py` | `[FroniusSmartmeterJSON]` | Exposes a Fronius smart meter as a Victron grid meter. | Polls the Fronius JSON API over HTTP and publishes a `com.victronenergy.grid` D-Bus service. |
 | `MqttExporter` | `MqttExporter.py` | `MqttExporter:*` | Exports selected D-Bus values to main MQTT. | Subscribes to configured D-Bus service/path pairs and republishes on configured MQTT topics on change or at 1 s, 10 s, or 60 s intervals. |
 | `FroniusWattpilot` | `FroniusWattpilot.py` | `[FroniusWattpilot]` | Integrates and controls a Fronius Wattpilot EV charger. | Owns Victron EV-charger D-Bus paths, including session energy/time compatibility paths, Wattpilot WebSocket commands through `Wattpilot.py`, SolarOverheadDistributor requests, grid telemetry safety checks, read-only native `fup`/`ful` command-authority enforcement, runtime-status publication, and shutdown behavior. The underlying `Wattpilot.py` client owns a single worker reconnect loop for WebSocket outages. See `docs/wattpilot-architecture.md` before changing it. |
@@ -192,9 +192,9 @@ Services consume Victron system state through `DbusSubscription` registered via
 ### MQTT boundaries
 
 The main MQTT broker is used for es-ESS status, configured exports, MQTT-backed
-sensors/inverters, and SolarOverheadDistributor requests. The local Venus MQTT
-broker is used for writes to Venus settings or system values, such as
-TimeToGoCalculator and grid-setpoint commands.
+sensors/inverters, SolarOverheadDistributor requests, and the diagnostic
+TimeToGoCalculator estimate. The local Venus MQTT broker is used for writes to
+Venus settings or system values, such as grid-setpoint commands.
 
 When TLS is enabled, each client has an explicit trust mode. `Required` uses
 certificate and hostname verification with either system trust or a configured
