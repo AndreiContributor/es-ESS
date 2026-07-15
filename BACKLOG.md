@@ -64,8 +64,11 @@ Current validated state:
   later single-cycle atomic `0 W` assignment exposed that three-phase fallback
   bypassed `AllowanceDropGraceSeconds`; the controller and hardware-free tests
   now preserve truthful allowance telemetry while debouncing that fallback.
-  Supervised live revalidation is complete. Additional Wattpilot work includes
-  the independent battery-heartbeat and natural winter observation tasks below.
+  Supervised live revalidation is complete. No Wattpilot implementation or
+  mandatory production-validation task remains. The optional natural-winter
+  observation and battery-heartbeat fault simulation were safely retired; the
+  latter cannot be isolated on the production GX without risking broader
+  battery/system telemetry.
 - The Victron `velib_python` dependency is pinned to the already validated
   bundled composite with per-file official provenance and canonical hashes.
   All runtime import sites select that bundle deterministically and reject
@@ -117,6 +120,50 @@ Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
+### Completed 2026-07-15 - Winter Validate Wattpilot Grid-Import Dispatch Branches
+
+- Closed this optional observation without forcing grid import or disrupting
+  grid-meter/D-Bus telemetry. Waiting indefinitely for weather or an accidental
+  outage does not represent unfinished implementation, and the original done
+  criteria explicitly allowed an inconclusive natural window.
+- The production Venus OS `v3.75` validation on 2026-07-13 already confirmed
+  grid-import guard behavior with `AllowGridCharging=false` after the selector
+  and dispatch implementation had landed: the controller stopped or waited
+  rather than intentionally using grid power during insufficient PV.
+- Reran 55 focused hardware-free tests covering selector precedence, stale-grid
+  fail-closed behavior, sustained-import timing and reset, safe three-to-one
+  reduction, stop fallback, Manual-mode exclusion, dispatch handlers, public
+  runtime status, and end-to-end Auto/Eco commands; all passed.
+- A future naturally occurring low-PV or telemetry-outage observation may be
+  retained as operational evidence, but it is not required to close the
+  implementation backlog. No production code, configuration, documentation,
+  architecture contract, or test change was required.
+
+### Completed 2026-07-15 - Live-Validate Battery-Assist SOC Heartbeat Failure
+
+- Closed this validation item without performing the proposed live fault
+  injection. The implemented fail-closed guard remains verified by focused
+  hardware-free tests for fresh, boundary, stale, missing, and invalid battery
+  activity, active-assist clearing, and reservation-bypass refusal; the four
+  directly relevant regression tests passed again during closure review.
+- Normal production behavior was already validated on Venus OS `v3.75`: the
+  selected-battery power heartbeat remained comfortably within the configured
+  `BatterySocFreshSeconds=15` window while bounded continuation-only assist ran
+  without intentional grid import.
+- The subscribed `/Dc/Battery/Power` path belongs to
+  `com.victronenergy.system`. No supported method was found to suppress only
+  that update for es-ESS; stopping system calculation, stopping the selected
+  battery/BMS service, or changing the battery monitor would disturb broader
+  ESS telemetry or control and is not justified solely to obtain redundant
+  live evidence.
+- Existing monitoring can show battery-power samples and assist state but not
+  independently prove the controller's internal heartbeat age and retained
+  reservation-bypass decision. A future isolated hardware-in-the-loop facility
+  may repeat the scenario, but it is not outstanding production validation.
+- No production code, configuration, documentation, architecture contract, or
+  test change was required. Manual ownership, no-grid behavior, and all battery-
+  assist bounds remain unchanged.
 
 ### Completed 2026-07-15 - Correlate Local And Remote Wattpilot Mode Boundaries
 
@@ -414,8 +461,10 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   34-321 W shortfalls while the grid remained at net export. This confirms the
   corrected heartbeat prevents false SOC expiry without changing the bounded,
   continuation-only assist contract.
-- Supervised battery-heartbeat interruption during a naturally eligible active
-  Auto/Eco charge remains a manual fault-simulation follow-up.
+- The later closure review safely retired supervised battery-heartbeat
+  interruption as a production requirement: the system path cannot be isolated
+  without risking broader battery/system telemetry, while the fail-closed path
+  remains covered by focused hardware-free tests.
 
 ### Completed 2026-07-13 - Fix Delayed Wattpilot Mode Telemetry At The Manual Boundary
 
@@ -1213,101 +1262,6 @@ Done criteria:
   enforced before side effects.
 - Full unittest suite passes.
 
-### P4 - Winter Validate Wattpilot Grid-Import Dispatch Branches
-
-Goal:
-
-Use natural low-PV / higher-load winter conditions to live-validate the
-Wattpilot control-state dispatch on grid-import and stale-telemetry branches
-that are difficult to exercise safely during summer surplus.
-
-Problem:
-
-Summer production and available battery energy made sustained grid import
-unlikely during the initial production validation. Selector-owned dispatch is
-covered by unit tests and by live validation across normal Manual, Auto/Eco
-start, active charging, battery assist, transport outage/recovery,
-disconnect/reconnect, one-to-three phase switching, and three-to-one fallback
-paths. The remaining live coverage gap is the no-grid safety path during real
-sustained import or grid-telemetry outage.
-
-Evidence:
-
-- Hardware-free selector and dispatch tests cover stale telemetry and sustained
-  import ordering, but natural production conditions have not exercised every
-  branch on the supported v3.75 GX/Wattpilot baseline.
-- Completed production notes record Manual, normal Auto/Eco, assist,
-  disconnect/reconnect, and phase-transition validation while retaining this
-  winter observation gap.
-
-Implementation:
-
-- Wait for natural winter or low-PV operating conditions rather than forcing an
-  artificial grid-import event.
-- During representative winter Auto/Eco charging, monitor the normal service
-  logs for grid-import guard or stale grid-telemetry safety messages.
-- If sustained grid import naturally occurs with `AllowGridCharging=false`,
-  confirm the existing grid-import guard either phase-downs first when safe or
-  stops Auto/Eco charging.
-- If a real grid-meter / D-Bus telemetry outage occurs, confirm Auto/Eco blocks
-  starts or stops active charging according to the existing fail-safe policy.
-- Do not change Wattpilot settings, force grid import, disconnect critical
-  telemetry, or modify the production energy system only to satisfy this
-  validation item.
-
-Files to change:
-
-- Possibly `BACKLOG.md` only, when recording the result.
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Existing unit tests already cover stale grid telemetry and grid-import guard
-  ordering.
-- No new automated tests are required unless the winter run reveals unexpected
-  behavior or unclear diagnostic output.
-
-Expected coverage:
-
-- Adds live evidence for natural conditions that hardware-free tests cannot
-  reproduce; existing passing tests remain unchanged.
-
-Manual validation:
-
-Active charging required only during a naturally suitable, attended low-PV
-window. Do not manufacture grid import or a telemetry outage.
-
-Manual test steps:
-
-1. Run normal winter Auto/Eco charging with `AllowGridCharging=false`.
-2. Search the live log for relevant guard messages:
-   `grep -Ei "Grid import guard|Grid telemetry is missing" /data/log/es-ESS/current.log`
-3. If grid import occurs, capture the relevant log window around the guard
-   decision.
-4. Confirm the observed decision matches the documented no-grid policy.
-5. Record the result in this backlog item.
-
-Risks and dependencies:
-
-- Weather and household load may not naturally expose the branch.
-- Complete relevant confirmed telemetry/controller fixes before treating a new
-  observation as final validation evidence.
-
-Open questions:
-
-- None. Record an inconclusive natural window rather than forcing the state.
-
-Done criteria:
-
-- Winter or naturally low-PV validation records correct behavior for any
-  observed grid-import or stale-telemetry branch.
-- If those branches still do not occur naturally, the item records that result
-  without forcing unsafe or unrealistic system behavior.
-- Full unittest suite passes if any code changes result from an observed defect.
-
 #### Implementation record - completed 2026-07-15: Live-Validate Implemented Auto/Eco Command Ownership
 
 Goal:
@@ -1555,116 +1509,6 @@ Done criteria:
 - Focused tests and configuration-contract checks pass where applicable.
 - Full unittest suite passes.
 
-### P4 - Live-Validate Battery-Assist SOC Heartbeat Failure
-
-Goal:
-
-Confirm on the supported GX/Wattpilot baseline that loss of the selected-battery
-activity heartbeat makes cached SOC ineligible and fails battery assist and the
-EV-priority reservation bypass closed during a naturally eligible session.
-
-Problem:
-
-Hardware-free tests prove that missing, invalid, or stale selected-battery
-activity invalidates cached SOC and clears/refuses battery assist. Production
-validation confirmed that normal `/Dc/Battery/Power` updates remain comfortably
-inside `BatterySocFreshSeconds`, but a supervised live interruption has not yet
-exercised the fail-closed branch. This is a validation gap, not evidence that the
-implemented guard is incorrect.
-
-Evidence:
-
-- The completed 2026-07-13 SOC-freshness item records a maximum observed
-  selected-battery update gap of 2.979 seconds against the 15-second configured
-  window and retains supervised heartbeat interruption as a follow-up.
-- `FroniusWattpilot.py:328-331` subscribes to selected-battery power,
-  `FroniusWattpilot.py:367-374` records its validity and timestamp, and
-  `FroniusWattpilot.py:2049-2061` rejects cached SOC when that heartbeat is
-  invalid or stale.
-- `tests/test_eco_pv_policy.py:714-797` covers fresh, missing, invalid, and stale
-  heartbeat behavior, active-assist clearing, and reservation-bypass refusal.
-- `scripts/es-ess-health-monitor.sh:181-189` provides read-only battery activity
-  observation on the GX device.
-
-Implementation:
-
-- Treat this as an attended fault-simulation task during a naturally eligible,
-  already-running Auto/Eco battery-assist window.
-- Use a reversible, site-approved method to interrupt only the selected-battery
-  activity updates long enough to cross `BatterySocFreshSeconds`; do not force
-  grid import, alter Manual charging, or disable unrelated safety telemetry.
-- Confirm active assist clears or is refused, the EV-priority battery-reservation
-  bypass remains disabled, and the controller follows existing no-grid phase-down
-  or stop behavior from the remaining fresh inputs.
-- Restore telemetry promptly and confirm eligibility recovers only through the
-  existing policy. If a defect appears, create a separate implementation item
-  with exact evidence and focused tests.
-
-Files to change:
-
-- `BACKLOG.md` when recording the observation result
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Existing SOC-heartbeat and battery-assist policy tests are the automated
-  verifier.
-- No new test is required unless the live run exposes a defect or missing
-  diagnostic state.
-
-Expected coverage:
-
-- Adds live evidence that stale selected-battery activity cannot authorize
-  battery use or reservation bypass despite a cached finite SOC.
-- Existing passing tests remain unchanged.
-
-Manual validation:
-
-Fault simulation with active charging required in an attended, naturally
-eligible battery-assist window.
-
-Manual test steps:
-
-1. Confirm Auto/Eco, `AllowGridCharging=false`, fresh grid/allowance telemetry,
-   eligible SOC, and an already-running charge; do not use this test to start a
-   charge from battery.
-2. Start the read-only health monitor and record assist, SOC, selected-battery
-   power activity, allowance, grid exchange, phase mode, and controller logs.
-3. Interrupt only the selected-battery activity heartbeat using an approved
-   reversible method and wait past `BatterySocFreshSeconds`.
-4. Confirm battery assist clears/refuses and the EV-priority reservation bypass
-   remains disabled without any Manual-mode command.
-5. Restore telemetry, confirm fresh activity returns, and record recovery under
-   the existing assist lockout/recovery policy.
-
-Risks and dependencies:
-
-- Interrupting the wrong D-Bus service or broader system telemetry could affect
-  unrelated ESS control; the exact site-approved method must be chosen before
-  execution.
-- Weather and load must create a naturally eligible running-assist window; do
-  not force unsafe grid import or battery discharge to satisfy the item.
-- The implemented Auto/Eco command-ownership guard should be understood when
-  interpreting charger current, but it is not required to verify that stale SOC
-  evidence disables assist and reservation bypass.
-
-Open questions:
-
-- What reversible, site-approved method can interrupt selected-battery activity
-  updates without disrupting broader ESS safety telemetry?
-
-Done criteria:
-
-- A live stale-heartbeat interval is captured past `BatterySocFreshSeconds`.
-- Battery assist and the EV-priority reservation bypass fail closed while the
-  heartbeat is stale, and Manual charging remains untouched.
-- Telemetry restoration and subsequent eligibility follow the documented
-  recovery policy.
-- Full unittest suite passes.
-
 ## Suggested Implementation Order / PR Execution Queue
 
 Use this queue as the implementation order. Entries carrying the same PR-group
@@ -1677,25 +1521,7 @@ After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
 No implementation PR items remain in the queue.
-
-The following observation tasks are not code PRs and remain open independently
-of this queue. Complete them only when their safe preconditions occur; an
-inconclusive window is preferable to forcing production behavior:
-
-- Winter-validate grid-import dispatch only under natural suitable low-PV
-  conditions; do not force production grid import or disconnect critical
-  telemetry.
-- Live-validate battery-assist SOC-heartbeat failure only during a naturally
-  eligible, attended running-assist window using a site-approved reversible
-  telemetry-interruption method.
-
-Hardware validation scope for the remaining backlog:
-
-- The P4 automatic-NPC allocation fix requires low-risk validation with a
-  non-critical automatic consumer.
-- The independent observation items carry their own fault-simulation or
-  active-charging preconditions and must not be forced merely to close the
-  backlog.
+No independent observation tasks remain open.
 
 ## Verification Plan
 
@@ -1717,19 +1543,18 @@ For implementation PRs:
 
 ## Outstanding Manual Validation
 
-The authoritative manual work is now attached to the corresponding open item:
-
-- **Active charging required under natural conditions:** winter-validate
-  grid-import or stale-grid-telemetry dispatch with
-  `AllowGridCharging=false`.
-- **Fault simulation with active charging:** live-validate battery-assist
-  SOC-heartbeat failure during a naturally eligible window.
+No outstanding manual validation remains. Do not force grid import, interrupt
+critical telemetry, or alter the production energy system solely to reproduce
+already-covered safety branches.
 
 The general Venus OS `v3.75` daylight Auto/Eco PV-surplus, no-grid, battery-
 assist, current-reduction, and naturally available phase-switch validation is
 complete and is not a separate outstanding item. The native-PV command-
 ownership guard, its supervised Gate 2 live validation, and the local/remote
-mode-boundary correlation are also complete.
+mode-boundary correlation are also complete. Battery-heartbeat fault injection
+is safely retired as a production requirement and is not outstanding manual
+validation. Natural winter grid-import observation is also optional operational
+evidence rather than an open backlog requirement.
 
 - The complete operator behavior checklist remains in README and the safety
   invariants remain in `docs/wattpilot-architecture.md`.
