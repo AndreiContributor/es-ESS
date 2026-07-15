@@ -68,6 +68,18 @@ class EsEssDailyReportTests(unittest.TestCase):
     def _statuses(result, check):
         return [finding.status for finding in result.findings if finding.check == check]
 
+    @staticmethod
+    def _audit(records):
+        return AUDIT.EsEssDailyReport(
+            records,
+            AUDIT.AuditSettings(log_level="APP_DEBUG"),
+            AUDIT.AuditInput(
+                target_date="2026-07-15",
+                log_file="current.log",
+                config_file="config.ini",
+            ),
+        )
+
     def test_parser_filters_date_and_preserves_traceback_continuation(self):
         lines = [
             "2026-07-14 23:59:59,999 INFO old day\n",
@@ -651,6 +663,49 @@ NoBatToEV=false
         self.assertEqual(
             (records[1].timestamp - records[0].timestamp).total_seconds(), 45 * 60
         )
+
+    def test_grid_correlation_uses_timestamp_index_without_scanning_charge_records(self):
+        class IndexedOnly(list):
+            def __iter__(self):
+                raise AssertionError("charge records must not be scanned per grid sample")
+
+        timestamp = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+        record = AUDIT.LogRecord(timestamp, "APP_DEBUG", "charging", "charging")
+        audit = self._audit([record])
+        audit.charge_records = IndexedOnly([record])
+        audit._charge_timestamps = IndexedOnly([timestamp])
+
+        self.assertTrue(audit._charging_near(timestamp + timedelta(seconds=10)))
+        self.assertFalse(audit._charging_near(timestamp + timedelta(seconds=11)))
+
+    def test_session_build_uses_stop_index_without_rescanning_full_log(self):
+        class IndexedOnly(list):
+            def __iter__(self):
+                raise AssertionError("full log must not be rescanned per charge sample")
+
+        start = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+        first = AUDIT.LogRecord(start, "APP_DEBUG", "charging", "first charge")
+        second = AUDIT.LogRecord(
+            start + timedelta(seconds=5), "APP_DEBUG", "charging", "second charge"
+        )
+        stop = AUDIT.LogRecord(
+            start + timedelta(seconds=10),
+            "APP_DEBUG",
+            "Stopping Auto/Eco charging",
+            "stop",
+        )
+        audit = self._audit([first, second, stop])
+        audit.records = IndexedOnly([first, second, stop])
+        audit.charge_records = [first, second]
+        audit._charge_timestamps = [first.timestamp, second.timestamp]
+        audit._stop_records = [stop]
+        audit._stop_timestamps = [stop.timestamp]
+
+        sessions = audit.build_sessions()
+
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].end, stop.timestamp.isoformat())
+        self.assertEqual(sessions[0].stop_reason, "insufficient allowance")
 
     def test_malformed_and_truncated_log_input_is_tolerated_but_not_complete(self):
         with tempfile.TemporaryDirectory() as directory:

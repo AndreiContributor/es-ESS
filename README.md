@@ -1353,8 +1353,10 @@ separate implementation, safety review, documentation, and test task.
 ### Logging
 es-ESS can log a lot of information helpfull to debug things. For this, the loglevel in the configuration can be adjusted.
 The log file is placed in `/data/log/es-ESS/current.log` and rotated at local
-midnight. Every line uses the GX device's local wall time and includes the UTC
-offset that applied at that instant, for example:
+midnight. The authoritative timezone is the Venus setting at
+`/Settings/System/TimeZone`, not the shell process timezone. Every line uses
+that GX wall time and includes the UTC offset that applied at that instant, for
+example:
 
 ```text
 2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG ...
@@ -1363,6 +1365,10 @@ offset that applied at that instant, for example:
 The offset follows the device timezone and daylight-saving rules. In Romania,
 for example, the same format reports `(UTC+2)` during winter. This makes the
 repeated autumn hour unambiguous without changing elapsed-time control logic.
+The setting is read with a bounded, read-only D-Bus query during logging
+startup and is updated by the existing settings subscription. If the setting
+or its timezone data cannot be read, logging emits a warning and falls back to
+the OS-local timezone; it does not change the process clock or timezone.
 
 `[Common] LogRetentionDays` controls local-calendar retention and defaults to
 `10`. The active `current.log` counts as the current day, so a value of `10`

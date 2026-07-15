@@ -126,21 +126,30 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 - Kept the existing APP_DEBUG stability-test default and time-only daily
   rotation without introducing a size cutoff that could truncate relevant
   diagnostic evidence.
-- Added local timestamps with the offset that applied to each record, such as
-  `(UTC+3)` in Romanian summer and `(UTC+2)` in winter. Both file and console
-  handlers use the same format, and elapsed-time charger control remains on
-  timezone-independent epoch/monotonic clocks.
+- Added timestamps based on the authoritative Venus
+  `/Settings/System/TimeZone` setting with the offset that applied to each
+  record, such as `(UTC+3)` in Romanian summer and `(UTC+2)` in winter. Both
+  file and console handlers use the same format. The read-only startup query is
+  bounded, the existing settings subscription updates the timezone at runtime,
+  and failures warn and fall back to OS-local time. Process-wide clocks and
+  elapsed-time charger control remain unchanged.
 - Added `[Common] LogRetentionDays=10` with configuration version 12 migration,
   positive-integer validation, local-calendar expiry at startup and rollover,
   and exact current-day-inclusive semantics: `current.log` plus at most nine
   dated rotations.
 - Kept the historical daily report compatible with old offset-free records and
   taught it to use new offsets when ordering and measuring the repeated
-  daylight-saving hour. Corrected the maintained log path, local-midnight,
+  daylight-saving hour. Replaced per-grid-sample and per-charge-sample full-log
+  scans with timestamp indexes after a large live APP_DEBUG report exposed the
+  quadratic paths. Corrected the maintained log path, local-midnight,
   retention, and diagnostic-report documentation.
-- Verification passed with 36 focused configuration/logging tests, 52 focused
-  daily-report tests, 4 configuration-contract tests, changed-file syntax
-  checks, the full 435-test hardware-free suite, and whitespace checks.
+- Live validation confirmed configuration version 12 and ten-day cleanup. It
+  also showed the shell in UTC while Venus reported `Europe/Bucharest`, which
+  led to making the Venus setting explicitly authoritative.
+- Verification passed with 40 focused configuration/logging tests, 54 focused
+  daily-report tests, 4 configuration-contract tests, 6 backlog-structure
+  tests, changed-file syntax checks, the full 441-test hardware-free suite, and
+  whitespace checks.
 
 ### Completed 2026-07-15 - Winter Validate Wattpilot Grid-Import Dispatch Branches
 

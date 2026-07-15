@@ -10,6 +10,7 @@ writes D-Bus, MQTT, Wattpilot settings, configuration, or service state.
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left, bisect_right
 import configparser
 import importlib.util
 import json
@@ -938,6 +939,9 @@ class EsEssDailyReport:
         self.phase_confirmations: list[tuple[LogRecord, int]] = []
         self.phase_up_waits: list[tuple[LogRecord, float, int]] = []
         self.charge_records: list[LogRecord] = []
+        self._charge_timestamps: list[datetime] = []
+        self._stop_records: list[LogRecord] = []
+        self._stop_timestamps: list[datetime] = []
         self.start_records: list[tuple[LogRecord, float]] = []
         self.authority_valid: list[LogRecord] = []
         self.authority_blocked: list[LogRecord] = []
@@ -1124,6 +1128,13 @@ class EsEssDailyReport:
             {record.timestamp: record for record in self.charge_records}.values(),
             key=lambda record: record.timestamp,
         )
+        self._charge_timestamps = [
+            record.timestamp for record in self.charge_records
+        ]
+        self._stop_records = [
+            record for record in self.records if self._stop_reason(record) is not None
+        ]
+        self._stop_timestamps = [record.timestamp for record in self._stop_records]
         self.failure_records = sorted(
             {record.timestamp: record for record in self.failure_records}.values(),
             key=lambda record: record.timestamp,
@@ -1876,10 +1887,15 @@ class EsEssDailyReport:
             )
 
     def _charging_near(self, timestamp: datetime, seconds: int = 10) -> bool:
-        return any(
-            abs((record.timestamp - timestamp).total_seconds()) <= seconds
-            for record in self.charge_records
-        )
+        if not self._charge_timestamps:
+            return False
+        index = bisect_left(self._charge_timestamps, timestamp)
+        for candidate_index in (index - 1, index):
+            if 0 <= candidate_index < len(self._charge_timestamps):
+                candidate = self._charge_timestamps[candidate_index]
+                if abs((candidate - timestamp).total_seconds()) <= seconds:
+                    return True
+        return False
 
     def check_grid_import(self) -> None:
         if self.settings.allow_grid_charging:
@@ -2152,10 +2168,10 @@ class EsEssDailyReport:
         groups: list[list[LogRecord]] = [[self.charge_records[0]]]
         for record in self.charge_records[1:]:
             prior = groups[-1][-1]
-            stop_between = any(
-                self._stop_reason(item) is not None
-                for item in self.records
-                if prior.timestamp < item.timestamp < record.timestamp
+            first_stop = bisect_right(self._stop_timestamps, prior.timestamp)
+            stop_between = (
+                first_stop < len(self._stop_timestamps)
+                and self._stop_timestamps[first_stop] < record.timestamp
             )
             if stop_between or (record.timestamp - prior.timestamp).total_seconds() > 300:
                 groups.append([record])
@@ -2171,19 +2187,14 @@ class EsEssDailyReport:
                 next_start if next_start else self.records[-1].timestamp,
                 last_charge + timedelta(minutes=5),
             )
-            stop_record = next(
-                (
-                    item
-                    for item in self.records
-                    if last_charge <= item.timestamp <= search_end
-                    and self._stop_reason(item) is not None
-                ),
-                None,
+            stop_index = bisect_left(self._stop_timestamps, last_charge)
+            stop_record = (
+                self._stop_records[stop_index]
+                if stop_index < len(self._stop_records)
+                and self._stop_timestamps[stop_index] <= search_end
+                else None
             )
             end = stop_record.timestamp if stop_record else last_charge
-            session_records = [
-                item for item in self.records if start <= item.timestamp <= end
-            ]
             phases = sorted(
                 {
                     phase

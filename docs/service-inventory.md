@@ -56,6 +56,14 @@ The runtime also owns the shared D-Bus monitor, main MQTT client, local Venus
 MQTT client, worker scheduling, service messages, and combined grid-setpoint
 requests.
 
+Logging bootstrap makes one bounded, read-only `GetValue` query to
+`com.victronenergy.settings` `/Settings/System/TimeZone`. That named Venus
+timezone controls log wall-clock formatting, UTC-offset labels, daily rollover,
+and retention dates even when the service process itself runs in UTC. The
+existing settings subscription updates the logging timezone at runtime. A
+query or timezone-data failure produces a warning and falls back to OS-local
+time without changing process-wide clocks or controller timing.
+
 ## Victron D-Bus Dependency Ownership
 
 Every orchestrator, active service, and retained dormant service that imports

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
- 
 # imports
+import ast
 import configparser
 import datetime
 from logging.handlers import TimedRotatingFileHandler
@@ -16,9 +16,83 @@ from builtins import Exception, int, str
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
 import ssl
+import subprocess
+
+try:
+  from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except ImportError:
+  class ZoneInfoNotFoundError(Exception):
+    pass
+
+  def ZoneInfo(timezoneName):
+    raise ZoneInfoNotFoundError(
+      "Python zoneinfo support is unavailable for {0}".format(timezoneName)
+    )
 
 
 DEFAULT_LOG_RETENTION_DAYS = 10
+VENUS_TIMEZONE_SERVICE = "com.victronenergy.settings"
+VENUS_TIMEZONE_PATH = "/Settings/System/TimeZone"
+
+
+class LogTimezoneContext:
+  def __init__(self, timezoneName=None):
+    self._lock = threading.RLock()
+    self.useOsLocalTimezone()
+    if timezoneName is not None:
+      self.setTimezone(timezoneName)
+
+  def setTimezone(self, timezoneName):
+    timezoneName = str(timezoneName)
+    timezone = ZoneInfo(timezoneName)
+    with self._lock:
+      self._timezoneName = timezoneName
+      self._timezone = timezone
+
+  def useOsLocalTimezone(self):
+    with self._lock:
+      self._timezoneName = "OS local timezone"
+      self._timezone = datetime.datetime.now().astimezone().tzinfo
+
+  def snapshot(self):
+    with self._lock:
+      return self._timezoneName, self._timezone
+
+
+_logTimezoneContext = LogTimezoneContext()
+
+
+def _readVenusTimezone():
+  result = subprocess.run(
+    [
+      "dbus",
+      "-y",
+      VENUS_TIMEZONE_SERVICE,
+      VENUS_TIMEZONE_PATH,
+      "GetValue",
+    ],
+    capture_output=True,
+    text=True,
+    timeout=3,
+  )
+  if result.returncode != 0:
+    raise RuntimeError(
+      "Venus timezone query failed with status {0}: {1}".format(
+        result.returncode, result.stderr.strip()
+      )
+    )
+
+  rawValue = result.stdout.strip()
+  try:
+    timezoneName = ast.literal_eval(rawValue)
+  except (SyntaxError, ValueError):
+    timezoneName = rawValue
+  if not isinstance(timezoneName, str) or not timezoneName:
+    raise ValueError(
+      "Venus timezone query returned an invalid value: {0!r}".format(rawValue)
+    )
+  ZoneInfo(timezoneName)
+  return timezoneName
 
 
 def _formatUtcOffset(offset):
@@ -31,8 +105,13 @@ def _formatUtcOffset(offset):
 
 
 class LocalTimezoneLogFormatter(logging.Formatter):
+  def __init__(self, fmt=None, datefmt=None, timezoneContext=None):
+    super().__init__(fmt=fmt, datefmt=datefmt)
+    self.timezoneContext = timezoneContext or _logTimezoneContext
+
   def formatTime(self, record, datefmt=None):
-    localTime = datetime.datetime.fromtimestamp(record.created).astimezone()
+    _timezoneName, timezone = self.timezoneContext.snapshot()
+    localTime = datetime.datetime.fromtimestamp(record.created, timezone)
     timestamp = localTime.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
     return "{0},{1:03d} {2}".format(
       timestamp,
@@ -42,15 +121,58 @@ class LocalTimezoneLogFormatter(logging.Formatter):
 
 
 class LocalCalendarTimedRotatingFileHandler(TimedRotatingFileHandler):
-  def __init__(self, filename, retentionDays):
+  def __init__(self, filename, retentionDays, timezoneContext=None):
     self.retentionDays = retentionDays
+    self.timezoneContext = timezoneContext or _logTimezoneContext
+    self._scheduledTimezoneName = self.timezoneContext.snapshot()[0]
     super().__init__(
       filename,
       when="midnight",
       interval=1,
       backupCount=retentionDays,
-      utc=False,
+      utc=True,
     )
+
+  def computeRollover(self, currentTime):
+    timezoneName, timezone = self.timezoneContext.snapshot()
+    currentLocalTime = datetime.datetime.fromtimestamp(currentTime, timezone)
+    nextLocalDate = currentLocalTime.date() + datetime.timedelta(days=1)
+    nextLocalMidnight = datetime.datetime.combine(
+      nextLocalDate, datetime.time.min, tzinfo=timezone
+    )
+    self._scheduledTimezoneName = timezoneName
+    return int(nextLocalMidnight.timestamp())
+
+  def shouldRollover(self, record):
+    timezoneName, _timezone = self.timezoneContext.snapshot()
+    if timezoneName != self._scheduledTimezoneName:
+      self.rolloverAt = self.computeRollover(int(time.time()))
+    return super().shouldRollover(record)
+
+  def doRollover(self):
+    if self.stream:
+      self.stream.close()
+      self.stream = None
+
+    _timezoneName, timezone = self.timezoneContext.snapshot()
+    completedLocalDate = datetime.datetime.fromtimestamp(
+      self.rolloverAt - 1, timezone
+    ).date()
+    destination = self.rotation_filename(
+      self.baseFilename + "." + completedLocalDate.isoformat()
+    )
+    if os.path.exists(destination):
+      os.remove(destination)
+    if os.path.exists(self.baseFilename):
+      self.rotate(self.baseFilename, destination)
+
+    if self.backupCount > 0:
+      for path in self.getFilesToDelete():
+        os.remove(path)
+
+    if not self.delay:
+      self.stream = self._open()
+    self.rolloverAt = self.computeRollover(int(time.time()))
 
   def _datedLogFiles(self):
     directory = os.path.dirname(self.baseFilename)
@@ -74,7 +196,8 @@ class LocalCalendarTimedRotatingFileHandler(TimedRotatingFileHandler):
 
   def getFilesToDelete(self):
     datedFiles = self._datedLogFiles()
-    today = datetime.datetime.now().astimezone().date()
+    _timezoneName, timezone = self.timezoneContext.snapshot()
+    today = datetime.datetime.now(timezone).date()
     oldestRetainedDate = today - datetime.timedelta(days=self.retentionDays - 1)
     expired = [path for logDate, path in datedFiles if logDate < oldestRetainedDate]
     retained = [
@@ -1165,8 +1288,18 @@ class esESS:
             c(self, "Exception", exc_info=ex)
     
     def _timeZoneChanged(self, sub):
-        self.publishServiceMessage(self, "Timezone detected as '{0}'".format(sub.value))
-        Globals.userTimezone = sub.value
+        try:
+            timezoneName = str(sub.value)
+            _logTimezoneContext.setTimezone(timezoneName)
+            Globals.userTimezone = timezoneName
+            self.publishServiceMessage(
+                self, "Timezone detected as '{0}'".format(timezoneName)
+            )
+        except (TypeError, ValueError, ZoneInfoNotFoundError) as ex:
+            w(
+                self,
+                "Ignoring invalid Venus timezone {0!r}: {1}".format(sub.value, ex),
+            )
 
     def _reportFutureException(self, future, operation):
         try:
@@ -1582,12 +1715,28 @@ def configureLogging(config):
       # fallback logging is available.
       logRetentionDays = DEFAULT_LOG_RETENTION_DAYS
 
+  timezoneWarning = None
+  try:
+      venusTimezone = _readVenusTimezone()
+      _logTimezoneContext.setTimezone(venusTimezone)
+      Globals.userTimezone = venusTimezone
+  except (
+      OSError,
+      RuntimeError,
+      subprocess.SubprocessError,
+      ValueError,
+      ZoneInfoNotFoundError,
+  ) as ex:
+      _logTimezoneContext.useOsLocalTimezone()
+      timezoneWarning = ex
+
   logFormatter = LocalTimezoneLogFormatter(
       fmt='%(asctime)s %(levelname)s %(message)s',
       datefmt='%Y-%m-%d %H:%M:%S',
+      timezoneContext=_logTimezoneContext,
   )
   fileHandler = LocalCalendarTimedRotatingFileHandler(
-      logDir + "/current.log", logRetentionDays
+      logDir + "/current.log", logRetentionDays, _logTimezoneContext
   )
   streamHandler = logging.StreamHandler()
   fileHandler.setFormatter(logFormatter)
@@ -1597,6 +1746,12 @@ def configureLogging(config):
       level=logLevel,
       handlers=[fileHandler, streamHandler]
   )
+
+  if timezoneWarning is not None:
+      logging.warning(
+          "Unable to read the Venus timezone; using the OS local timezone for logs: %s",
+          timezoneWarning,
+      )
 
   for path, exception in fileHandler.pruneExpiredLogs():
       logging.warning(

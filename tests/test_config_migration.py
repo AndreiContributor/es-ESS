@@ -381,26 +381,84 @@ class LoggingConfigurationTests(unittest.TestCase):
         _install_runtime_stubs()
         cls.es_ess = _load_es_ess_module()
 
-    def test_formatter_uses_local_time_with_human_readable_utc_offset(self):
+    def _timezone_context(self, timezone):
+        return Mock(
+            snapshot=Mock(return_value=("Europe/Bucharest", timezone))
+        )
+
+    def _format_at(self, instant, timezone):
         record = logging.LogRecord(
             "es-ess", 11, __file__, 1, "diagnostic", (), None
         )
         record.levelname = "APP_DEBUG"
-        record.created = 1784130130.123
+        record.created = instant.timestamp()
         record.msecs = 123
-        local_time = self.es_ess.datetime.datetime.fromtimestamp(
-            record.created
-        ).astimezone()
-        expected = "{0},123 {1} APP_DEBUG diagnostic".format(
-            local_time.strftime("%Y-%m-%d %H:%M:%S"),
-            self.es_ess._formatUtcOffset(local_time.utcoffset()),
-        )
         formatter = self.es_ess.LocalTimezoneLogFormatter(
             "%(asctime)s %(levelname)s %(message)s",
             "%Y-%m-%d %H:%M:%S",
+            self._timezone_context(timezone),
+        )
+        return formatter.format(record)
+
+    def test_formatter_uses_venus_timezone_in_romanian_summer(self):
+        instant = self.es_ess.datetime.datetime(
+            2026, 7, 15, 15, 42, 10, 123000,
+            tzinfo=self.es_ess.datetime.timezone.utc,
         )
 
-        self.assertEqual(formatter.format(record), expected)
+        self.assertEqual(
+            self._format_at(
+                instant,
+                self.es_ess.datetime.timezone(
+                    self.es_ess.datetime.timedelta(hours=3)
+                ),
+            ),
+            "2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG diagnostic",
+        )
+
+    def test_formatter_uses_venus_timezone_in_romanian_winter(self):
+        instant = self.es_ess.datetime.datetime(
+            2026, 1, 15, 16, 42, 10, 123000,
+            tzinfo=self.es_ess.datetime.timezone.utc,
+        )
+
+        self.assertEqual(
+            self._format_at(
+                instant,
+                self.es_ess.datetime.timezone(
+                    self.es_ess.datetime.timedelta(hours=2)
+                ),
+            ),
+            "2026-01-15 18:42:10,123 (UTC+2) APP_DEBUG diagnostic",
+        )
+
+    def test_venus_timezone_query_reads_named_setting_with_timeout(self):
+        completed = Mock(
+            returncode=0,
+            stdout="'Europe/Bucharest'\n",
+            stderr="",
+        )
+        with patch.object(
+            self.es_ess, "ZoneInfo", return_value=self.es_ess.datetime.timezone.utc
+        ) as zone_info, patch.object(
+            self.es_ess.subprocess, "run", return_value=completed
+        ) as run:
+            timezone_name = self.es_ess._readVenusTimezone()
+
+        self.assertEqual(timezone_name, "Europe/Bucharest")
+        zone_info.assert_called_once_with("Europe/Bucharest")
+        run.assert_called_once_with(
+            [
+                "dbus",
+                "-y",
+                "com.victronenergy.settings",
+                "/Settings/System/TimeZone",
+                "GetValue",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
 
     def test_offset_format_supports_whole_and_partial_hour_timezones(self):
         timedelta = self.es_ess.datetime.timedelta
@@ -415,11 +473,15 @@ class LoggingConfigurationTests(unittest.TestCase):
     def test_retention_keeps_current_day_plus_nine_local_day_logs(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             base_log = Path(tmp_dir) / "current.log"
+            timezone = self.es_ess.datetime.timezone(
+                self.es_ess.datetime.timedelta(hours=3)
+            )
+            timezone_context = self._timezone_context(timezone)
             handler = self.es_ess.LocalCalendarTimedRotatingFileHandler(
-                str(base_log), 10
+                str(base_log), 10, timezone_context
             )
             try:
-                today = self.es_ess.datetime.datetime.now().astimezone().date()
+                today = self.es_ess.datetime.datetime.now(timezone).date()
                 rotated = {}
                 for age in range(1, 13):
                     path = Path(
@@ -444,6 +506,62 @@ class LoggingConfigurationTests(unittest.TestCase):
                 self.assertTrue(unrelated.exists())
                 retained_logs = [base_log] + [rotated[age] for age in range(1, 10)]
                 self.assertEqual(sum(path.exists() for path in retained_logs), 10)
+            finally:
+                handler.close()
+
+    def test_rollover_uses_next_midnight_in_venus_timezone(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            timezone = self.es_ess.datetime.timezone(
+                self.es_ess.datetime.timedelta(hours=3)
+            )
+            timezone_context = self._timezone_context(timezone)
+            handler = self.es_ess.LocalCalendarTimedRotatingFileHandler(
+                str(Path(tmp_dir) / "current.log"), 10, timezone_context
+            )
+            try:
+                current = self.es_ess.datetime.datetime(
+                    2026, 7, 15, 21, 30,
+                    tzinfo=self.es_ess.datetime.timezone.utc,
+                )
+                expected = self.es_ess.datetime.datetime(
+                    2026, 7, 17, 0, 0,
+                    tzinfo=timezone,
+                )
+
+                self.assertEqual(
+                    handler.computeRollover(current.timestamp()),
+                    int(expected.timestamp()),
+                )
+            finally:
+                handler.close()
+
+    def test_rollover_names_completed_venus_calendar_day(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base_log = Path(tmp_dir) / "current.log"
+            base_log.write_text("completed day\n", encoding="utf-8")
+            timezone = self.es_ess.datetime.timezone(
+                self.es_ess.datetime.timedelta(hours=3)
+            )
+            handler = self.es_ess.LocalCalendarTimedRotatingFileHandler(
+                str(base_log), 10, self._timezone_context(timezone)
+            )
+            try:
+                local_midnight = self.es_ess.datetime.datetime(
+                    2026, 7, 16, 0, 0, tzinfo=timezone
+                )
+                handler.rolloverAt = int(local_midnight.timestamp())
+                with patch.object(
+                    handler, "getFilesToDelete", return_value=[]
+                ), patch.object(
+                    self.es_ess.time,
+                    "time",
+                    return_value=local_midnight.timestamp(),
+                ):
+                    handler.doRollover()
+
+                rotated = Path(str(base_log) + ".2026-07-15")
+                self.assertEqual(rotated.read_text(encoding="utf-8"), "completed day\n")
+                self.assertTrue(base_log.exists())
             finally:
                 handler.close()
 

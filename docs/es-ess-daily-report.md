@@ -60,11 +60,14 @@ without invoking even those optional read commands. Each snapshot command has a
 two-second timeout. After three consecutive D-Bus timeouts, remaining snapshot
 paths are marked unavailable and historical analysis continues.
 
-New log records use local wall time with the applicable offset, for example
+New log records use the Venus `/Settings/System/TimeZone` wall time with the
+applicable offset, for example
 `2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG ...`. The analyzer uses that offset
 to order records and calculate durations across daylight-saving changes. It
 continues to accept pre-upgrade records that do not contain an offset, so a
-rotation window spanning the upgrade remains readable.
+rotation window spanning the upgrade remains readable. Grid-to-charge
+correlation and charging-session stop lookup use timestamp indexes, keeping
+APP_DEBUG reports practical when a day contains many samples.
 
 ## Install And Run
 
