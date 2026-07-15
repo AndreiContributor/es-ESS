@@ -4,7 +4,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,7 +80,12 @@ class WattpilotDispatchCharacterizationTests(unittest.TestCase):
         controller.surplusSince = 30
         controller.surplusBelowMinimumSince = 35
         controller.noAllowanceForcedOff = True
-        controller.wattpilot = SimpleNamespace(modelStatus=SimpleNamespace(value=999))
+        controller._lastObservedModelStatusValue = None
+        controller._protocolChargingStatusSince = 0
+        controller.wattpilot = SimpleNamespace(
+            modelStatus=SimpleNamespace(value=999),
+            power=0,
+        )
 
         controller.publishServiceMessage = Mock()
         controller.wattpilotReportsActiveCharge = Mock(return_value=True)
@@ -201,6 +206,79 @@ class WattpilotDispatchCharacterizationTests(unittest.TestCase):
         controller.clearPendingPhaseSwitch.assert_called_once_with()
         controller.clearPhaseSwitchCandidate.assert_called_once_with()
         controller.publishSafetyTelemetry.assert_called_once_with()
+
+    def test_protocol_charging_status_info_logs_only_on_entry_change_and_exit(self):
+        controller = self._controller()
+        charging_state = self.fwp.ControlStates.WattpilotControlState.CHARGING
+
+        def inputs(model_status_value):
+            return self.fwp.ControlStates.ControlStateInputs(
+                auto_mode=True,
+                command_authority_ok=True,
+                allow_grid_charging=False,
+                grid_telemetry_fresh=True,
+                effective_car_connected=True,
+                model_status_value=model_status_value,
+            )
+
+        with patch.object(self.fwp, "i") as info_log:
+            controller.wattpilot.modelStatus = (
+                self.fwp.WattpilotModelStatus.ChargingBecauseAutomaticStopTestLadung
+            )
+            controller.wattpilot.power = 1.4
+            with patch.object(self.fwp.time, "time", return_value=100):
+                controller.logProtocolChargingStatusTransition(
+                    charging_state,
+                    inputs(8),
+                )
+
+            with patch.object(self.fwp.time, "time", return_value=105):
+                controller.logProtocolChargingStatusTransition(
+                    charging_state,
+                    inputs(8),
+                )
+            self.assertEqual(info_log.call_count, 1)
+
+            controller.wattpilot.modelStatus = (
+                self.fwp.WattpilotModelStatus.ChargingBecauseAutomaticStopNotEnoughTime
+            )
+            with patch.object(self.fwp.time, "time", return_value=120):
+                controller.logProtocolChargingStatusTransition(
+                    charging_state,
+                    inputs(9),
+                )
+
+            controller.wattpilot.modelStatus = (
+                self.fwp.WattpilotModelStatus.ChargingBecausePvSurplus
+            )
+            with patch.object(self.fwp.time, "time", return_value=135):
+                controller.logProtocolChargingStatusTransition(
+                    charging_state,
+                    inputs(12),
+                )
+
+        messages = [call.args[1] for call in info_log.call_args_list]
+        self.assertEqual(len(messages), 4)
+        self.assertIn(
+            "Wattpilot special charging model status entered: model_status=8",
+            messages[0],
+        )
+        self.assertIn("name=ChargingBecauseAutomaticStopTestLadung", messages[0])
+        self.assertIn("selected_state=charging", messages[0])
+        self.assertIn(
+            "Wattpilot special charging model status exited: model_status=8",
+            messages[1],
+        )
+        self.assertIn("next_model_status=9 observed_seconds=20", messages[1])
+        self.assertIn(
+            "Wattpilot special charging model status entered: model_status=9",
+            messages[2],
+        )
+        self.assertIn(
+            "Wattpilot special charging model status exited: model_status=9",
+            messages[3],
+        )
+        self.assertIn("next_model_status=12 observed_seconds=15", messages[3])
 
 
 if __name__ == "__main__":

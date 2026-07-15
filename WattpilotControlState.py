@@ -2,7 +2,10 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-ACTIVE_CHARGING_STATUS_VALUES = frozenset([3, 12, 15, 19, 20])
+PROTOCOL_CHARGING_STATUS_VALUES = frozenset([8, 9, 10, 11, 13, 14])
+ACTIVE_CHARGING_STATUS_VALUES = frozenset([3, 12, 15, 19, 20]).union(
+    PROTOCOL_CHARGING_STATUS_VALUES
+)
 NOT_CHARGING_STATUS_VALUES = frozenset([4, 5, 6, 16, 17, 18, 22, 24])
 
 
@@ -38,6 +41,14 @@ class ControlStateInputs:
     phase_switching: bool = False
 
 
+def is_active_charging_status(model_status_value):
+    return model_status_value in ACTIVE_CHARGING_STATUS_VALUES
+
+
+def is_protocol_charging_status(model_status_value):
+    return model_status_value in PROTOCOL_CHARGING_STATUS_VALUES
+
+
 def select_control_state(inputs):
     if inputs.transport_unavailable:
         return WattpilotControlState.TRANSPORT_UNAVAILABLE
@@ -67,7 +78,7 @@ def select_control_state(inputs):
     if not inputs.effective_car_connected:
         return WattpilotControlState.DISCONNECTED
 
-    if inputs.model_status_value in ACTIVE_CHARGING_STATUS_VALUES:
+    if is_active_charging_status(inputs.model_status_value):
         return WattpilotControlState.CHARGING
 
     if inputs.model_status_value in NOT_CHARGING_STATUS_VALUES:

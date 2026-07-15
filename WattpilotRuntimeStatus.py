@@ -16,6 +16,7 @@ import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
 import RuntimeCompatibility
+import WattpilotControlState as ControlStates
 
 
 CONTROL_STATE_STOPPED = 0
@@ -820,7 +821,9 @@ class WattpilotRuntimeStatusReporter:
         if _number(getattr(wattpilot, "power", 0), 0) * 1000.0 > 50.0:
             return True
         model_status = getattr(wattpilot, "modelStatus", None)
-        return getattr(model_status, "value", model_status) in (3, 12, 15, 19, 20)
+        return ControlStates.is_active_charging_status(
+            getattr(model_status, "value", model_status)
+        )
 
     def _has_minimum_allowance(self) -> bool:
         result = self._call_bool("hasMinimumAllowance")

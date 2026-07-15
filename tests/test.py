@@ -350,6 +350,15 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         with patch.object(self.fwp.time, "time", return_value=115):
             self.assertFalse(controller.allowanceStopGraceActive())
 
+    def test_protocol_defined_charging_statuses_are_active_for_connection_debounce(self):
+        for model_status_value in (8, 9, 10, 11, 13, 14):
+            with self.subTest(model_status_value=model_status_value):
+                controller = self._controller()
+                controller.wattpilot.modelStatus = SimpleNamespace(
+                    value=model_status_value
+                )
+                self.assertTrue(controller.wattpilotReportsActiveCharge())
+
     def test_one_false_car_connection_does_not_drop_consumer_request(self):
         controller = self._controller()
         controller.lastConfirmedCarConnected = True
@@ -1122,6 +1131,23 @@ class WattpilotControlRegressionTests(unittest.TestCase):
 
         controller.wattpilot.set_power.assert_not_called()
         controller.wattpilot.set_start_stop.assert_not_called()
+
+    def test_manual_protocol_defined_charging_statuses_remain_reporting_only(self):
+        for model_status_value in (8, 9, 10, 11, 13, 14):
+            with self.subTest(model_status_value=model_status_value):
+                controller = self._controller()
+                controller.mode = self.fwp.VrmEvChargerControlMode.Manual
+                controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+                controller.wattpilot.modelStatus.value = model_status_value
+                controller.wattpilot.power = 1.4
+                controller.allowanceValid = False
+                controller.gridL1Valid = False
+
+                controller._update()
+
+                controller.wattpilot.set_power.assert_not_called()
+                controller.wattpilot.set_phases.assert_not_called()
+                controller.wattpilot.set_start_stop.assert_not_called()
 
 
 if __name__ == "__main__":
