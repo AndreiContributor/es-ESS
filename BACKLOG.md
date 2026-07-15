@@ -2316,7 +2316,26 @@ Done criteria:
   process or dependency behavior.
 - Full unittest suite passes.
 
-### P4 - Measure Daily-Report Peak Memory And Add Bounds Only If Needed
+### Completed 2026-07-15 - Measure Daily-Report Peak Memory And Retain Complete Evidence
+
+Completion record:
+
+- The supported Venus OS `v3.75` GX processed a representative APP_DEBUG
+  `current.log` containing 210,294 lines/records and 29,918,910 bytes while
+  es-ESS remained online.
+- The report's peak resident set was 107,656 KB from an initial 642,456 KB of
+  available memory. Even the conservative subtraction leaves approximately
+  522 MiB available; the post-run reading recovered to 640,836 KB.
+- Log loading took 53.66 seconds and analysis took 25.85 seconds. The report
+  exited `2` because the whole current-day input contained earlier operational
+  anomalies, not because of a resource limit or report failure.
+- The supervised es-ESS process remained PID 2494 and its uptime advanced from
+  525 to 636 seconds during the run.
+- Decision: close measurement-only. Do not add line, continuation, record, or
+  byte caps: the observed GX workload has ample headroom, and arbitrary limits
+  could discard the safety evidence this report is intended to preserve.
+- The implementation had already passed 67 focused daily-report tests and the
+  complete 415-test hardware-free suite before this production measurement.
 
 Goal:
 
@@ -2435,9 +2454,6 @@ advance the queue on the next request.
    validation without disconnecting the production grid.
 2. P1 - Make Initial MQTT Connections Resilient — implementation is complete;
    close after a low-risk GX test-broker refusal/recovery exercise.
-3. P4 - Measure Daily-Report Peak Memory And Add Bounds Only If Needed — record
-   representative GX peak RSS/headroom and implement transparent bounds only if
-   that evidence demonstrates a need.
 
 ## Verification Plan
 
@@ -2478,9 +2494,6 @@ safety branches:
   behavior while disconnected; no hardware action remains.
 - Hardware not needed: documentation-contract, exact D-Bus read-allowlist, and
   lifecycle-script changes are covered by focused automated/static checks.
-- Log-only production observation: measure peak RSS for the daily report on a
-  representative GX log set; add truncation bounds only if the evidence justifies
-  them and make any resulting incomplete analysis explicit.
 
 The general Venus OS `v3.75` daylight Auto/Eco PV-surplus, no-grid, battery-
 assist, current-reduction, and naturally available phase-switch validation is
