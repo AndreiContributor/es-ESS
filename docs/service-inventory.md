@@ -33,8 +33,8 @@ and active `[Services]` bootstrap keys and their conversion types before
 constructing MQTT clients, threads, D-Bus services, or integration services.
 It also validates bounded/cross-field Wattpilot values, positive service update
 intervals, positive device polling intervals, MQTT PV stale/zero-feed-in
-values, common thread/HTTP values, TLS trust modes, and configured combined
-grid-setpoint bounds. Invalid bootstrap values are
+values, common thread/HTTP/log-retention values, TLS trust modes, and
+configured combined grid-setpoint bounds. Invalid bootstrap values are
 logged together at CRITICAL level and startup exits with status 1; optional
 sections and settings that already have runtime defaults remain compatible when
 absent.
@@ -55,6 +55,20 @@ starts, current increases, and phase-up while retaining safe stop commands.
 The runtime also owns the shared D-Bus monitor, main MQTT client, local Venus
 MQTT client, worker scheduling, service messages, and combined grid-setpoint
 requests.
+
+Logging bootstrap makes one bounded, read-only `GetValue` query to
+`com.victronenergy.settings` `/Settings/System/TimeZone`. That named Venus
+timezone controls log wall-clock formatting, UTC-offset labels, daily rollover,
+and retention dates even when the service process itself runs in UTC. The
+existing settings subscription updates the logging timezone at runtime. A
+query or timezone-data failure produces a warning and falls back to OS-local
+time without changing process-wide clocks or controller timing.
+
+The standalone `scripts/es-ess-daily-report.py` uses the same exact settings
+service/path as a required, bounded read-only query before resolving report
+calendar windows. `--no-current-snapshot` disables optional service/runtime
+snapshot reads but not this timezone lookup. Report analysis remains isolated
+from controller imports and all D-Bus writes.
 
 ## Victron D-Bus Dependency Ownership
 

@@ -19,6 +19,7 @@ POLICY_CONFIG_KEYS = {
         "GridSetPointMinW",
         "GridSetPointMaxW",
         "HttpRequestTimeout",
+        "LogRetentionDays",
     },
     "Mqtt": {
         "SslVerification",

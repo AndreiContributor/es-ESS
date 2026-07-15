@@ -121,6 +121,49 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-15 - Make Log Timezone And Calendar-Day Retention Explicit
+
+- Kept the existing APP_DEBUG stability-test default and time-only daily
+  rotation without introducing a size cutoff that could truncate relevant
+  diagnostic evidence.
+- Added timestamps based on the authoritative Venus
+  `/Settings/System/TimeZone` setting with the offset that applied to each
+  record, such as `(UTC+3)` in Romanian summer and `(UTC+2)` in winter. Both
+  file and console handlers use the same format. The read-only startup query is
+  bounded, the existing settings subscription updates the timezone at runtime,
+  and failures warn and fall back to OS-local time. Process-wide clocks and
+  elapsed-time charger control remain unchanged.
+- Added `[Common] LogRetentionDays=10` with configuration version 12 migration,
+  positive-integer validation, local-calendar expiry at startup and rollover,
+  and exact current-day-inclusive semantics: `current.log` plus at most nine
+  dated rotations.
+- Kept the historical daily report compatible with old offset-free records and
+  taught it to use new offsets when ordering and measuring the repeated
+  daylight-saving hour. Replaced per-grid-sample and per-charge-sample full-log
+  scans with timestamp indexes after a large live APP_DEBUG report exposed the
+  quadratic paths. A subsequent 189,007-record GX run completed but took five
+  minutes and selected the UTC calendar window, exposing remaining collection
+  overhead and OS-timezone coupling. The report now performs the same bounded
+  Venus timezone query as logging, routes regex parsing by message markers,
+  uses a fixed-format fast parser and ISO timestamp conversion, avoids
+  single-file de-duplication/sorting, records loader/analysis stage durations,
+  and indexes allowance and Manual-boundary lookups. The first follow-up GX run
+  confirmed correct `Europe/Bucharest` boundaries and improved to 2m17s before
+  the dedicated loader fast path was added. Final production validation
+  processed 195,892 records in 1m16s (48.63s loading and 23.90s analysis) while
+  es-ESS remained up with the same PID. Corrected the maintained log path,
+  local-midnight, retention, and diagnostic-report documentation.
+- Live validation confirmed configuration version 12 and ten-day cleanup. It
+  also showed the shell in UTC while Venus reported `Europe/Bucharest`, which
+  led to making the Venus setting explicitly authoritative.
+- Verification passed with 40 focused configuration/logging tests, 60 focused
+  daily-report tests, 4 configuration-contract tests, 6 backlog-structure
+  tests, changed-file syntax checks, the full 447-test hardware-free suite, and
+  whitespace checks. A synthetic 189,000-record workload with approximately
+  12,600 allowance and grid samples completed analysis in 0.33 seconds on the
+  development machine; fast parsing a representative mix of 193,000 legacy UTC
+  and offset-bearing lines took 0.23 seconds.
+
 ### Completed 2026-07-15 - Winter Validate Wattpilot Grid-Import Dispatch Branches
 
 - Closed this optional observation without forcing grid import or disrupting

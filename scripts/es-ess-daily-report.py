@@ -2,14 +2,16 @@
 """Read-only daily es-ESS report for production logs and optional snapshots.
 
 The report never treats an absent log event as proof that a safety mechanism
-worked. It reads configuration and logs, and may use allowlisted read-only
-``svstat`` and ``dbus ... GetValue`` commands for a current snapshot. It never
-writes D-Bus, MQTT, Wattpilot settings, configuration, or service state.
+worked. It reads configuration and logs, uses one allowlisted read-only
+``dbus ... GetValue`` command for the Venus timezone, and may use additional
+allowlisted ``svstat`` and D-Bus reads for a current snapshot. It never writes
+D-Bus, MQTT, Wattpilot settings, configuration, or service state.
 """
 
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left, bisect_right
 import configparser
 import importlib.util
 import json
@@ -17,10 +19,22 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional, TextIO
+
+try:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+except ImportError:
+    class ZoneInfoNotFoundError(Exception):
+        pass
+
+    def ZoneInfo(timezone_name: str):
+        raise ZoneInfoNotFoundError(
+            f"Python zoneinfo support is unavailable for {timezone_name}"
+        )
 
 
 SCHEMA_VERSION = 3
@@ -35,6 +49,8 @@ DEFAULT_SERVICE_DIR = "/service/es-ESS"
 DEFAULT_WATTPILOT_DBUS_SERVICE = (
     "com.victronenergy.evcharger.esESS_FroniusWattpilot"
 )
+DEFAULT_SETTINGS_DBUS_SERVICE = "com.victronenergy.settings"
+VENUS_TIMEZONE_DBUS_PATH = "/Settings/System/TimeZone"
 VERBOSE_LOG_LEVELS = frozenset({"APP_DEBUG", "DEBUG", "TRACE"})
 FULL_DAY_BOUNDARY_TOLERANCE = timedelta(minutes=10)
 HEARTBEAT_GAP_SECONDS = 180
@@ -134,6 +150,8 @@ class ProgressReporter:
 LOG_LINE_RE = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2}) "
     r"(?P<time>\d{2}:\d{2}:\d{2}),(?P<millis>\d+) "
+    r"(?:\(UTC(?P<offset_sign>[+-])(?P<offset_hours>\d{1,2})"
+    r"(?::(?P<offset_minutes>\d{2}))?\) )?"
     r"(?P<level>[A-Z_]+) (?P<message>.*)$"
 )
 ALLOWANCE_RE = re.compile(
@@ -171,6 +189,9 @@ PHASE_UP_WAIT_RE = re.compile(
 PHASE_CONFIRM_RE = re.compile(
     r"Wattpilot phase telemetry confirmed (?P<phase>[13])-phase charging"
 )
+START_RE = re.compile(
+    r"Starting to charge after (?P<stable>\d+(?:\.\d+)?)s of continuous PV allowance"
+)
 MODEL_CHARGING_RE = re.compile(
     r"Wattpilot Modelstatus:\s+(?:WattpilotModelStatus\.)?Charging", re.IGNORECASE
 )
@@ -192,6 +213,30 @@ RAW_COMMAND_RE = re.compile(
     r'"type"\s*:\s*"setValue"|\bsetValue\s+(?:amp|frc|psm)=|'
     r"\b(?:amp|frc|psm)=)",
     re.IGNORECASE,
+)
+STOP_REASONS = (
+    ("grid import guard triggered. stopping", "grid import guard"),
+    ("grid telemetry is missing, invalid, or stale", "stale grid telemetry"),
+    ("stopping auto/eco charging", "insufficient allowance"),
+    ("stopping ev charging", "controller stop"),
+    ("charge complete", "charge complete"),
+    ("disconnect confirmed", "vehicle disconnected"),
+    ("wattpilot modelstatus: notcharging", "Wattpilot not charging"),
+    ("blocked:", "command authority blocked"),
+)
+STOP_MARKERS = (
+    "Stopping",
+    "stopping",
+    "Blocked:",
+    "blocked:",
+    "charge complete",
+    "Charge complete",
+    "disconnect confirmed",
+    "Disconnect confirmed",
+    "NotCharging",
+    "notcharging",
+    "Grid telemetry",
+    "grid telemetry",
 )
 
 
@@ -245,6 +290,7 @@ class AuditInput:
     window_type: str = "calendar-day"
     window_start: Optional[str] = None
     window_end: Optional[str] = None
+    report_timezone: Optional[str] = None
     log_files: list[str] = field(default_factory=list)
     total_log_lines: int = 0
     dated_log_lines: int = 0
@@ -256,6 +302,8 @@ class AuditInput:
     elapsed_window_seconds: float = 0.0
     evidence_span_percent: float = 0.0
     full_window_available_at: Optional[str] = None
+    log_load_seconds: float = 0.0
+    analysis_seconds: float = 0.0
 
 
 @dataclass
@@ -337,12 +385,105 @@ class AuditResult:
         return asdict(self)
 
 
+def _localize_wall_datetime(value: datetime) -> datetime:
+    """Attach the device's historical local offset to a naive wall time."""
+    seconds = time.mktime(value.timetuple()) + value.microsecond / 1_000_000
+    return datetime.fromtimestamp(seconds).astimezone()
+
+
 def parse_log_timestamp(match: re.Match[str]) -> datetime:
-    base = datetime.strptime(
-        f"{match.group('date')} {match.group('time')}", "%Y-%m-%d %H:%M:%S"
-    )
     millis_text = match.group("millis")[:3].ljust(3, "0")
-    return base + timedelta(milliseconds=int(millis_text))
+    base = datetime.fromisoformat(
+        f"{match.group('date')}T{match.group('time')}.{millis_text}000"
+    )
+
+    if match.group("offset_sign") is None:
+        return _localize_wall_datetime(base)
+
+    hours = int(match.group("offset_hours"))
+    minutes = int(match.group("offset_minutes") or "0")
+    offset = timedelta(hours=hours, minutes=minutes)
+    if match.group("offset_sign") == "-":
+        offset = -offset
+    return base.replace(tzinfo=timezone(offset))
+
+
+def parse_log_line(
+    line: str, legacy_timezone=None
+) -> Optional[tuple[datetime, str, str]]:
+    """Parse the maintained log format without a regex on the common path."""
+    try:
+        if (
+            len(line) < 25
+            or line[4] != "-"
+            or line[7] != "-"
+            or line[10] != " "
+            or line[13] != ":"
+            or line[16] != ":"
+            or line[19] != ","
+        ):
+            return None
+        millis_end = line.find(" ", 20)
+        if millis_end < 21:
+            return None
+        millis_text = line[20:millis_end]
+        if not millis_text.isdigit():
+            return None
+        millis_text = millis_text[:3].ljust(3, "0")
+        timestamp = datetime.fromisoformat(
+            f"{line[:10]}T{line[11:19]}.{millis_text}000"
+        )
+
+        cursor = millis_end + 1
+        if line.startswith("(UTC", cursor):
+            offset_end = line.find(") ", cursor + 5)
+            if offset_end < 0:
+                return None
+            offset_text = line[cursor + 4 : offset_end]
+            if not offset_text or offset_text[0] not in "+-":
+                return None
+            hour_text, separator, minute_text = offset_text[1:].partition(":")
+            if not hour_text.isdigit() or (
+                separator and (len(minute_text) != 2 or not minute_text.isdigit())
+            ):
+                return None
+            offset = timedelta(
+                hours=int(hour_text),
+                minutes=int(minute_text or "0"),
+            )
+            if offset_text[0] == "-":
+                offset = -offset
+            timestamp = timestamp.replace(tzinfo=timezone(offset))
+            cursor = offset_end + 2
+        else:
+            timestamp = (
+                timestamp.replace(tzinfo=legacy_timezone)
+                if legacy_timezone is not None
+                else _localize_wall_datetime(timestamp)
+            )
+
+        level_end = line.find(" ", cursor)
+        if level_end <= cursor:
+            return None
+        level = line[cursor:level_end]
+        if not all(character.isupper() or character == "_" for character in level):
+            return None
+        return timestamp, level, line[level_end + 1 :]
+    except (OverflowError, ValueError):
+        return None
+
+
+def _align_window_to_timestamp(
+    timestamp: datetime, window_start: datetime, window_end: datetime
+) -> tuple[datetime, datetime]:
+    if timestamp.tzinfo is not None and window_start.tzinfo is None:
+        return (
+            _localize_wall_datetime(window_start),
+            _localize_wall_datetime(window_end),
+        )
+    if timestamp.tzinfo is None and window_start.tzinfo is not None:
+        return window_start.replace(tzinfo=None), window_end.replace(tzinfo=None)
+    return window_start, window_end
 
 
 def _load_log_path(
@@ -357,6 +498,11 @@ def _load_log_path(
     total_lines = 0
     current_record: Optional[LogRecord] = None
     processed_bytes = 0
+    legacy_timezone = (
+        timezone.utc
+        if time.timezone == 0 and not time.daylight
+        else None
+    )
 
     with path.open("rb") as handle:
         for raw_bytes in handle:
@@ -373,16 +519,19 @@ def _load_log_path(
                     path.name,
                 )
             line = raw_line.rstrip("\r\n")
-            match = LOG_LINE_RE.match(line)
-            if match:
+            parsed = parse_log_line(line, legacy_timezone=legacy_timezone)
+            if parsed is not None:
                 current_record = None
-                timestamp = parse_log_timestamp(match)
-                if not (window_start <= timestamp < window_end):
+                timestamp, level, message = parsed
+                comparable_start, comparable_end = _align_window_to_timestamp(
+                    timestamp, window_start, window_end
+                )
+                if not (comparable_start <= timestamp < comparable_end):
                     continue
                 record = LogRecord(
                     timestamp=timestamp,
-                    level=match.group("level"),
-                    message=match.group("message"),
+                    level=level,
+                    message=message,
                     raw=line,
                 )
                 records.append(record)
@@ -438,6 +587,9 @@ def load_log_window(
         total_lines += line_count
         processed_offset += path.stat().st_size
 
+    if len(paths) == 1:
+        return records, total_lines
+
     # A line can briefly exist in both current.log and the newly rotated file.
     # De-duplicate exact records while retaining distinct same-millisecond logs.
     deduplicated: dict[tuple[datetime, str, str], LogRecord] = {}
@@ -467,8 +619,20 @@ def resolve_window(
     date_value: Optional[str],
     hours: Optional[float],
     now: Optional[datetime] = None,
+    local_timezone=None,
 ) -> tuple[str, datetime, datetime, str]:
-    now = now or datetime.now()
+    if now is None:
+        now = (
+            datetime.now(local_timezone)
+            if local_timezone is not None
+            else datetime.now().astimezone()
+        )
+    elif local_timezone is not None:
+        now = (
+            now.replace(tzinfo=local_timezone)
+            if now.tzinfo is None
+            else now.astimezone(local_timezone)
+        )
     if hours is not None:
         if hours < 24:
             raise ValueError("--hours must be at least 24 for a complete report")
@@ -487,8 +651,15 @@ def resolve_window(
             raise ValueError("--date must be today, yesterday, or YYYY-MM-DD")
         selected = parsed.date()
 
-    start = datetime.combine(selected, datetime.min.time())
-    end = start + timedelta(days=1)
+    wall_start = datetime.combine(selected, datetime.min.time())
+    wall_end = wall_start + timedelta(days=1)
+    window_timezone = local_timezone or now.tzinfo
+    if window_timezone is None:
+        start = wall_start
+        end = wall_end
+    else:
+        start = wall_start.replace(tzinfo=window_timezone)
+        end = wall_end.replace(tzinfo=window_timezone)
     return selected.isoformat(), start, end, "calendar-day"
 
 
@@ -498,7 +669,20 @@ def coverage_problem(
     window_end: datetime,
     now: Optional[datetime] = None,
 ) -> Optional[str]:
-    now = now or datetime.now()
+    if records:
+        window_start, window_end = _align_window_to_timestamp(
+            records[0].timestamp, window_start, window_end
+        )
+    if now is None:
+        now = (
+            datetime.now().astimezone()
+            if window_end.tzinfo is not None
+            else datetime.now()
+        )
+    elif window_end.tzinfo is not None and now.tzinfo is None:
+        now = _localize_wall_datetime(now)
+    elif window_end.tzinfo is None and now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
     if window_end > now:
         return (
             "The selected calendar day has not finished. Analyze yesterday after "
@@ -547,6 +731,10 @@ def calculate_coverage_metadata(
     window_start: datetime,
     analysis_cutoff: datetime,
 ) -> tuple[float, float, float]:
+    if records:
+        window_start, analysis_cutoff = _align_window_to_timestamp(
+            records[0].timestamp, window_start, analysis_cutoff
+        )
     elapsed_seconds = max(
         0.0, (analysis_cutoff - window_start).total_seconds()
     )
@@ -711,8 +899,13 @@ def _run_readonly_command(
             in {
                 DEFAULT_WATTPILOT_DBUS_SERVICE,
                 "com.victronenergy.system",
+                DEFAULT_SETTINGS_DBUS_SERVICE,
             }
             and args[3].startswith("/")
+            and (
+                args[2] != DEFAULT_SETTINGS_DBUS_SERVICE
+                or args[3] == VENUS_TIMEZONE_DBUS_PATH
+            )
         )
     else:
         allowed = False
@@ -736,6 +929,48 @@ def _run_readonly_command(
         detail = (completed.stderr or "").strip() or "unavailable"
         return False, detail
     return True, output
+
+
+def resolve_report_timezone(
+    runner=subprocess.run,
+    which=shutil.which,
+    zone_factory=ZoneInfo,
+):
+    """Return the authoritative Venus timezone or a safe OS-local fallback."""
+    fallback = datetime.now().astimezone().tzinfo
+    if not which("dbus"):
+        return (
+            "OS local timezone",
+            fallback,
+            "Venus timezone unavailable because the dbus command is not installed; "
+            "using OS-local time.",
+        )
+
+    ok, value = _run_readonly_command(
+        [
+            "dbus",
+            "-y",
+            DEFAULT_SETTINGS_DBUS_SERVICE,
+            VENUS_TIMEZONE_DBUS_PATH,
+            "GetValue",
+        ],
+        runner=runner,
+    )
+    if not ok:
+        return (
+            "OS local timezone",
+            fallback,
+            f"Venus timezone query failed ({value}); using OS-local time.",
+        )
+    try:
+        report_timezone = zone_factory(value)
+    except (OSError, ValueError, ZoneInfoNotFoundError) as exc:
+        return (
+            "OS local timezone",
+            fallback,
+            f"Venus timezone {value!r} is unavailable ({exc}); using OS-local time.",
+        )
+    return value, report_timezone, None
 
 
 def capture_current_snapshot(
@@ -872,6 +1107,7 @@ class EsEssDailyReport:
         self.findings: list[Finding] = []
 
         self.allowances: list[AllowanceEvent] = []
+        self._allowance_timestamps: list[datetime] = []
         self.grid_samples: list[GridSample] = []
         self.current_adjustments: list[tuple[LogRecord, int, int]] = []
         self.assist_samples: list[tuple[LogRecord, float, float]] = []
@@ -880,6 +1116,9 @@ class EsEssDailyReport:
         self.phase_confirmations: list[tuple[LogRecord, int]] = []
         self.phase_up_waits: list[tuple[LogRecord, float, int]] = []
         self.charge_records: list[LogRecord] = []
+        self._charge_timestamps: list[datetime] = []
+        self._stop_records: list[LogRecord] = []
+        self._stop_timestamps: list[datetime] = []
         self.start_records: list[tuple[LogRecord, float]] = []
         self.authority_valid: list[LogRecord] = []
         self.authority_blocked: list[LogRecord] = []
@@ -892,6 +1131,8 @@ class EsEssDailyReport:
         self.stale_telemetry_records: list[LogRecord] = []
         self.battery_assist_limit_records: list[LogRecord] = []
         self.raw_command_records: list[LogRecord] = []
+        self._manual_control_records: list[LogRecord] = []
+        self._manual_control_timestamps: list[datetime] = []
         self.rare_entries: list[tuple[LogRecord, dict[str, str]]] = []
         self.rare_exits: list[tuple[LogRecord, dict[str, str]]] = []
 
@@ -916,7 +1157,11 @@ class EsEssDailyReport:
         for record in self.records:
             message = record.message
 
-            allowance_match = ALLOWANCE_RE.search(message)
+            allowance_match = (
+                ALLOWANCE_RE.search(message)
+                if "Assigned " in message and "Wattpilot" in message
+                else None
+            )
             if allowance_match:
                 state = allowance_match.group("state")
                 event = AllowanceEvent(
@@ -929,7 +1174,11 @@ class EsEssDailyReport:
                 if "Charging" in state:
                     self.charge_records.append(record)
 
-            grid_match = GRID_RE.search(message)
+            grid_match = (
+                GRID_RE.search(message)
+                if "L1/L2/L3/Bat/Soc/Feedin is " in message
+                else None
+            )
             if grid_match:
                 phase_total = sum(
                     float(grid_match.group(name)) for name in ("l1", "l2", "l3")
@@ -937,7 +1186,11 @@ class EsEssDailyReport:
                 import_w = phase_total if self.settings.grid_import_positive else -phase_total
                 self.grid_samples.append(GridSample(record, import_w))
 
-            current_match = CURRENT_RE.search(message)
+            current_match = (
+                CURRENT_RE.search(message)
+                if "Adjusting charge current to " in message
+                else None
+            )
             if current_match:
                 self.current_adjustments.append(
                     (
@@ -948,7 +1201,11 @@ class EsEssDailyReport:
                 )
                 self.charge_records.append(record)
 
-            assist_match = ASSIST_RE.search(message)
+            assist_match = (
+                ASSIST_RE.search(message)
+                if "Battery assist active: " in message
+                else None
+            )
             if assist_match:
                 self.assist_samples.append(
                     (
@@ -960,11 +1217,19 @@ class EsEssDailyReport:
             if "Battery assist time limit reached" in message:
                 self.battery_assist_limit_records.append(record)
 
-            grace_match = GRACE_RE.search(message)
+            grace_match = (
+                GRACE_RE.search(message)
+                if "EV allowance fell below the usable minimum" in message
+                else None
+            )
             if grace_match:
                 self.grace_starts.append((record, int(grace_match.group("seconds"))))
 
-            wait_match = PHASE_UP_WAIT_RE.search(message)
+            wait_match = (
+                PHASE_UP_WAIT_RE.search(message)
+                if "phase-up allowance" in message
+                else None
+            )
             if wait_match:
                 self.phase_up_waits.append(
                     (
@@ -974,7 +1239,11 @@ class EsEssDailyReport:
                     )
                 )
 
-            confirmation_match = PHASE_CONFIRM_RE.search(message)
+            confirmation_match = (
+                PHASE_CONFIRM_RE.search(message)
+                if "Wattpilot phase telemetry confirmed " in message
+                else None
+            )
             if confirmation_match:
                 self.phase_confirmations.append(
                     (record, int(confirmation_match.group("phase")))
@@ -994,28 +1263,34 @@ class EsEssDailyReport:
             ):
                 self.phase_actions.append(PhaseAction(record, 1, "grid guard"))
 
-            start_match = re.search(
-                r"Starting to charge after (?P<stable>\d+(?:\.\d+)?)s of continuous PV allowance",
-                message,
+            start_match = (
+                START_RE.search(message)
+                if "Starting to charge after " in message
+                else None
             )
             if start_match:
                 self.start_records.append(
                     (record, float(start_match.group("stable")))
                 )
                 self.charge_records.append(record)
-            elif MODEL_CHARGING_RE.search(message):
+            elif (
+                "Wattpilot Modelstatus:" in message
+                and "Charging" in message
+                and MODEL_CHARGING_RE.search(message)
+            ):
                 self.charge_records.append(record)
 
             if "Validated: es-ESS is the sole Auto/Eco command owner" in message:
                 self.authority_valid.append(record)
-            if (
+            authority_blocked = (
                 "Blocked: native Wattpilot command settings unavailable" in message
                 or "Blocked: Wattpilot firmware compatibility unavailable" in message
                 or "Blocked: disable Use PV surplus" in message
                 or "Blocked: disable flexible tariff" in message
                 or "Ready: select Auto on GX/VRM" in message
                 or "Auto selection rejected." in message
-            ):
+            )
+            if authority_blocked:
                 self.authority_blocked.append(record)
             if "Manual mode selected. Releasing Auto/Eco" in message:
                 self.manual_boundaries.append(record)
@@ -1026,7 +1301,7 @@ class EsEssDailyReport:
             if "Grid telemetry is missing, invalid, or stale" in message:
                 self.safety_override_records.append(record)
                 self.stale_telemetry_records.append(record)
-            if record in self.authority_blocked:
+            if authority_blocked:
                 self.safety_override_records.append(record)
 
             if "Initialization completed." in message and "is up and running" in message:
@@ -1037,13 +1312,40 @@ class EsEssDailyReport:
             ):
                 self.reconnect_records.append(record)
 
-            if RAW_COMMAND_RE.search(message):
+            raw_command = bool(
+                (
+                    "setValue" in message
+                    or "frc=" in message
+                    or "amp=" in message
+                    or "psm=" in message
+                )
+                and RAW_COMMAND_RE.search(message)
+            )
+            if raw_command:
                 self.raw_command_records.append(record)
+            if (
+                "Adjusting charge current" in message
+                or "Switching to 3-phase from PV surplus" in message
+                or "Switching to 1-phase" in message
+                or "Starting to charge after" in message
+                or "Stopping EV charging" in message
+                or "Battery assist active" in message
+                or raw_command
+            ):
+                self._manual_control_records.append(record)
 
-            rare_enter = RARE_ENTER_RE.search(message)
+            rare_enter = (
+                RARE_ENTER_RE.search(message)
+                if "Wattpilot special charging model status entered:" in message
+                else None
+            )
             if rare_enter:
                 self.rare_entries.append((record, rare_enter.groupdict()))
-            rare_exit = RARE_EXIT_RE.search(message)
+            rare_exit = (
+                RARE_EXIT_RE.search(message)
+                if "Wattpilot special charging model status exited:" in message
+                else None
+            )
             if rare_exit:
                 self.rare_exits.append((record, rare_exit.groupdict()))
 
@@ -1062,10 +1364,30 @@ class EsEssDailyReport:
             ):
                 self.failure_records.append(record)
 
+            if self._stop_reason(record) is not None:
+                self._stop_records.append(record)
+
         self.charge_records = sorted(
             {record.timestamp: record for record in self.charge_records}.values(),
             key=lambda record: record.timestamp,
         )
+        self._charge_timestamps = [
+            record.timestamp for record in self.charge_records
+        ]
+        self._allowance_timestamps = [
+            event.record.timestamp for event in self.allowances
+        ]
+        self._stop_timestamps = [record.timestamp for record in self._stop_records]
+        self._manual_control_records = sorted(
+            {
+                (record.timestamp, record.raw): record
+                for record in self._manual_control_records
+            }.values(),
+            key=lambda record: record.timestamp,
+        )
+        self._manual_control_timestamps = [
+            record.timestamp for record in self._manual_control_records
+        ]
         self.failure_records = sorted(
             {record.timestamp: record for record in self.failure_records}.values(),
             key=lambda record: record.timestamp,
@@ -1356,6 +1678,16 @@ class EsEssDailyReport:
                 f"({min(amps)}..{max(amps)} A observed).",
             )
 
+    def _allowance_at_or_before(
+        self, timestamp: datetime
+    ) -> Optional[AllowanceEvent]:
+        index = bisect_right(self._allowance_timestamps, timestamp) - 1
+        return self.allowances[index] if index >= 0 else None
+
+    def _allowance_after(self, timestamp: datetime) -> Optional[AllowanceEvent]:
+        index = bisect_right(self._allowance_timestamps, timestamp)
+        return self.allowances[index] if index < len(self.allowances) else None
+
     def check_allowance(self) -> None:
         if not self.allowances:
             status = "WARN" if self.charge_records else "NOT_OBSERVED"
@@ -1409,14 +1741,7 @@ class EsEssDailyReport:
         stale_commands: list[LogRecord] = []
         missing_evidence: list[LogRecord] = []
         for command in command_records:
-            prior = next(
-                (
-                    event
-                    for event in reversed(self.allowances)
-                    if event.record.timestamp <= command.timestamp
-                ),
-                None,
-            )
+            prior = self._allowance_at_or_before(command.timestamp)
             if prior is None:
                 missing_evidence.append(command)
                 continue
@@ -1463,13 +1788,8 @@ class EsEssDailyReport:
             premature_state_changes: list[LogRecord] = []
             missing_grace_evidence: list[LogRecord] = []
             for zero_event in zero_three_phase:
-                next_assignment = next(
-                    (
-                        event
-                        for event in self.allowances
-                        if event.record.timestamp > zero_event.record.timestamp
-                    ),
-                    None,
+                next_assignment = self._allowance_after(
+                    zero_event.record.timestamp
                 )
                 if next_assignment is None:
                     missing_grace_evidence.append(zero_event.record)
@@ -1711,13 +2031,8 @@ class EsEssDailyReport:
                 unconfirmed.append(action.record)
 
             if action.target_phase == 3:
-                prior_allowance = next(
-                    (
-                        event
-                        for event in reversed(self.allowances)
-                        if event.record.timestamp <= action.record.timestamp
-                    ),
-                    None,
+                prior_allowance = self._allowance_at_or_before(
+                    action.record.timestamp
                 )
                 if (
                     prior_allowance is not None
@@ -1818,10 +2133,15 @@ class EsEssDailyReport:
             )
 
     def _charging_near(self, timestamp: datetime, seconds: int = 10) -> bool:
-        return any(
-            abs((record.timestamp - timestamp).total_seconds()) <= seconds
-            for record in self.charge_records
-        )
+        if not self._charge_timestamps:
+            return False
+        index = bisect_left(self._charge_timestamps, timestamp)
+        for candidate_index in (index - 1, index):
+            if 0 <= candidate_index < len(self._charge_timestamps):
+                candidate = self._charge_timestamps[candidate_index]
+                if abs((candidate - timestamp).total_seconds()) <= seconds:
+                    return True
+        return False
 
     def check_grid_import(self) -> None:
         if self.settings.allow_grid_charging:
@@ -1998,9 +2318,11 @@ class EsEssDailyReport:
                 None,
             )
             end = next_auto.timestamp if next_auto else self.records[-1].timestamp
-            for record in self.records:
-                if not (boundary.timestamp < record.timestamp <= end):
-                    continue
+            first_control = bisect_right(
+                self._manual_control_timestamps, boundary.timestamp
+            )
+            last_control = bisect_right(self._manual_control_timestamps, end)
+            for record in self._manual_control_records[first_control:last_control]:
                 seconds_after_boundary = (
                     record.timestamp - boundary.timestamp
                 ).total_seconds()
@@ -2028,16 +2350,7 @@ class EsEssDailyReport:
                 )
                 if approved_release:
                     continue
-                if (
-                    "Adjusting charge current" in record.message
-                    or "Switching to 3-phase from PV surplus" in record.message
-                    or "Switching to 1-phase" in record.message
-                    or "Starting to charge after" in record.message
-                    or "Stopping EV charging" in record.message
-                    or "Battery assist active" in record.message
-                    or record in self.raw_command_records
-                ):
-                    manual_violations.append(record)
+                manual_violations.append(record)
 
         if manual_violations:
             self.add(
@@ -2071,19 +2384,11 @@ class EsEssDailyReport:
 
     @staticmethod
     def _stop_reason(record: LogRecord) -> Optional[str]:
-        message = record.message
-        reasons = (
-            ("Grid import guard triggered. Stopping", "grid import guard"),
-            ("Grid telemetry is missing, invalid, or stale", "stale grid telemetry"),
-            ("Stopping Auto/Eco charging", "insufficient allowance"),
-            ("Stopping EV charging", "controller stop"),
-            ("charge complete", "charge complete"),
-            ("disconnect confirmed", "vehicle disconnected"),
-            ("Wattpilot Modelstatus: NotCharging", "Wattpilot not charging"),
-            ("Blocked:", "command authority blocked"),
-        )
-        for marker, reason in reasons:
-            if marker.lower() in message.lower():
+        if not any(marker in record.message for marker in STOP_MARKERS):
+            return None
+        message = record.message.lower()
+        for marker, reason in STOP_REASONS:
+            if marker in message:
                 return reason
         return None
 
@@ -2094,10 +2399,10 @@ class EsEssDailyReport:
         groups: list[list[LogRecord]] = [[self.charge_records[0]]]
         for record in self.charge_records[1:]:
             prior = groups[-1][-1]
-            stop_between = any(
-                self._stop_reason(item) is not None
-                for item in self.records
-                if prior.timestamp < item.timestamp < record.timestamp
+            first_stop = bisect_right(self._stop_timestamps, prior.timestamp)
+            stop_between = (
+                first_stop < len(self._stop_timestamps)
+                and self._stop_timestamps[first_stop] < record.timestamp
             )
             if stop_between or (record.timestamp - prior.timestamp).total_seconds() > 300:
                 groups.append([record])
@@ -2113,19 +2418,14 @@ class EsEssDailyReport:
                 next_start if next_start else self.records[-1].timestamp,
                 last_charge + timedelta(minutes=5),
             )
-            stop_record = next(
-                (
-                    item
-                    for item in self.records
-                    if last_charge <= item.timestamp <= search_end
-                    and self._stop_reason(item) is not None
-                ),
-                None,
+            stop_index = bisect_left(self._stop_timestamps, last_charge)
+            stop_record = (
+                self._stop_records[stop_index]
+                if stop_index < len(self._stop_records)
+                and self._stop_timestamps[stop_index] <= search_end
+                else None
             )
             end = stop_record.timestamp if stop_record else last_charge
-            session_records = [
-                item for item in self.records if start <= item.timestamp <= end
-            ]
             phases = sorted(
                 {
                     phase
@@ -2408,6 +2708,7 @@ def render_human(result: AuditResult) -> str:
         f"OVERALL: {result.overall}",
         f"Window status: {'PARTIAL - TODAY IN PROGRESS' if result.inputs.partial_window else 'COMPLETE REQUESTED WINDOW'}",
         f"Requested period: {result.inputs.window_start} to {result.inputs.window_end}",
+        f"Report timezone:  {result.inputs.report_timezone or 'unavailable'}",
         f"Analysis cutoff:  {result.inputs.analysis_cutoff or result.inputs.window_end}",
         f"Evidence period:  {result.inputs.first_timestamp or 'unavailable'} to "
         f"{result.inputs.last_timestamp or 'unavailable'}",
@@ -2417,6 +2718,8 @@ def render_human(result: AuditResult) -> str:
         f"Logs:    {', '.join(result.inputs.log_files) or result.inputs.log_file}",
         f"Config:  {result.inputs.config_file}",
         f"Records: {result.inputs.dated_log_lines}",
+        f"Processing time: log load {result.inputs.log_load_seconds:.2f}s; "
+        f"analysis {result.inputs.analysis_seconds:.2f}s",
         "",
         "Sanitized configuration",
         "-----------------------",
@@ -2559,7 +2862,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-current-snapshot",
         action="store_true",
-        help="Skip optional read-only svstat and D-Bus GetValue snapshots.",
+        help=(
+            "Skip optional read-only service/runtime snapshots; the required "
+            "read-only Venus timezone query still runs."
+        ),
     )
     parser.add_argument(
         "--no-progress",
@@ -2575,7 +2881,6 @@ def main(argv: Optional[list[str]] = None) -> int:
         enabled=not args.no_progress and sys.stderr.isatty()
     )
     progress.update(0, "Reading configuration")
-    report_now = datetime.now()
     config_path = Path(args.config)
     settings, config_warnings = load_settings(config_path)
     if settings.log_level not in VERBOSE_LOG_LEVELS:
@@ -2587,9 +2892,18 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(render_prerequisite(reason, str(config_path), args.json))
         return EXIT_INCOMPLETE
 
+    progress.update(0, "Reading Venus timezone")
+    timezone_name, report_timezone, timezone_warning = resolve_report_timezone()
+    if timezone_warning is not None:
+        config_warnings.append(timezone_warning)
+    report_now = datetime.now(report_timezone)
+
     try:
         label, window_start, window_end, window_type = resolve_window(
-            args.date, args.hours, now=report_now
+            args.date,
+            args.hours,
+            now=report_now,
+            local_timezone=report_timezone,
         )
     except ValueError as exc:
         progress.stop("Stopped: invalid report window")
@@ -2617,6 +2931,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     analysis_cutoff = report_now if partial_today else window_end
 
+    log_load_started = time.monotonic()
     try:
         records, total_lines = load_log_window(
             log_paths,
@@ -2633,6 +2948,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         progress.stop("Stopped: log read failed")
         print(f"ERROR: cannot read log file: {exc}", file=sys.stderr)
         return EXIT_INPUT_ERROR
+    log_load_seconds = time.monotonic() - log_load_started
 
     progress.update(2, "Validating evidence coverage")
     if partial_today:
@@ -2705,6 +3021,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         window_type=window_type,
         window_start=window_start.isoformat(),
         window_end=window_end.isoformat(),
+        report_timezone=timezone_name,
         log_files=[str(path) for path in log_paths],
         total_log_lines=total_lines,
         dated_log_lines=len(records),
@@ -2718,11 +3035,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         full_window_available_at=(
             window_end.isoformat() if partial_today else None
         ),
+        log_load_seconds=log_load_seconds,
     )
     progress.update(4, "Analyzing controller evidence")
+    analysis_started = time.monotonic()
     result = EsEssDailyReport(
         records, settings, audit_input, config_warnings, snapshot
     ).run()
+    audit_input.analysis_seconds = time.monotonic() - analysis_started
     progress.update(5, "Rendering report")
     if args.json:
         output = json.dumps(result.to_dict(), indent=2, sort_keys=True)

@@ -8,7 +8,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -67,6 +67,18 @@ class EsEssDailyReportTests(unittest.TestCase):
     @staticmethod
     def _statuses(result, check):
         return [finding.status for finding in result.findings if finding.check == check]
+
+    @staticmethod
+    def _audit(records):
+        return AUDIT.EsEssDailyReport(
+            records,
+            AUDIT.AuditSettings(log_level="APP_DEBUG"),
+            AUDIT.AuditInput(
+                target_date="2026-07-15",
+                log_file="current.log",
+                config_file="config.ini",
+            ),
+        )
 
     def test_parser_filters_date_and_preserves_traceback_continuation(self):
         lines = [
@@ -513,6 +525,58 @@ NoBatToEV=false
         self.assertEqual(value, "1")
         self.assertEqual(runner.call_args.args[0][-1], "GetValue")
 
+    def test_timezone_query_allowlist_accepts_only_exact_settings_path(self):
+        completed = mock.Mock(
+            returncode=0, stdout="'Europe/Bucharest'\n", stderr=""
+        )
+        runner = mock.Mock(return_value=completed)
+
+        ok, value = AUDIT._run_readonly_command(
+            [
+                "dbus",
+                "-y",
+                AUDIT.DEFAULT_SETTINGS_DBUS_SERVICE,
+                AUDIT.VENUS_TIMEZONE_DBUS_PATH,
+                "GetValue",
+            ],
+            runner=runner,
+        )
+        rejected, message = AUDIT._run_readonly_command(
+            [
+                "dbus",
+                "-y",
+                AUDIT.DEFAULT_SETTINGS_DBUS_SERVICE,
+                "/Settings/CGwacs/BatteryLife/State",
+                "GetValue",
+            ],
+            runner=runner,
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(value, "Europe/Bucharest")
+        self.assertFalse(rejected)
+        self.assertIn("read-only allowlist", message)
+
+    def test_report_timezone_uses_bounded_venus_setting_query(self):
+        completed = mock.Mock(
+            returncode=0, stdout="'Europe/Bucharest'\n", stderr=""
+        )
+        runner = mock.Mock(return_value=completed)
+        fixed_timezone = timezone(timedelta(hours=3))
+        zone_factory = mock.Mock(return_value=fixed_timezone)
+
+        name, resolved_timezone, warning = AUDIT.resolve_report_timezone(
+            runner=runner,
+            which=lambda command: "/usr/bin/dbus" if command == "dbus" else None,
+            zone_factory=zone_factory,
+        )
+
+        self.assertEqual(name, "Europe/Bucharest")
+        self.assertIs(resolved_timezone, fixed_timezone)
+        self.assertIsNone(warning)
+        zone_factory.assert_called_once_with("Europe/Bucharest")
+        self.assertEqual(runner.call_args.kwargs["timeout"], 2)
+
     def test_progress_reporter_renders_stages_and_completion_to_its_stream(self):
         stream = io.StringIO()
         progress = AUDIT.ProgressReporter(enabled=True, stream=stream)
@@ -629,6 +693,98 @@ NoBatToEV=false
         self.assertEqual(total, 4)
         self.assertEqual([record.message for record in records], ["before", "duplicate", "after"])
 
+    def test_offset_timestamp_orders_repeated_dst_hour_by_actual_instant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "current.log"
+            path.write_text(
+                "2026-10-25 03:30:00,000 (UTC+3) APP_DEBUG summer occurrence\n"
+                "2026-10-25 03:15:00,000 (UTC+2) APP_DEBUG winter occurrence\n",
+                encoding="utf-8",
+            )
+            records, total = AUDIT.load_log_window(
+                [path],
+                datetime(2026, 10, 25, tzinfo=timezone.utc),
+                datetime(2026, 10, 26, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(total, 2)
+        self.assertEqual(
+            [record.message for record in records],
+            ["summer occurrence", "winter occurrence"],
+        )
+        self.assertEqual(
+            (records[1].timestamp - records[0].timestamp).total_seconds(), 45 * 60
+        )
+
+    def test_fast_log_parser_preserves_offset_and_millisecond_contract(self):
+        line = (
+            "2026-07-15 18:42:10,123456 (UTC+5:30) APP_DEBUG "
+            "[TPt_0|test] diagnostic"
+        )
+
+        parsed = AUDIT.parse_log_line(line, legacy_timezone=timezone.utc)
+
+        self.assertIsNotNone(parsed)
+        timestamp, level, message = parsed
+        self.assertEqual(
+            timestamp,
+            datetime(
+                2026,
+                7,
+                15,
+                18,
+                42,
+                10,
+                123000,
+                tzinfo=timezone(timedelta(hours=5, minutes=30)),
+            ),
+        )
+        self.assertEqual(level, "APP_DEBUG")
+        self.assertEqual(message, "[TPt_0|test] diagnostic")
+
+    def test_grid_correlation_uses_timestamp_index_without_scanning_charge_records(self):
+        class IndexedOnly(list):
+            def __iter__(self):
+                raise AssertionError("charge records must not be scanned per grid sample")
+
+        timestamp = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+        record = AUDIT.LogRecord(timestamp, "APP_DEBUG", "charging", "charging")
+        audit = self._audit([record])
+        audit.charge_records = IndexedOnly([record])
+        audit._charge_timestamps = IndexedOnly([timestamp])
+
+        self.assertTrue(audit._charging_near(timestamp + timedelta(seconds=10)))
+        self.assertFalse(audit._charging_near(timestamp + timedelta(seconds=11)))
+
+    def test_session_build_uses_stop_index_without_rescanning_full_log(self):
+        class IndexedOnly(list):
+            def __iter__(self):
+                raise AssertionError("full log must not be rescanned per charge sample")
+
+        start = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+        first = AUDIT.LogRecord(start, "APP_DEBUG", "charging", "first charge")
+        second = AUDIT.LogRecord(
+            start + timedelta(seconds=5), "APP_DEBUG", "charging", "second charge"
+        )
+        stop = AUDIT.LogRecord(
+            start + timedelta(seconds=10),
+            "APP_DEBUG",
+            "Stopping Auto/Eco charging",
+            "stop",
+        )
+        audit = self._audit([first, second, stop])
+        audit.records = IndexedOnly([first, second, stop])
+        audit.charge_records = [first, second]
+        audit._charge_timestamps = [first.timestamp, second.timestamp]
+        audit._stop_records = [stop]
+        audit._stop_timestamps = [stop.timestamp]
+
+        sessions = audit.build_sessions()
+
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0].end, stop.timestamp.isoformat())
+        self.assertEqual(sessions[0].stop_reason, "insufficient allowance")
+
     def test_malformed_and_truncated_log_input_is_tolerated_but_not_complete(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "current.log"
@@ -660,6 +816,58 @@ NoBatToEV=false
         self.assertEqual(window_type, "calendar-day")
         with self.assertRaises(ValueError):
             AUDIT.resolve_window(None, 23.9, now)
+
+    def test_today_window_uses_venus_timezone_when_os_clock_is_utc(self):
+        venus_timezone = timezone(timedelta(hours=3))
+        os_now = datetime(2026, 7, 15, 18, 11, tzinfo=timezone.utc)
+
+        label, start, end, window_type = AUDIT.resolve_window(
+            "today",
+            None,
+            now=os_now,
+            local_timezone=venus_timezone,
+        )
+
+        self.assertEqual(label, "2026-07-15")
+        self.assertEqual(start, datetime(2026, 7, 15, tzinfo=venus_timezone))
+        self.assertEqual(end, datetime(2026, 7, 16, tzinfo=venus_timezone))
+        self.assertEqual(window_type, "calendar-day")
+
+    def test_large_irrelevant_record_set_bypasses_event_regexes(self):
+        start = datetime(2026, 7, 15, tzinfo=timezone.utc)
+        records = [
+            AUDIT.LogRecord(
+                start + timedelta(milliseconds=index),
+                "APP_DEBUG",
+                "routine heartbeat",
+                "routine heartbeat",
+            )
+            for index in range(20000)
+        ]
+        audit = self._audit(records)
+        regex_names = (
+            "ALLOWANCE_RE",
+            "GRID_RE",
+            "CURRENT_RE",
+            "ASSIST_RE",
+            "GRACE_RE",
+            "PHASE_UP_WAIT_RE",
+            "PHASE_CONFIRM_RE",
+            "START_RE",
+            "MODEL_CHARGING_RE",
+            "RAW_COMMAND_RE",
+            "RARE_ENTER_RE",
+            "RARE_EXIT_RE",
+        )
+        spies = {}
+        with contextlib.ExitStack() as stack:
+            for name in regex_names:
+                spy = mock.Mock(wraps=getattr(AUDIT, name))
+                spies[name] = spy
+                stack.enter_context(mock.patch.object(AUDIT, name, spy))
+            audit.collect()
+
+        self.assertTrue(all(spy.search.call_count == 0 for spy in spies.values()))
 
     def test_coverage_requires_both_full_day_boundaries(self):
         start = datetime(2026, 7, 14)
@@ -717,8 +925,47 @@ NoBatToEV=false
         self.assertIn("Window status: PARTIAL", report)
         self.assertIn("Evidence period:", report)
         self.assertIn("span coverage:", report)
+        self.assertIn("Processing time: log load", report)
         self.assertIn("Full calendar-day report available after:", report)
         self.assertIn("[WARN] partial calendar day", report)
+
+    def test_main_uses_resolved_venus_timezone_for_today_window(self):
+        venus_timezone = timezone(timedelta(hours=3))
+        now = datetime.now(venus_timezone)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config.ini"
+            config.write_text("[Common]\nLogLevel=APP_DEBUG\n", encoding="utf-8")
+            log = root / "current.log"
+            log.write_text(
+                f"{now:%Y-%m-%d %H:%M:%S},000 (UTC+3) APP_DEBUG current evidence\n",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with mock.patch.object(
+                AUDIT,
+                "resolve_report_timezone",
+                return_value=("Europe/Bucharest", venus_timezone, None),
+            ), contextlib.redirect_stdout(output):
+                exit_code = AUDIT.main(
+                    [
+                        "--config",
+                        str(config),
+                        "--log-file",
+                        str(log),
+                        "--date",
+                        "today",
+                        "--no-current-snapshot",
+                    ]
+                )
+
+        report = output.getvalue()
+        self.assertEqual(exit_code, AUDIT.EXIT_INCOMPLETE)
+        self.assertIn("Report timezone:  Europe/Bucharest", report)
+        self.assertIn(
+            f"Requested period: {now:%Y-%m-%d}T00:00:00+03:00",
+            report,
+        )
 
     def test_partial_today_anomaly_overrides_incomplete_ceiling(self):
         result = self._run(
