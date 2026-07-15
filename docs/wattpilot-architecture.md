@@ -346,6 +346,13 @@ Future Wattpilot changes must preserve these invariants:
   controller can issue the phase command.
 - Fresh grid telemetry and fresh allowance data are required for no-grid
   Auto/Eco decisions.
+- A fresh distributor allowance below the usable minimum, including a truthful
+  atomic `0 W` assignment during an already-running three-phase charge, must
+  remain truthfully published on `/PvAllowance`. The controller may retain the
+  existing phase/current command for `AllowanceDropGraceSeconds`; recovery
+  clears that debounce, while a sustained deficit phase-reduces or stops at
+  expiry. This allowance-only grace must not delay stale-grid handling or the
+  sustained grid-import guard.
 - A confirmed physical vehicle disconnect must stop Auto/Eco current and phase
   control even if Wattpilot briefly continues to report a stale active charging
   model status.
@@ -371,7 +378,9 @@ Future Wattpilot changes must preserve these invariants:
   without a matching Wattpilot phase command.
 - `MinPhaseSwitchSeconds` is the single normal stability/cooldown timer for
   both phase directions. A no-grid session may reduce phase or stop before the
-  timer expires when bounded battery assist cannot safely bridge the deficit.
+  timer expires when bounded battery assist cannot safely bridge the deficit,
+  but an assigned allowance below the usable minimum first receives the short
+  `AllowanceDropGraceSeconds` debounce described above.
 - On the normal current-adjustment path, `SurplusDropGraceSeconds` may preserve
   an active one-to-three candidate through a shorter-than-grace dip below the
   phase-up threshold only while fresh assigned allowance remains above the
@@ -383,8 +392,10 @@ Future Wattpilot changes must preserve these invariants:
   overhead cannot authorize phase-up, and fresh assigned allowance must meet
   the full phase-up threshold at the command boundary.
 - During a sustained three-phase PV deficit, bounded battery assist or
-  explicitly allowed grid fallback may hold the running phase/current. Once
-  the shared timer expires, one-phase PV availability authorizes the reduction.
+  explicitly allowed grid fallback may hold the running phase/current. A
+  transient below-minimum assignment may also hold only for the allowance-drop
+  debounce. Once the applicable hold expires, one-phase PV availability
+  authorizes the reduction.
 - Current limits must respect configured per-phase bounds and the
   Wattpilot-reported effective limit.
 - Public D-Bus and MQTT runtime-status paths are compatibility contracts.

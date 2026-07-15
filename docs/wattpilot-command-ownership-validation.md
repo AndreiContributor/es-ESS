@@ -363,10 +363,12 @@ merged through PR #70. The run produced these results:
   through 16 A and the measured charger power followed them without a native
   current rewrite or clamp to the previous native 6 A behavior.
 - Assigned allowance remained above the configured phase-up threshold for the
-  full `600`-second candidate. es-ESS issued the phase-up at 07:15:35 UTC, live
-  telemetry confirmed three-phase charging, and a later assigned-allowance loss
-  produced a safe telemetry-confirmed phase-down. No native phase race was
-  observed.
+  full `600`-second candidate. es-ESS issued the phase-up at 07:15:35 UTC and
+  live telemetry confirmed three-phase charging. A later single-cycle atomic
+  `0 W` assignment produced a telemetry-confirmed phase-down and exposed that
+  the three-phase deficit path bypassed `AllowanceDropGraceSeconds`; the
+  follow-up controller fix now holds the existing command through that grace
+  while keeping `/PvAllowance=0`. No native phase race was observed.
 - Grid exchange stayed near the configured no-grid target and
   `/GridImportGuardActive` remained `0`. Small observed battery-assist
   shortfalls were bounded continuation behavior; the stationary battery
