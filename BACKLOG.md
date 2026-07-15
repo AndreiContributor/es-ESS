@@ -109,6 +109,46 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-15 - Add Single Read-Only es-ESS Daily Report
+
+- Added `scripts/es-ess-daily-report.py` as the only historical/end-of-day
+  analyzer. It automatically reads current and standard rotated logs plus safe
+  `config.ini` fields and may capture current state only through allowlisted
+  `svstat` and D-Bus `GetValue` operations. It never writes Wattpilot, D-Bus,
+  MQTT, configuration, files, or service state.
+- Historical reports stop with `INCOMPLETE` and exact commissioning
+  instructions unless `APP_DEBUG` (or more verbose) covers the complete
+  requested window. `--date today` analyzes available diagnostic records with
+  explicit period, cutoff, evidence-duration, span-coverage and full-day-ready
+  metadata, while retaining an `INCOMPLETE` ceiling unless it proves an
+  anomaly. The tool otherwise reports `GOOD`, `ATTENTION`, `ANOMALY`, or
+  `INCOMPLETE`; unobserved rare statuses remain informational.
+- Covered runtime/reconnect health, sanitized service configuration, optional
+  current state, approximate Auto/Manual sessions, current and allowance
+  freshness/drop grace, phase timing/confirmation/frequency, battery assist,
+  stale telemetry, grid guards, command authority, raw commands in Manual, and
+  rare statuses 8–11 and 13–14. Safety intervention is distinguished from
+  unsafe behavior, and JSON excludes credentials and unrelated values.
+- Expanded hardware-free coverage for calendar and rolling windows across log
+  rotation, incomplete/truncated evidence, all four overall results, all rare
+  statuses, session reconstruction, runtime/reconnect and safety cases, Manual
+  raw-command ownership, secret redaction, unavailable GX commands, and proof
+  that only read-only commands can be invoked.
+- Added an interactive stderr progress bar with byte-level log progress and
+  per-path snapshot progress, `--no-progress` automation support, two-second
+  read-command timeouts, and a three-timeout D-Bus circuit breaker. Human
+  session output now compacts repeated current samples while JSON retains the
+  complete structured values.
+- Documented APP_DEBUG setup, restart and full-day collection in README, the
+  HTML system guide, architecture and the dedicated daily-report guide. The
+  live health monitor remains the current-state tool. The report states only
+  that no anomaly was found in selected available evidence; it does not claim a
+  completed charging session was definitely perfect.
+- Verification passed with 51 focused daily-report tests, the maintained
+  configuration contract, syntax checks, and all 422 hardware-free repository
+  tests. A copied production excerpt was correctly rejected as incomplete
+  rather than being treated as a full-day report.
+
 ### Completed 2026-07-15 - Live-Validate Implemented Auto/Eco Command Ownership
 
 - Completed Gate 2 on production Venus OS `v3.75`, Wattpilot firmware `42.5`,

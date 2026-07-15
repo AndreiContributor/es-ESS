@@ -37,6 +37,7 @@ system for at least 10ish years, there will be plenty of updates and/or bugfixes
   - [Scripted-SolarOverheadConsumer](#scripted-solaroverheadconsumer) - Consumers managed by external scripts can to be more complex and join the solar overhead pool.
   - [NPC-SolarOverheadConsumer](#npc-solaroverheadconsumer) - Manage consumers on a simple on/off level, based on available overhead. No programming required.
 - [Production health monitor](#production-health-monitor) - Read-only GX health snapshot after firmware updates, deploys, config changes and Wattpilot validation runs.
+- [es-ESS daily report](#es-ess-daily-report) - Read-only complete-day runtime, charging-session, phase and safety report.
 - [Dormant service modules](#dormant-service-modules) - Legacy code that is retained for reference but is not available for configuration.
 - [This and that](#this-and-that) - Various information that doesn't fit elsewhere.
 - [F.A.Q](#faq) - Frequently Asked Questions
@@ -809,6 +810,50 @@ timestamps. It does not write D-Bus, MQTT, config, service state or Wattpilot
 control values. Installation, mode-boundary validation, and interpretation
 steps are documented in
 [docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
+
+### es-ESS daily report
+
+For historical/end-of-day validation, analyze a complete APP_DEBUG day against
+the safe parameters in production `config.ini`:
+
+```bash
+python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday
+```
+
+For a current-day diagnostic report using evidence available so far:
+
+```bash
+python /data/es-ESS/scripts/es-ess-daily-report.py --date today
+```
+
+For a private JSON report that can be retained or pasted for review:
+
+```bash
+mkdir -p /data/es-ESS-validation
+chmod 700 /data/es-ESS-validation
+umask 077
+python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday --json \
+  > /data/es-ESS-validation/es-ess-daily-report-$(date +%Y%m%d).json
+```
+
+The read-only analyzer automatically includes `current.log` and dated rotations
+and optionally reads current service/D-Bus snapshots through allowlisted status
+and `GetValue` calls. It never writes D-Bus, MQTT, Wattpilot, configuration, or
+service state. Historical dates require `[Common] LogLevel=APP_DEBUG` (or more
+verbose) across a complete requested window. `--date today` analyzes available
+diagnostic records but remains `INCOMPLETE` unless it detects an `ANOMALY`; it
+prints the requested period, cutoff, evidence period/duration, span coverage,
+and full-day availability time. The report uses `GOOD`, `ATTENTION`, `ANOMALY`, and `INCOMPLETE`
+and includes runtime health, sanitized configuration, current state,
+approximate sessions, allowance/grace and phase behavior, safety interventions,
+and rare statuses 8–11 and 13–14. `NOT_OBSERVED` rare statuses are
+informational. Interactive runs show byte-level log and D-Bus snapshot progress
+on stderr; use `--no-progress` for automation or `--no-current-snapshot` to skip
+the optional live snapshot. Three consecutive snapshot timeouts skip remaining
+paths without blocking historical analysis. Full commissioning, options,
+limitations, exit codes, and JSON
+output are documented in
+[docs/es-ess-daily-report.md](docs/es-ess-daily-report.md).
 
 Native Solar.wattpilot PV/tariff/phase setting discovery uses the separate
 command-free `scripts/wattpilot-setting-capture.py` utility with the vehicle

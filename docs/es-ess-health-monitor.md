@@ -196,6 +196,7 @@ LOG_LINES=800 EVENT_LINES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh
 
 ## Related Documentation
 
+- [es-ESS daily report](es-ess-daily-report.md)
 - [Cerbo GX firmware upgrade and rollback](cerbo-gx-firmware-upgrade-and-rollback.md)
 - [Wattpilot architecture boundaries](wattpilot-architecture.md)
 - [es-ESS service inventory](service-inventory.md)
