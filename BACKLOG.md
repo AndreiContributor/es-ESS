@@ -1552,15 +1552,34 @@ Done criteria:
 - Focused tests and configuration-contract checks pass where applicable.
 - Full unittest suite passes.
 
-### P1 - Make Initial MQTT Connections Resilient
+### Completed 2026-07-15 - Make Initial MQTT Connections Resilient
 
-Implementation status (2026-07-15):
+Completion record:
 
 - Implemented in `7702435` with asynchronous main/local startup, bounded
   reconnect backoff and diagnostics, successful-connect metadata publication,
   subscription restoration, and shutdown-before-first-connect coverage.
-- Hardware-free orchestration and full-suite verification pass. The low-risk GX
-  broker fault/recovery exercise below remains the only completion condition.
+- Hardware-free orchestration, TLS/plain parity, failure diagnostics, recovery,
+  subscription restoration, shutdown-before-first-connect, and full-suite
+  verification pass.
+- Production fault/recovery validation completed on Venus OS `v3.75` on
+  2026-07-15 using an isolated loopback TCP proxy for the main client; the
+  Venus local broker was never stopped. With `localhost:18884` unavailable,
+  main MQTT logged one actionable failure, local MQTT connected normally,
+  startup continued after the bounded 30-second wait, and es-ESS remained on
+  PID 12561 from 40 through 55 seconds without a crash loop.
+- Local-broker refusal was not induced because stopping the Venus broker would
+  disrupt platform MQTT consumers. Equivalent local-client refusal/recovery is
+  retained in hardware-free orchestration coverage; the live run confirmed
+  normal local-client isolation while the main client was unavailable.
+- Starting the proxy without restarting es-ESS produced exactly one main MQTT
+  connect callback on the same PID, restored all SolarOverheadDistributor and
+  Wattpilot subscriptions, republished `es-ESS/$SYS/Status=Online`, and resumed
+  TimeToGo diagnostic publication.
+- The original configuration was restored with a matching SHA-256, production
+  main/local MQTT each connected normally after restart, PID 13293 remained
+  stable, live main-MQTT publication succeeded, the verified proxy was stopped,
+  port 18884 became free, and all temporary files were removed.
 
 Goal:
 
@@ -2466,8 +2485,7 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-1. P1 - Make Initial MQTT Connections Resilient — implementation is complete;
-   close after a low-risk GX test-broker refusal/recovery exercise.
+No unfinished implementation items remain.
 
 ## Verification Plan
 
@@ -2489,14 +2507,10 @@ For implementation PRs:
 
 ## Outstanding Manual Validation
 
-The new queue introduces the following conditional or implementation-stage
-manual checks. Do not force grid import, disconnect a production grid, interrupt
-critical telemetry, or alter the production energy system solely to reproduce
-safety branches:
+No implementation-stage manual validation remains. Do not force grid import,
+disconnect a production grid, interrupt critical telemetry, or alter the
+production energy system solely to reproduce historical safety branches.
 
-- Fault simulation, low-risk window: start es-ESS while a test main or local
-  MQTT broker is unavailable, restore it, and confirm one clean recovery with
-  subscriptions and status publication restored.
 - Hibernate remote control was resolved as documentation-only unsupported
   behavior while disconnected; no hardware action remains.
 - Hardware not needed: documentation-contract, exact D-Bus read-allowlist, and
