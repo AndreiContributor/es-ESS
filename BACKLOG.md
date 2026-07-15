@@ -54,15 +54,18 @@ Current validated state:
   of stale Auto/Eco limits on entry to Manual is the sole approved exception.
 - The native Eco/es-ESS command-ownership guard is implemented, merged on
   `main`, and live-validated on 2026-07-15. With native PV surplus and flexible
-  tariff disabled, VRM web Auto selection established sole-owner authority;
-  supervised one-phase current control, phase-up, Manual release, and final
-  disconnected restoration all passed without intentional grid charging. A
+  tariff disabled, VRM web and Android home-screen-widget Auto selection
+  established sole-owner authority; supervised one-phase current control,
+  phase-up, Manual release, and final disconnected restoration all passed
+  without intentional grid charging. Local-app and remote-widget mode-boundary
+  timing, physical indication, raw `lmo`, public `/ModeLiteral`, realtime
+  delivery failure, and command-free disconnected behavior are also live-
+  correlated. A
   later single-cycle atomic `0 W` assignment exposed that three-phase fallback
   bypassed `AllowanceDropGraceSeconds`; the controller and hardware-free tests
   now preserve truthful allowance telemetry while debouncing that fallback.
   Supervised live revalidation is complete. Additional Wattpilot work includes
-  the independent mode-boundary, battery-heartbeat, and natural winter
-  observation tasks below.
+  the independent battery-heartbeat and natural winter observation tasks below.
 - The Victron `velib_python` dependency is pinned to the already validated
   bundled composite with per-file official provenance and canonical hashes.
   All runtime import sites select that bundle deterministically and reject
@@ -114,6 +117,37 @@ Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
+### Completed 2026-07-15 - Correlate Local And Remote Wattpilot Mode Boundaries
+
+- Completed a vehicle-disconnected production observation on Venus OS `v3.75`,
+  Wattpilot firmware `42.5`, and Solar.wattpilot app `2.1.0`. The capture is
+  preserved on the GX as
+  `/data/es-ess-mode-boundary-20260715-155537.log`.
+- A local Solar.wattpilot Standard selection recorded an operator action around
+  15:56:31 UTC, raw `lmo=3` at 15:56:33.785, and
+  `/ModeLiteral=Manual` at 15:56:38.865. The physical Eco indication turned
+  off. Raw-to-public propagation took 5.080 seconds, matching the normal
+  controller cadence; the app/physical timestamp remains operator-recorded and
+  is not treated as a tighter transport measurement.
+- The first Android home-screen VRM EV Charging Station widget attempt remained
+  pending for about one minute and reported that its MQTT action could not be
+  sent because the installation might not be real-time. No `/Mode` handler,
+  raw `lmo`, or public mode event reached es-ESS during that failed delivery.
+- On the successful retry, es-ESS received VRM `/Mode=1` at 16:01:15.593 UTC,
+  Wattpilot reported raw `lmo=4` at 16:01:15.706, and
+  `/ModeLiteral=Auto` published at 16:01:15.723. The complete server-observed
+  path took 130 ms, including 17 ms from raw receipt to public state. The app
+  showed Eco and the physical white/orange status-114 indication returned.
+- The final snapshot remained disconnected at 0 W/0 A with healthy telemetry,
+  validated compatibility, `fup=false`, `ful=false`, and
+  `/CommandAuthorityOk=1`. Manual produced the approved one-time release
+  message and no repeated or unintended `amp`, `psm`, or `frc` evidence.
+- The Android widget's Manual `0`, Auto `1`, Scheduled `2` ordering is now
+  documented: right from Manual requests Auto, left from Auto requests Manual,
+  and right from Auto requests the existing temporary Scheduled/wake-up path
+  before returning to the prior mode. No timeout, command-authority expansion,
+  or production-code change was required.
 
 ### Completed 2026-07-15 - Audit And Pin The Victron `velib_python` Dependency
 
@@ -217,9 +251,10 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   home battery remained charging.
 - Standard/Manual selection produced the approved one-time release without
   repeated control commands. Solar.wattpilot app `2.1.0` could not reselect Eco
-  with both native Eco options disabled, so the validated commissioning path is
-  VRM web dashboard -> EVCS tile/module -> Auto. Firmware status `114` and its
-  persistent orange/yellow Eco LED flash are documented as an expected visual
+  with both native Eco options disabled, so the validated commissioning paths
+  are the VRM web/Remote Console EVCS mode control and the dedicated Android
+  home-screen VRM EV Charging Station widget. Firmware status `114` and its
+  persistent white/orange Eco LED flash are documented as an expected visual
   artifact only while authority and telemetry remain healthy.
 - The window ended with the vehicle disconnected, Auto selected, zero EV
   power/current, stopped control state, unknown phase, healthy telemetry,
@@ -1494,9 +1529,11 @@ Resolved questions:
 - Native regulation did not rewrite the acknowledged es-ESS current or phase
   requests during the supervised window. Read-only `fup`/`ful` observations and
   raw ECO mode provided the pre-command authority gate.
-- Firmware kept `fup=false` and `ful=false` stable after VRM web selected Auto
-  (`lmo=4`). Solar.wattpilot app `2.1.0` cannot select Eco with both options off;
-  VRM web dashboard -> EVCS tile/module -> Auto is the validated transition.
+- Firmware kept `fup=false` and `ful=false` stable after VRM selected Auto
+  (`lmo=4`). Solar.wattpilot app `2.1.0` cannot select Eco with both options
+  off. The VRM web/Remote Console EVCS mode control and the dedicated Android
+  home-screen VRM EV Charging Station widget are validated transitions; the
+  in-app installation-schematic EVCS area remains informational.
 - The selected Opel Corsa-e profile still hides the app phase control, but live
   evidence showed that only the es-ESS 600-second candidate issued phase-up and
   that telemetry confirmed both the three-phase result and later safe
@@ -1516,112 +1553,6 @@ Done criteria:
 - Manual-mode ownership, battery-assist limits, phase timing, compatibility
   guards, and D-Bus/MQTT contracts remain intact.
 - Focused tests and configuration-contract checks pass where applicable.
-- Full unittest suite passes.
-
-### P4 - Complete Local And Remote Wattpilot Mode-Boundary Correlation
-
-Goal:
-
-Close the remaining live-observation gap between operator-selected
-Solar.wattpilot mode changes, physical charger indication, raw firmware `lmo`
-telemetry, and the public es-ESS `/ModeLiteral` state without changing command
-authority.
-
-Problem:
-
-The fixed controller path publishes a newly received raw mode transition on the
-next normal controller cycle and local same-Wi-Fi Eco/Standard transitions have
-passed production validation. Earlier remote/cloud operator timestamps were
-ambiguous, however, and the physical mode indication was not correlated with
-the same raw and public timestamps. This is an evidence gap, not a confirmed
-production defect; it must not justify a new timeout or wider command authority.
-
-Evidence:
-
-- The completed 2026-07-13 mode-telemetry item records local Eco-to-Standard
-  publication in 4.687 seconds and Standard-to-Eco publication in 3.793 seconds,
-  while explicitly declining to claim remote/cloud end-to-end latency.
-- `Wattpilot.py:326-331` exposes observer-only raw `lmo` receipt/change times.
-- `FroniusWattpilot.py:2994-3023` correlates raw mode telemetry with
-  `/ModeLiteral` publication, and `scripts/es-ess-health-monitor.sh:245`
-  describes the expected timestamp order.
-- `tests/test_wattpilot_client.py:286-324` and
-  `tests/test_wattpilot_command_boundary.py:204-239` cover raw telemetry and
-  publication correlation without real hardware.
-
-Implementation:
-
-- Treat this as an observation task. With the vehicle disconnected, capture
-  separately timed local and remote/cloud mode selections, the physical charger
-  mode indication, raw `lmo` change/receipt logs, and `/ModeLiteral` publication.
-- Confirm the existing five-second controller cadence after raw telemetry
-  arrives and confirm that Manual/default transitions issue no `psm`, `amp`, or
-  `frc` command except the already approved one-time Auto/Eco constraint release.
-- Record whether any end-to-end delay occurs before raw `lmo` reaches es-ESS or
-  after receipt. Do not introduce a generic mode-expiry timeout from app timing
-  alone.
-- If the evidence reveals a controller defect, create a separate implementation
-  item with focused tests before changing production behavior.
-
-Files to change:
-
-- `BACKLOG.md` when recording the observation result
-
-Files to add:
-
-- None expected.
-
-Tests:
-
-- Existing raw-mode and command-boundary tests are the automated verifier.
-- No new test is required unless the observation exposes a production defect or
-  an unclear diagnostic contract.
-
-Expected coverage:
-
-- Distinguishes app/cloud delivery delay from es-ESS controller publication
-  delay and confirms the existing command-free Manual boundary on both paths.
-- Existing passing tests remain unchanged.
-
-Manual validation:
-
-Fault simulation in a low-risk window with the vehicle disconnected; no active
-charging is required.
-
-Manual test steps:
-
-1. Start the read-only production health monitor and record synchronized time.
-2. Select Eco and Standard locally, recording app action time, physical mode
-   indication, raw `lmo` timestamps, and `/ModeLiteral` publication.
-3. Repeat through the remote/cloud path with independently recorded timestamps.
-4. Confirm the log contains no unintended `psm`, `amp`, or `frc` command; allow
-   only the documented one-time release when leaving Auto/Eco for Manual.
-5. Record the local and remote results in this item, including any inconclusive
-   app-side timestamp.
-
-Risks and dependencies:
-
-- App and cloud timestamps can be ambiguous; raw charger telemetry is the
-  boundary for judging es-ESS latency.
-- Mode changes can affect later charging behavior, so perform them with the
-  vehicle disconnected and restore the intended commissioning mode afterward.
-- No other backlog item must land first.
-
-Open questions:
-
-- Does the remote/cloud path delay raw `lmo` delivery compared with the local
-  path on the validated app/firmware baseline?
-- Does the physical mode indication consistently agree with raw `lmo` before
-  `/ModeLiteral` is published?
-
-Done criteria:
-
-- Local and remote/cloud mode transitions have correlated operator, physical,
-  raw-telemetry, and public-state evidence on the validated baseline.
-- Any latency is assigned to the app/cloud, charger telemetry, or es-ESS
-  publication boundary without widening command authority by assumption.
-- Manual/default mode remains command-free except for the approved one-time
-  Auto/Eco constraint release.
 - Full unittest suite passes.
 
 ### P4 - Live-Validate Battery-Assist SOC Heartbeat Failure
@@ -1751,8 +1682,6 @@ The following observation tasks are not code PRs and remain open independently
 of this queue. Complete them only when their safe preconditions occur; an
 inconclusive window is preferable to forcing production behavior:
 
-- Complete local and remote Wattpilot mode-boundary correlation with the
-  vehicle disconnected.
 - Winter-validate grid-import dispatch only under natural suitable low-PV
   conditions; do not force production grid import or disconnect critical
   telemetry.
@@ -1790,8 +1719,6 @@ For implementation PRs:
 
 The authoritative manual work is now attached to the corresponding open item:
 
-- **Fault simulation, vehicle disconnected:** complete local and remote
-  Wattpilot mode-boundary correlation.
 - **Active charging required under natural conditions:** winter-validate
   grid-import or stale-grid-telemetry dispatch with
   `AllowGridCharging=false`.
@@ -1801,7 +1728,8 @@ The authoritative manual work is now attached to the corresponding open item:
 The general Venus OS `v3.75` daylight Auto/Eco PV-surplus, no-grid, battery-
 assist, current-reduction, and naturally available phase-switch validation is
 complete and is not a separate outstanding item. The native-PV command-
-ownership guard and its supervised Gate 2 live validation are also complete.
+ownership guard, its supervised Gate 2 live validation, and the local/remote
+mode-boundary correlation are also complete.
 
 - The complete operator behavior checklist remains in README and the safety
   invariants remain in `docs/wattpilot-architecture.md`.

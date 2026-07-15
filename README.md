@@ -568,16 +568,19 @@ Before enabling Auto/Eco PV control:
   as `fup=false` and `ful=false`. Missing, malformed, or enabled values block
   es-ESS Auto/Eco commands.
 - Disabling native PV may move the wallbox from Eco to Standard. After both
-  native switches are off, select Auto from the VRM web dashboard: click the
-  EVCS tile/module and use its mode control. The VRM mobile app did not expose
-  this mode control during operator validation on 2026-07-15. Solar.wattpilot
-  app `2.1.0` also refuses to activate Eco while both Eco options are off, so
-  it cannot perform this transition. es-ESS permits the VRM-requested `lmo=4`
-  transition only when both settings are confirmed off. Do not connect the
-  vehicle until `/CommandAuthorityOk=1`.
+  native switches are off, select Auto through either the VRM web/Remote
+  Console EVCS mode control or the dedicated VRM EV Charging Station widget
+  on the Android home screen. The EVCS area inside the VRM mobile app's
+  installation schematic is informational and is not the Android home-screen
+  widget. Operator validation on 2026-07-15 confirmed that, with Manual shown,
+  pressing the home-screen widget's right arrow once restores Auto. The
+  Solar.wattpilot app `2.1.0` refuses to activate Eco while both Eco options
+  are off, so it cannot perform this transition. es-ESS permits the
+  VRM-requested `lmo=4` transition only when both settings are confirmed off.
+  Do not connect the vehicle until `/CommandAuthorityOk=1`.
 - Firmware `42.5` reports native status `114` whenever raw Eco mode is active
   while both native PV surplus and flexible tariff are disabled. The Eco LED
-  therefore flashes orange/yellow and may continue flashing while es-ESS is
+  therefore alternates white/orange and may continue flashing while es-ESS is
   successfully charging. This is an expected single-owner commissioning
   artifact when `/CommandAuthorityOk=1`, both native-setting paths are `0`, and
   telemetry is healthy; it does not authorize ignoring a red LED, another
@@ -596,6 +599,22 @@ Before enabling Auto/Eco PV control:
   Wattpilot-reported effective limit.
 - Use `Scheduled Charging` in VRM only as the wake-up path when hibernate is
   enabled.
+
+Android VRM widget mode controls follow the Victron numeric order: Manual `0`,
+Auto `1`, Scheduled `2`. From Manual, press right once to request Auto; from
+Auto, press left once to request Manual. Pressing right while already in Auto
+requests Scheduled, which es-ESS uses only as a temporary Wattpilot wake-up
+path before returning to the previous mode. The widget can therefore appear
+unresponsive to right-from-Auto even though it sent the Scheduled request; do
+not use that direction to test Auto-to-Manual switching. Keep the vehicle
+disconnected during these commissioning transitions because selecting Manual
+returns charging ownership to Wattpilot.
+
+VRM widget actions require the installation's real-time VRM connection. If the
+widget reports `MQTT connection failed`, `failed to send MQTT action`, or that
+the installation might not be real-time, the request did not reach the es-ESS
+`/Mode` handler. Enable VRM real-time updates, confirm the GX VRM Portal
+connection and retry only after real-time status recovers.
 
 VRM controls do not offer an explicit one-phase/three-phase selector. Direct
 current selection maps to phase mode like this:
@@ -624,6 +643,16 @@ When a raw mode transition arrives while the vehicle is disconnected, it
 bypasses the normal five-minute idle-report throttle and is reflected on
 `/ModeLiteral` by the next five-second controller cycle. Unchanged disconnected
 state remains on the low-frequency idle cadence.
+
+Production validation on 2026-07-15 completed this correlation with the vehicle
+disconnected. A local Standard selection propagated from raw `lmo=3` to public
+Manual in 5.080 seconds. A failed Android widget attempt reported a VRM
+realtime/MQTT delivery error and produced no es-ESS `/Mode` event. On retry, the
+Android home-screen widget's `/Mode=1` request, raw `lmo=4`, and public Auto
+state completed in 130 ms server-observed time. The final snapshot retained
+healthy sole-owner authority with no unintended current, phase, or force-state
+commands. The GX capture is
+`/data/es-ess-mode-boundary-20260715-155537.log`.
 
 > :warning: **FAKE-BMS injection**:<br /> This feature is creating FAKE-BMS information on dbus. Make sure to manually select your *actual* BMS unter *Settings > System setup > Battery Monitor* else your ESS may not behave correctly anymore. Don't leave this setting to *Automatic*
 

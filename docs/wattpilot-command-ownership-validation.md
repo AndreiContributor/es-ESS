@@ -269,29 +269,40 @@ diagnostic and hardware-free tests before deployment.
 3. In Solar.wattpilot, turn off `Use PV surplus`. The app may move from ECO to
    Standard. Confirm `/NativePvSurplusEnabled=0`,
    `/FlexibleTariffEnabled=0`, and the instruction to select Auto.
-4. In the VRM web dashboard, click the EVCS tile/module and use its mode control
-   to select Auto. The VRM mobile app did not expose this control during
-   operator validation on 2026-07-15. Solar.wattpilot app `2.1.0` also disabled
-   its Eco activation action and required at least one Eco option while both
-   native settings were off; therefore it cannot make this transition. The VRM
-   web EVCS control is the supported user transition. Do not use
-   Standard/Manual as an Auto-control workaround. Confirm raw `lmo=4` remains
-   stable, both native settings remain `0`,
+4. Select Auto through either the VRM web/Remote Console EVCS mode control or
+   the dedicated VRM EV Charging Station widget on the Android home screen.
+   The EVCS area inside the VRM mobile app's installation schematic is
+   informational and is not the Android home-screen widget. With Manual shown,
+   press the widget's right arrow once to request Auto. Solar.wattpilot app
+   `2.1.0` disables its Eco activation action and requires at least one Eco
+   option while both native settings are off; therefore it cannot make this
+   transition. Do not use Standard/Manual as an Auto-control workaround.
+   Confirm raw `lmo=4` remains stable, both native settings remain `0`,
    `/CommandAuthorityOk=1`, and the literal reports that es-ESS is the sole
    Auto/Eco command owner.
+
+   Android widget modes follow Manual `0`, Auto `1`, Scheduled `2`. From Auto,
+   left requests Manual; right requests Scheduled, which es-ESS uses only as a
+   temporary wake-up path before returning to the previous mode. Right-from-
+   Auto can therefore appear unresponsive and is not the Auto-to-Manual
+   direction. If the widget reports `MQTT connection failed`, `failed to send
+   MQTT action`, or that the installation might not be real-time, restore the
+   VRM real-time connection before retrying; that failure means the request did
+   not reach the es-ESS `/Mode` handler.
 5. If either native setting changes, authority stays blocked, or any unexpected
    `frc=On`, positive `amp`, or `psm` command appears, stop before connecting
    the vehicle and retain the evidence.
 
 Expected firmware `42.5` visual artifact: raw Eco mode with both native PV
 surplus and flexible tariff disabled produces native status `114`. The Eco LED
-flashes orange/yellow and, as confirmed during operator validation on
+alternates white/orange and, as confirmed during operator validation on
 2026-07-15, may keep flashing while es-ESS is successfully charging. This state
-can be selected through the VRM web EVCS control even though Solar.wattpilot
-app `2.1.0` refuses to select Eco with both native options disabled. Accept this
-indication only while `/CommandAuthorityOk=1`, both native-setting paths are
-`0`, and telemetry is healthy. A red LED, a different status code, lost
-authority, or unhealthy telemetry remains a stop-and-inspect condition.
+can be selected through the VRM web/Remote Console EVCS control or the dedicated
+Android home-screen EVCS widget even though Solar.wattpilot app `2.1.0` refuses
+to select Eco with both native options disabled. Accept this indication only
+while `/CommandAuthorityOk=1`, both native-setting paths are `0`, and telemetry
+is healthy. A red LED, a different status code, lost authority, or unhealthy
+telemetry remains a stop-and-inspect condition.
 
 ### B. One-phase PV ownership
 
@@ -379,10 +390,22 @@ merged through PR #70. The run produced these results:
   it was not needlessly repeated during this disconnected boundary check.
 - Solar.wattpilot app `2.1.0` refused to activate Eco while both native Eco
   options were disabled. The VRM web EVCS mode control successfully restored
-  Auto. Firmware status `114` and the orange/yellow Eco LED flash persisted
-  even during successful es-ESS charging, matching the documented native
-  indication for Eco with neither native Eco option selected. Do not change a
-  native authority setting merely to suppress this expected indicator.
+  Auto. Follow-up operator validation on 2026-07-15 also confirmed that the
+  dedicated Android home-screen VRM EV Charging Station widget can restore
+  Auto once its real-time MQTT action reaches the installation. The completed
+  vehicle-disconnected correlation is preserved in
+  `/data/es-ess-mode-boundary-20260715-155537.log`. Local raw `lmo=3` to public
+  Manual propagation took 5.080 seconds. An earlier widget attempt reported
+  that the MQTT action could not be sent because the installation might not be
+  real-time and produced no es-ESS `/Mode` event; that was a VRM delivery
+  failure, not an es-ESS mode rejection. On retry, es-ESS received `/Mode=1` at
+  16:01:15.593 UTC, raw `lmo=4` at 16:01:15.706, and published Auto at
+  16:01:15.723: 130 ms server-observed end to end. No unintended `amp`, `psm`,
+  or `frc` command accompanied either disconnected transition. Firmware status
+  `114` and the white/orange Eco LED flash persisted even during successful
+  es-ESS charging, matching the documented native indication for Eco with
+  neither native Eco option selected. Do not change a native authority setting
+  merely to suppress this expected indicator.
 - The final health snapshot at 07:35:33 UTC showed the vehicle disconnected,
   Auto selected, zero EV power/current, stopped control state, unknown phase,
   healthy telemetry, validated runtime compatibility, both native observations
