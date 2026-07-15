@@ -761,7 +761,8 @@ Tests:
 
 - A transient fresh `0 W` assignment retains three-phase and sends no phase or
   stop command while `/PvAllowance` remains `0`.
-- Recovery inside 15 seconds clears the timer without a phase command.
+- Recovery inside the configured grace clears the timer without a phase
+  command.
 - Sustained insufficient allowance phase-reduces or stops at the exact grace
   boundary according to one-phase PV availability.
 - Existing grid-import-guard precedence, battery-assist bounds, Manual-mode
@@ -780,17 +781,18 @@ Manual test steps:
    VRM web EVCS tile, and verify sole-owner authority and fresh telemetry.
 2. While charging on three phases, run the read-only health/log monitor and
    wait for a natural short allowance drop.
-3. If one fresh `0 W` assignment recovers inside 15 seconds, confirm phase
+3. If one fresh `0 W` assignment recovers inside the configured 30-second
+   grace, confirm phase
    remains three, no phase/stop command appears, and `/PvAllowance` still
    reports `0` for that sample.
-4. If a deficit naturally persists to 15 seconds, confirm phase reduction or
+4. If a deficit naturally persists to 30 seconds, confirm phase reduction or
    stop follows current one-phase PV availability.
 5. Stop immediately if grid import is sustained, telemetry becomes stale, or
    authority is lost; those guards must not wait for allowance grace.
 
 Risks and dependencies:
 
-- During the explicit 15-second allowance grace, Victron ESS may temporarily
+- During the explicit 30-second allowance grace, Victron ESS may temporarily
   supply an EV shortfall. This is bounded by the short configured debounce and
   does not authorize a new charge or phase-up.
 - A suitable transient cannot be scheduled safely; an inconclusive supervised
