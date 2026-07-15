@@ -141,6 +141,17 @@ command. Confirm that neither transition produces an unintended `psm`, `amp`,
 or `frc` command. Stop and retain the capture if the physical Eco LED changes
 to Manual before es-ESS receives the matching non-ECO `lmo` value.
 
+This correlation was completed in production on 2026-07-15 with the vehicle
+disconnected; the retained GX capture is
+`/data/es-ess-mode-boundary-20260715-155537.log`. Local raw `lmo=3` to public
+Manual propagation took 5.080 seconds. A failed Android widget request reported
+a VRM realtime/MQTT delivery error and produced no es-ESS `/Mode` event. The
+successful retry progressed from `/Mode=1` to raw `lmo=4` and public Auto in
+130 ms server-observed time, restored the physical white/orange status-114
+indication, and produced no unintended `psm`, `amp`, or `frc` command. Retain
+this procedure for regression checks after relevant runtime or integration
+changes.
+
 ## How To Read The Output
 
 Healthy output normally shows:
