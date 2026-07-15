@@ -1789,6 +1789,15 @@ Resolution:
   time-to-go requires the selected BMS to publish `/TimeToGo`; es-ESS does not
   create a competing owner. The original UI-restoration goal below is retained
   as review history but is superseded by this supported ownership decision.
+- Production validation on Venus OS `v3.75` completed on 2026-07-15 with
+  `TimeToGoCalculator=true`, `BatteryCapacityInWh=32000`, and
+  `UpdateInterval=1000`. With natural battery discharge, all three required
+  D-Bus inputs were present and main MQTT published
+  `es-ESS/TimeToGoCalculator/TimeToGo=108556` seconds. The value was consistent
+  with the observed changing discharge power, SOC, active SOC limit, and
+  configured capacity. es-ESS remained healthy on the same PID with increasing
+  uptime and no recent critical error, traceback, or exception. The optional
+  live diagnostic observation is complete.
 
 Goal:
 
@@ -2487,9 +2496,6 @@ safety branches:
   zero-feed-in commands are suppressed when the authoritative grid-connected
   state is false, missing, or stale. Do not disconnect the production grid for
   this test.
-- Optional log-only observation: confirm TimeToGoCalculator publishes a
-  plausible natural charge/discharge estimate on its documented main-MQTT
-  diagnostic topic. No D-Bus/GX/VRM injection is expected or supported.
 - Hibernate remote control was resolved as documentation-only unsupported
   behavior while disconnected; no hardware action remains.
 - Hardware not needed: documentation-contract, exact D-Bus read-allowlist, and
