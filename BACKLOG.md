@@ -1554,6 +1554,14 @@ Done criteria:
 
 ### P1 - Make Initial MQTT Connections Resilient
 
+Implementation status (2026-07-15):
+
+- Implemented in `7702435` with asynchronous main/local startup, bounded
+  reconnect backoff and diagnostics, successful-connect metadata publication,
+  subscription restoration, and shutdown-before-first-connect coverage.
+- Hardware-free orchestration and full-suite verification pass. The low-risk GX
+  broker fault/recovery exercise below remains the only completion condition.
+
 Goal:
 
 Allow es-ESS to survive a main or local MQTT broker that is not yet listening
@@ -1653,6 +1661,16 @@ Done criteria:
 - Full unittest suite passes.
 
 ### P1 - Gate Experimental Zero-Feed-In On Confirmed Grid Connection
+
+Implementation status (2026-07-15):
+
+- Implemented in `48fe83a`. Commands now require an explicitly connected grid
+  or shore AC input; missing, malformed, genset, off-grid, and transition states
+  issue no new OpenDTU command and preserve the last nonpersistent limit so
+  frequency shifting remains authoritative.
+- Hardware-free transition/recovery and full-suite verification pass. The
+  isolated hardware-in-the-loop check below remains the only completion
+  condition; production-grid disconnection is explicitly prohibited.
 
 Goal:
 
@@ -1754,7 +1772,23 @@ Done criteria:
 - The maintained sample and user guidance describe the gate accurately.
 - Full unittest suite passes.
 
-### P2 - Restore End-To-End Time-To-Go Publication
+### Completed 2026-07-15 - Resolve Time-To-Go Ownership And Publication
+
+Resolution:
+
+- Official Venus `dbus-systemcalc-py` behavior establishes that systemcalc owns
+  `/Dc/Battery/TimeToGo` and sources it from `/TimeToGo` on the selected battery
+  service. An MQTT `N/...` topic is an outbound notification, not a supported
+  write mechanism. es-ESS owns neither D-Bus service.
+- Commit `bb90d6f` removed the ineffective local notification injection and
+  retained the estimate as a main-MQTT diagnostic at
+  `es-ESS/TimeToGoCalculator/TimeToGo`. Zero power/SOC, incomplete telemetry,
+  publish failure, and charge/discharge calculations are covered without
+  stopping the worker.
+- README, sample configuration, and service inventory now state that GX/VRM
+  time-to-go requires the selected BMS to publish `/TimeToGo`; es-ESS does not
+  create a competing owner. The original UI-restoration goal below is retained
+  as review history but is superseded by this supported ownership decision.
 
 Goal:
 
@@ -1848,7 +1882,19 @@ Done criteria:
 - The contradictory README status is corrected only after that evidence.
 - Full unittest suite passes.
 
-### P2 - Decide And Align Wattpilot Hibernate-Mode Remote Control
+### Completed 2026-07-15 - Decide And Align Wattpilot Hibernate-Mode Remote Control
+
+Resolution:
+
+- Selected the conservative existing-product boundary: with
+  `HibernateMode=true` and no EV connected, es-ESS intentionally disconnects;
+  remote VRM mode changes are unsupported while disconnected. Scheduled is a
+  best-effort status probe, not a supported keep-awake/control path.
+- Commit `e3dd6c1` removed the unresolved source TODO and aligned README,
+  `config.sample.ini`, the service inventory, and the HTML guide without adding
+  reconnect ownership, charger commands, or Manual/Auto authority changes.
+- Documentation-contract and full-suite tests pass. This documentation-only
+  resolution requires no Wattpilot hardware action.
 
 Goal:
 
@@ -1949,7 +1995,16 @@ Done criteria:
 - Manual and Auto/Eco safety invariants remain covered.
 - Full unittest suite passes.
 
-### P3 - Audit And Enforce Maintained Documentation Contracts
+### Completed 2026-07-15 - Audit And Enforce Maintained Documentation Contracts
+
+Completion record:
+
+- Commit `e3dd6c1` corrected the singular `MqttTemperature` service flag,
+  `[MqttExporter:*]` prefix, Shelly PM service flag, all four stale Wattpilot
+  example values, and conflicting hibernate promises.
+- Contract tests now compare the complete maintained README Wattpilot table and
+  the system-guide Wattpilot block against `config.sample.ini`, plus canonical
+  service-specific names and the hibernate boundary. No runtime default changed.
 
 Goal:
 
@@ -2054,7 +2109,16 @@ Done criteria:
 - Rendered documentation remains readable and internally consistent.
 - Full unittest suite passes.
 
-### P3 - Restrict Daily-Report D-Bus Reads To Exact Paths
+### Completed 2026-07-15 - Restrict Daily-Report D-Bus Reads To Exact Paths
+
+Completion record:
+
+- Commit `4b50c6a` defines an immutable allowlist containing every declared
+  Wattpilot snapshot pair plus the exact Venus timezone pair. Arbitrary
+  Wattpilot paths, all generic system paths, other services, writes,
+  non-absolute paths, and extra arguments are rejected before subprocess use.
+- Tests accept every declared pair and preserve the existing `svstat`, timeout,
+  circuit-breaker, and command-free behavior.
 
 Goal:
 
@@ -2137,7 +2201,20 @@ Done criteria:
 - Existing snapshot and timezone behavior remains unchanged.
 - Full unittest suite passes.
 
-### P4 - Evaluate Low-Risk Lifecycle And Diagnostic-Script Hygiene
+### Completed 2026-07-15 - Evaluate Low-Risk Lifecycle And Diagnostic-Script Hygiene
+
+Completion record:
+
+- Retained exact-command emergency/uninstall behavior: adding shared PID
+  lifecycle machinery would increase risk without evidence of a practical
+  defect. No lifecycle script changed.
+- Retained the private `ConfigParser._sections` access because public mapping
+  APIs include inherited `[DEFAULT]` keys, but replaced private boolean
+  conversion with public `getboolean()` and documented the explicit-key reason.
+- Commit `4b50c6a` labels Paho/websocket checks as the Wattpilot external
+  dependency subset, distinguishes missing config from unreadable/malformed
+  existing config, and adds `python3` fallback to the health monitor. Focused
+  static/behavioral and full-suite tests pass.
 
 Goal:
 
@@ -2353,22 +2430,14 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-1. P1 - Gate Experimental Zero-Feed-In On Confirmed Grid Connection — close the
-   device-control gap before lower-risk reliability and documentation work.
-2. P1 - Make Initial MQTT Connections Resilient — prevent broker boot ordering
-   from terminating the service bundle.
-3. P2 - Restore End-To-End Time-To-Go Publication — repair the explicitly broken
-   active helper and validate its Venus integration contract.
-4. P2 - Decide And Align Wattpilot Hibernate-Mode Remote Control — settle the
-   product/safety contract before final documentation alignment.
-5. P3 - Audit And Enforce Maintained Documentation Contracts — correct known
-   drift and add narrow automated guards after the hibernate decision.
-6. P3 - Restrict Daily-Report D-Bus Reads To Exact Paths — close the latent
-   read-boundary gap with a small isolated hardening change.
-7. P4 - Evaluate Low-Risk Lifecycle And Diagnostic-Script Hygiene — retain only
-   evidence-backed cleanup and permit no-change closure.
-8. P4 - Measure Daily-Report Peak Memory And Add Bounds Only If Needed — perform
-   the optional GX observation last and implement bounds only from evidence.
+1. P1 - Gate Experimental Zero-Feed-In On Confirmed Grid Connection —
+   implementation is complete; close after isolated hardware-in-the-loop
+   validation without disconnecting the production grid.
+2. P1 - Make Initial MQTT Connections Resilient — implementation is complete;
+   close after a low-risk GX test-broker refusal/recovery exercise.
+3. P4 - Measure Daily-Report Peak Memory And Add Bounds Only If Needed — record
+   representative GX peak RSS/headroom and implement transparent bounds only if
+   that evidence demonstrates a need.
 
 ## Verification Plan
 
@@ -2402,12 +2471,11 @@ safety branches:
   zero-feed-in commands are suppressed when the authoritative grid-connected
   state is false, missing, or stale. Do not disconnect the production grid for
   this test.
-- Log-only/live GX observation: after the TimeToGo repair, confirm a natural
-  discharge publishes plausible values through the intended D-Bus/MQTT path and
-  returns to the unavailable sentinel when inputs cease to qualify.
-- Wattpilot hardware, only if remote hibernate recovery is implemented: verify
-  bounded wake/control behavior in Auto/Eco and unchanged Manual ownership. A
-  documentation-only resolution needs no hardware action.
+- Optional log-only observation: confirm TimeToGoCalculator publishes a
+  plausible natural charge/discharge estimate on its documented main-MQTT
+  diagnostic topic. No D-Bus/GX/VRM injection is expected or supported.
+- Hibernate remote control was resolved as documentation-only unsupported
+  behavior while disconnected; no hardware action remains.
 - Hardware not needed: documentation-contract, exact D-Bus read-allowlist, and
   lifecycle-script changes are covered by focused automated/static checks.
 - Log-only production observation: measure peak RSS for the daily report on a
