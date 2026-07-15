@@ -639,6 +639,12 @@
       <div class="callout warning">
         <p><strong>Single-owner requirement:</strong> with the vehicle disconnected, turn off Solar.wattpilot <em>Use PV surplus</em> and flexible tariff. In the VRM web dashboard, click the EVCS tile/module and select Auto using its mode control; operator validation on 2026-07-15 confirmed that this control is not available in the VRM mobile app. Solar.wattpilot app 2.1.0 also refuses to activate Eco while both Eco options are off, so it cannot perform this transition. Connect the vehicle only when <code>/CommandAuthorityOk=1</code>, <code>/NativePvSurplusEnabled=0</code> and <code>/FlexibleTariffEnabled=0</code>. Firmware 42.5 then reports native status 114: the Eco LED flashes orange/yellow and may keep flashing during successful es-ESS charging. Treat this as expected only while authority and telemetry remain healthy; red LEDs, another status code, or lost authority still require inspection. The native start-up-power slider—including its 10 kW maximum—does not disable native regulation and is not an authority boundary.</p>
       </div>
+
+      <div class="callout">
+        <p><strong>Rare protocol charging reasons:</strong> the upstream Wattpilot firmware API names <code>modelStatus</code> values <code>8</code>–<code>11</code> and <code>13</code>–<code>14</code> as <code>ChargingBecause...</code> states. es-ESS therefore treats them as active charging only after command-authority, fresh-telemetry, no-grid, phase-transition and confirmed-connection safety gates have passed. In Manual mode they remain reporting-only and never authorize es-ESS charging commands.</p>
+        <p>Entry, changes between these values and exit are logged once at INFO with the stable marker <code>Wattpilot special charging model status</code>; an unchanged state is not repeated every control cycle. Natural occurrences can be found in long-running production logs with:</p>
+        <pre>grep -F <span class="value">"Wattpilot special charging model status"</span> /data/log/es-ESS/current.log</pre>
+      </div>
     </section>
 
     <section id="assist">
