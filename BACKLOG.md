@@ -63,6 +63,12 @@ Current validated state:
   Supervised live revalidation is complete. Additional Wattpilot work includes
   the independent mode-boundary, battery-heartbeat, and natural winter
   observation tasks below.
+- The Victron `velib_python` dependency is pinned to the already validated
+  bundled composite with per-file official provenance and canonical hashes.
+  All runtime import sites select that bundle deterministically and reject
+  mixed sources. Log-only GX validation on 2026-07-15 passed integrity, import
+  ownership, D-Bus registration, MQTT recovery, and command-free new-process
+  startup checks on Venus OS `v3.75`.
 - The 2026-07-12 review confirmed additional crash, device-control, stale-data,
   persistence, configuration, security, and test-coverage work. Items with
   site-specific limits or uncertain Wattpilot protocol meaning retain explicit
@@ -108,6 +114,34 @@ Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
+### Completed 2026-07-15 - Audit And Pin The Victron `velib_python` Dependency
+
+- Selected the already live-used bundled dependency and traced its four runtime
+  files to exact official Victron commits. Added per-file Git blob and canonical
+  SHA-256 evidence, MIT licensing, update policy, and Venus OS `v3.75` metadata
+  in `velib_python-master/PINNED.json`; the exact four-file combination is a
+  documented composite rather than one upstream tree commit.
+- Added `VelibDependency.py` to verify the pin, select the repository-relative
+  bundle first, and reject a core module already loaded from another source.
+  Normalized all eleven orchestrator, active-service, and retained dormant-
+  service import sites without replacing dependency code or changing D-Bus,
+  MQTT, configuration, or Wattpilot control contracts.
+- Added read-only health-monitor integrity, import-origin, and Venus OS
+  system-copy comparison output plus seven hardware-free provenance, drift,
+  registration, path, callback, and monitor tests. Changed-file syntax, shell
+  syntax, backlog/whitespace checks, and the full 429-test suite passed.
+- Pre-change production evidence was captured at 14:21 UTC. The post-change
+  restart at 15:00 UTC changed PID `32228` to stable PID `3914`; both MQTT
+  clients recovered, the four expected es-ESS D-Bus services registered once,
+  pinned integrity and bundled origins passed, compatibility/telemetry/command
+  authority remained healthy, and Wattpilot stayed disconnected, stopped, at
+  `0 W` and `0 A` with no critical or import error.
+- The old Auto-mode process issued its documented safe `Off` during SIGTERM at
+  15:00:01 before shutdown. The replacement process began recovery around
+  15:00:24 and issued no start, stop, current, or phase command. The Venus OS
+  copy differed for `vedbus.py` and `dbusmonitor.py` and matched for
+  `settingsdevice.py` and `ve_utils.py`; it remained read-only and unselected.
 
 ### Completed 2026-07-15 - Live-Validate Three-Phase Allowance-Drop Grace
 
@@ -1239,181 +1273,6 @@ Done criteria:
   without forcing unsafe or unrealistic system behavior.
 - Full unittest suite passes if any code changes result from an observed defect.
 
-### P4 - Audit And Pin The Victron `velib_python` Dependency
-
-Goal:
-
-Make the Victron D-Bus dependency reproducible and auditable while preserving
-the behavior supported on Venus OS `v3.75`.
-
-Problem:
-
-The repository contains `velib_python-master` as ordinary copied source files,
-but does not record the upstream Victron commit or snapshot date. The main
-entry point prepends the bundled path, while individual service modules also
-prepend the Venus OS copy under
-`/opt/victronenergy/dbus-systemcalc-py/ext/velib_python`. Python module caching
-normally makes the main entry point's first import authoritative, but the mixed
-paths make standalone imports and future maintenance ambiguous. The bundled
-files also differ from current upstream sources, so replacing them blindly
-could change D-Bus service registration or monitoring behavior.
-
-Evidence:
-
-- `es-ESS.py:28-30` loads `vedbus` and `dbusmonitor` from
-  `/data/es-ESS/velib_python-master`.
-- `FroniusWattpilot.py:13-14`, `FroniusSmartmeterJSON.py:14-15`,
-  `Helper.py:10-11`, `MqttPVInverter.py:14-15`, `MqttTemperature.py:13-14`,
-  `Shelly3EMGrid.py:15-16`, `ShellyPMInverter.py:14-15`, and
-  `SolarOverheadDistributor.py:17-18` prepend the Venus OS system copy before
-  importing `VeDbusService`.
-- `velib_python-master` is tracked as normal files rather than a Git submodule
-  and contains no upstream commit manifest.
-- `RuntimeCompatibility.py` permits only the clean Venus OS `v3.75` release,
-  so dependency selection must be evaluated against that supported runtime
-  rather than current upstream `master` alone.
-
-Implementation status 2026-07-15:
-
-- Selected the already live-used bundled dependency to avoid replacing D-Bus
-  behavior. The four runtime files are an official Victron composite:
-  `vedbus.py` matches commit `c00682415ae5690112852c6ab5554e678358a818`;
-  `dbusmonitor.py` and `ve_utils.py` match
-  `516178e9e413c23c4fb1bd114b865a88fc644e40`; and `settingsdevice.py`
-  originates from `897d58211e9f94fe4b795cdee06e23ab1582821b`. No single upstream tree
-  commit contains the exact four-file combination.
-- Added `velib_python-master/PINNED.json` with repository, per-file commit,
-  Git blob, canonical SHA-256, MIT license, update policy, and Venus OS `v3.75`
-  metadata. `VelibDependency.py` verifies the pin, makes the repository-relative
-  bundled directory first in `sys.path`, and rejects mixed already-loaded core
-  modules.
-- Normalized all eleven orchestrator, active-service, and retained dormant-
-  service `vedbus` import sites. None selects the mutable Venus OS system copy.
-- Added read-only health-monitor output for pin integrity, resolved import
-  origin, and per-file comparison with the Venus OS system copy.
-- Added seven hardware-free contract tests for provenance, hashes, license,
-  complete import ownership, external-module rejection, D-Bus registration,
-  path publication, writable callbacks, and `DbusMonitor` subscription/setup.
-  Changed-file syntax, shell syntax, whitespace checks, and the full 429-test
-  suite pass. Post-change log-only GX restart validation remains open below.
-
-Implementation:
-
-- Identified the exact Victron upstream revisions represented by the bundled
-  runtime files and recorded their composite provenance.
-- Compared the bundled `vedbus.py`, `dbusmonitor.py`, `settingsdevice.py`, and
-  `ve_utils.py` with current upstream. The post-change health monitor will
-  complete the per-file comparison with the Venus OS `v3.75` system copy on
-  the GX without selecting it.
-- Chose one explicit runtime source: the pinned bundled composite. No unpinned
-  branch such as `master` is tracked.
-- Recorded the chosen source, commit/hash, license, update procedure, and Venus OS
-  compatibility baseline in the repository.
-- Normalized import paths after the chosen source passed hardware-free and
-  GX validation. Preserve all existing D-Bus path names, write callbacks,
-  service registration order, Manual-mode command boundaries, Auto/Eco safety
-  behavior, MQTT contracts, and configuration defaults.
-- Any future dependency replacement remains a separate compatibility change;
-  do not combine it with Wattpilot control or phase-policy work.
-
-Files to change:
-
-- `BACKLOG.md`
-- `VelibDependency.py`, `es-ESS.py`, and every service module that imports
-  `vedbus`
-- `velib_python-master/PINNED.json` without replacing the validated runtime
-  files
-- `docs/service-inventory.md`
-- `docs/es-ess-health-monitor.md`
-- `scripts/es-ess-health-monitor.sh`
-- `README.md`
-
-Files added:
-
-- `VelibDependency.py`
-- An upstream provenance/version manifest beside the bundled dependency
-- `tests/test_velib_dependency_contract.py`
-
-Tests:
-
-- Added a hardware-free dependency-contract test that verifies the selected
-  source and recorded revision/hash cannot drift silently.
-- Tested that the orchestrator and every service select the same
-  `vedbus` module under the supported deployment layout.
-- Exercised representative `VeDbusService` registration, path publication,
-  writable callbacks, and `DbusMonitor` subscription setup with stubbed D-Bus
-  dependencies following the existing hardware-free test pattern.
-- Existing Wattpilot runtime-status, command-boundary, session-path, service
-  orchestration, and active-service tests pass unchanged in the full 429-test
-  suite.
-
-Expected coverage:
-
-- Proves dependency provenance and import-source selection are deterministic.
-- Proves the D-Bus integration surface used by es-ESS remains compatible
-  without requiring real hardware in CI.
-- Existing passing tests remain unchanged.
-
-Manual validation:
-
-Log-only (safe in production). Validate on supported Venus OS `v3.75` with no
-active charging or other controlled transition required.
-
-The pre-change baseline was captured at 2026-07-15 14:21 UTC on Venus OS
-`v3.75` build `20260624163305`: es-ESS was stable, all four main-process imports
-resolved under `/data/es-ESS/velib_python-master`, telemetry and command
-authority were healthy, Wattpilot was stopped with zero power/current, and the
-recent log contained no critical, error, or compatibility event. The optional
-standalone `Helper` probe reached an existing `Helper`/`Globals` circular import
-before dependency selection; that unrelated dormant import shape is not treated
-as a `velib_python` failure or widened into this task.
-
-Manual test steps:
-
-1. Deploy the pinned dependency/import change to a staging path or during a
-   normal low-risk restart window.
-2. Restart es-ESS and confirm startup completes without import, D-Bus, or
-   registration errors.
-3. Inspect D-Bus and confirm enabled services and their existing paths register
-   once with unchanged values and writable behavior.
-4. Confirm main/local MQTT connections and normal worker heartbeats recover.
-5. Confirm Wattpilot status reporting recovers without issuing a start, stop,
-   current, or phase command while Manual mode or no active charge is present.
-
-Risks and dependencies:
-
-- A newer upstream snapshot may depend on Venus OS components or D-Bus behavior
-  not present in the supported release.
-- Selecting the system copy couples es-ESS behavior to Venus OS packaging;
-  selecting a bundled copy requires explicit license/provenance maintenance.
-- Import-order changes can affect every D-Bus-publishing service and therefore
-  require GX validation even when hardware-free tests pass.
-- No other backlog item must land first.
-
-Resolved decisions:
-
-- Retain and verify the already live-used bundled composite for reproducibility.
-  Do not select or copy the Venus OS system dependency. The post-change health
-  monitor records a read-only comparison for audit evidence only.
-
-Done criteria:
-
-- The selected `velib_python` source and exact revision/hash are documented.
-- All runtime imports resolve deterministically to that source.
-- No unpinned download from `master` is used in deployment or maintenance.
-- D-Bus service registration and monitoring pass hardware-free regression
-  tests and log-only GX validation on Venus OS `v3.75`.
-- Wattpilot Manual/Auto safety boundaries and public D-Bus/MQTT contracts are
-  unchanged.
-- Full unittest suite passes.
-
-Remaining closure condition:
-
-- Deploy during a low-risk disconnected window and complete the log-only
-  restart, D-Bus registration, MQTT/worker recovery, import-origin/integrity,
-  and no-Wattpilot-command checks above. Move this item to `Completed` only
-  after that evidence passes.
-
 #### Implementation record - completed 2026-07-15: Live-Validate Implemented Auto/Eco Command Ownership
 
 Goal:
@@ -1886,9 +1745,7 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-24. P4 audit and pin the Victron `velib_python` dependency — establish v3.75
-   provenance and deterministic import ownership as a separate compatibility
-   change.
+No implementation PR items remain in the queue.
 
 The following observation tasks are not code PRs and remain open independently
 of this queue. Complete them only when their safe preconditions occur; an
@@ -1907,9 +1764,6 @@ Hardware validation scope for the remaining backlog:
 
 - The P4 automatic-NPC allocation fix requires low-risk validation with a
   non-critical automatic consumer.
-- The P4 `velib_python` audit requires log-only startup and D-Bus registration
-  validation on the supported Venus OS release; active charging is not
-  required.
 - The independent observation items carry their own fault-simulation or
   active-charging preconditions and must not be forced merely to close the
   backlog.
@@ -1938,8 +1792,6 @@ The authoritative manual work is now attached to the corresponding open item:
 
 - **Fault simulation, vehicle disconnected:** complete local and remote
   Wattpilot mode-boundary correlation.
-- **Log-only:** validate the implemented pinned `velib_python` provenance/import
-  change on the supported Venus OS release.
 - **Active charging required under natural conditions:** winter-validate
   grid-import or stale-grid-telemetry dispatch with
   `AllowGridCharging=false`.
