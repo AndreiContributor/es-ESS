@@ -64,6 +64,12 @@ existing settings subscription updates the logging timezone at runtime. A
 query or timezone-data failure produces a warning and falls back to OS-local
 time without changing process-wide clocks or controller timing.
 
+The standalone `scripts/es-ess-daily-report.py` uses the same exact settings
+service/path as a required, bounded read-only query before resolving report
+calendar windows. `--no-current-snapshot` disables optional service/runtime
+snapshot reads but not this timezone lookup. Report analysis remains isolated
+from controller imports and all D-Bus writes.
+
 ## Victron D-Bus Dependency Ownership
 
 Every orchestrator, active service, and retained dormant service that imports

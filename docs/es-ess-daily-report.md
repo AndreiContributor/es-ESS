@@ -49,16 +49,22 @@ The tool reads only:
 - `/data/es-ESS/config.ini`;
 - `/data/log/es-ESS/current.log` and standard dated rotations such as
   `current.log.2026-07-15`; and
+- the authoritative Venus timezone through one bounded, exact
+  `com.victronenergy.settings /Settings/System/TimeZone GetValue` query; and
 - when available, current service state through `svstat` plus selected D-Bus
   values through exact `dbus ... GetValue` calls.
 
 It never writes D-Bus, MQTT, Wattpilot settings, configuration, files, or
 service state. It does not import the es-ESS controller. The command helper
 rejects service control and every D-Bus operation except the allowlisted
-`GetValue` snapshots. Use `--no-current-snapshot` to perform log/config analysis
-without invoking even those optional read commands. Each snapshot command has a
-two-second timeout. After three consecutive D-Bus timeouts, remaining snapshot
-paths are marked unavailable and historical analysis continues.
+`GetValue` reads. Use `--no-current-snapshot` to skip the optional service and
+runtime-status snapshot; the required read-only timezone query still runs so
+`today`, `yesterday`, explicit dates, and local-midnight boundaries agree with
+logging even when the service process runs in UTC. Each command has a two-second
+timeout. After three consecutive snapshot timeouts, remaining optional snapshot
+paths are marked unavailable and historical analysis continues. If the timezone
+query or timezone database is unavailable, the report warns, uses OS-local time,
+and cannot silently claim a complete authoritative calendar window.
 
 New log records use the Venus `/Settings/System/TimeZone` wall time with the
 applicable offset, for example
@@ -66,8 +72,10 @@ applicable offset, for example
 to order records and calculate durations across daylight-saving changes. It
 continues to accept pre-upgrade records that do not contain an offset, so a
 rotation window spanning the upgrade remains readable. Grid-to-charge
-correlation and charging-session stop lookup use timestamp indexes, keeping
-APP_DEBUG reports practical when a day contains many samples.
+correlation, allowance lookup, Manual-boundary checks, and charging-session stop
+lookup use timestamp indexes. Message-marker routing avoids applying every
+event regex to unrelated lines, and timestamp parsing uses the ISO fast path,
+keeping APP_DEBUG reports practical when a day contains many samples.
 
 ## Install And Run
 
@@ -93,7 +101,9 @@ Interactive runs display a six-stage progress bar on stderr: configuration,
 byte-level log loading, evidence validation, read-only snapshot paths, analysis,
 and rendering. This is particularly useful on GX hardware when a large
 APP_DEBUG log contains more than 100,000 records. Progress never enters report
-stdout, so JSON remains parseable. Disable it for automation with:
+stdout, so JSON remains parseable. The report header records separate log-load
+and evidence-analysis durations to make GX performance regressions visible.
+Disable progress for automation with:
 
 ```sh
 python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday --no-progress

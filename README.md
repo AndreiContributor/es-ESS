@@ -879,21 +879,24 @@ python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday --json \
   > /data/es-ESS-validation/es-ess-daily-report-$(date +%Y%m%d).json
 ```
 
-The read-only analyzer automatically includes `current.log` and dated rotations
-and optionally reads current service/D-Bus snapshots through allowlisted status
-and `GetValue` calls. It never writes D-Bus, MQTT, Wattpilot, configuration, or
-service state. Historical dates require `[Common] LogLevel=APP_DEBUG` (or more
-verbose) across a complete requested window. `--date today` analyzes available
-diagnostic records but remains `INCOMPLETE` unless it detects an `ANOMALY`; it
-prints the requested period, cutoff, evidence period/duration, span coverage,
-and full-day availability time. The report uses `GOOD`, `ATTENTION`, `ANOMALY`, and `INCOMPLETE`
+The read-only analyzer automatically includes `current.log` and dated rotations.
+It makes one bounded, allowlisted `GetValue` query for the authoritative Venus
+`/Settings/System/TimeZone`, then optionally reads current service/D-Bus
+snapshots. It never writes D-Bus, MQTT, Wattpilot, configuration, or service
+state. Historical dates require `[Common] LogLevel=APP_DEBUG` (or more verbose)
+across a complete requested window. `--date today` analyzes the Venus-local day
+from local midnight through execution and remains `INCOMPLETE` unless it detects
+an `ANOMALY`; it prints the report timezone, requested period, cutoff, evidence
+period/duration, span coverage, and full-day availability time. The report uses
+`GOOD`, `ATTENTION`, `ANOMALY`, and `INCOMPLETE`
 and includes runtime health, sanitized configuration, current state,
 approximate sessions, allowance/grace and phase behavior, safety interventions,
 and rare statuses 8–11 and 13–14. `NOT_OBSERVED` rare statuses are
 informational. Interactive runs show byte-level log and D-Bus snapshot progress
 on stderr; use `--no-progress` for automation or `--no-current-snapshot` to skip
-the optional live snapshot. Three consecutive snapshot timeouts skip remaining
-paths without blocking historical analysis. Full commissioning, options,
+the optional live snapshot. The required timezone query still runs with that
+flag. Three consecutive snapshot timeouts skip remaining paths without blocking
+historical analysis. Full commissioning, options,
 limitations, exit codes, and JSON
 output are documented in
 [docs/es-ess-daily-report.md](docs/es-ess-daily-report.md).
