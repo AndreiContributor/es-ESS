@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "dependency": "victronenergy/velib_python",
+  "repository": "https://github.com/victronenergy/velib_python",
+  "selection": "bundled-composite",
+  "license": "MIT",
+  "validated_venus_os": "v3.75",
+  "notes": [
+    "The directory name is retained for deployment compatibility; it is not an unpinned master checkout.",
+    "The four runtime files form a recoverable composite of official Victron commits rather than one upstream tree commit.",
+    "Update hashes and provenance only after hardware-free regression and live GX compatibility validation."
+  ],
+  "core_files": {
+    "vedbus.py": {
+      "upstream_commit": "c00682415ae5690112852c6ab5554e678358a818",
+      "upstream_commit_date": "2025-07-15T14:54:19+02:00",
+      "upstream_git_blob_sha1": "1947c6e2d8ba0d2ed77afdcc5536d1ba06475c16",
+      "canonical_sha256": "81632d5e022194a3948d57227798d899997e3c03b2abb202113cdf3d11ce5b51"
+    },
+    "dbusmonitor.py": {
+      "upstream_commit": "516178e9e413c23c4fb1bd114b865a88fc644e40",
+      "upstream_commit_date": "2025-07-16T16:56:28+02:00",
+      "upstream_git_blob_sha1": "92ee1360258439d11aa7302e9980a4b0cafe9835",
+      "canonical_sha256": "5bb8ae60870c658cdbac5364935c13ca44eb6284b9aa0c574046b8dac601f501"
+    },
+    "settingsdevice.py": {
+      "upstream_commit": "897d58211e9f94fe4b795cdee06e23ab1582821b",
+      "upstream_commit_date": "2025-06-20T16:11:03+02:00",
+      "upstream_git_blob_sha1": "fdbe46ca10bc9c8b7e8f64ee3f7487c599fe5762",
+      "canonical_sha256": "9e91910fb24979948b37746a34b87e531c7d6698e7d69d768735203c79367abb"
+    },
+    "ve_utils.py": {
+      "upstream_commit": "516178e9e413c23c4fb1bd114b865a88fc644e40",
+      "upstream_commit_date": "2025-07-16T16:56:28+02:00",
+      "upstream_git_blob_sha1": "3c76f38da8df7e40a4418e119b2d9a320a3ec1a7",
+      "canonical_sha256": "a7aeece047efa8b53d6bac342f2f59f6c95e6f424307617702df0352c1ed4bef"
+    }
+  }
+}

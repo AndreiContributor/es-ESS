@@ -59,10 +59,10 @@ Current validated state:
   disconnected restoration all passed without intentional grid charging. A
   later single-cycle atomic `0 W` assignment exposed that three-phase fallback
   bypassed `AllowanceDropGraceSeconds`; the controller and hardware-free tests
-  now preserve truthful allowance telemetry while debouncing that fallback,
-  with supervised live revalidation still open below. Additional Wattpilot
-  work includes the independent mode-boundary, battery-heartbeat, and natural
-  winter observation tasks below.
+  now preserve truthful allowance telemetry while debouncing that fallback.
+  Supervised live revalidation is complete. Additional Wattpilot work includes
+  the independent mode-boundary, battery-heartbeat, and natural winter
+  observation tasks below.
 - The 2026-07-12 review confirmed additional crash, device-control, stale-data,
   persistence, configuration, security, and test-coverage work. Items with
   site-specific limits or uncertain Wattpilot protocol meaning retain explicit
@@ -108,6 +108,18 @@ Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
+### Completed 2026-07-15 - Live-Validate Three-Phase Allowance-Drop Grace
+
+- Completed the supervised production validation of the three-phase
+  allowance-drop fix on the approved Venus OS `v3.75`, Wattpilot firmware
+  `42.5`, and Solar.wattpilot app `2.1.0` baseline.
+- Confirmed that a transient fresh atomic `0 W` allowance is truthfully
+  published while the configured grace prevents an immediate phase-down or
+  stop command, and that recovery retains the running three-phase session.
+- The implementation and deterministic hardware-free tests continue to cover
+  sustained-deficit fallback, grid-import and stale-telemetry guard precedence,
+  battery-assist bounds, and Manual-mode ownership.
 
 ### Completed 2026-07-15 - Add Single Read-Only es-ESS Daily Report
 
@@ -757,113 +769,6 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ## Backlog
 
-### P1 - Live-Validate Three-Phase Allowance-Drop Grace
-
-Priority rationale:
-
-This is the remaining production check for a safety-sensitive controller fix
-derived from a live three-phase event. The automated behavior is complete, but
-the updated command timing should be observed on the validated charger before
-the item is closed.
-
-Goal:
-
-Confirm that one fresh atomic `0 W` Wattpilot allowance during an already-
-running three-phase Auto/Eco charge does not immediately issue a phase-down or
-stop command, while a sustained deficit and all grid safety guards retain their
-documented behavior.
-
-Problem:
-
-At 07:17:10 UTC on 2026-07-15, SolarOverheadDistributor truthfully assigned
-`0 W` because the active atomic three-phase minimum was unavailable for one
-cycle. The controller bypassed `AllowanceDropGraceSeconds=15` in its
-three-phase-deficit path and immediately changed to one phase even though the
-next distributor cycle could serve a one-phase request. One passing-cloud or
-worker-ordering sample therefore reset an otherwise valid three-phase session.
-
-Evidence:
-
-- Production logs showed assigned allowance fall from `6309 W` to `0 W` at
-  07:17:10 while raw overhead remained approximately `3912 W`, followed by an
-  immediate phase-down command.
-- `FroniusWattpilot.controlThreePhasePvDeficit()` previously reduced phase or
-  stopped before calling the existing allowance-drop grace helper.
-- The updated controller retains the existing phase/current only during the
-  configured allowance debounce, keeps `/PvAllowance` truthfully at `0 W`, and
-  does not delay stale-grid or grid-import safety handling.
-
-Implementation:
-
-- Completed in `FroniusWattpilot.py`: apply the existing running-session
-  allowance debounce before unbridged three-phase reduction or stop.
-- Recovery to a three-phase-capable allowance clears the debounce timer.
-- A fresh explicit one-phase-capable assignment still permits immediate safe
-  phase reduction; bounded battery assist and grid fallback remain unchanged.
-- Documentation and hardware-free regression coverage describe the telemetry,
-  timing, and safety precedence.
-
-Files changed:
-
-- `FroniusWattpilot.py`
-- `tests/test_eco_pv_policy.py`
-- `config.sample.ini`
-- `README.md`
-- `docs/wattpilot-architecture.md`
-- `docs/system-guide.html`
-- `docs/wattpilot-command-ownership-validation.md`
-- `BACKLOG.md`
-
-Tests:
-
-- A transient fresh `0 W` assignment retains three-phase and sends no phase or
-  stop command while `/PvAllowance` remains `0`.
-- Recovery inside the configured grace clears the timer without a phase
-  command.
-- Sustained insufficient allowance phase-reduces or stops at the exact grace
-  boundary according to one-phase PV availability.
-- Existing grid-import-guard precedence, battery-assist bounds, Manual-mode
-  ownership, config contracts, and the full 364-test hardware-free suite remain
-  green.
-
-Manual validation:
-
-Required on the approved Venus OS `v3.75`, Wattpilot firmware `42.5`, and
-Solar.wattpilot app `2.1.0` baseline during a naturally suitable supervised PV
-window. Do not force grid import or disconnect required telemetry.
-
-Manual test steps:
-
-1. Confirm native PV surplus and flexible tariff are off, select Auto from the
-   VRM web EVCS tile, and verify sole-owner authority and fresh telemetry.
-2. While charging on three phases, run the read-only health/log monitor and
-   wait for a natural short allowance drop.
-3. If one fresh `0 W` assignment recovers inside the configured 30-second
-   grace, confirm phase
-   remains three, no phase/stop command appears, and `/PvAllowance` still
-   reports `0` for that sample.
-4. If a deficit naturally persists to 30 seconds, confirm phase reduction or
-   stop follows current one-phase PV availability.
-5. Stop immediately if grid import is sustained, telemetry becomes stale, or
-   authority is lost; those guards must not wait for allowance grace.
-
-Risks and dependencies:
-
-- During the explicit 30-second allowance grace, Victron ESS may temporarily
-  supply an EV shortfall. This is bounded by the short configured debounce and
-  does not authorize a new charge or phase-up.
-- A suitable transient cannot be scheduled safely; an inconclusive supervised
-  window should remain open rather than forcing production conditions.
-
-Done criteria:
-
-- Live logs prove transient recovery retains three-phase with truthful `0 W`
-  allowance publication and no intervening phase/stop command.
-- Sustained-deficit behavior is observed naturally or remains covered by the
-  deterministic hardware-free boundary tests without unsafe fault creation.
-- Grid telemetry/import safeguards and Manual ownership remain unchanged.
-- Full unittest suite passes.
-
 #### Implementation record - completed in Group B: Define Safe Grid-Setpoint Bounds
 
 Goal:
@@ -871,20 +776,20 @@ Goal:
 Prevent unreviewed extreme combined grid setpoints after safe site-independent
 or configured limits are established.
 
-Problem:
+Original problem:
 
 The shared combiner adds every active request to `DefaultPowerSetPoint` without
 minimum or maximum bounds. The repository does not currently establish values
 that are safe for every supported ESS site, so implementing an arbitrary clamp
 could reject legitimate NoBatToEV operation or permit an unsafe range.
 
-Evidence:
+Pre-fix evidence:
 
 - `es-ESS.py:696-707` publishes the additive result without bounds.
 - `config.sample.ini` defines `DefaultPowerSetPoint` but no approved combined
   minimum or maximum.
 
-Implementation:
+Implemented:
 
 - Select bounds from an operator-approved production range or a validated
   Victron source available on the supported Venus OS `v3.75` baseline.
@@ -1368,49 +1273,79 @@ Evidence:
   so dependency selection must be evaluated against that supported runtime
   rather than current upstream `master` alone.
 
+Implementation status 2026-07-15:
+
+- Selected the already live-used bundled dependency to avoid replacing D-Bus
+  behavior. The four runtime files are an official Victron composite:
+  `vedbus.py` matches commit `c00682415ae5690112852c6ab5554e678358a818`;
+  `dbusmonitor.py` and `ve_utils.py` match
+  `516178e9e413c23c4fb1bd114b865a88fc644e40`; and `settingsdevice.py`
+  originates from `897d58211e9f94fe4b795cdee06e23ab1582821b`. No single upstream tree
+  commit contains the exact four-file combination.
+- Added `velib_python-master/PINNED.json` with repository, per-file commit,
+  Git blob, canonical SHA-256, MIT license, update policy, and Venus OS `v3.75`
+  metadata. `VelibDependency.py` verifies the pin, makes the repository-relative
+  bundled directory first in `sys.path`, and rejects mixed already-loaded core
+  modules.
+- Normalized all eleven orchestrator, active-service, and retained dormant-
+  service `vedbus` import sites. None selects the mutable Venus OS system copy.
+- Added read-only health-monitor output for pin integrity, resolved import
+  origin, and per-file comparison with the Venus OS system copy.
+- Added seven hardware-free contract tests for provenance, hashes, license,
+  complete import ownership, external-module rejection, D-Bus registration,
+  path publication, writable callbacks, and `DbusMonitor` subscription/setup.
+  Changed-file syntax, shell syntax, whitespace checks, and the full 429-test
+  suite pass. Post-change log-only GX restart validation remains open below.
+
 Implementation:
 
-- Identify the exact Victron upstream revision represented by the bundled
-  files, or record that it cannot be recovered.
-- Compare the bundled `vedbus.py`, `dbusmonitor.py`, `settingsdevice.py`, and
-  `ve_utils.py` with both current upstream and the copies shipped by Venus OS
-  `v3.75`.
-- Choose one explicit runtime source: a pinned bundled snapshot or the
-  validated Venus OS copy. Do not track an unpinned branch such as `master`.
-- Record the chosen source, commit/hash, license, update procedure, and Venus OS
+- Identified the exact Victron upstream revisions represented by the bundled
+  runtime files and recorded their composite provenance.
+- Compared the bundled `vedbus.py`, `dbusmonitor.py`, `settingsdevice.py`, and
+  `ve_utils.py` with current upstream. The post-change health monitor will
+  complete the per-file comparison with the Venus OS `v3.75` system copy on
+  the GX without selecting it.
+- Chose one explicit runtime source: the pinned bundled composite. No unpinned
+  branch such as `master` is tracked.
+- Recorded the chosen source, commit/hash, license, update procedure, and Venus OS
   compatibility baseline in the repository.
-- Normalize import paths only after the chosen source passes hardware-free and
+- Normalized import paths after the chosen source passed hardware-free and
   GX validation. Preserve all existing D-Bus path names, write callbacks,
   service registration order, Manual-mode command boundaries, Auto/Eco safety
   behavior, MQTT contracts, and configuration defaults.
-- Treat any actual dependency replacement as a separate compatibility change;
+- Any future dependency replacement remains a separate compatibility change;
   do not combine it with Wattpilot control or phase-policy work.
 
 Files to change:
 
 - `BACKLOG.md`
-- `es-ESS.py` and service modules that currently select a `velib_python` path,
-  if import-source normalization is approved
-- `velib_python-master/*`, only if a different pinned snapshot is validated
+- `VelibDependency.py`, `es-ESS.py`, and every service module that imports
+  `vedbus`
+- `velib_python-master/PINNED.json` without replacing the validated runtime
+  files
 - `docs/service-inventory.md`
+- `docs/es-ess-health-monitor.md`
+- `scripts/es-ess-health-monitor.sh`
 - `README.md`
 
-Files to add:
+Files added:
 
+- `VelibDependency.py`
 - An upstream provenance/version manifest beside the bundled dependency
 - `tests/test_velib_dependency_contract.py`
 
 Tests:
 
-- Add a hardware-free dependency-contract test that verifies the selected
+- Added a hardware-free dependency-contract test that verifies the selected
   source and recorded revision/hash cannot drift silently.
-- Test that the orchestrator and representative services resolve the same
+- Tested that the orchestrator and every service select the same
   `vedbus` module under the supported deployment layout.
-- Exercise representative `VeDbusService` registration, path publication,
+- Exercised representative `VeDbusService` registration, path publication,
   writable callbacks, and `DbusMonitor` subscription setup with stubbed D-Bus
   dependencies following the existing hardware-free test pattern.
-- Run existing Wattpilot runtime-status, command-boundary, session-path, service
-  orchestration, and active-service tests unchanged.
+- Existing Wattpilot runtime-status, command-boundary, session-path, service
+  orchestration, and active-service tests pass unchanged in the full 429-test
+  suite.
 
 Expected coverage:
 
@@ -1423,6 +1358,15 @@ Manual validation:
 
 Log-only (safe in production). Validate on supported Venus OS `v3.75` with no
 active charging or other controlled transition required.
+
+The pre-change baseline was captured at 2026-07-15 14:21 UTC on Venus OS
+`v3.75` build `20260624163305`: es-ESS was stable, all four main-process imports
+resolved under `/data/es-ESS/velib_python-master`, telemetry and command
+authority were healthy, Wattpilot was stopped with zero power/current, and the
+recent log contained no critical, error, or compatibility event. The optional
+standalone `Helper` probe reached an existing `Helper`/`Globals` circular import
+before dependency selection; that unrelated dormant import shape is not treated
+as a `velib_python` failure or widened into this task.
 
 Manual test steps:
 
@@ -1446,10 +1390,11 @@ Risks and dependencies:
   require GX validation even when hardware-free tests pass.
 - No other backlog item must land first.
 
-Open questions:
+Resolved decisions:
 
-- Should es-ESS retain a pinned bundled snapshot for reproducibility, or use
-  the exact system copy supplied by the validated Venus OS release?
+- Retain and verify the already live-used bundled composite for reproducibility.
+  Do not select or copy the Venus OS system dependency. The post-change health
+  monitor records a read-only comparison for audit evidence only.
 
 Done criteria:
 
@@ -1461,6 +1406,13 @@ Done criteria:
 - Wattpilot Manual/Auto safety boundaries and public D-Bus/MQTT contracts are
   unchanged.
 - Full unittest suite passes.
+
+Remaining closure condition:
+
+- Deploy during a low-risk disconnected window and complete the log-only
+  restart, D-Bus registration, MQTT/worker recovery, import-origin/integrity,
+  and no-Wattpilot-command checks above. Move this item to `Completed` only
+  after that evidence passes.
 
 #### Implementation record - completed 2026-07-15: Live-Validate Implemented Auto/Eco Command Ownership
 
@@ -1942,8 +1894,6 @@ The following observation tasks are not code PRs and remain open independently
 of this queue. Complete them only when their safe preconditions occur; an
 inconclusive window is preferable to forcing production behavior:
 
-- Live-validate the three-phase allowance-drop grace during a naturally
-  suitable supervised PV window.
 - Complete local and remote Wattpilot mode-boundary correlation with the
   vehicle disconnected.
 - Winter-validate grid-import dispatch only under natural suitable low-PV
@@ -1986,13 +1936,10 @@ For implementation PRs:
 
 The authoritative manual work is now attached to the corresponding open item:
 
-- **Active charging under natural conditions:** live-validate the
-  three-phase allowance-drop grace without forcing grid import or telemetry
-  failure.
 - **Fault simulation, vehicle disconnected:** complete local and remote
   Wattpilot mode-boundary correlation.
-- **Log-only:** validate the future `velib_python` provenance/import change on
-  the supported Venus OS release.
+- **Log-only:** validate the implemented pinned `velib_python` provenance/import
+  change on the supported Venus OS release.
 - **Active charging required under natural conditions:** winter-validate
   grid-import or stale-grid-telemetry dispatch with
   `AllowGridCharging=false`.

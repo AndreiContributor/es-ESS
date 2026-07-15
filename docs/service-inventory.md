@@ -56,6 +56,24 @@ The runtime also owns the shared D-Bus monitor, main MQTT client, local Venus
 MQTT client, worker scheduling, service messages, and combined grid-setpoint
 requests.
 
+## Victron D-Bus Dependency Ownership
+
+Every orchestrator, active service, and retained dormant service that imports
+`vedbus` first calls `VelibDependency.activate_velib_python()`. The activator
+selects the repository-relative `velib_python-master` directory, verifies the
+four runtime files against `velib_python-master/PINNED.json`, places that
+directory first on `sys.path`, and rejects a core module already loaded from a
+different location. No service selects the mutable Venus OS copy under
+`/opt/victronenergy/dbus-systemcalc-py/ext/velib_python`.
+
+The directory name is historical and retained for deployment compatibility.
+The selected content is a pinned composite of exact official Victron commits,
+not an upstream `master` checkout. The manifest records the source repository,
+per-file commit and Git blob IDs, canonical SHA-256 hashes, MIT license, and
+validated Venus OS baseline. Dependency updates require a new provenance audit,
+updated hashes and contract tests, the full hardware-free suite, and log-only
+GX startup/D-Bus registration validation on the supported Venus OS release.
+
 ## Module Layout
 
 The active service modules intentionally remain in the repository root for now.
