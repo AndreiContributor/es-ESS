@@ -269,13 +269,29 @@ diagnostic and hardware-free tests before deployment.
 3. In Solar.wattpilot, turn off `Use PV surplus`. The app may move from ECO to
    Standard. Confirm `/NativePvSurplusEnabled=0`,
    `/FlexibleTariffEnabled=0`, and the instruction to select Auto.
-4. Select Auto on GX/VRM. This is the supported user transition; do not use
+4. In the VRM web dashboard, click the EVCS tile/module and use its mode control
+   to select Auto. The VRM mobile app did not expose this control during
+   operator validation on 2026-07-15. Solar.wattpilot app `2.1.0` also disabled
+   its Eco activation action and required at least one Eco option while both
+   native settings were off; therefore it cannot make this transition. The VRM
+   web EVCS control is the supported user transition. Do not use
    Standard/Manual as an Auto-control workaround. Confirm raw `lmo=4` remains
-   stable, both native settings remain `0`, `/CommandAuthorityOk=1`, and the
-   literal reports that es-ESS is the sole Auto/Eco command owner.
+   stable, both native settings remain `0`,
+   `/CommandAuthorityOk=1`, and the literal reports that es-ESS is the sole
+   Auto/Eco command owner.
 5. If either native setting changes, authority stays blocked, or any unexpected
    `frc=On`, positive `amp`, or `psm` command appears, stop before connecting
    the vehicle and retain the evidence.
+
+Expected firmware `42.5` visual artifact: raw Eco mode with both native PV
+surplus and flexible tariff disabled produces native status `114`. The Eco LED
+flashes orange/yellow and, as confirmed during operator validation on
+2026-07-15, may keep flashing while es-ESS is successfully charging. This state
+can be selected through the VRM web EVCS control even though Solar.wattpilot
+app `2.1.0` refuses to select Eco with both native options disabled. Accept this
+indication only while `/CommandAuthorityOk=1`, both native-setting paths are
+`0`, and telemetry is healthy. A red LED, a different status code, lost
+authority, or unhealthy telemetry remains a stop-and-inspect condition.
 
 ### B. One-phase PV ownership
 
@@ -328,3 +344,52 @@ and full automated tests passing, no intentional grid charging, unchanged
 Manual ownership, bounded continuation-only battery assist, and a completed
 backlog entry. An inconclusive natural-PV window is recorded as inconclusive;
 unsafe conditions are never forced merely to close the item.
+
+### Gate-2 evidence recorded on 2026-07-15
+
+The production run used Venus OS `v3.75`, Wattpilot firmware `42.5`,
+Solar.wattpilot app `2.1.0`, `AllowGridCharging=false`, and the reviewed files
+merged through PR #70. The run produced these results:
+
+- With the vehicle disconnected and native `Use PV surplus` enabled,
+  `/CommandAuthorityOk=0`, `/NativePvSurplusEnabled=1`, and
+  `/FlexibleTariffEnabled=0`. The diagnostic named the conflicting setting and
+  no positive-current or phase command was issued.
+- Turning native PV off moved Solar.wattpilot from Eco to Standard. Both native
+  observations then reported `0`; selecting Auto from the VRM web dashboard
+  EVCS tile produced raw `lmo=4`, `/ModeLiteral=Auto`, and
+  `/CommandAuthorityOk=1` with the sole-owner diagnostic.
+- During supervised one-phase charging, es-ESS requests progressed from 13 A
+  through 16 A and the measured charger power followed them without a native
+  current rewrite or clamp to the previous native 6 A behavior.
+- Assigned allowance remained above the configured phase-up threshold for the
+  full `600`-second candidate. es-ESS issued the phase-up at 07:15:35 UTC and
+  live telemetry confirmed three-phase charging. A later single-cycle atomic
+  `0 W` assignment produced a telemetry-confirmed phase-down and exposed that
+  the three-phase deficit path bypassed `AllowanceDropGraceSeconds`; the
+  follow-up controller fix now holds the existing command through that grace
+  while keeping `/PvAllowance=0`. No native phase race was observed.
+- Grid exchange stayed near the configured no-grid target and
+  `/GridImportGuardActive` remained `0`. Small observed battery-assist
+  shortfalls were bounded continuation behavior; the stationary battery
+  remained charging rather than supplying an unbounded EV shortfall.
+- Selecting Standard/Manual produced the approved one-time release and no
+  repeated es-ESS control commands. The previously completed Venus OS `v3.75`
+  Manual-current validation remains the evidence for user current ownership;
+  it was not needlessly repeated during this disconnected boundary check.
+- Solar.wattpilot app `2.1.0` refused to activate Eco while both native Eco
+  options were disabled. The VRM web EVCS mode control successfully restored
+  Auto. Firmware status `114` and the orange/yellow Eco LED flash persisted
+  even during successful es-ESS charging, matching the documented native
+  indication for Eco with neither native Eco option selected. Do not change a
+  native authority setting merely to suppress this expected indicator.
+- The final health snapshot at 07:35:33 UTC showed the vehicle disconnected,
+  Auto selected, zero EV power/current, stopped control state, unknown phase,
+  healthy telemetry, validated runtime compatibility, both native observations
+  at `0`, `/CommandAuthorityOk=1`, and no recent critical or error event.
+
+An authority-loss fault was not simulated during an active charge. Doing so was
+not required to prove the selected boundary and would have introduced avoidable
+native-controller behavior. The disconnected conflicting-authority preflight,
+combined with the hardware-free command-boundary tests, is the fail-closed
+evidence for invalid authority.
