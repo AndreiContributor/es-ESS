@@ -414,10 +414,19 @@ Future Wattpilot changes must preserve these invariants:
 - Current limits must respect configured per-phase bounds and the
   Wattpilot-reported effective limit.
 - Public D-Bus and MQTT runtime-status paths are compatibility contracts.
-- Keep read-only diagnostics such as `scripts/es-ess-health-monitor.sh`
-  command-free. Monitoring tools may read the runtime-status contract, service
-  state, selected config values and logs, but must not write Wattpilot, D-Bus,
-  MQTT, service or configuration state.
+- Keep read-only diagnostics such as `scripts/es-ess-health-monitor.sh` and
+  `scripts/es-ess-daily-report.py` command-free. Monitoring tools may read the
+  runtime-status contract, service state, selected config values and logs, but
+  must not write Wattpilot, D-Bus, MQTT, service or configuration state. The
+  daily report may invoke only allowlisted `svstat` and D-Bus `GetValue`
+  snapshots. Historical dates must stop unless APP_DEBUG (or more verbose)
+  covers the complete requested window. A current-day partial report may
+  analyze available diagnostic records, but must remain incomplete unless it
+  proves an anomaly and must report its evidence period and coverage rather
+  than infer a successful safety action from silence. Progress output belongs
+  on stderr so JSON stdout remains machine-readable. Snapshot commands must be
+  time-bounded and may skip remaining paths after repeated timeouts without
+  changing the historical findings.
 - Keep `scripts/wattpilot-setting-capture.py` command-free. It may authenticate,
   request complete status, and compare redacted property snapshots only while
   the vehicle is disconnected. It must reject unvalidated firmware, a missing

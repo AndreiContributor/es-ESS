@@ -901,6 +901,32 @@ chmod +x /data/es-ESS/scripts/es-ess-health-monitor.sh
 <span class="comment"># Longer supervised observation with a saved log</span>
 INTERVAL_SECONDS=10 MAX_SAMPLES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh | tee /data/es-ess-health-$(date +%Y%m%d-%H%M%S).log</pre>
 
+      <h3 style="margin-top:32px">Read-only es-ESS daily report</h3>
+      <p>Use the daily report for historical/end-of-day validation; the health monitor above remains the live snapshot tool. The analyzer always requires <code>[Common] LogLevel=APP_DEBUG</code> (or more verbose). Yesterday and older dates require a complete requested window. <code>--date today</code> analyzes diagnostic records available from midnight through execution and remains <code>INCOMPLETE</code> unless it already proves an <code>ANOMALY</code>. It prints the requested period, analysis cutoff, first/last evidence, evidence duration, elapsed-period span coverage, and the next midnight when the full calendar day becomes available. It automatically reads <code>current.log</code> and standard dated rotations.</p>
+      <pre><span class="comment"># After copying scripts/es-ess-daily-report.py to production</span>
+chmod +x /data/es-ESS/scripts/es-ess-daily-report.py
+python -m py_compile /data/es-ESS/scripts/es-ess-daily-report.py
+
+<span class="comment"># In /data/es-ESS/config.ini</span>
+[Common]
+LogLevel=APP_DEBUG
+
+<span class="comment"># Restart, collect one complete day, then produce a human report</span>
+/data/es-ESS/restart.sh
+python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday
+
+<span class="comment"># Optional partial report for diagnostic evidence available today</span>
+python /data/es-ESS/scripts/es-ess-daily-report.py --date today
+
+<span class="comment"># Private JSON report for retention or review</span>
+mkdir -p /data/es-ESS-validation
+chmod 700 /data/es-ESS-validation
+umask 077
+python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday --json \
+  &gt; /data/es-ESS-validation/es-ess-daily-report-$(date +%Y%m%d).json</pre>
+      <p>The report is read-only: it never writes D-Bus, MQTT, Wattpilot, configuration, files or service state. Optional current snapshots use only <code>svstat</code> and selected D-Bus <code>GetValue</code> calls. Interpret <code>GOOD</code>, <code>ATTENTION</code>, <code>ANOMALY</code> and <code>INCOMPLETE</code> using the complete <a href="es-ess-daily-report.md">es-ESS daily-report guide</a>. The report covers runtime health, sanitized configuration, approximate charging sessions, phase/allowance/grace behavior, safety interventions and rare statuses 8–11 and 13–14. A rare status marked <code>NOT OBSERVED</code> is informational. Do not force grid import, telemetry failure, phase switching or battery assist merely to exercise a check.</p>
+      <p>Interactive execution shows progress for configuration, byte-level log loading, evidence checks, each read-only snapshot path, analysis and rendering. The progress bar is written to stderr, so JSON stdout remains valid. Use <code>--no-progress</code> for automation or <code>--no-current-snapshot</code> to skip the optional current snapshot. Snapshot calls time out after two seconds; after three consecutive D-Bus timeouts, remaining paths are marked unavailable and log analysis continues.</p>
+
       <div class="callout danger">
         <p><strong>Do not place real passwords in screenshots or public documentation.</strong> Back up <code>config.ini</code> privately. Use <code>kill_me.sh</code> only when graceful restart fails; normal shutdown restores the configured grid-setpoint baseline and performs service cleanup.</p>
       </div>
@@ -1088,6 +1114,7 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
         <li><a href="https://updates.victronenergy.com/feeds/venus/release/images/einstein/">Official Cerbo GX firmware archive</a> — current and older <code>einstein</code> images and <code>.swu</code> files.</li>
         <li><a href="cerbo-gx-firmware-upgrade-and-rollback.md">Local Cerbo GX firmware runbook</a> — es-ESS-specific preparation, upgrade, verification and rollback steps.</li>
         <li><a href="es-ess-health-monitor.md">Local es-ESS production health monitor</a> — install, run and interpret read-only health snapshots after firmware updates, deploys, config changes and Wattpilot validation windows.</li>
+        <li><a href="es-ess-daily-report.md">Local es-ESS daily report</a> — read-only complete-day runtime, charging-session, allowance, phase, battery-assist, rare-status and safety evidence with strict APP_DEBUG/full-day prerequisites.</li>
         <li><a href="wattpilot-architecture.md">Local Wattpilot architecture contract</a> — command boundaries, Manual-mode protection, no-grid policy, battery assist and runtime-status contracts.</li>
         <li><a href="service-inventory.md">Local es-ESS service inventory</a> — active services, D-Bus/MQTT boundaries and grid-setpoint ownership.</li>
         <li><a href="../README.md">Project README</a> — installation, configuration keys, deployment verification and operating notes.</li>
