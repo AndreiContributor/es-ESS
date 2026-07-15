@@ -326,7 +326,7 @@ MqttTemperatures requires a few variables to be set in `/data/es-ESS/config.ini`
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
-| [Services]    | MqttTemperatures | Flag, if the service should be enabled or not | Boolean | true |
+| [Services]    | MqttTemperature | Flag, if the service should be enabled or not | Boolean | true |
 | [MqttTemperature:XYZ]  | VRMInstanceID |  VRMInstanceId to be used on dbus | Integer  | 1000 |
 | [MqttTemperature:XYZ]  | CustomName |  Custom name to be used for this sensor | String  | MPPT2 Wiring |
 | [MqttTemperature:XYZ]  | Topic |  Topic on Mqtt, delivering the measurement value. | String  | Devices/d1Garden/Sensors/TEMP/Value |
@@ -360,7 +360,7 @@ MqttExporter requires a few variables to be set in `/data/es-ESS/config.ini`:
 
 For every value you want to export, you have to create a additional section, specifying export-conditions. This is quite a bunch of work, but generally only done once. 
 
-Each section needs to match the pattern `[MattExporter:uniqueKey]` where uniqueKey should be an unique identifier.
+Each section needs to match the pattern `[MqttExporter:uniqueKey]` where uniqueKey should be an unique identifier.
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
@@ -504,7 +504,10 @@ Seamless Integration through all layers:
 # FroniusWattpilot
 
 > :white_check_mark: Production Ready. 
-> Known Issue: When no EV is connected AND Hibernate Mode is enabled, control through VRM doesn't work. Waking up Wattpilot through the "scheduled charge" option isn't helping, wattpilot will immediately go into hibernation again. 
+> Hibernate contract: when `HibernateMode=true` and no EV is connected, es-ESS
+> intentionally disconnects from Wattpilot and remote mode changes through VRM
+> are unsupported. Scheduled mode can trigger a best-effort status probe, but it
+> is not a supported keep-awake or remote-control path.
 
 ### Overview
 
@@ -615,18 +618,20 @@ Before enabling Auto/Eco PV control:
 - Keep the Wattpilot app's own cable/current limits correct. es-ESS will not
   raise charging beyond the configured per-phase limits or the
   Wattpilot-reported effective limit.
-- Use `Scheduled Charging` in VRM only as the wake-up path when hibernate is
-  enabled.
+- Keep `HibernateMode=false` when disconnected remote mode control is required.
+  With hibernate enabled, Scheduled is only a best-effort status probe and does
+  not make remote mode changes supported.
 
 Android VRM widget mode controls follow the Victron numeric order: Manual `0`,
 Auto `1`, Scheduled `2`. From Manual, press right once to request Auto; from
 Auto, press left once to request Manual. Pressing right while already in Auto
-requests Scheduled, which es-ESS uses only as a temporary Wattpilot wake-up
-path before returning to the previous mode. The widget can therefore appear
-unresponsive to right-from-Auto even though it sent the Scheduled request; do
-not use that direction to test Auto-to-Manual switching. Keep the vehicle
-disconnected during these commissioning transitions because selecting Manual
-returns charging ownership to Wattpilot.
+requests Scheduled, which es-ESS treats as a best-effort status probe before
+returning to the previous mode. It is not a supported keep-awake path when
+hibernate is enabled. The widget can therefore appear unresponsive to
+right-from-Auto even though it sent the Scheduled request; do not use that
+direction to test Auto-to-Manual switching. Keep the vehicle disconnected
+during these commissioning transitions because selecting Manual returns
+charging ownership to Wattpilot.
 
 VRM widget actions require the installation's real-time VRM connection. If the
 widget reports `MQTT connection failed`, `failed to send MQTT action`, or that
@@ -688,13 +693,13 @@ commands. The GX capture is
 | [FroniusWattpilot]  | Position | Position, where the Wattpilot is connected to. Options: 0:=ac-out, 1:=ac-in | Integer  | 0 |
 | [FroniusWattpilot]  | Host | hostname / ip of Wattpilot | String  | 10.10.20.47 |
 | [FroniusWattpilot]  | Password | Password of Wattpilot | String  | password |
-| [FroniusWattpilot]  | HibernateMode | When the car is disconnected, es-ESS will switch into idle mode, stop doing heavy lifting. Connection to wattpilot remains established and VRM control enabled. <br /><br />With hibernate enabled, wattpilot will also be disconnected, and connected every 5 minutes for a car-state-check. This greatly reduces the number of incoming socket messages from wattpilot by about 95% per day, but causes an delay of up to 5 minutes when the car is connected.<br /><br />You can force a wakeup by switching to *Scheduled charging* in VRM at any time. | Boolean  | false |
+| [FroniusWattpilot]  | HibernateMode | When `false`, idle polling keeps the Wattpilot connection available. When `true`, es-ESS intentionally disconnects while no EV is connected and reconnects about every five minutes for a status probe, which can delay car detection. Remote mode changes through VRM are unsupported while disconnected; Scheduled is only a best-effort probe, not a supported keep-awake/control path. | Boolean  | false |
 | [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. Must be within `6..32 A`. | Integer (A) | 6 |
 | [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. Must be within `6..32 A` and at least `MinCurrentPerPhase`; the controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. Must be greater than `ThreePhasePvSurplusStopW`. The maintained 4500 W default is above the typical 3-phase 6 A electrical floor while matching observed Wattpilot-app-style behavior more closely than a very conservative 5000 W threshold. | Integer (W) | 4500 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStopW | PV threshold below which Auto/Eco falls back from 3 phases to 1 phase when one-phase charging is still supportable. Must be lower than `ThreePhasePvSurplusStartW`. | Integer (W) | 4100 |
 | [FroniusWattpilot] | EvPriorityOverBatteryCharge | Lets Wattpilot use real PV that would otherwise charge the battery while the car is connected in Auto mode. This does not allow battery-to-EV charging from a stopped state. | Boolean | true |
-| [FroniusWattpilot] | EvPriorityMinSoc | Minimum battery SOC required before EV priority over battery charging is allowed. | Number (%) | 60 |
+| [FroniusWattpilot] | EvPriorityMinSoc | Minimum battery SOC required before EV priority over battery charging is allowed. | Number (%) | 50 |
 | [FroniusWattpilot] | BatteryAssistEnabled | Enables the optional short battery bridge for an already-running Auto/Eco charge. | Boolean | true |
 | [FroniusWattpilot] | BatteryAssistSocMin | Minimum battery SOC required before battery assist can be used. Must be within `0..100`. | Number (%) | 50 |
 | [FroniusWattpilot] | BatteryAssistMaxSeconds | Maximum duration for one battery-assist window. Use at least `MinPhaseSwitchSeconds` when battery should be able to bridge the full phase-down waiting interval. Must be greater than `0` when enabled. | Integer (seconds) | 600 |
@@ -709,12 +714,12 @@ commands. The GX capture is
 | [FroniusWattpilot] | GridTelemetryFreshSeconds | Positive maximum age of each required grid-power value (L1, L2, and L3) while no-grid Auto/Eco control is enabled. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | AllowanceDropGraceSeconds | Non-negative grace period before an already-running Auto/Eco session is phase-reduced or stopped for an insufficient or stale allowance. A fresh truthful `0 W` allowance remains published as `0 W`; this setting only debounces the controller response. Stale grid telemetry and the grid-import guard are not delayed. The maintained 30-second profile tolerates short cloud dips without extending allowance freshness. | Integer (seconds) | 30 |
 | [FroniusWattpilot] | CarDisconnectConfirmSeconds | Non-negative time a disconnected car-state reading must remain stable before es-ESS accepts it as a disconnect. | Integer (seconds) | 15 |
-| [FroniusWattpilot] | SurplusDropGraceSeconds | Non-negative grace period before continuous low surplus resets the Auto/Eco start timer. On the normal current-adjustment path it also preserves an active 1-to-3 candidate through a shorter-than-grace dip only while allowance remains above the effective three-phase floor. Eligible battery assist may leave an already-existing candidate timer running through its bounded bridge, including a deeper dip; it cannot create the candidate or issue a phase command. Full phase-up allowance is always required at the command boundary. | Integer (seconds) | 20 |
+| [FroniusWattpilot] | SurplusDropGraceSeconds | Non-negative grace period before continuous low surplus resets the Auto/Eco start timer. On the normal current-adjustment path it also preserves an active 1-to-3 candidate through a shorter-than-grace dip only while allowance remains above the effective three-phase floor. Eligible battery assist may leave an already-existing candidate timer running through its bounded bridge, including a deeper dip; it cannot create the candidate or issue a phase command. Full phase-up allowance is always required at the command boundary. | Integer (seconds) | 30 |
 | [FroniusWattpilot] | StartupGraceSeconds | Non-negative time after a start or phase switch where commanded EV demand may be reported while Wattpilot telemetry catches up. | Integer (seconds) | 60 |
 | [FroniusWattpilot] | StartupTelemetryRatio | Fraction of commanded demand that Wattpilot telemetry must reach before startup grace is considered satisfied. Must be greater than `0` and at most `1`. | Number | 0.80 |
 | [FroniusWattpilot] | RawOverheadFreshSeconds | Maximum age of raw distributor overhead used only for safe 3-to-1 fallback decisions. Must be at least `5`. | Integer (seconds) | 15 |
-| [FroniusWattpilot] | ChargeCompletePowerThresholdW | Sustained low EV power treated as charge-complete hold instead of restarting Auto/Eco PV control. | Number (W) | 100 |
-| [FroniusWattpilot] | ChargeCompleteConfirmSeconds | Time low EV power must remain below `ChargeCompletePowerThresholdW` before charge-complete hold starts. | Integer (seconds) | 120 |
+| [FroniusWattpilot] | ChargeCompletePowerThresholdW | Sustained low EV power treated as charge-complete hold instead of restarting Auto/Eco PV control. | Number (W) | 120 |
+| [FroniusWattpilot] | ChargeCompleteConfirmSeconds | Time low EV power must remain below `ChargeCompletePowerThresholdW` before charge-complete hold starts. | Integer (seconds) | 300 |
 | [FroniusWattpilot] | ChargeCompleteResumePowerW | EV power above this value starts the confirmation for leaving charge-complete hold. | Number (W) | 300 |
 | [FroniusWattpilot] | ChargeCompleteResumeSeconds | Time EV power must remain above `ChargeCompleteResumePowerW` before charge-complete hold clears. | Integer (seconds) | 30 |
 
@@ -1063,7 +1068,7 @@ ShellyPMInverter requires a few variables to be set in `/data/es-ESS/config.ini`
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
-| [Services]    | Shelly3EMGrid   | Flag, if the service should be enabled or not | Boolean | true |
+| [Services]    | ShellyPMInverter   | Flag, if the service should be enabled or not | Boolean | true |
 
 After enabling the service in general, you need to create 1 additional config-section per shelly to use. 
 each config Section needs to match the pattern `[ShellyPMInverter:aUniqueKey]` and contain the following values: 
