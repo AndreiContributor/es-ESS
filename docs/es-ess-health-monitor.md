@@ -121,37 +121,32 @@ phone and GX clocks, then run the monitor continuously with enough log history:
 INTERVAL_SECONDS=5 MAX_SAMPLES=0 LOG_LINES=1000 EVENT_LINES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh | tee /data/es-ess-mode-boundary-$(date +%Y%m%d-%H%M%S).log
 ```
 
-For each Standard-to-Eco and Eco-to-Standard transition, record the phone-app
-selection time and the physical Eco LED change. The mode-boundary log section
-then provides two es-ESS timestamps:
+Record the operator action time and the physical LED change for each supported
+transition. With the validated Solar.wattpilot app `2.1.0`, use the local or
+hotspot app only to observe an Eco-to-Standard/Manual selection. When both
+native Eco options are disabled, that app refuses to select Eco. Restore Auto
+through the VRM web/Remote Console EVCS control or, on Android, press right once
+from Manual in the dedicated home-screen VRM EV Charging Station widget. Do not
+confuse it with the informational EVCS area inside the VRM app installation
+schematic. The mode-boundary log section then provides two es-ESS timestamps:
 
 - `Wattpilot mode telemetry changed` is the raw WebSocket `lmo` receipt.
 - `Published Wattpilot mode telemetry` is the controller's matching
   `/ModeLiteral` publication.
 
 The matching publication should follow on the next five-second controller
-cycle even while the vehicle is disconnected. Production diagnosis on
-2026-07-13 established that raw `lmo` changed promptly but the prior idle path
-could defer `/ModeLiteral` for up to five minutes. The controller now bypasses
-that idle throttle only for an unpublished raw mode transition.
+cycle even while the vehicle is disconnected. The controller bypasses the
+normal disconnected idle-report throttle for an unpublished raw mode
+transition.
 
-Repeat once through the local/hotspot app path and once through remote/cloud
-access when both are available. The timestamps are diagnostic facts only; they
-do not expire an otherwise stable ECO session or authorize any Wattpilot
-command. Confirm that neither transition produces an unintended `psm`, `amp`,
-or `frc` command. Stop and retain the capture if the physical Eco LED changes
-to Manual before es-ESS receives the matching non-ECO `lmo` value.
-
-This correlation was completed in production on 2026-07-15 with the vehicle
-disconnected; the retained GX capture is
-`/data/es-ess-mode-boundary-20260715-155537.log`. Local raw `lmo=3` to public
-Manual propagation took 5.080 seconds. A failed Android widget request reported
-a VRM realtime/MQTT delivery error and produced no es-ESS `/Mode` event. The
-successful retry progressed from `/Mode=1` to raw `lmo=4` and public Auto in
-130 ms server-observed time, restored the physical white/orange status-114
-indication, and produced no unintended `psm`, `amp`, or `frc` command. Retain
-this procedure for regression checks after relevant runtime or integration
-changes.
+Exercise the local observation and VRM/remote restoration paths when both are
+available. A VRM realtime/MQTT delivery error means the request did not reach
+the es-ESS `/Mode` handler; restore the real-time connection before retrying.
+The timestamps are diagnostic facts only: they do not expire an otherwise
+stable ECO session or authorize any Wattpilot command. Confirm that neither
+transition produces an unintended `psm`, `amp`, or `frc` command. Stop and
+retain the capture if the physical mode changes before es-ESS receives the
+matching `lmo` value.
 
 ## How To Read The Output
 

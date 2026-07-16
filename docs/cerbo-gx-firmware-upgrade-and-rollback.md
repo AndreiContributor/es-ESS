@@ -134,10 +134,13 @@ image must be installed.
    python -m pip install websocket-client
    python -c "import websocket; print('websocket-client OK')"
    python -c "import paho.mqtt.client, websocket; print('Python dependencies OK')"
+   svc -u /service/es-ESS
    svstat /service/es-ESS
    ```
 
-5. Restart es-ESS and inspect the log:
+5. Confirm es-ESS is running and inspect the log. `restart.sh` only signals an
+   existing process; it cannot bring a service back up after `svc -d`, which is
+   why the recovery block above uses `svc -u` first:
 
    ```sh
    /data/es-ESS/restart.sh

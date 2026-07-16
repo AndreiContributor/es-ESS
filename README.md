@@ -16,7 +16,7 @@ Services are marked according to their current development state:
 # About me
 
 I'm a software engineer since about 20 years, pretty new to python, tho. es-ESS is provided free of charge and created during my spare-time after work. 
-Feel free to create [issues](https://github.com/realdognose/es-ESS/issues) for questions or bugs, but bear with me that i cannot provide a 24/7 support or guarantee some sort of 8h response time. 
+Feel free to create [issues](https://github.com/AndreiContributor/es-ESS/issues) for questions or bugs, but bear with me that i cannot provide a 24/7 support or guarantee some sort of 8h response time.
 If you are a developer yourself and want to help to improve es-ESS, feel free to do so and create pull requests.
 
 I've switched to a Victron-System some months ago, and immediately digged into customizing it. Lot has been done, Lot is still todo. Since I will run this 
@@ -121,15 +121,22 @@ command-ownership boundary. Fronius documents that stored firmware can
 be selected again after an update and that the mobile app may also need an
 update after firmware changes.
 
-Run the following lines of code on your gx device: 
+For a fresh installation, run the following commands on the GX device. This
+block deliberately stops if an es-ESS deployment or staging directory already
+exists; do not use it as an in-place update procedure because that could nest
+directories or overwrite assumptions about the production configuration.
 
-```
-wget https://github.com/AndreiContributor/es-ESS/archive/refs/heads/main.zip
-unzip main.zip "es-ESS-main/*" -d /data
+```sh
+test ! -e /data/es-ESS && test ! -e /data/es-ESS-main || {
+  echo "Existing es-ESS deployment or staging directory found; stop and use a controlled update procedure."
+  exit 1
+}
+wget -O /data/es-ESS-main.zip https://github.com/AndreiContributor/es-ESS/archive/refs/heads/main.zip
+unzip /data/es-ESS-main.zip "es-ESS-main/*" -d /data
 mv /data/es-ESS-main /data/es-ESS
 chmod a+x /data/es-ESS/install.sh
 /data/es-ESS/install.sh
-rm main.zip
+rm /data/es-ESS-main.zip
 ```
 
 `es-ESS` will automatically start - with the default configuration with all services DISABLED. You can now start to modify the file `/data/es-ESS/config.ini` as required. 
@@ -182,10 +189,10 @@ the credential-bearing file cannot be secured.
 
 | Section                  | Value name           |  Descripion                                                                                            | Type          | Example Value                |
 | ------------------------ | ---------------------|------------------------------------------------------------------------------------------------------- | ------------- |------------------------------|
-| [Common]                 | LogLevel             | LogLevel to use. See [Logging](#logging) use `INFO` if you are unsure.                                 | String        | INFO                         |  
+| [Common]                 | LogLevel             | Log level to use. The maintained diagnostic sample uses `APP_DEBUG`; use `INFO` for lower-volume normal operation when the daily-report analyzer is not required. | String | APP_DEBUG |
 | [Common]                 | LogRetentionDays     | Number of local calendar days retained, including the active `current.log`. Must be greater than `0`. | Integer       | 10                           |
 | [Common]                 | NumberOfThreads      | Number of Threads to use. 3-XX depending on enabled service count.                                     | Integer       | 5                            |
-| [Common]                 | ServiceMessageCount  | Number of ServiceMessages to publish on Mqtt. See [Service Messages](#service-messages)                | Integer       | 50                           |
+| [Common]                 | ServiceMessageCount  | Number of ServiceMessages to publish on Mqtt. See [Service Messages](#service-messages)                | Integer       | 20                           |
 | [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 12                           |
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
@@ -194,10 +201,10 @@ the credential-bearing file cannot be secured.
 | [Common]                 | GridSetPointMinW     | Site-approved minimum combined Victron ESS grid setpoint. Must contain `DefaultPowerSetPoint`.         | Number (W)    | -50                          |
 | [Common]                 | GridSetPointMaxW     | Site-approved maximum combined Victron ESS grid setpoint. Must contain `DefaultPowerSetPoint`.         | Number (W)    | -50                          |
 | [Common]                 | HttpRequestTimeout   | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers.                       | Double        | 5                            |
-| [Mqtt]                   | Host                 | Hostname / IP of your main-mqtt to work with.                                                          | String        | mqtt.ad.equinox-solutions.de |
-| [Mqtt]                   | User                 | Username to connect to your main-mqtt.                                                                 | String        | user                         |
-| [Mqtt]                   | Password             | Password to connect to your main-mqtt.                                                                 | String        | secure123!                   |
-| [Mqtt]                   | Port                 | Port to connect to your main-mqtt.                                                                     | Integer       | 1833                         |
+| [Mqtt]                   | Host                 | Hostname / IP of your main MQTT broker.                                                                | String        | localhost                    |
+| [Mqtt]                   | User                 | Username to connect to your main MQTT broker; may be empty for an unauthenticated local broker.       | String        | `<broker user>`              |
+| [Mqtt]                   | Password             | Password to connect to your main MQTT broker. Never copy a documented example into production.        | String        | `<broker password>`          |
+| [Mqtt]                   | Port                 | Port of the main MQTT broker.                                                                          | Integer       | 1883                         |
 | [Mqtt]                   | SslEnabled           | Flag indicating whether the main MQTT connection uses TLS.                                             | Boolean       | true                         |
 | [Mqtt]                   | SslVerification      | `Required`, `CertificateOnly`, or explicit legacy `Insecure`.                                          | String        | Required                     |
 | [Mqtt]                   | SslCaFile            | Optional readable CA/certificate file. Empty `Required` mode uses the system trust store.              | Path          | /data/keys/broker-ca.crt     |
@@ -275,7 +282,7 @@ falls back from verified TLS.
 
 > :information_source: Diagnostic MQTT output only
 
-<img align="right" src="https://github.com/realdognose/es-ESS/blob/main/img/TimeToGo.png" /> 
+<img align="right" src="img/TimeToGo.png" />
 
 #### Overview
 
@@ -304,7 +311,7 @@ TimeToGoCalculator requires a few variables to be set in `/data/es-ESS/config.in
 | ---------- | ---------|---- | ------------- |--|
 | [Common]  | BatteryCapacityInWh  | Your batteries capacity in Wh.  | Integer| 28000 |
 | [Services]    | TimeToGoCalculator | Flag, if the service should be enabled or not | Boolean | true |
-| [TimeToGoCalculator]  | UpdateInterval | Time in milliseconds for TimeToGo calculations. Must be greater than `0`; smaller values reduce flickering when a BMS sends `null`, but also run the calculation more frequently. | Integer  | 1000 |
+| [TimeToGoCalculator]  | UpdateInterval | Time in milliseconds between TimeToGo calculation attempts. Must be greater than `0`; incomplete input cycles are skipped without overwriting the last valid diagnostic value. | Integer  | 1000 |
 
 # MqttTemperatures
 > :white_check_mark: Production Ready
@@ -314,11 +321,11 @@ MqttTemperatures is a streight-forward feature: It allows you to read temperatur
 
 | Example View |
 |:-------------------------:|
-|<img src="https://github.com/realdognose/es-ESS/blob/main/img/mqttTemperature.png"> |
+|<img src="img/mqttTemperature.png"> |
 
 | Example View with Details |
 |:-------------------------:|
-|<img src="https://github.com/realdognose/es-ESS/blob/main/img/mqttTemperatureGarden.png"> |
+|<img src="img/mqttTemperatureGarden.png"> |
 
 ### Configuration
 MqttTemperatures requires a few variables to be set in `/data/es-ESS/config.ini`: 
@@ -337,7 +344,7 @@ MqttTemperatures requires a few variables to be set in `/data/es-ESS/config.ini`
 
 | Example Config file with multiple sections added |
 |:-------------------------:|
-|<img src="https://github.com/realdognose/es-ESS/blob/main/img/mqttTemperatureExampleConf.png"> |
+|<img src="img/mqttTemperatureExampleConf.png"> |
 
 # MqttExporter
 
@@ -356,7 +363,7 @@ MqttExporter requires a few variables to be set in `/data/es-ESS/config.ini`:
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
-| [Services]    | MqttExporter | Flag, if the service should be enabled or not | Boolean | true 
+| [Services]    | MqttExporter | Flag, if the service should be enabled or not | Boolean | true |
 
 For every value you want to export, you have to create a additional section, specifying export-conditions. This is quite a bunch of work, but generally only done once. 
 
@@ -371,7 +378,8 @@ Each section needs to match the pattern `[MqttExporter:uniqueKey]` where uniqueK
 
 **Note that dbus-paths start with a "/" and MQTT Topics don't.**
 
-To export values from DBus to your mqtt server, you need to specify 3 variables per export
+To export values from D-Bus to your MQTT server, specify the three required
+variables `Service`, `DbusKey`, and `MqttTopic`. `PublishType` is optional.
 You can create as many exports as you like, just increase the number of the sections added to the ini file.
 
 ### Service name ###
@@ -384,35 +392,35 @@ if you want to export from a certain service (like bms) you can use dbus-spy in 
   
 | use `dbus-spy` to find the servicename |
 |:-------:|
-|<img src="https://github.com/realdognose/es-ESS/blob/main/img/mqttExporter1.png" />|
+|<img src="img/mqttExporter1.png" />|
 </div>
 
 <div align="center">
 
 | use `dbus-spy` to find the desired Dbus-keys (right arrow key) |
 |:-------:|
-|<img src="https://github.com/realdognose/es-ESS/blob/main/img/mqttExporter2.png" />|
+|<img src="img/mqttExporter2.png" />|
 </div>
 
 <div align="center">
 
 | create config entries |
 |:-------:|
-|<img src="https://github.com/realdognose/es-ESS/blob/main/img/mqttExporter3.png" />|
+|<img src="img/mqttExporter3.png" />|
 </div>
 
 <div align="center">
 
 | Values on MQTT |
 |:-------:|
-|<img src="https://github.com/realdognose/es-ESS/blob/main/img/mqttExporter4.png" />|
+|<img src="img/mqttExporter4.png" />|
 </div>
 
 Hint: You can use a trailing `*` on the Mqtt Topic. This will cause the original dbus path to be appended, for example: 
 
-<img src="https://github.com/realdognose/es-ESS/blob/main/img/mqttExporterStar1.png" />
+<img src="img/mqttExporterStar1.png" />
 
-<img src="https://github.com/realdognose/es-ESS/blob/main/img/mqttExporterStar2.png" />
+<img src="img/mqttExporterStar2.png" />
 
 # MqttPvInverter
 
@@ -433,13 +441,13 @@ MqttPvInverter requires a few variables to be set in `/data/es-ESS/config.ini`:
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
-| [Services]    | MqttPvInverter | Flag, if the service should be enabled or not | Boolean | true 
-| [MqttPvInverter]    | EnableZeroFeedin | Experimental, leave to false! | Boolean | false 
-| [MqttPvInverter]    | EnablePvShutdown | Flag, if the Inverters should be shutdown through OpenDTU, when the GX is shutting down PV. | Boolean | true 
-| [MqttPvInverter]    | ZeroFeedinScaleStep | Experimental OpenDTU throttle rate-of-change limit per zero-feed-in cycle. | Double | 0.05
-| [MqttPvInverter]    | ZeroFeedinDistance | Experimental buffer in W subtracted from measured consumption before calculating target inverter power. | Double | 50
-| [MqttPvInverter]    | ZeroFeedinStartSoc | Experimental SOC threshold where zero-feed-in control may begin. | Double | 100
-| [MqttPvInverter]    | StaleTimeoutSeconds | Maximum age of any MQTT message from one inverter before its D-Bus state and cached phase power are invalidated. Must be at least `5`. | Integer (seconds) | 300
+| [Services]    | MqttPVInverter | Flag, if the service should be enabled or not | Boolean | true |
+| [MqttPvInverter]    | EnableZeroFeedin | Experimental; leave disabled unless commissioned on an isolated setup. | Boolean | false |
+| [MqttPvInverter]    | EnablePvShutdown | Flag indicating whether OpenDTU inverters should be shut down when the GX disables PV. | Boolean | false |
+| [MqttPvInverter]    | ZeroFeedinScaleStep | Experimental OpenDTU throttle rate-of-change limit per zero-feed-in cycle. | Double | 0.05 |
+| [MqttPvInverter]    | ZeroFeedinDistance | Experimental buffer in W subtracted from measured consumption before calculating target inverter power. | Double | 50 |
+| [MqttPvInverter]    | ZeroFeedinStartSoc | Experimental SOC threshold where zero-feed-in control may begin. | Double | 100 |
+| [MqttPvInverter]    | StaleTimeoutSeconds | Maximum age of any MQTT message from one inverter before its D-Bus state and cached phase power are invalidated. Must be at least `5`. | Integer (seconds) | 300 |
 
 When zero-feed-in is enabled and the calculated target inverter power is `0`,
 producing inverters with `DtuControlTopic` receive an explicit `0%` OpenDTU
@@ -508,27 +516,30 @@ topics rebuild the cached total.
 
 For every inverter you want to create you have to create a additional section, specifying paths on mqtt. This is quite a bunch of work, but generally only done once. 
 
-Each section needs to match the pattern `[MqttPvInverter:uniqueKey]` where uniqueKey should be an unique identifier.
+Each section must match the case-sensitive pattern
+`[MqttPVInverter:uniqueKey]`, where `uniqueKey` is a unique identifier. The
+global settings section intentionally uses the different spelling
+`[MqttPvInverter]`.
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
-| [MqttPvInverter:XXX]  | CustomName |  Service name, see details bellow | String  | com.victronenergy.system |
-| [MqttPvInverter:XXX]  | VRMInstanceID |  Key of the dbus-value to export | String  | /Ac/Grid/L1/Power |
-| [MqttPvInverter:XXX]  | L1VoltageTopic |  Voltage reported for L1 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | L2VoltageTopic |  Voltage reported for L2 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | L3VoltageTopic |  Voltage reported for L3 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | L1PowerTopic |  Power reported for L1 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | L2PowerTopic |  Power reported for L2 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | L3PowerTopic |  Power reported for L3 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | L1CurrentTopic |  Current reported for L1 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | L2CurrentTopic |  Current reported for L2 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | L3CurrentTopic |  Current reported for L3 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | L1EnergyForwardedTopic |  Counter for the amount of Energy produced on L1 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | L2EnergyForwardedTopic |  Counter for the amount of Energy produced on L2 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | L3EnergyForwardedTopic |  Counter for the amount of Energy produced on L3 | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | TotalEnergyForwardedTopic |  Counter for the amount of Energy produced| String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | TotalPowerTopic |  Total output power | String  | my/mqtt/topic |
-| [MqttPvInverter:XXX]  | DtuControlTopic |  Experimental | String  | my/mqtt/topic|
+| [MqttPVInverter:XXX]  | CustomName | Display name used for the emulated PV inverter in Venus OS/VRM. | String | Roof PV |
+| [MqttPVInverter:XXX]  | VRMInstanceID | Unique numeric D-Bus/VRM device instance. | Integer | 1008 |
+| [MqttPVInverter:XXX]  | L1VoltageTopic | Voltage reported for L1. | String | site/pv/l1/voltage |
+| [MqttPVInverter:XXX]  | L2VoltageTopic | Voltage reported for L2. | String | site/pv/l2/voltage |
+| [MqttPVInverter:XXX]  | L3VoltageTopic | Voltage reported for L3. | String | site/pv/l3/voltage |
+| [MqttPVInverter:XXX]  | L1PowerTopic | Power reported for L1. | String | site/pv/l1/power |
+| [MqttPVInverter:XXX]  | L2PowerTopic | Power reported for L2. | String | site/pv/l2/power |
+| [MqttPVInverter:XXX]  | L3PowerTopic | Power reported for L3. | String | site/pv/l3/power |
+| [MqttPVInverter:XXX]  | L1CurrentTopic | Current reported for L1. | String | site/pv/l1/current |
+| [MqttPVInverter:XXX]  | L2CurrentTopic | Current reported for L2. | String | site/pv/l2/current |
+| [MqttPVInverter:XXX]  | L3CurrentTopic | Current reported for L3. | String | site/pv/l3/current |
+| [MqttPVInverter:XXX]  | L1EnergyForwardedTopic | Produced-energy counter for L1. | String | site/pv/l1/energy |
+| [MqttPVInverter:XXX]  | L2EnergyForwardedTopic | Produced-energy counter for L2. | String | site/pv/l2/energy |
+| [MqttPVInverter:XXX]  | L3EnergyForwardedTopic | Produced-energy counter for L3. | String | site/pv/l3/energy |
+| [MqttPVInverter:XXX]  | TotalEnergyForwardedTopic | Total produced-energy counter. | String | site/pv/energy |
+| [MqttPVInverter:XXX]  | TotalPowerTopic | Total output power. | String | site/pv/power |
+| [MqttPVInverter:XXX]  | DtuControlTopic | Optional experimental OpenDTU control-topic prefix. | String | site/opendtu/inverter/0 |
 
 Example: You don't need to provide all values, if it's a single phased inverter: 
 <img width="647" height="374" alt="image" src="https://github.com/user-attachments/assets/33bc3d45-37d1-4f3f-a220-1b828e705fc7" />
@@ -586,13 +597,13 @@ surplus:
 
 | Charging | Phase Switch | Waiting for Sun | Cooldown Information |
 |:-------:|:-------:|:-------:|:-------:|
-| <img src="https://github.com/realdognose/es-ESS/blob/main/img/wattpilot_3phases.png" /> | <img src="https://github.com/realdognose/es-ESS/blob/main/img/wattpilot_switching_to_3.png" /> | <img src="https://github.com/realdognose/es-ESS/blob/main/img/wattpilot_waitingSun.png" />| <img src="https://github.com/realdognose/es-ESS/blob/main/img/wattpilot_start.png" /> <br /> <img src="https://github.com/realdognose/es-ESS/blob/main/img/wattpilot_stop.png" />| 
+| <img src="img/wattpilot_3phases.png" /> | <img src="img/wattpilot_switching_to_3.png" /> | <img src="img/wattpilot_waitingSun.png" />| <img src="img/wattpilot_start.png" /> <br /> <img src="img/wattpilot_stop.png" />|
 
 <div align="center">
 
 | Full integration |
 |:-------:|
-|<img src="https://github.com/realdognose/es-ESS/blob/main/img/SolarOverheadConsumers%202.png" />|
+|<img src="img/SolarOverheadConsumers%202.png" />|
 | VRM and the Wattpilot app both show useful status. Auto/Eco PV control is owned by es-ESS; Manual mode remains owned by the Wattpilot user. |
 </div>
 
@@ -617,7 +628,7 @@ python -m pip install websocket-client
 
 ### Configuration
 
-<img align="right" src="https://github.com/realdognose/es-ESS/blob/main/img/wattpilot_controls.png" /> 
+<img align="right" src="img/wattpilot_controls.png" />
 
 FroniusWattpilot uses `/data/es-ESS/config.ini` at runtime. The complete
 maintained sample is `config.sample.ini`; new installs copy that file to
@@ -638,10 +649,10 @@ Before enabling Auto/Eco PV control:
   Console EVCS mode control or the dedicated VRM EV Charging Station widget
   on the Android home screen. The EVCS area inside the VRM mobile app's
   installation schematic is informational and is not the Android home-screen
-  widget. Operator validation on 2026-07-15 confirmed that, with Manual shown,
-  pressing the home-screen widget's right arrow once restores Auto. The
-  Solar.wattpilot app `2.1.0` refuses to activate Eco while both Eco options
-  are off, so it cannot perform this transition. es-ESS permits the
+  widget. With Manual shown, press the home-screen widget's right arrow once to
+  request Auto. The validated Solar.wattpilot app `2.1.0` refuses to activate
+  Eco while both Eco options are off, so it cannot perform this transition.
+  es-ESS permits the
   VRM-requested `lmo=4` transition only when both settings are confirmed off.
   Do not connect the vehicle until `/CommandAuthorityOk=1`.
 - Firmware `42.5` reports native status `114` whenever raw Eco mode is active
@@ -712,15 +723,11 @@ bypasses the normal five-minute idle-report throttle and is reflected on
 `/ModeLiteral` by the next five-second controller cycle. Unchanged disconnected
 state remains on the low-frequency idle cadence.
 
-Production validation on 2026-07-15 completed this correlation with the vehicle
-disconnected. A local Standard selection propagated from raw `lmo=3` to public
-Manual in 5.080 seconds. A failed Android widget attempt reported a VRM
-realtime/MQTT delivery error and produced no es-ESS `/Mode` event. On retry, the
-Android home-screen widget's `/Mode=1` request, raw `lmo=4`, and public Auto
-state completed in 130 ms server-observed time. The final snapshot retained
-healthy sole-owner authority with no unintended current, phase, or force-state
-commands. The GX capture is
-`/data/es-ess-mode-boundary-20260715-155537.log`.
+Use the production health monitor to correlate operator actions, raw `lmo`
+telemetry, and the published mode. A failed VRM realtime/MQTT action produces
+no es-ESS `/Mode` event; restore the real-time connection before retrying.
+Supported disconnected transitions must not produce unintended current, phase,
+or force-state commands.
 
 > :warning: **FAKE-BMS injection**:<br /> This feature is creating FAKE-BMS information on dbus. Make sure to manually select your *actual* BMS unter *Settings > System setup > Battery Monitor* else your ESS may not behave correctly anymore. Don't leave this setting to *Automatic*
 
@@ -736,8 +743,8 @@ commands. The GX capture is
 | [FroniusWattpilot]  | OverheadPriority | SolarOverheadDistributor priority used for Wattpilot allowance requests. | Integer | 35 |
 | [FroniusWattpilot]  | ResetChargedEnergyCounter |  Define when the counters *Charge Time* and *Charged Energy* in VRM should reset. Options: OnDisconnect, OnConnect| String  | OnDisconnect |
 | [FroniusWattpilot]  | Position | Position, where the Wattpilot is connected to. Options: 0:=ac-out, 1:=ac-in | Integer  | 0 |
-| [FroniusWattpilot]  | Host | hostname / ip of Wattpilot | String  | 10.10.20.47 |
-| [FroniusWattpilot]  | Password | Password of Wattpilot | String  | password |
+| [FroniusWattpilot]  | Host | Hostname or IP address of Wattpilot; replace this example address as needed. | String  | 192.168.1.101 |
+| [FroniusWattpilot]  | Password | Wattpilot password; replace this placeholder before enabling the service. | String  | change-me |
 | [FroniusWattpilot]  | HibernateMode | When `false`, idle polling keeps the Wattpilot connection available. When `true`, es-ESS intentionally disconnects while no EV is connected and reconnects about every five minutes for a status probe, which can delay car detection. Remote mode changes through VRM are unsupported while disconnected; Scheduled is only a best-effort probe, not a supported keep-awake/control path. | Boolean  | false |
 | [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. Must be within `6..32 A`. | Integer (A) | 6 |
 | [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. Must be within `6..32 A` and at least `MinCurrentPerPhase`; the controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
@@ -978,12 +985,20 @@ automated checks, restoration steps, and later active-charging validation are
 documented in
 [docs/wattpilot-command-ownership-validation.md](docs/wattpilot-command-ownership-validation.md).
 
-### Low Price Charging. 
-Wattpilot supports the function to charge due to cheap grid prices, you can use the builtin feature as you are used to. es-ESS will then detect,
-whenever Wattpilot is charging due to cheap prices and NOT take over any control. 
+### Low-price charging
 
-> :warning: **Hint**:<br /> Using Low Price-Charging would cause your home battery to kick in. Using this feature therefore only makes sence, if you enable the [NoBatToEV](#nobattoev) Service as well, which will offload any power drawn by the EV to the grid,
-as long as it is NOT covered by local solar production.
+Low-price charging is a native Wattpilot reason, not a PV-surplus allowance. In
+Auto with `AllowGridCharging=false`, es-ESS reports the safety action and stops
+the EV charge. When grid charging is explicitly permitted, es-ESS reports the
+native charging state without converting it into a PV-start decision. Manual
+mode remains user-controlled and reporting-only.
+
+Low-price charging can use grid energy and may also cause the stationary
+battery to support the EV, depending on the ESS configuration. Do not enable
+`NoBatToEV` merely as a generic workaround: it intentionally changes the grid
+setpoint and conflicts with the recommended no-grid Auto/Eco profile. Use it
+only with site-approved grid-setpoint bounds and a separately commissioned
+energy policy.
 
 ### Credits
 Wattpilot control functionality has been taken from https://github.com/joscha82/wattpilot and modified to extract all variables required for full integration.
@@ -998,8 +1013,13 @@ The wattpilot app is reporting the time since the car has been plugged in. Espec
 
 > Sometimes VRM is displaying `Stop charging`, `Start charging` or `Switching phasemode` for a long time? 
 
-Whenever one of the preconfigured Start/Stop- or Phaseswitchtimes are exhausted, es-ESS will display the status until the cooldown is passed, or conditions change again. 
-So, whenever a sun shortage requires to stop charging, but you have 250s left on the on/off cooldown, VRM will display `Stop charging` for 250s. This is, so you are aware that - even if there is grid-pull happening - wattpilot is about to stop as soon as conditions allow for it. For more details about the current state, you can review the respective service messages topic on mqtt: `es-ESS/{service}/ServiceMessages/ServiceMessageType.Operational`
+Transition statuses can remain visible while a configured start/stop or phase
+condition is accumulating or while the Wattpilot confirms a command. Safety
+paths are separate: stale required telemetry and the no-grid import guard can
+stop or reduce Auto/Eco earlier than a normal cooldown. Inspect the runtime
+status paths and the service-message topic
+`es-ESS/{service}/ServiceMessages/ServiceMessageType.Operational` for the
+actual active condition.
 
 # NoBatToEV
 > :large_orange_diamond: Release-Candiate-Version: Feature is still undergoing development, but current version is already satisfying.
@@ -1011,12 +1031,12 @@ your ev charge, consumption and available solar - and offloads any overhead-ev-c
 
 | Example |
 |:-------------------------:|
-|<img src="https://github.com/realdognose/es-ESS/blob/main/img/nobattoev.png"> |
+|<img src="img/nobattoev.png"> |
 | With 0 Solar available, basically the whole ev-charge is offloaded to the grid, while the battery only powers the remaining loads.|
 
 | Example 2 |
 |:-------------------------:|
-|<img src="https://github.com/realdognose/es-ESS/blob/main/img/nobattoev2.png"> |
+|<img src="img/nobattoev2.png"> |
 | With Solar available, critical loads and EV Charger is covered as good as possible - and the remaining difference is offloaded to the grid.|
 
 Adjusting the Grid-Setpoints of the multiplus is not resulting in a 10W-Precission. Especially with Solar beeing available, the battery will 
@@ -1033,14 +1053,16 @@ NoBatToEV requires a few variables to be set in `/data/es-ESS/config.ini`:
 | [Common]     | VRMPortalID |  Your portal ID to access values on mqtt / dbus |String | VRM0815 |
 | [Common]     | DefaultPowerSetPoint |  Default Power SetPoint, so it can be restored after ev charge finished. | double | -50 |
 | [Common]     | GridSetPointMinW | Minimum site-approved final grid setpoint. | double | -50 |
-| [Common]     | GridSetPointMaxW | Maximum site-approved final grid setpoint. | double | 12000 |
+| [Common]     | GridSetPointMaxW | Maximum site-approved final grid setpoint. Keep equal to the baseline until the required import range is approved. | double | -50 |
 | [NoBatToEV]  | UseRelay | can be -1 (disabled) or 0 or 1. Then NoBatToEV will only be "active", when the Relay 0 or 1 is turned on. (Relay Toggles are available in VRM)|
 
-> :warning: NOTE: this feature manipulates the grid set point in order to achieve proper offloading of your evs energy demand. Several precautions ensure that the configured default grid set point
-> is restored when the service is receiving proper shutdown signals (aka SIGTERM) or any kind of internal error appears. - However, in case of unexpected
-> powerlosses of your GX-device, complete Hardware-failure, networking-issues or usage of the `reboot` command on the cerbo that may not be the case.
-> I have never expierienced issues with that, hence I can't tell what the multiplus will do, if the cerbo `dies`, while the grid set point is -5000 Watt or something.
-> I assume, Worstcase, your multiplus will keep charging your houses battery until there is no more consumer for such a (stuck) grid request.
+> :warning: **Grid-setpoint ownership:** This feature changes the Victron ESS
+> grid setpoint. Orderly shutdown restores the configured baseline, but an
+> abrupt GX, process, broker, or network failure may leave the last externally
+> published setting in effect until another owner replaces it. The resulting
+> system behavior depends on the commissioned Venus/ESS configuration. After an
+> abnormal interruption, inspect the active grid setpoint and explicitly
+> restore the approved baseline before resuming operation.
 
 During an orderly shutdown, es-ESS sends the configured default grid set point
 as a forced QoS 1 MQTT publication and waits for acknowledgement for up to two
@@ -1048,8 +1070,8 @@ seconds before disconnecting MQTT. Shutdown still continues if the broker does
 not acknowledge within that bound.
 
 The final combined setpoint is clamped to `GridSetPointMinW..GridSetPointMaxW`
-and each distinct clamp is logged. Version 11 migrates both bounds to the
-existing `DefaultPowerSetPoint`, which deliberately prevents dynamic
+and each distinct clamp is logged. The maintained configuration initializes
+both bounds to `DefaultPowerSetPoint`, which deliberately prevents dynamic
 NoBatToEV adjustments until the operator enters limits approved for the local
 ESS, grid connection, protection, and contract. The bounds are safety policy,
 not a substitute for Victron input-current or inverter limits.
@@ -1070,12 +1092,12 @@ Shelly3EMGrid requires a few variables to be set in `/data/es-ESS/config.ini`:
 | [Shelly3EMGrid]     | CustomName |  Display Name of the device in VRM | String | Shelly 3EM (Grid) |
 | [Shelly3EMGrid]     | PollFrequencyMs | Interval in milliseconds to query the Shelly JSON API. Must be greater than `0`. | int | 1000 |
 | [Shelly3EMGrid]     | Username |  Username of the Shelly | String | User |
-| [Shelly3EMGrid]     | Password |  Password of the Shelly | String | JG372FDr |
-| [Shelly3EMGrid]     | Host |  IP / Hostname of the Shelly | String | 192.168.136.87 |
-| [Shelly3EMGrid]     | Metering | Type of Measurement. See Info bellow. `Default` or `Net` | String | Default
+| [Shelly3EMGrid]     | Password | Password of the Shelly. | String | `<device password>` |
+| [Shelly3EMGrid]     | Host | IP / hostname of the Shelly. | String | 192.0.2.87 |
+| [Shelly3EMGrid]     | Metering | Type of measurement. See below: `Default` or `Net`. | String | Default |
 
-When adjusting the `PollFrequencyMs`, you should check the log file regulary. The Device is polled with exactly `PollFrequencyMs`
-Timeout, so requests do not pile up. Whenever there are 3 consecutive timeouts, the dbus service will be feed with `null` values, and 
+`PollFrequencyMs` is the worker interval. Each HTTP request uses a timeout of
+half that interval so requests do not pile up. Whenever there are 3 consecutive timeouts, the D-Bus service is fed with `null` values, and
 the device is marked offline, so the overall system notes that it now has to work without grid-meter values.
 
 ### Metering
@@ -1101,9 +1123,9 @@ of inventing consumption or feed-in.
 
 ### Example config
 
-<img src="https://github.com/realdognose/es-ESS/blob/main/img/shelly3emexample.png">
+<img src="img/shelly3emexample.png">
 
-<img src="https://github.com/realdognose/es-ESS/blob/main/img/shelly3emexample2.png">
+<img src="img/shelly3emexample2.png">
 
 # ShellyPMInverter
 > :white_check_mark: Production Ready. 
@@ -1129,25 +1151,25 @@ each config Section needs to match the pattern `[ShellyPMInverter:aUniqueKey]` a
 | [ShellyPMInverter:aUniqueKey]     | CustomName |  Display Name of the device in VRM | String | HMS-Garage |
 | [ShellyPMInverter:aUniqueKey]     | PollFrequencyMs | Interval in milliseconds to query the Shelly JSON API. Must be greater than `0`. | int | 1000 |
 | [ShellyPMInverter:aUniqueKey]     | Username |  Username of the Shelly | String | User |
-| [ShellyPMInverter:aUniqueKey]     | Password |  Password of the Shelly | String | JG372FDr |
-| [ShellyPMInverter:aUniqueKey]     | Host |  IP / Hostname of the Shelly | String | 192.168.136.87 |
+| [ShellyPMInverter:aUniqueKey]     | Password | Password of the Shelly. | String | `<device password>` |
+| [ShellyPMInverter:aUniqueKey]     | Host | IP / hostname of the Shelly. | String | 192.0.2.87 |
 | [ShellyPMInverter:aUniqueKey]     | Phase |  Phase the Shelly / Inverter is connected to. (1-3) | Integer | 2 |
 | [ShellyPMInverter:aUniqueKey]     | Position |  Position, the Shelly / Inverter is connected to your multiplus. 0 = ACIN; 1=ACOUT | Integer | 1 |
 | [ShellyPMInverter:aUniqueKey]     | Relay |  id of the relay, if multiple. | Integer | 0 |
 
-When adjusting the `PollFrequencyMs`, you should check the log file regulary. The Device is polled with exactly `PollFrequencyMs`
-Timeout, so requests do not pile up. Whenever there are 3 consecutive timeouts, the dbus service will be feed with `null` values, and 
+`PollFrequencyMs` is the worker interval. Each HTTP request uses a timeout of
+half that interval so requests do not pile up. Whenever there are 3 consecutive timeouts, the D-Bus service is fed with `null` values, and
 the device is marked offline, so the overall system notes that the inverter is currently considered not producing.
 
 Example Configuration:
 
-<img src="https://github.com/realdognose/es-ESS/blob/main/img/pmInverterExample.png">
+<img src="img/pmInverterExample.png">
 
-<img src="https://github.com/realdognose/es-ESS/blob/main/img/pmInverterExample2.png">
+<img src="img/pmInverterExample2.png">
 
-<img src="https://github.com/realdognose/es-ESS/blob/main/img/pmInverterExample3.png">
+<img src="img/pmInverterExample3.png">
 
-<img src="https://github.com/realdognose/es-ESS/blob/main/img/pmInverterExample4.png">
+<img src="img/pmInverterExample4.png">
 
 
 # SolarOverheadDistributor
@@ -1172,13 +1194,16 @@ Each consumer is represented as a FAKE-BMS in VRM, so you can see where your ene
 
 | Example View |
 |:-------------------------:|
-|<img src="https://github.com/realdognose/es-ESS/blob/main/img/SolarOverheadConsumers%203.png"> |
+|<img src="img/SolarOverheadConsumers%203.png"> |
 | <div align="left">The example shows the view in VRM and presents the following information: <br /><br />- There is a a Battery reservation active (only 250W), because it reached 100% SoC. (Idling at 26W)<br />- The consumer *Pool Filter* is requesting a total of 220W, and due to the current allowance, 205W currently beeing consumed, equaling 92.7% of it's request. <br />- The consumer  *Pool Heater* is requesting a total of 750W, and due to the current allowance, 650W currently beeing consumed, equaling 86.6% of it's request. <br />- The consumer  *Waterplay* is requesting a total of 120W, and due to the current allowance, 120W currently beeing consumed, equaling 100% of it's request. <br />- The consumer  *PV Heater* is requesting a total of 3300W, and due to the current allowance, 1067W currently beeing consumed, equaling 32.3% of it's request. <br /> - The consumer [WattPilot](#FroniusWattpilot) is requesting a total of 11388W, and due to the current allowance, 6073W currently beeing consumed, equaling 53.3% of it's request. <br /> - All Consumers are currently running in automatic mode (listening to distribution), this is indicated through the tiny sun icon: ☼ </div>|
 
 #### General functionality
-The SolarOverheadDistributor (re-)distributes power every minute. We have been running tests with more frequent updates, but it turned out that the delay in processing a request/allowance by some consumers is causing issues. 
-Also, when consumption changes, the whole ESS itself needs to adapt, adjust battery-usage, grid-meter has to catch up, values have to be re-read and published in dbus and so on. Finally also the sun may have some ups and downs
-during ongoing calculations. So we decided to go with a fixed value of 1 minute, which is fast enough to adapt quickly but not causing any issues with consumers going on/off due to delays in processing.
+
+SolarOverheadDistributor recalculates allowances every configured
+`UpdateInterval`; the maintained sample uses `5000` ms. Choose an interval that
+allows the ESS, grid meter, consumers, and MQTT/D-Bus feedback to settle. Faster
+updates improve response time but can amplify delayed consumer feedback and
+short PV fluctuations.
 
 ### Usage
 Each consumer can create a SolarOverhead-Request, which then will be accepted or not by the SolarOverheadDistributor based on various parameters. The overall request has to be send to the mqtt topic `es-ESS/SolarOverheadDistributor/Requests` where es-ESS will catch up the request, process it and add the `allowance` property to the request.
@@ -1278,11 +1303,11 @@ the example consumerKey is *waterplay* here.
 | [HttpConsumer:waterplay]    | ~~minimum~~                       | obsolete for on/off NPC-consumers     | ~~Double~~        | ~~0~~|
 | [HttpConsumer:waterplay]    | ~~stepSize~~                         | obsolete for on/off NPC-consumers | ~~Double~~       | ~~120.0~~|
 | [HttpConsumer:waterplay]    | Request                              | Total power this consumer would ever need.                              | Double        | 120.0       | 
-| [HttpConsumer:waterplay]    | OnUrl                              | http(s) url to active the consumer                            | String        | http://shellyOneWaterPlayFilter.ad.equinox-solutions.de/relay/0/?turn=on       | 
-| [HttpConsumer:waterplay]    | OffUrl                              | http(s) url to deactive the consumer                               | String        | http://shellyOneWaterPlayFilter.ad.equinox-solutions.de/relay/0/?turn=off      | 
-| [HttpConsumer:waterplay]    | StatusUrl                              | http(s) url to determine the current operation state of the consumer                            | String        | http://shellyOneWaterPlayFilter.ad.equinox-solutions.de/status       | 
+| [HttpConsumer:waterplay]    | OnUrl                              | HTTP(S) URL to activate the consumer.                            | String        | http://waterplay.example.test/relay/0/?turn=on       |
+| [HttpConsumer:waterplay]    | OffUrl                              | HTTP(S) URL to deactivate the consumer.                          | String        | http://waterplay.example.test/relay/0/?turn=off      |
+| [HttpConsumer:waterplay]    | StatusUrl                              | HTTP(S) URL used to determine the consumer's current state. | String        | http://waterplay.example.test/status       |
 | [HttpConsumer:waterplay]    | IsOnKeywordRegex                              | If this Regex-Match is positive, the consumer is considered *On* (evaluated against the result of statusUrl)                            | String        | "ison":\s*true      | 
-| [HttpConsumer:waterplay]    | PowerUrl                              | http(s) url to determine the current consumption state of the consumer. If left empty, es-ESS will assume `Consumption=Request` while the consumer is switched on.                            | String        | 'http://shellyOneWaterPlayFilter.ad.equinox-solutions.de/status'       | 
+| [HttpConsumer:waterplay]    | PowerUrl                              | HTTP(S) URL used to determine current consumption. If empty, es-ESS assumes `Consumption=Request` while the consumer is on. | String | http://waterplay.example.test/status |
 | [HttpConsumer:waterplay]    | PowerExtractRegex     | Regex to extract the consumption. Has to have a SINGLE matchgroup.                            | String        | "apower":([^,]+),      | 
 
 If the NPC is mqtt controlled, you need to provide the Topics, instead of the URLs:
@@ -1301,11 +1326,11 @@ Example (Screenshots)
 
 Pool-Filter (via a Shelly Pro2 PM) as http-consumer:
 
-<img align="center" src="https://github.com/realdognose/es-ESS/blob/main/img/poolFilterAsHTTP.png">
+<img align="center" src="img/poolFilterAsHTTP.png">
 
 Pool-Heater (via s Shally Pro2 PM) as mqtt-consumer. (Got my own mqtt/rpc infrastructure, tho)
 
-<img align="center" src="https://github.com/realdognose/es-ESS/blob/main/img/poolHeaterAsMqtt.png">
+<img align="center" src="img/poolHeaterAsMqtt.png">
 
 ### Configuration
 SolarOverheadDistributer requires a few variables to be set in `/data/es-ESS/config.ini`: 
@@ -1329,21 +1354,24 @@ In order to have the FAKE-BMS visible in VRM, you need to go to *Settings -> Sys
 
 | Cerbo Configuration for FAKE-BMS |
 |:-----------:|
-| <img align="center" src="https://github.com/realdognose/es-ESS/blob/main/img/cerboSettings.png" /> |
+| <img align="center" src="img/cerboSettings.png" /> |
 </div>
 
 <div align="center">
 
-| Typically usefull equations for `MinBatCharge` |
+| Typical equations for `MinBatteryCharge` |
 |:-----------:|
 | Blue := Linear going down, with a maxium of 5400Watts and a minimum of 400W: `5000-50*SOC+400`|
 | Green := Enforce battery charge of 3000W upto ~ 90% SoC: `3000/(min(SOC,99)-100)+3000`|
-| Red := Just enforce at very low SoC, but 1500W minimum: `(1/(SOC/8)*5000)+1000`|
-| <img align="center" src="https://github.com/realdognose/es-ESS/blob/main/img/socFormula.png"> |
+| Red := Reserve more power at low SOC while avoiding division by zero: `max(1000, 6000-50*SOC)`|
+| <img align="center" src="img/socFormula.png"> |
 </div>
 
 ### Priority Shifting ###
-Priority shifting is a powerfull feature allowing you to control your consumers in a sophisticated way. SolarOverheadDistributor will always give away `StepSize` Watts to a single consumer.
+Priority shifting lets scripted consumers share available power in configured
+steps. SolarOverheadDistributor gives `StepSize` watts to one eligible scripted
+consumer per distribution step. Explicit HTTP/MQTT NPC consumers are atomic and
+receive either their complete `Request` or `0`.
 Once an assignment has been done, and priority shifting is enabled for this consumer, it's priority for the next distribution round is lowered by the given `PriorityShift` value. (defaults to 0,
 if not provided)
 
@@ -1387,7 +1415,7 @@ of 200 Watts, ending at my 11kW EV-Charging station:
 
 | Good day :) |
 |:-----------:|
-| <img align="center" src="https://github.com/realdognose/es-ESS/blob/main/img/example_overhead2.png" /> |
+| <img align="center" src="img/example_overhead2.png" /> |
 
 </div>
 
@@ -1395,7 +1423,7 @@ of 200 Watts, ending at my 11kW EV-Charging station:
 
 | Not so sunny day, but consumers taking any chance. |
 |:-----------:|
-| <img align="center" src="https://github.com/realdognose/es-ESS/blob/main/img/solarOverhead_Gaps.png" /> |
+| <img align="center" src="img/solarOverhead_Gaps.png" /> |
 
 </div>
 
@@ -1403,7 +1431,7 @@ of 200 Watts, ending at my 11kW EV-Charging station:
 
 | yet another day |
 |:-----------:|
-| <img align="center" src="https://github.com/realdognose/es-ESS/blob/main/img/example_overhead1.png" /> |
+| <img align="center" src="img/example_overhead1.png" /> |
 
 </div>
 
@@ -1455,7 +1483,7 @@ verbose levels for stability testing.
 
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
-| [Common]    | LogLevel |  Options: TRACE, DEBUG, APP_DEBUG, INFO, WARNING, ERROR, CRITICAL | String | INFO |
+| [Common]    | LogLevel | Options: TRACE, DEBUG, APP_DEBUG, INFO, WARNING, ERROR, CRITICAL. The maintained diagnostic sample uses APP_DEBUG; INFO is suitable for lower-volume normal operation when daily-report analysis is not needed. | String | APP_DEBUG |
 | [Common]    | LogRetentionDays | Local calendar days retained, including `current.log`; must be greater than `0`. | Integer | 10 |
 
 `APP_DEBUG` is a level higher than regular `DEBUG`, so this will surpress Debug messages of third party modules as long as they obey the setup log level.
@@ -1464,7 +1492,7 @@ verbose levels for stability testing.
 
 | Logrotation to avoid filling up the disk |
 |:-----------:|
-| <img align="center" src="https://github.com/realdognose/es-ESS/blob/main/img/logrotate.png" /> |
+| <img align="center" src="img/logrotate.png" /> |
 
 </div>
 
@@ -1475,7 +1503,7 @@ Additionally there are the following configuration options available:
 | Section    | Value name |  Descripion | Type | Example Value|
 | ---------- | ---------|---- | ------------- |--|
 | [Common]    | NumberOfThreads |  Number of threads, es-ESS should use. | int | 5 |
-| [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 50 |
+| [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 20 |
 | [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 12 |
 | [Common]    | HttpRequestTimeout | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers. | double | 5 |
 
@@ -1486,7 +1514,7 @@ es-ESS also publishes Operational-Messages as well as Errors, Warnings and Criti
 
 | Service Messages on MQTT |
 |:-----------:|
-| <img align="center" src="https://github.com/realdognose/es-ESS/blob/main/img/ServiceMessages.png" /> |
+| <img align="center" src="img/ServiceMessages.png" /> |
 
 </div>
 
