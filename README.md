@@ -36,6 +36,7 @@ system for at least 10ish years, there will be plenty of updates and/or bugfixes
 - [SolarOverheadDistributor](#solaroverheaddistributor) - Utility to manage and distribute available solar overhead between various consumers.
   - [Scripted-SolarOverheadConsumer](#scripted-solaroverheadconsumer) - Consumers managed by external scripts can to be more complex and join the solar overhead pool.
   - [NPC-SolarOverheadConsumer](#npc-solaroverheadconsumer) - Manage consumers on a simple on/off level, based on available overhead. No programming required.
+- [Accidental-deletion recovery](docs/es-ess-recovery.md) - Preserve a surviving process, logs, runtime data and configuration evidence before a staged reinstall.
 - [Production health monitor](#production-health-monitor) - Read-only GX health snapshot after firmware updates, deploys, config changes and Wattpilot validation runs.
 - [es-ESS daily report](#es-ess-daily-report) - Read-only complete-day runtime, charging-session, phase and safety report.
 - [Dormant service modules](#dormant-service-modules) - Legacy code that is retained for reference but is not available for configuration.
@@ -143,6 +144,29 @@ rm /data/es-ESS-main.zip
 I recommend to complete configuration of a single service, then restart and validate functionality. If you rush through the (quite huge) configuration in a single go, and it
 is not working at the end, it may become hard to find the error without starting over.
 
+If `/data/es-ESS` was deleted manually while es-ESS may still be running, do
+not use the fresh-install block immediately. Deleting Python source files does
+not stop an already-running process, WinSCP deletion does not invoke the
+uninstall backup, and the process may recreate `runtimeData`. Follow the
+[accidental-deletion recovery runbook](docs/es-ess-recovery.md) to preserve
+open-file evidence, logs and runtime data; stop Wattpilot control gracefully;
+and activate a disabled replacement from a staging directory.
+
+Create a private configuration backup outside the application directory after
+each known-good change:
+
+```sh
+mkdir -p /data/es-ESS-backups
+chmod 700 /data/es-ESS-backups
+BACKUP="/data/es-ESS-backups/config.ini.known-good-$(date +%Y%m%d-%H%M%S)"
+cp /data/es-ESS/config.ini "$BACKUP"
+chmod 600 "$BACKUP"
+```
+
+Also retain a private copy on another device. `/data/es-ESS-backups` protects
+against application-folder deletion, but not storage failure or a recovery
+operation that erases the complete `/data` partition.
+
 Handy commands to use during configuration and in generall: 
 
 Restart es-ESS (gracefully - config changes require restart!). The script waits
@@ -186,6 +210,13 @@ have to mind adding / remove values as you enable or disable certain services.
 Install and startup reassert owner-only `0600` permissions on `config.ini`.
 Configuration migration backups use the same mode and startup fails clearly if
 the credential-bearing file cannot be secured.
+
+Credential fields use the password of the named integration. In particular,
+`[FroniusWattpilot] Password` is the Wattpilot device/app-access password, not
+the hotspot/Wi-Fi key, technician password, MQTT password, or Fronius account
+password. Do not print credential-bearing configuration in diagnostics. Python
+INI interpolation is currently enabled, so write each literal `%` in a
+configuration value as `%%`.
 
 | Section                  | Value name           |  Descripion                                                                                            | Type          | Example Value                |
 | ------------------------ | ---------------------|------------------------------------------------------------------------------------------------------- | ------------- |------------------------------|
@@ -744,7 +775,7 @@ or force-state commands.
 | [FroniusWattpilot]  | ResetChargedEnergyCounter |  Define when the counters *Charge Time* and *Charged Energy* in VRM should reset. Options: OnDisconnect, OnConnect| String  | OnDisconnect |
 | [FroniusWattpilot]  | Position | Position, where the Wattpilot is connected to. Options: 0:=ac-out, 1:=ac-in | Integer  | 0 |
 | [FroniusWattpilot]  | Host | Hostname or IP address of Wattpilot; replace this example address as needed. | String  | 192.168.1.101 |
-| [FroniusWattpilot]  | Password | Wattpilot password; replace this placeholder before enabling the service. | String  | change-me |
+| [FroniusWattpilot]  | Password | Wattpilot device/app-access password; this is not the hotspot/Wi-Fi key, technician password, MQTT password, or Fronius account password. Replace the placeholder before enabling the service. | String  | change-me |
 | [FroniusWattpilot]  | HibernateMode | When `false`, idle polling keeps the Wattpilot connection available. When `true`, es-ESS intentionally disconnects while no EV is connected and reconnects about every five minutes for a status probe, which can delay car detection. Remote mode changes through VRM are unsupported while disconnected; Scheduled is only a best-effort probe, not a supported keep-awake/control path. | Boolean  | false |
 | [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. Must be within `6..32 A`. | Integer (A) | 6 |
 | [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. Must be within `6..32 A` and at least `MinCurrentPerPhase`; the controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
@@ -902,6 +933,14 @@ the runtime-status D-Bus/MQTT values match the observed charging state. For
 transport changes, also power-cycle or disconnect the Wattpilot network link
 several times and confirm es-ESS reconnects without duplicate WebSocket worker
 messages or unbounded exceptions.
+
+During a normal Wattpilot start, firmware can initially report as unavailable
+before authentication and full telemetry arrive. A valid commissioning
+sequence continues with `Authentication successful`, actual firmware `42.5`,
+`CompatibilityOk=1`, healthy telemetry, both native command competitors at
+`0`, and `CommandAuthorityOk=1` before an Auto/Eco vehicle connection. A
+missing later confirmation is not a harmless startup warning: commands remain
+blocked and the actionable runtime-status literal must be investigated.
 
 ### Production health monitor
 

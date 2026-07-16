@@ -112,6 +112,21 @@ deployment, or Wattpilot validation work:
   grid-import, phase-switch, Wattpilot command evidence, and raw-to-published
   Wattpilot mode transitions.
 
+### Interpret Disk Usage By Filesystem
+
+The `/` and `/data` rows describe different filesystems. es-ESS, its
+configuration, runtime data, validation captures and local logs live under
+`/data`; available space there determines whether those application files can
+continue growing. The `/` row describes the Venus OS root filesystem and can
+have a very different utilization percentage.
+
+Do not delete unknown Venus OS files merely because `/` reports a high
+percentage, and do not assume free space on `/data` fixes low root-filesystem
+space. Record both available-byte values and their trend, then investigate the
+specific filesystem using the supported Venus OS maintenance procedure. A
+single health snapshot reports current capacity; it does not identify which
+files consumed it.
+
 ## Validate The Wattpilot Mode Boundary
 
 Use this read-only observation with the vehicle disconnected. Synchronize the
@@ -205,6 +220,7 @@ LOG_LINES=800 EVENT_LINES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh
 
 ## Related Documentation
 
+- [Accidental-deletion recovery](es-ess-recovery.md)
 - [es-ESS daily report](es-ess-daily-report.md)
 - [Cerbo GX firmware upgrade and rollback](cerbo-gx-firmware-upgrade-and-rollback.md)
 - [Wattpilot architecture boundaries](wattpilot-architecture.md)

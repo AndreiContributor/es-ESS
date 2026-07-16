@@ -935,6 +935,20 @@ python -m pip install websocket-client
 /data/es-ESS/restart.sh
 tail -f -n 50 /data/log/es-ESS/current.log</pre>
 
+      <div class="callout warning" style="margin-top:24px">
+        <p><strong>Manual deletion is not an uninstall.</strong> If WinSCP or another file tool removed <code>/data/es-ESS</code>, an already-running Python process may continue the previously loaded Auto/Eco behavior, the service symlink may remain, and no uninstall backup is created. Do not reboot or start copying into the production path before preserving logs and open-file evidence. Follow the staged <a href="es-ess-recovery.md">accidental-deletion recovery runbook</a>.</p>
+      </div>
+
+      <h3 style="margin-top:32px">Known-good configuration backups</h3>
+      <p>Keep credential-bearing backups outside the application directory with owner-only permissions, and retain another private copy off the GX device. A backup elsewhere under <code>/data</code> protects against application-folder deletion but not failure or erasure of the complete data partition.</p>
+      <pre>mkdir -p /data/es-ESS-backups
+chmod 700 /data/es-ESS-backups
+BACKUP="/data/es-ESS-backups/config.ini.known-good-$(date +%Y%m%d-%H%M%S)"
+cp /data/es-ESS/config.ini "$BACKUP"
+chmod 600 "$BACKUP"</pre>
+
+      <p><code>[FroniusWattpilot] Password</code> is the Wattpilot device/app-access password, not the hotspot/Wi-Fi key, technician password, MQTT password, or Fronius account password. Python INI interpolation is currently enabled; represent a literal <code>%</code> as <code>%%</code>. A normal successful connection may briefly report firmware unavailable before authentication, but it must continue to authentication success, firmware <code>42.5</code> confirmation, healthy telemetry and validated command authority before the vehicle is connected in Auto/Eco.</p>
+
       <h3 style="margin-top:32px">Optional post-install, post-deploy or post-firmware health snapshot</h3>
       <p>Run this read-only monitor after installation, after a firmware update, after copying a new es-ESS checkout, after changing <code>config.ini</code>, or before a supervised Wattpilot daylight validation. It does not control Wattpilot and does not write D-Bus, MQTT, service or configuration state.</p>
       <pre><span class="comment"># One-time executable bit after the script is present in /data/es-ESS/scripts</span>
@@ -945,6 +959,7 @@ chmod +x /data/es-ESS/scripts/es-ess-health-monitor.sh
 
 <span class="comment"># Longer supervised observation with a saved log</span>
 INTERVAL_SECONDS=10 MAX_SAMPLES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh | tee /data/es-ess-health-$(date +%Y%m%d-%H%M%S).log</pre>
+      <p>The monitor reports <code>/</code> and <code>/data</code> separately. es-ESS files and logs live on <code>/data</code>; high utilization of the Venus OS root filesystem must be investigated independently. Do not remove unknown operating-system files merely to reduce the root percentage. See the <a href="es-ess-health-monitor.md">health-monitor guide</a> for interpretation.</p>
 
       <h3 style="margin-top:32px">Read-only es-ESS daily report</h3>
       <p>Use the daily report for historical/end-of-day validation; the health monitor above remains the live snapshot tool. The analyzer always requires <code>[Common] LogLevel=APP_DEBUG</code> (or more verbose). Yesterday and older dates require a complete requested window. <code>--date today</code> analyzes diagnostic records available from Venus-local midnight through execution and remains <code>INCOMPLETE</code> unless it already proves an <code>ANOMALY</code>. A bounded, exact, read-only query to <code>com.victronenergy.settings /Settings/System/TimeZone</code> makes the report calendar agree with logging even when the shell runs in UTC. It prints the report timezone, requested period, analysis cutoff, first/last evidence, evidence duration, elapsed-period span coverage, and the next local midnight when the full calendar day becomes available. It automatically reads <code>current.log</code> and standard dated rotations. Log lines include their UTC offset, for example <code>2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG ...</code>, while the analyzer remains compatible with older lines that have no offset. Timestamp indexes, marker-routed event parsing, and fast ISO timestamp conversion keep large APP_DEBUG reports practical.</p>
@@ -1164,6 +1179,7 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
         <li><a href="https://www.victronenergy.com/media/pg/Cerbo_GX/en/firmware-updates.html">Cerbo GX firmware update manual</a> — online/offline installation and both rollback methods.</li>
         <li><a href="https://updates.victronenergy.com/feeds/venus/release/images/einstein/">Official Cerbo GX firmware archive</a> — current and older <code>einstein</code> images and <code>.swu</code> files.</li>
         <li><a href="cerbo-gx-firmware-upgrade-and-rollback.md">Local Cerbo GX firmware runbook</a> — es-ESS-specific preparation, upgrade, verification and rollback steps.</li>
+        <li><a href="es-ess-recovery.md">Local accidental-deletion recovery runbook</a> — preserve a surviving process, configuration evidence, logs and runtime data before a staged reinstall.</li>
         <li><a href="es-ess-health-monitor.md">Local es-ESS production health monitor</a> — install, run and interpret read-only health snapshots after firmware updates, deploys, config changes and Wattpilot validation windows.</li>
         <li><a href="es-ess-daily-report.md">Local es-ESS daily report</a> — read-only complete-day runtime, charging-session, allowance, phase, battery-assist, rare-status and safety evidence with strict APP_DEBUG/full-day prerequisites.</li>
         <li><a href="wattpilot-architecture.md">Local Wattpilot architecture contract</a> — command boundaries, Manual-mode protection, no-grid policy, battery assist and runtime-status contracts.</li>
