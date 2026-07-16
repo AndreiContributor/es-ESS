@@ -69,8 +69,9 @@ sha256sum scripts/wattpilot-setting-capture.py
 Pass criteria:
 
 - syntax compilation succeeds;
-- the checksum matches the reviewed script (the 2026-07-14 Gate-1 artifact was
-  `7500734393d18ec7feb21f852b661cd8fc41a14b987cee14c3d8becd48280ba0`);
+- the checksum matches the current artifact reviewed in the development
+  checkout or release package; do not use an older evidence hash as the
+  acceptance value for a newer script;
 - all capture-tool unit tests pass in development/CI;
 - no dependency is installed or upgraded for this procedure.
 
@@ -282,13 +283,14 @@ diagnostic and hardware-free tests before deployment.
    Auto/Eco command owner.
 
    Android widget modes follow Manual `0`, Auto `1`, Scheduled `2`. From Auto,
-   left requests Manual; right requests Scheduled, which es-ESS uses only as a
-   temporary wake-up path before returning to the previous mode. Right-from-
-   Auto can therefore appear unresponsive and is not the Auto-to-Manual
-   direction. If the widget reports `MQTT connection failed`, `failed to send
-   MQTT action`, or that the installation might not be real-time, restore the
-   VRM real-time connection before retrying; that failure means the request did
-   not reach the es-ESS `/Mode` handler.
+   left requests Manual; right requests Scheduled, which es-ESS treats only as
+   a best-effort status probe before returning to the previous mode. It is not a
+   supported keep-awake or control path. Right-from-Auto can therefore appear
+   unresponsive and is not the Auto-to-Manual direction. If the widget reports
+   `MQTT connection failed`, `failed to send MQTT action`, or that the
+   installation might not be real-time, restore the VRM real-time connection
+   before retrying; that failure means the request did not reach the es-ESS
+   `/Mode` handler.
 5. If either native setting changes, authority stays blocked, or any unexpected
    `frc=On`, positive `amp`, or `psm` command appears, stop before connecting
    the vehicle and retain the evidence.

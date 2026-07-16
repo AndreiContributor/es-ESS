@@ -262,7 +262,35 @@
     .adapt-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px 24px; padding: 18px; border: 1px dashed #9caaae; border-radius: 16px; background: rgba(255,255,255,.7); }
     .adapt-item { display: grid; grid-template-columns: minmax(180px, .8fr) 1fr; gap: 12px; padding-bottom: 7px; border-bottom: 1px solid var(--line); }
     .adapt-item strong { font-size: .9rem; }
-    .blank { min-height: 1.4em; border-bottom: 1px dotted #66757b; color: var(--muted); }
+    .blank {
+      width: 100%;
+      min-height: 1.7em;
+      padding: 1px 4px;
+      border: 0;
+      border-bottom: 1px dotted #66757b;
+      border-radius: 0;
+      outline: none;
+      background: transparent;
+      color: var(--ink);
+      font: inherit;
+    }
+    .blank::placeholder { color: var(--muted); opacity: 1; }
+    .blank:focus { border-bottom: 2px solid var(--blue); background: var(--blue-soft); }
+    .worksheet-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: -8px 0 20px; }
+    .worksheet-actions p { margin: 0; color: var(--muted); font-size: .9rem; }
+    .print-worksheet-button {
+      appearance: none;
+      padding: 10px 16px;
+      border: 1px solid var(--navy);
+      border-radius: 10px;
+      background: var(--navy);
+      color: #fff;
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .print-worksheet-button:hover { background: var(--blue); border-color: var(--blue); }
+    .print-worksheet-button:focus-visible { outline: 3px solid rgba(37,116,169,.35); outline-offset: 3px; }
 
     .sources { columns: 2; column-gap: 36px; }
     .sources li { break-inside: avoid; margin-bottom: 12px; }
@@ -292,6 +320,17 @@
       .card, .diagram { box-shadow: none; }
       a { color: inherit; text-decoration: none; }
       pre { white-space: pre-wrap; }
+      .blank { color: #000; border-bottom: 1px dotted #444; }
+      .blank::placeholder { color: #666; }
+      .worksheet-actions { display: none; }
+      body.print-worksheet > .hero,
+      body.print-worksheet > .toc-shell,
+      body.print-worksheet main > section:not(#adapt),
+      body.print-worksheet > footer { display: none !important; }
+      body.print-worksheet main { width: 100%; padding: 0; margin: 0; }
+      body.print-worksheet #adapt { display: block; padding: 0; border: 0; break-inside: auto; }
+      body.print-worksheet .adapt-grid { break-inside: auto; }
+      body.print-worksheet .adapt-item { break-inside: avoid; }
     }
   </style>
 </head>
@@ -632,14 +671,13 @@
           <tr><td><strong>Standard / Manual</strong></td><td>Wattpilot user/app</td><td>Charges at the selected current; grid or battery may support it.</td><td>Reports state but does not continuously start, stop, current-limit or phase-switch. A one-time release clears old Auto/Eco limits when leaving Auto.</td></tr>
           <tr><td><strong>Auto / ECO</strong></td><td>es-ESS, only when firmware 42.5 reports ECO, native <em>Use PV surplus</em> is off and flexible tariff is off</td><td>Starts from assigned real PV allowance. Optional bounded battery assist is continuation-only.</td><td>Missing or conflicting authority telemetry fails closed; safe zero-current and stop commands remain available, while starts, current increases and phase-up are blocked.</td></tr>
           <tr><td><strong>Next Trip</strong></td><td>Native Wattpilot scheduling</td><td>Targets a requested energy/range by a deadline. It may use PV, stored energy or grid power to meet the trip requirement.</td><td>Not a guarantee of PV-only charging. Treat it as an explicit user override for mobility.</td></tr>
-          <tr><td><strong>Flexible-tariff / low-price</strong></td><td>Native Wattpilot logic</td><td>Can intentionally charge when price is low; the stationary battery may discharge before grid import.</td><td>Detected as a native charging reason rather than taken over by the normal PV controller.</td></tr>
+          <tr><td><strong>Flexible-tariff / low-price</strong></td><td>Native Wattpilot logic</td><td>Can intentionally request charging when price is low; its energy source is not guaranteed to be PV.</td><td>In Auto with <code>AllowGridCharging=false</code>, es-ESS stops the charge. In other permitted modes it reports the native reason without converting it into a PV-surplus decision; Manual remains user-controlled.</td></tr>
         </tbody>
       </table>
 
       <div class="callout warning">
-        <p><strong>Single-owner requirement:</strong> with the vehicle disconnected, turn off Solar.wattpilot <em>Use PV surplus</em> and flexible tariff. Select Auto through the VRM web/Remote Console EVCS mode control or the dedicated VRM EV Charging Station widget on the Android home screen. The EVCS area inside the VRM mobile app's installation schematic is informational and is not the Android home-screen widget. Operator validation on 2026-07-15 confirmed that, with Manual shown, pressing the home-screen widget's right arrow once restores Auto. Solar.wattpilot app 2.1.0 refuses to activate Eco while both Eco options are off, so it cannot perform this transition. Connect the vehicle only when <code>/CommandAuthorityOk=1</code>, <code>/NativePvSurplusEnabled=0</code> and <code>/FlexibleTariffEnabled=0</code>. Firmware 42.5 then reports native status 114: the Eco LED alternates white/orange and may keep flashing during successful es-ESS charging. Treat this as expected only while authority and telemetry remain healthy; red LEDs, another status code, or lost authority still require inspection. The native start-up-power slider—including its 10 kW maximum—does not disable native regulation and is not an authority boundary.</p>
+        <p><strong>Single-owner requirement:</strong> with the vehicle disconnected, turn off Solar.wattpilot <em>Use PV surplus</em> and flexible tariff. Select Auto through the VRM web/Remote Console EVCS mode control or the dedicated VRM EV Charging Station widget on the Android home screen. The EVCS area inside the VRM mobile app's installation schematic is informational and is not the Android home-screen widget. With Manual shown, press the home-screen widget's right arrow once to request Auto. The validated Solar.wattpilot app 2.1.0 refuses to activate Eco while both Eco options are off, so it cannot perform this transition. Connect the vehicle only when <code>/CommandAuthorityOk=1</code>, <code>/NativePvSurplusEnabled=0</code> and <code>/FlexibleTariffEnabled=0</code>. Firmware 42.5 then reports native status 114: the Eco LED alternates white/orange and may keep flashing during successful es-ESS charging. Treat this as expected only while authority and telemetry remain healthy; red LEDs, another status code, or lost authority still require inspection. The native start-up-power slider—including its 10 kW maximum—does not disable native regulation and is not an authority boundary.</p>
         <p><strong>Android widget arrows:</strong> modes follow Manual <code>0</code>, Auto <code>1</code>, Scheduled <code>2</code>. Manual-to-Auto uses right; Auto-to-Manual uses left. Right while already in Auto requests Scheduled, which es-ESS treats as a best-effort status probe before returning to the previous mode, so the widget may appear unresponsive. With <code>HibernateMode=true</code>, es-ESS intentionally disconnects while no EV is present; remote mode changes are unsupported while disconnected, and Scheduled is not a supported keep-awake/control path. If the widget reports <code>MQTT connection failed</code>, <code>failed to send MQTT action</code>, or that the installation might not be real-time, restore the VRM real-time connection before retrying; the request has not reached es-ESS.</p>
-        <p><strong>Completed production correlation:</strong> the vehicle-disconnected 2026-07-15 capture is retained as <code>/data/es-ess-mode-boundary-20260715-155537.log</code>. Local raw <code>lmo=3</code> to public Manual took 5.080 seconds. A failed Android widget action produced no es-ESS <code>/Mode</code> event; the successful retry progressed from <code>/Mode=1</code> through raw <code>lmo=4</code> to public Auto in 130 ms server-observed time, restored the white/orange indication, and produced no unintended current, phase, or force-state command.</p>
       </div>
 
       <div class="callout">
@@ -680,7 +718,7 @@ AllowGridCharging=<span class="value">false</span></pre>
       <h3 style="margin-top:30px">What the recommended example permits</h3>
       <ul class="checklist">
         <li>Only an already-running Auto/Eco session can receive assistance.</li>
-        <li>SOC must remain at or above 50% and must have been received within 15 seconds.</li>
+        <li>SOC must be finite and remain at or above 50%; selected-battery <code>/Dc/Battery/Power</code> activity must be no older than 15 seconds because it is the liveness heartbeat for cached SOC.</li>
         <li>The calculated PV shortfall must not exceed 1 kW with the maintained daily-use default.</li>
         <li>One assist window lasts no more than 600 seconds.</li>
         <li>PV must fully recover for 120 seconds before another locked-out assist window becomes available.</li>
@@ -728,7 +766,7 @@ AllowGridCharging=<span class="value">false</span></pre>
       <ul>
         <li>If <code>NoBatToEV=false</code>, no currently active service adds a grid-setpoint request, so es-ESS normally calculates <code>-50 W</code>.</li>
         <li><code>NoBatToEV</code> can add a positive request to offload the EV shortfall to the grid, preventing that EV portion from draining the battery.</li>
-        <li>Version 11 defaults both configured bounds to the existing baseline. Dynamic adjustments therefore remain clamped to that baseline until the operator enters site-approved limits; each distinct clamp is logged.</li>
+        <li>The maintained configuration defaults both bounds to the existing baseline. Dynamic adjustments therefore remain clamped to that baseline until the operator enters site-approved limits; each distinct clamp is logged.</li>
         <li>That behavior conflicts with a no-grid Auto/Eco objective, so keep <code>NoBatToEV=false</code> with the recommended Wattpilot battery-assist profile.</li>
         <li>The dormant <code>ChargeCurrentReducer</code> has a separate setting of the same name in its own section; it is not an active service in this checkout.</li>
         <li>es-ESS republishes the grid setpoint when its calculated value changes. It does not necessarily overwrite every later external change on each five-second management cycle.</li>
@@ -839,7 +877,7 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
           <li><strong>If a cloud passes on one phase: bridge, reduce or stop.</strong><br>For an already-running charge, eligible battery assist may hold the existing one-phase current for up to <code>BatteryAssistMaxSeconds=600</code> when SOC is at least 50%, selected-battery power activity is no older than <code>BatterySocFreshSeconds=15</code>, shortfall is no greater than 1,000 W, grid import remains within the safety limit, and telemetry is fresh. Missing or invalid SOC, or a missing, invalid or stale battery heartbeat, clears/refuses assist. If PV recovers, assist clears and one-phase charging continues. If the deficit persists but assigned PV still supports approximately 1.38 kW, charging reduces to a PV-supported current; below that minimum it stops after <code>AllowanceDropGraceSeconds=30</code>. An assist timeout remains locked out until PV fully covers EV demand for 120 seconds or the car disconnects. A later restart again requires sufficient assigned PV for 60 seconds.</li>
           <li><strong>While already charging on one phase, hold 4,500 W for 10 minutes: become eligible for three phases.</strong><br>Once assigned allowance reaches <code>ThreePhasePvSurplusStartW=4500</code>, the shared <code>MinPhaseSwitchSeconds=600</code> timer begins. On the normal adjustment path, a dip shorter than <code>SurplusDropGraceSeconds=30</code> preserves the candidate only above the effective three-phase floor; a deeper or longer normally evaluated dip resets it. If bounded battery assist is actively holding the existing one-phase charge, an already-started candidate timer is intentionally left running even through a deeper dip, potentially for up to <code>BatteryAssistMaxSeconds=600</code>. Assist cannot create the candidate or switch phases. Fresh assigned allowance must recover to the full 4,500 W before the controller can command and confirm three-phase mode. The 4,500 W default remains above the normal three-phase 6 A floor while making phase-up less conservative than a 5,000 W threshold.</li>
           <li><strong>With sufficient PV: stay on three phases.</strong><br>There is no maximum three-phase duration. Charging can remain in that mode indefinitely while assigned PV stays above the effective phase-down threshold.</li>
-          <li><strong>A cloud lowers PV: debounce one short assignment drop, then bridge when safe.</strong><br>The configured stop threshold is <code>ThreePhasePvSurplusStopW=4100</code>, but the effective threshold is the greater of 4,100 W and the three-phase electrical minimum—about 4.14 kW at 230 V and 6 A. Because the three-phase request is atomic, SolarOverheadDistributor truthfully assigns <code>0 W</code> when it cannot provide the full electrical minimum. A running charge keeps that truthful <code>0 W</code> telemetry but retains its current phase/current for up to <code>AllowanceDropGraceSeconds=30</code>; recovery clears the timer, so a short passing-cloud or worker-ordering dip does not force a phase change. Stale grid telemetry and the grid-import guard are never delayed. For a longer bridge, valid battery SOC at least <code>BatteryAssistSocMin=50</code>, selected-battery power activity no older than <code>BatterySocFreshSeconds=15</code>, and shortfall no greater than <code>BatteryAssistMaxShortfallW=1000</code> may sustain the already-running charge for at most <code>BatteryAssistMaxSeconds=600</code>. A higher shortfall setting is more tolerant of clouds but allows deeper battery contribution before reduction or phase-down.</li>
+          <li><strong>A cloud lowers PV: debounce a brief allowance drop, then bridge when safe.</strong><br>The configured stop threshold is <code>ThreePhasePvSurplusStopW=4100</code>, while the effective threshold also respects the live three-phase electrical minimum. If the distributor cannot satisfy that atomic request, it truthfully publishes <code>0 W</code>. An already-running charge retains its current command for up to <code>AllowanceDropGraceSeconds=30</code>; recovery clears the timer, while a sustained deficit proceeds to phase-down or stop. Stale grid telemetry and the grid-import guard are never delayed. Eligible battery assist may bridge a longer shortfall only within the configured SOC, battery-activity, power and duration bounds.</li>
           <li><strong>PV recovers during the bridge: remain on three phases.</strong><br>The phase-down candidate is cancelled when assigned PV again supports three phases. Full PV coverage for <code>BatteryAssistRecoverySeconds=120</code> satisfies the configured assist-recovery condition.</li>
           <li><strong>The deficit persists: reduce phase or stop.</strong><br>After the shared phase timer, the controller switches to one phase when fresh allowance can support it; otherwise it stops. If SOC falls below 50%, the shortfall exceeds 1,000 W, assist times out, or other allowance conditions make the long bridge ineligible, phase reduction or stop may occur after the 30-second allowance-drop grace and before the normal 10-minute wait completes. Stale grid telemetry and sustained grid import retain their earlier safety response.</li>
           <li><strong>Later phase-up normally requires stability again.</strong><br>After a completed phase-down, a new 1-to-3 candidate again uses the shared 600-second stability/cooldown setting. During an eligible one-phase battery bridge, however, an existing candidate may mature while PV is low; if fresh allowance then recovers to at least 4,500 W, the controller may switch without starting another complete 600-second interval. The full threshold at the command boundary prevents a battery-only phase-up.</li>
@@ -871,14 +909,19 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
         <li><strong>Commission with low risk.</strong><br>Start with the vehicle disconnected, conservative current limits, <em>Use PV surplus</em> off, flexible tariff off, and supervision at the site. Select Auto through the VRM web/Remote Console EVCS mode control or, on Android, press right once from Manual in the dedicated home-screen VRM EV Charging Station widget. Do not confuse it with the informational EVCS area inside the VRM app installation schematic. Connect the vehicle only after the authority diagnostic is healthy. Validate one-phase operation before allowing the three-phase threshold to be reached.</li>
       </ol>
 
-      <h3 style="margin-top:32px">GX shell commands</h3>
-      <pre><span class="comment"># Download the current main branch</span>
-wget https://github.com/AndreiContributor/es-ESS/archive/refs/heads/main.zip
-unzip main.zip "es-ESS-main/*" -d /data
+      <h3 style="margin-top:32px">GX shell commands for a fresh installation</h3>
+      <p>Use this block only when neither <code>/data/es-ESS</code> nor the staging directory exists. It deliberately stops instead of overwriting an existing deployment or production configuration.</p>
+      <pre><span class="comment"># Download the current main branch for a fresh install</span>
+test ! -e /data/es-ESS &amp;&amp; test ! -e /data/es-ESS-main || {
+  echo "Existing es-ESS deployment or staging directory found; stop and use a controlled update procedure."
+  exit 1
+}
+wget -O /data/es-ESS-main.zip https://github.com/AndreiContributor/es-ESS/archive/refs/heads/main.zip
+unzip /data/es-ESS-main.zip "es-ESS-main/*" -d /data
 mv /data/es-ESS-main /data/es-ESS
 chmod a+x /data/es-ESS/install.sh
 /data/es-ESS/install.sh
-rm main.zip
+rm /data/es-ESS-main.zip
 
 <span class="comment"># Wattpilot transport dependency (if not already installed)</span>
 opkg update
@@ -988,6 +1031,7 @@ opkg install python3-pip
 python -m pip install websocket-client
 python -c "import websocket; print('websocket-client OK')"
 python -c "import paho.mqtt.client, websocket; print('Python dependencies OK')"
+svc -u /service/es-ESS
 svstat /service/es-ESS
 
 /data/es-ESS/restart.sh
@@ -1052,14 +1096,14 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
           <tr><td>Manual boundary</td><td>Select Standard/Manual and change current in the Wattpilot app.</td><td>es-ESS reports the state but does not continuously counter-command the user.</td></tr>
           <tr><td>Command authority</td><td>With the vehicle disconnected, enable native <em>Use PV surplus</em>, observe the block, turn it off, then select Auto from the VRM web/Remote Console EVCS mode control or press right once from Manual in the dedicated Android home-screen EVCS widget.</td><td>Invalid authority blocks starts, positive current and phase-up. Healthy authority requires ECO plus both native setting observations at <code>0</code>. A VRM MQTT/realtime delivery error means no mode action reached es-ESS.</td></tr>
           <tr><td>No-surplus start</td><td>Connect the car when PV allowance is below about one-phase minimum.</td><td>Auto/Eco waits; battery assist does not create a start.</td></tr>
-          <tr><td>One-phase start</td><td>Increase genuine PV above minimum for <code>MinOnOffSeconds</code>.</td><td>Charge starts on one phase at a bounded current.</td></tr>
-          <tr><td>Phase-up</td><td>Hold assigned allowance above <code>ThreePhasePvSurplusStartW</code>.</td><td>Three-phase command occurs only after <code>MinPhaseSwitchSeconds</code> and is confirmed from telemetry.</td></tr>
-          <tr><td>Transient three-phase allowance drop</td><td>While already charging on three phases, observe one fresh atomic <code>0 W</code> allowance followed by recovery inside <code>AllowanceDropGraceSeconds</code>.</td><td><code>/PvAllowance</code> truthfully shows 0 W, but no phase or stop command occurs; recovery clears the grace timer. A sustained drop reduces phase or stops at expiry. Grid safety remains immediate.</td></tr>
-          <tr><td>Cloud bridge</td><td>Reduce PV so shortfall is under 1 kW while SOC is above 50%.</td><td>Existing charge is held temporarily; runtime status shows assist active. Larger shortfalls should reduce current, phase down or stop earlier.</td></tr>
-          <tr><td>Assist timeout</td><td>Keep the shortfall present beyond 600 seconds.</td><td>Assist locks out; controller reduces to one phase or stops according to fresh allowance.</td></tr>
-          <tr><td>Grid guard</td><td>Supervised test causing import above 300 W for 15 seconds.</td><td>No-grid Auto/Eco stops or safely reduces; Manual remains user-controlled.</td></tr>
-          <tr><td>Telemetry failure</td><td>Temporarily interrupt grid, allowance or selected-battery telemetry.</td><td>New Auto/Eco start is blocked for required grid/allowance data; invalid SOC or stale battery activity clears/refuses assist and reservation bypass. Manual remains user-controlled.</td></tr>
-          <tr><td>Network recovery</td><td>Restart or disconnect Wattpilot networking.</td><td>Status becomes unavailable, then reconnects without duplicate control workers.</td></tr>
+          <tr><td>One-phase start</td><td>During supervised operation, observe genuine PV naturally remain above minimum for <code>MinOnOffSeconds</code>.</td><td>Charge starts on one phase at a bounded current.</td></tr>
+          <tr><td>Phase-up</td><td>Observe a natural interval with assigned allowance above <code>ThreePhasePvSurplusStartW</code>.</td><td>Three-phase command occurs only after <code>MinPhaseSwitchSeconds</code> and is confirmed from telemetry.</td></tr>
+          <tr><td>Transient three-phase allowance drop</td><td>Review a naturally observed event, retained production evidence, or hardware-free test where one fresh atomic <code>0 W</code> allowance recovers inside <code>AllowanceDropGraceSeconds</code>.</td><td><code>/PvAllowance</code> truthfully shows 0 W, but no phase or stop command occurs; recovery clears the grace timer. A sustained drop reduces phase or stops at expiry. Grid safety remains immediate.</td></tr>
+          <tr><td>Cloud bridge</td><td>Observe a natural shortfall under 1 kW while SOC is above 50%, or use hardware-free tests.</td><td>Existing charge is held temporarily; runtime status shows assist active. Larger shortfalls should reduce current, phase down or stop earlier.</td></tr>
+          <tr><td>Assist timeout</td><td>Use hardware-free tests or a naturally sustained supervised shortfall; do not prolong a production deficit solely for validation.</td><td>Assist locks out at the configured limit; the controller reduces to one phase or stops according to fresh allowance.</td></tr>
+          <tr><td>Grid guard</td><td>Review a naturally observed event, hardware-free test, or isolated staging test. Do not force production grid import.</td><td>No-grid Auto/Eco stops or safely reduces after the configured threshold and duration; Manual remains user-controlled.</td></tr>
+          <tr><td>Telemetry failure</td><td>Use hardware-free tests or isolated staging. Do not interrupt critical production telemetry solely to reproduce the fault.</td><td>New Auto/Eco start is blocked for required grid/allowance data; invalid SOC or stale battery activity clears/refuses assist and reservation bypass. Manual remains user-controlled.</td></tr>
+          <tr><td>Network recovery</td><td>Review a natural interruption or use isolated staging; do not disrupt an operating production wallbox solely for validation.</td><td>Status becomes unavailable, then reconnects without duplicate control workers.</td></tr>
           <tr><td>Grid failure</td><td>Installer-supervised outage test.</td><td>House backup follows the certified ESS design; EV Auto/Eco must not be assumed available.</td></tr>
         </tbody>
       </table>
@@ -1077,29 +1121,33 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
     <section id="adapt">
       <p class="eyebrow">12 · Adaptation worksheet</p>
       <h2>Record the installation before copying values</h2>
-      <p class="section-intro">Print this section or fill it digitally. Values in the example profile should not be copied until the matching item is known.</p>
-      <div class="adapt-grid">
-        <div class="adapt-item"><strong>PV inverter family/model</strong><span class="blank">Example: Fronius Symo 10.0-3-M</span></div>
-        <div class="adapt-item"><strong>PV array peak power</strong><span class="blank">kWp and panel count</span></div>
-        <div class="adapt-item"><strong>PV AC position</strong><span class="blank">AC-in / AC-out / parallel</span></div>
-        <div class="adapt-item"><strong>Grid phases</strong><span class="blank">1 / 3</span></div>
-        <div class="adapt-item"><strong>Smart Meter</strong><span class="blank">Model, direction, feed-in point</span></div>
-        <div class="adapt-item"><strong>Wattpilot model</strong><span class="blank">11 / 22 kW, generation</span></div>
-        <div class="adapt-item"><strong>Wattpilot AC position</strong><span class="blank">0=AC-out / 1=AC-in</span></div>
-        <div class="adapt-item"><strong>Maximum permitted EV current</strong><span class="blank">A per phase</span></div>
-        <div class="adapt-item"><strong>Victron inverter/chargers</strong><span class="blank">Model, quantity, phase mapping</span></div>
-        <div class="adapt-item"><strong>GX device and Venus OS</strong><span class="blank">Model and version</span></div>
-        <div class="adapt-item"><strong>Battery bank</strong><span class="blank">Chemistry, voltage, nominal kWh</span></div>
-        <div class="adapt-item"><strong>BMS protocol and monitor</strong><span class="blank">Actual selected service</span></div>
-        <div class="adapt-item"><strong>Minimum operating SOC</strong><span class="blank">%</span></div>
-        <div class="adapt-item"><strong>Maximum charge/discharge</strong><span class="blank">W / A, BMS-approved</span></div>
-        <div class="adapt-item"><strong>Battery assist</strong><span class="blank">SOC, W, seconds, recovery</span></div>
-        <div class="adapt-item"><strong>Grid setpoint</strong><span class="blank">W; negative export / positive import</span></div>
-        <div class="adapt-item"><strong>Grid sign verified</strong><span class="blank">Positive import: yes / no</span></div>
-        <div class="adapt-item"><strong>Network reservations</strong><span class="blank">GX, Fronius, Wattpilot</span></div>
-        <div class="adapt-item"><strong>Backup-load policy</strong><span class="blank">EV and PV behavior during outage</span></div>
-        <div class="adapt-item"><strong>Installer approval/date</strong><span class="blank"></span></div>
+      <p class="section-intro">Print this section or fill it digitally. Values remain in the open page only and are not stored or transmitted. Values in the example profile should not be copied until the matching item is known.</p>
+      <div class="worksheet-actions">
+        <button class="print-worksheet-button" type="button" data-print-worksheet aria-describedby="worksheet-print-help">Print / Save as PDF</button>
+        <p id="worksheet-print-help">Opens the browser print dialog for this worksheet only. Select <strong>Save as PDF</strong> to create a local PDF.</p>
       </div>
+      <form class="adapt-grid" autocomplete="off">
+        <label class="adapt-item"><strong>PV inverter family/model</strong><input class="blank" type="text" name="pv-inverter" placeholder="Example: Fronius Symo 10.0-3-M"></label>
+        <label class="adapt-item"><strong>PV array peak power</strong><input class="blank" type="text" name="pv-array" placeholder="kWp and panel count"></label>
+        <label class="adapt-item"><strong>PV AC position</strong><input class="blank" type="text" name="pv-position" placeholder="AC-in / AC-out / parallel"></label>
+        <label class="adapt-item"><strong>Grid phases</strong><input class="blank" type="text" name="grid-phases" placeholder="1 / 3"></label>
+        <label class="adapt-item"><strong>Smart Meter</strong><input class="blank" type="text" name="smart-meter" placeholder="Model, direction, feed-in point"></label>
+        <label class="adapt-item"><strong>Wattpilot model</strong><input class="blank" type="text" name="wattpilot-model" placeholder="11 / 22 kW, generation"></label>
+        <label class="adapt-item"><strong>Wattpilot AC position</strong><input class="blank" type="text" name="wattpilot-position" placeholder="0=AC-out / 1=AC-in"></label>
+        <label class="adapt-item"><strong>Maximum permitted EV current</strong><input class="blank" type="text" name="ev-current" placeholder="A per phase"></label>
+        <label class="adapt-item"><strong>Victron inverter/chargers</strong><input class="blank" type="text" name="victron-inverters" placeholder="Model, quantity, phase mapping"></label>
+        <label class="adapt-item"><strong>GX device and Venus OS</strong><input class="blank" type="text" name="gx-version" placeholder="Model and version"></label>
+        <label class="adapt-item"><strong>Battery bank</strong><input class="blank" type="text" name="battery-bank" placeholder="Chemistry, voltage, nominal kWh"></label>
+        <label class="adapt-item"><strong>BMS protocol and monitor</strong><input class="blank" type="text" name="bms-monitor" placeholder="Actual selected service"></label>
+        <label class="adapt-item"><strong>Minimum operating SOC</strong><input class="blank" type="text" name="minimum-soc" placeholder="%"></label>
+        <label class="adapt-item"><strong>Maximum charge/discharge</strong><input class="blank" type="text" name="battery-limits" placeholder="W / A, BMS-approved"></label>
+        <label class="adapt-item"><strong>Battery assist</strong><input class="blank" type="text" name="battery-assist" placeholder="SOC, W, seconds, recovery"></label>
+        <label class="adapt-item"><strong>Grid setpoint</strong><input class="blank" type="text" name="grid-setpoint" placeholder="W; negative export / positive import"></label>
+        <label class="adapt-item"><strong>Grid sign verified</strong><input class="blank" type="text" name="grid-sign" placeholder="Positive import: yes / no"></label>
+        <label class="adapt-item"><strong>Network reservations</strong><input class="blank" type="text" name="network-reservations" placeholder="GX, Fronius, Wattpilot"></label>
+        <label class="adapt-item"><strong>Backup-load policy</strong><input class="blank" type="text" name="backup-policy" placeholder="EV and PV behavior during outage"></label>
+        <label class="adapt-item"><strong>Installer approval/date</strong><input class="blank" type="text" name="installer-approval" placeholder="Name and date"></label>
+      </form>
     </section>
 
     <section id="sources">
@@ -1153,6 +1201,30 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
           closeMenu();
           menu.querySelector("summary").focus();
         }
+      });
+    })();
+
+    (() => {
+      const button = document.querySelector("[data-print-worksheet]");
+      if (!button) return;
+
+      let printPending = false;
+      const finishWorksheetPrint = () => {
+        if (!printPending) return;
+        printPending = false;
+        document.body.classList.remove("print-worksheet");
+      };
+
+      button.addEventListener("click", () => {
+        if (printPending) return;
+        printPending = true;
+        document.body.classList.add("print-worksheet");
+        window.requestAnimationFrame(() => window.print());
+      });
+
+      window.addEventListener("afterprint", finishWorksheetPrint);
+      window.addEventListener("focus", () => {
+        if (printPending) window.setTimeout(finishWorksheetPrint, 0);
       });
     })();
   </script>
