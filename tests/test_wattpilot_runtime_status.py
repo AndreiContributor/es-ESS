@@ -18,6 +18,7 @@ from WattpilotRuntimeStatus import (
     CONTROL_STATE_STOPPED,
     CONTROL_STATE_STOPPED_FOR_COMMAND_AUTHORITY,
     CONTROL_STATE_STOPPED_FOR_GRID_IMPORT,
+    CONTROL_STATE_STOPPED_FOR_SITE_CURRENT_LIMIT,
     CONTROL_STATE_STOPPED_FOR_STALE_TELEMETRY,
     CONTROL_STATE_SWITCHING_TO_1_PHASE,
     CONTROL_STATE_SWITCHING_TO_3_PHASE,
@@ -122,6 +123,8 @@ class FroniusWattpilot:
         self.mode = Mode("Auto")
         self.allowGridCharging = False
         self.grid_healthy = True
+        self.site_current_healthy = True
+        self.siteCurrentForcedOff = False
         self.allowance_fresh = True
         self.minimum_allowance = False
         self.currentPhaseMode = 1
@@ -282,6 +285,9 @@ class FroniusWattpilot:
 
     def gridTelemetryIsFresh(self):
         return self.grid_healthy
+
+    def siteCurrentTelemetryIsFresh(self):
+        return self.site_current_healthy
 
     def allowanceIsFresh(self):
         return self.allowance_fresh
@@ -469,6 +475,12 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
                 lambda c: (self.publish(c, "WaitingForSun"), setattr(c, "grid_healthy", False)),
                 "StopCharging",
                 CONTROL_STATE_STOPPED_FOR_STALE_TELEMETRY,
+            ),
+            (
+                "Stopped for site current limit",
+                lambda c: setattr(c, "siteCurrentForcedOff", True),
+                "StopCharging",
+                CONTROL_STATE_STOPPED_FOR_SITE_CURRENT_LIMIT,
             ),
         ]
         for literal, arrange, status_name, expected in cases:

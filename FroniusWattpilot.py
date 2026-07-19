@@ -22,6 +22,7 @@ import WattpilotControlState as ControlStates
 import WattpilotDecisionInputs as DecisionInputs
 import WattpilotPhaseDecisions as PhaseDecisions
 import WattpilotSafetyDecisions as SafetyDecisions
+import WattpilotSiteCurrentDecisions as SiteCurrentDecisions
 import RuntimeCompatibility
 from Wattpilot import Wattpilot
 from enums import WattpilotModelStatus, WattpilotStartStop, WattpilotControlMode, VrmEvChargerControlMode, VrmEvChargerStatus, VrmEvChargerStartStop
@@ -85,6 +86,16 @@ class FroniusWattpilot (esESSService):
         self.minCurrentPerPhase = max(6, int(settings.get("MinCurrentPerPhase", 6)))
         self.maxCurrentPerPhase = max(
             self.minCurrentPerPhase, int(settings.get("MaxCurrentPerPhase", 16))
+        )
+        self.siteMaxCurrent = int(settings.get("SiteMaxCurrent", 20))
+        self.charger1PhaseMapping = settings.get(
+            "Charger1PhaseMapping", "L1"
+        ).upper()
+        self.siteCurrentFreshSeconds = max(
+            1, int(settings.get("SiteCurrentFreshSeconds", 15))
+        )
+        self.siteCurrentRecoverySeconds = max(
+            0, int(settings.get("SiteCurrentRecoverySeconds", 30))
         )
 
         # Phase thresholds are PV-only allowance thresholds. Battery assist does
@@ -190,6 +201,7 @@ class FroniusWattpilot (esESSService):
         self.surplusSince = 0
         self.surplusBelowMinimumSince = 0
         self.noAllowanceForcedOff = False
+        self.siteCurrentForcedOff = False
 
         # Keep the last confirmed connection through a short telemetry glitch.
         # A physical false reading is only accepted as a disconnect after it
@@ -238,6 +250,19 @@ class FroniusWattpilot (esESSService):
 
         self.gridImportSince = 0
 
+        # Mandatory whole-site per-phase guard for Auto/Eco commands. The
+        # recovery timer applies only to increases; reductions and stops are
+        # immediate on the next controller cycle.
+        self.siteCurrentRecoverySince = {1: 0, 2: 0}
+        self.siteCurrentGuardBlocked = False
+        self.siteCurrentGuardReason = "Waiting for site-current telemetry"
+        self.siteCurrentAllowedCurrent = 0
+        self.siteCurrentLimitingPhase = "Unknown"
+        self.siteCurrentHeadrooms = (0.0, 0.0, 0.0)
+        self.sitePhaseTransitionReductionAt = 0
+        self.sitePhaseTransitionTargetMode = 0
+        self.sitePhaseTransitionTargetAmps = 0
+
         # Startup / phase-transition telemetry bridge. This is not a battery
         # assist: it only prevents a false 0 W allowance while the Wattpilot
         # has accepted a valid PV command but has not yet reported real power.
@@ -267,6 +292,13 @@ class FroniusWattpilot (esESSService):
         self.gridL1UpdatedAt = 0
         self.gridL2UpdatedAt = 0
         self.gridL3UpdatedAt = 0
+        self.siteCurrentL1Dbus = None
+        self.siteCurrentL2Dbus = None
+        self.siteCurrentL3Dbus = None
+        for phase in ("L1", "L2", "L3"):
+            setattr(self, "siteCurrent{0}Value".format(phase), None)
+            setattr(self, "siteCurrent{0}Valid".format(phase), False)
+            setattr(self, "siteCurrent{0}UpdatedAt".format(phase), 0)
         # Raw PV overhead calculated by SolarOverheadDistributor. This remains
         # meaningful even when a three-phase Wattpilot request is assigned 0 W
         # because the three-phase 6 A minimum cannot be met.
@@ -341,6 +373,18 @@ class FroniusWattpilot (esESSService):
         self.dbusService.add_path('/ChargeComplete/Elapsed', 0)
         self.dbusService.add_path('/ChargeComplete/ResumeElapsed', 0)
         self.dbusService.add_path('/GridImport', 0)
+        self.dbusService.add_path('/SiteCurrentLimit', self.siteMaxCurrent)
+        self.dbusService.add_path('/Charger1PhaseMapping', self.charger1PhaseMapping)
+        for phase in ("L1", "L2", "L3"):
+            self.dbusService.add_path('/SiteCurrent{0}'.format(phase), 0)
+            self.dbusService.add_path('/SiteCurrentAge{0}'.format(phase), -1)
+            self.dbusService.add_path('/SiteHeadroom{0}'.format(phase), 0)
+        self.dbusService.add_path('/SiteAllowedCurrent', 0)
+        self.dbusService.add_path('/SiteLimitingPhase', 'Unknown')
+        self.dbusService.add_path('/SiteCurrentTelemetryHealthy', 0)
+        self.dbusService.add_path('/SiteCurrentGuardBlocked', 0)
+        self.dbusService.add_path('/SiteCurrentGuardReason', self.siteCurrentGuardReason)
+        self.dbusService.add_path('/SiteCurrentRecoveryElapsed', 0)
 
         self.dbusService.register()
 
@@ -366,6 +410,21 @@ class FroniusWattpilot (esESSService):
         self.gridL3Dbus = self.registerDbusSubscription(
             "com.victronenergy.system", "/Ac/Grid/L3/Power",
             callback=self.onGridL3Telemetry
+        )
+        self.siteCurrentL1Dbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Ac/Consumption/L1/Current",
+            callback=self.onSiteCurrentL1Telemetry,
+            initialValueDefault=None,
+        )
+        self.siteCurrentL2Dbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Ac/Consumption/L2/Current",
+            callback=self.onSiteCurrentL2Telemetry,
+            initialValueDefault=None,
+        )
+        self.siteCurrentL3Dbus = self.registerDbusSubscription(
+            "com.victronenergy.system", "/Ac/Consumption/L3/Current",
+            callback=self.onSiteCurrentL3Telemetry,
+            initialValueDefault=None,
         )
         self.overheadAvailableDbus = self.registerDbusSubscription(
             "com.victronenergy.settings.esESS_SolarOverheadDistributor",
@@ -413,6 +472,23 @@ class FroniusWattpilot (esESSService):
 
         setattr(self, "grid{0}Valid".format(phase), valid)
         setattr(self, "grid{0}UpdatedAt".format(phase), updatedAt)
+
+    def onSiteCurrentL1Telemetry(self, subscription):
+        self.recordSiteCurrentTelemetry("L1", subscription.value)
+
+    def onSiteCurrentL2Telemetry(self, subscription):
+        self.recordSiteCurrentTelemetry("L2", subscription.value)
+
+    def onSiteCurrentL3Telemetry(self, subscription):
+        self.recordSiteCurrentTelemetry("L3", subscription.value)
+
+    def recordSiteCurrentTelemetry(self, phase, value):
+        """Record one physical whole-site current sample and receive time."""
+        numeric = DecisionInputs.finite_number(value)
+        valid = numeric is not None and numeric >= 0
+        setattr(self, "siteCurrent{0}Value".format(phase), numeric)
+        setattr(self, "siteCurrent{0}Valid".format(phase), valid)
+        setattr(self, "siteCurrent{0}UpdatedAt".format(phase), time.time())
 
     def onMqttMessage(self, client, userdata, msg):
         """Receive Wattpilot allowance and raw distributor-overhead updates."""
@@ -550,20 +626,23 @@ class FroniusWattpilot (esESSService):
                 self.wattpilot.set_power(0)
             else:
                 if requestedCurrent > maxCurrent:
-                    self.currentPhaseMode = 2
-                    self.wattpilot.set_phases(2)
+                    requestedPhaseMode = 2
                     ampPerPhase = int(round(requestedCurrent / 3.0))
                 else:
-                    self.currentPhaseMode = 1
-                    self.wattpilot.set_phases(1)
+                    requestedPhaseMode = 1
                     ampPerPhase = requestedCurrent
 
                 ampPerPhase = min(maxCurrent, ampPerPhase)
+                ampPerPhase = self.siteLimitedTargetCurrent(
+                    requestedPhaseMode, ampPerPhase
+                )
 
                 if ampPerPhase < self.minCurrentPerPhase:
                     self.wattpilot.set_power(0)
                 else:
-                    self.wattpilot.set_power(ampPerPhase)
+                    self.commandSiteSafePhaseTransition(
+                        requestedPhaseMode, ampPerPhase
+                    )
 
         elif path == "/StartStop":
             state = VrmEvChargerStartStop(value)
@@ -750,6 +829,8 @@ class FroniusWattpilot (esESSService):
         phaseDownForPvDip=False,
         pendingPhaseStatus=False,
         transportUnavailable=False,
+        siteCurrentTelemetryFresh=True,
+        siteCurrentLimitExceeded=False,
     ):
         modelStatus = getattr(self.wattpilot, "modelStatus", None)
         lowPriceStatus = getattr(
@@ -765,6 +846,8 @@ class FroniusWattpilot (esESSService):
             transport_unavailable=transportUnavailable,
             auto_mode=self.mode == VrmEvChargerControlMode.Auto,
             command_authority_ok=self.wattpilotAutoControlAuthorityOk(),
+            site_current_telemetry_fresh=siteCurrentTelemetryFresh,
+            site_current_limit_exceeded=siteCurrentLimitExceeded,
             allow_grid_charging=self.allowGridCharging,
             grid_telemetry_fresh=gridTelemetryFresh,
             grid_import_limit_exceeded=gridImportLimitExceeded,
@@ -783,7 +866,24 @@ class FroniusWattpilot (esESSService):
             ),
         )
 
-    def selectControlState(self, effectiveCarConnected, gridTelemetryFresh):
+    def selectControlState(
+        self,
+        effectiveCarConnected,
+        gridTelemetryFresh,
+        siteCurrentTelemetryFresh=True,
+        siteCurrentLimitExceeded=False,
+    ):
+        if self.mode == VrmEvChargerControlMode.Auto and (
+            not siteCurrentTelemetryFresh or siteCurrentLimitExceeded
+        ):
+            inputs = self.controlStateInputs(
+                effectiveCarConnected=effectiveCarConnected,
+                gridTelemetryFresh=gridTelemetryFresh,
+                siteCurrentTelemetryFresh=siteCurrentTelemetryFresh,
+                siteCurrentLimitExceeded=siteCurrentLimitExceeded,
+            )
+            return ControlStates.select_control_state(inputs), None, inputs
+
         if (
             self.mode == VrmEvChargerControlMode.Auto
             and not self.allowGridCharging
@@ -836,6 +936,12 @@ class FroniusWattpilot (esESSService):
 
         if selectedState == state.COMMAND_AUTHORITY_BLOCKED:
             return self._handleCommandAuthorityBlocked()
+
+        if selectedState == state.SITE_CURRENT_TELEMETRY_UNSAFE:
+            return self._handleSiteCurrentTelemetryUnsafe()
+
+        if selectedState == state.SITE_CURRENT_LIMIT_STOP:
+            return self._handleSiteCurrentLimitStop()
 
         if selectedState == state.GRID_TELEMETRY_UNSAFE:
             return self._handleGridTelemetryUnsafe()
@@ -921,6 +1027,7 @@ class FroniusWattpilot (esESSService):
         self.surplusSince = 0
         self.surplusBelowMinimumSince = 0
         self.noAllowanceForcedOff = False
+        self.siteCurrentForcedOff = False
         self.clearBatteryAssist()
         self.clearBatteryAssistLockout("car disconnected")
         self.clearChargeCompleteHold("car disconnected")
@@ -1054,9 +1161,64 @@ class FroniusWattpilot (esESSService):
             self._lastWattpilotCompatibilityState = state
         return compatible
 
-    def allowWattpilotCommand(self, _name=None, _value=None):
-        """Authorize commands only after exact ``fwv`` validation."""
-        return self.refreshWattpilotFirmwareCompatibility()
+    def allowWattpilotCommand(self, name=None, value=None):
+        """Final firmware, ownership, and site-current command boundary."""
+        if not self.refreshWattpilotFirmwareCompatibility():
+            return False
+
+        # Manual mode is observation-only. The only normal es-ESS command here
+        # is the one-time Auto constraint release (frc Neutral/psm Auto).
+        if not self.wattpilotAutoControlSelected():
+            return True
+
+        if name == "amp" and float(value) <= 0:
+            return True
+        offValue = int(getattr(WattpilotStartStop.Off, "value", WattpilotStartStop.Off))
+        onValue = int(getattr(WattpilotStartStop.On, "value", WattpilotStartStop.On))
+        if name == "frc" and int(value) == offValue:
+            return True
+        if name == "psm" and int(value) == 0:
+            return True
+        if name == "lmo":
+            return True
+
+        requestedPhase = self.currentPhaseMode
+        if name == "psm":
+            requestedPhase = int(value)
+        if requestedPhase not in (1, 2):
+            self.siteCurrentGuardBlocked = True
+            self.siteCurrentGuardReason = "Blocked command with uncertain phase mode"
+            return False
+
+        activeCharge = self.wattpilotReportsActiveCharge()
+        decision = self.siteCurrentDecision(requestedPhase, activeCharge)
+        self.updateSiteCurrentRecovery(requestedPhase, decision)
+        if decision is None or decision.allowed_current < self.minCurrentPerPhase:
+            self.siteCurrentGuardBlocked = True
+            self.siteCurrentGuardReason = "Blocked command without safe site-current headroom"
+            return False
+
+        if name == "frc":
+            return (
+                int(value) == onValue
+                and self.siteCurrentRecoveryReady(requestedPhase)
+            )
+
+        if name == "psm":
+            if not activeCharge:
+                return True
+            current = DecisionInputs.finite_number(
+                getattr(self.wattpilot, "amp", 0)
+            )
+            return current is None or current <= decision.allowed_current
+
+        if name == "amp":
+            permitted = self.siteLimitedTargetCurrent(
+                requestedPhase, int(value), applyRecovery=True
+            )
+            return int(value) >= self.minCurrentPerPhase and int(value) <= permitted
+
+        return False
 
     def _update(self):
         try:
@@ -1148,12 +1310,15 @@ class FroniusWattpilot (esESSService):
                 d(self, "Car state not ready yet.")
                 return
 
+            siteTelemetryFresh, siteLimitExceeded = self.refreshSiteCurrentGuard()
             self.publishSafetyTelemetry()
             gridTelemetryFresh = self.gridTelemetryIsFresh()
 
             selectedState, pendingPhaseStatus, _inputs = self.selectControlState(
                 effectiveCarConnected,
                 gridTelemetryFresh,
+                siteTelemetryFresh,
+                siteLimitExceeded,
             )
             self.logProtocolChargingStatusTransition(selectedState, _inputs)
             shouldReturn = self.dispatchControlState(
@@ -1358,8 +1523,44 @@ class FroniusWattpilot (esESSService):
             return
 
         desiredPhaseMode = self.desiredPhaseModeForPvAllowance()
-        targetAmps = self.targetCurrentForPhase(
-            desiredPhaseMode, self.allowance
+        onePhaseDecision = self.siteCurrentDecision(1, False)
+        threePhaseDecision = self.siteCurrentDecision(2, False)
+        self.updateSiteCurrentRecovery(1, onePhaseDecision)
+        self.updateSiteCurrentRecovery(2, threePhaseDecision)
+
+        if (
+            desiredPhaseMode == 2
+            and threePhaseDecision is not None
+            and threePhaseDecision.allowed_current >= self.minCurrentPerPhase
+            and self.siteCurrentRecoveryReady(2)
+        ):
+            selectedPhaseMode = 2
+        elif (
+            onePhaseDecision is not None
+            and onePhaseDecision.allowed_current >= self.minCurrentPerPhase
+            and self.targetCurrentForPhase(1, self.allowance)
+            >= self.minCurrentPerPhase
+            and self.siteCurrentRecoveryReady(1)
+        ):
+            selectedPhaseMode = 1
+        else:
+            self.siteCurrentGuardBlocked = True
+            self.siteCurrentGuardReason = (
+                "Waiting for {0} seconds of stable site-current headroom".format(
+                    self.siteCurrentRecoverySeconds
+                )
+            )
+            self.publishServiceMessage(
+                self,
+                "Site-current headroom is not yet safe and stable for an EV start."
+            )
+            self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
+            return
+
+        targetAmps = self.siteLimitedTargetCurrent(
+            selectedPhaseMode,
+            self.targetCurrentForPhase(selectedPhaseMode, self.allowance),
+            applyRecovery=False,
         )
 
         if targetAmps < self.minCurrentPerPhase:
@@ -1378,17 +1579,18 @@ class FroniusWattpilot (esESSService):
             )
         )
 
-        self.currentPhaseMode = desiredPhaseMode
+        self.currentPhaseMode = selectedPhaseMode
+        self.wattpilot.set_phases(selectedPhaseMode)
+        self.wattpilot.set_power(targetAmps)
+        self.wattpilot.set_start_stop(WattpilotStartStop.On)
         self.beginPowerTransitionGrace(
-            desiredPhaseMode,
+            selectedPhaseMode,
             targetAmps,
             "EV start"
         )
-        self.wattpilot.set_phases(desiredPhaseMode)
-        self.wattpilot.set_power(targetAmps)
-        self.wattpilot.set_start_stop(WattpilotStartStop.On)
         self.lastOnOffTime = time.time()
         self.noAllowanceForcedOff = False
+        self.siteCurrentForcedOff = False
         self.allowanceBelowMinimumSince = 0
         self.surplusSince = 0
         self.surplusBelowMinimumSince = 0
@@ -1397,6 +1599,22 @@ class FroniusWattpilot (esESSService):
 
 
     def controlAutomaticCharging(self):
+        siteTelemetryFresh, siteLimitExceeded = self.refreshSiteCurrentGuard()
+        if not siteTelemetryFresh or siteLimitExceeded:
+            self.clearBatteryAssist()
+            self.forceStopForSiteCurrentLimit()
+            return VrmEvChargerStatus.StopCharging
+
+        # Site-current protection has priority over PV allowance grace,
+        # battery assist and grid fallback. Reduce before any continuation path.
+        siteEnforcement = self.enforceSiteCurrentLimit()
+        if not siteEnforcement:
+            self.clearBatteryAssist()
+            self.forceStopForSiteCurrentLimit()
+            return VrmEvChargerStatus.StopCharging
+        if siteEnforcement == "reduced":
+            return VrmEvChargerStatus.Charging
+
         # No-grid operation requires current, valid L1/L2/L3 telemetry. Do not
         # wait for the allowance grace because unknown grid import is unsafe.
         if not self.allowGridCharging and not self.gridTelemetryIsFresh():
@@ -1825,6 +2043,65 @@ class FroniusWattpilot (esESSService):
             maxCurrent,
         )
 
+    def safeTargetCurrentForPhase(self, phaseMode, allowance):
+        return self.siteLimitedTargetCurrent(
+            phaseMode,
+            self.targetCurrentForPhase(phaseMode, allowance),
+        )
+
+    def commandSiteSafePhaseTransition(self, phaseMode, targetAmps):
+        """Order amp/phase commands so both the old and new mode stay safe."""
+        if targetAmps < self.minCurrentPerPhase:
+            self.sitePhaseTransitionReductionAt = 0
+            self.sitePhaseTransitionTargetMode = 0
+            self.sitePhaseTransitionTargetAmps = 0
+            return False
+        current = DecisionInputs.finite_number(getattr(self.wattpilot, "amp", 0))
+        current = current if current is not None and current > 0 else 0
+        if current > targetAmps:
+            if (
+                getattr(self, "sitePhaseTransitionTargetMode", 0) != phaseMode
+                or getattr(self, "sitePhaseTransitionTargetAmps", 0) != targetAmps
+            ):
+                self.sitePhaseTransitionReductionAt = time.time()
+                self.sitePhaseTransitionTargetMode = phaseMode
+                self.sitePhaseTransitionTargetAmps = targetAmps
+            self.wattpilot.set_power(targetAmps)
+            # Wait for fresh Wattpilot current telemetry before changing phase.
+            # A sent amp reduction is not proof that the wallbox applied it.
+            return "reducing"
+
+        if (
+            getattr(self, "sitePhaseTransitionTargetMode", 0) == phaseMode
+            and getattr(self, "sitePhaseTransitionTargetAmps", 0) == targetAmps
+        ):
+            energyUpdatedAt = getattr(
+                self.wattpilot, "energyTelemetryUpdatedAt", 0
+            )
+            measuredCurrents = tuple(
+                DecisionInputs.finite_number(
+                    getattr(self.wattpilot, "amps{0}".format(index), None)
+                )
+                for index in (1, 2, 3)
+            )
+            telemetryConfirmsReduction = (
+                energyUpdatedAt
+                > getattr(self, "sitePhaseTransitionReductionAt", 0)
+                and all(value is not None for value in measuredCurrents)
+                and max(measuredCurrents) <= targetAmps
+            )
+            if not telemetryConfirmsReduction:
+                return "reducing"
+
+        self.sitePhaseTransitionReductionAt = 0
+        self.sitePhaseTransitionTargetMode = 0
+        self.sitePhaseTransitionTargetAmps = 0
+        self.wattpilot.set_phases(phaseMode)
+        self.currentPhaseMode = phaseMode
+        if current <= targetAmps:
+            self.wattpilot.set_power(targetAmps)
+        return "switched"
+
     def currentChargeDemandPower(self):
         actualPower = (
             float(self.wattpilot.power) * 1000
@@ -1945,16 +2222,16 @@ class FroniusWattpilot (esESSService):
             # Do not keep a false 3-phase controller state after the Wattpilot
             # or vehicle failed to provide L2/L3 power. Revert to one phase and
             # apply the assigned PV allowance only.
-            targetAmps = self.targetCurrentForPhase(1, self.allowance)
+            targetAmps = self.safeTargetCurrentForPhase(1, self.allowance)
             self.publishServiceMessage(
                 self,
                 "3-phase switch was not confirmed by Wattpilot telemetry. "
                 "Falling back to 1-phase."
             )
-            self.currentPhaseMode = 1
+            phaseResult = self.commandSiteSafePhaseTransition(1, targetAmps)
+            if phaseResult == "reducing":
+                return transitionStatus
             self.lastPhaseSwitchTime = now
-            self.wattpilot.set_phases(1)
-            self.wattpilot.set_power(targetAmps)
             self.clearPendingPhaseSwitch()
             return VrmEvChargerStatus.SwitchingTo1Phase
 
@@ -2086,7 +2363,7 @@ class FroniusWattpilot (esESSService):
         statusValue = getattr(status, "value", None)
         return (
             ControlStates.is_active_charging_status(statusValue)
-            or self.powerTransitionUntil > time.time()
+            or getattr(self, "powerTransitionUntil", 0) > time.time()
         )
 
     def updateEffectiveCarConnection(self):
@@ -2234,6 +2511,218 @@ class FroniusWattpilot (esESSService):
         return DecisionInputs.grid_telemetry_is_fresh(
             samples, self.gridTelemetryFreshSeconds, time.time()
         )
+
+    def siteCurrentTelemetryIsFresh(self, requireChargerCurrent=None):
+        """Return whether mandatory physical L1/L2/L3 inputs are usable."""
+        now = time.time()
+        for phase in ("L1", "L2", "L3"):
+            if not DecisionInputs.timestamped_value_is_fresh(
+                getattr(self, "siteCurrent{0}Valid".format(phase), False),
+                getattr(self, "siteCurrent{0}UpdatedAt".format(phase), 0),
+                self.siteCurrentFreshSeconds,
+                now,
+            ):
+                return False
+
+        if requireChargerCurrent is None:
+            requireChargerCurrent = self.wattpilotReportsActiveCharge()
+        if not requireChargerCurrent:
+            return True
+
+        updatedAt = getattr(self.wattpilot, "energyTelemetryUpdatedAt", 0)
+        if updatedAt <= 0 or now - updatedAt > self.siteCurrentFreshSeconds:
+            return False
+        currents = tuple(
+            DecisionInputs.finite_number(
+                getattr(self.wattpilot, "amps{0}".format(index), None)
+            )
+            for index in (1, 2, 3)
+        )
+        return all(current is not None and current >= 0 for current in currents)
+
+    def siteCurrentDecision(self, requestedPhaseMode, activeCharge=None):
+        """Calculate site-safe current for a requested Wattpilot phase mode."""
+        if activeCharge is None:
+            activeCharge = self.wattpilotReportsActiveCharge()
+        if not self.siteCurrentTelemetryIsFresh(activeCharge):
+            return None
+
+        measuredPhaseMode = 0
+        chargerCurrents = (0, 0, 0)
+        if activeCharge:
+            measuredPhaseMode = getattr(self, "currentPhaseMode", 0)
+            if measuredPhaseMode not in (1, 2):
+                return None
+            if getattr(self, "pendingPhaseSwitchMode", 0) not in (0, measuredPhaseMode):
+                return None
+            chargerCurrents = tuple(
+                getattr(self.wattpilot, "amps{0}".format(index), None)
+                for index in (1, 2, 3)
+            )
+
+        try:
+            decision = SiteCurrentDecisions.evaluate_site_current(
+                tuple(
+                    getattr(self, "siteCurrent{0}Value".format(phase), None)
+                    for phase in ("L1", "L2", "L3")
+                ),
+                chargerCurrents,
+                measuredPhaseMode,
+                requestedPhaseMode,
+                self.charger1PhaseMapping,
+                self.siteMaxCurrent,
+            )
+        except (TypeError, ValueError):
+            return None
+
+        self.siteCurrentAllowedCurrent = decision.allowed_current
+        self.siteCurrentLimitingPhase = decision.limiting_phase
+        self.siteCurrentHeadrooms = decision.headrooms
+        return decision
+
+    def updateSiteCurrentRecovery(self, phaseMode, decision, now=None):
+        """Track continuous site-safe headroom independently by phase mode."""
+        if now is None:
+            now = time.time()
+        recovery = getattr(self, "siteCurrentRecoverySince", {1: 0, 2: 0})
+        if not isinstance(recovery, dict):
+            recovery = {1: 0, 2: 0}
+        if decision is None or decision.allowed_current < self.minCurrentPerPhase:
+            recovery[phaseMode] = 0
+        elif recovery.get(phaseMode, 0) <= 0:
+            recovery[phaseMode] = now
+        self.siteCurrentRecoverySince = recovery
+
+    def siteCurrentRecoveryElapsed(self, phaseMode):
+        since = getattr(self, "siteCurrentRecoverySince", {}).get(phaseMode, 0)
+        return max(0, time.time() - since) if since > 0 else 0
+
+    def siteCurrentRecoveryReady(self, phaseMode):
+        return (
+            self.siteCurrentRecoveryElapsed(phaseMode)
+            >= self.siteCurrentRecoverySeconds
+        )
+
+    def refreshSiteCurrentGuard(self):
+        """Refresh safety state before Auto/Eco state selection and commands."""
+        active = self.wattpilotReportsActiveCharge()
+        decisions = {
+            phase: self.siteCurrentDecision(phase, active)
+            for phase in (1, 2)
+        }
+        now = time.time()
+        for phase, decision in decisions.items():
+            self.updateSiteCurrentRecovery(phase, decision, now)
+
+        currentPhase = self.currentPhaseMode if self.currentPhaseMode in (1, 2) else 1
+        selected = decisions[currentPhase]
+        telemetryFresh = selected is not None
+        limitExceeded = bool(
+            active
+            and selected is not None
+            and selected.allowed_current < self.minCurrentPerPhase
+        )
+
+        autoMode = self.mode == VrmEvChargerControlMode.Auto
+        if not autoMode:
+            self.siteCurrentGuardBlocked = False
+            self.siteCurrentGuardReason = "Manual mode: observation only"
+        elif not telemetryFresh:
+            self.siteCurrentGuardBlocked = True
+            self.siteCurrentGuardReason = "Site-current telemetry missing, invalid, stale, or phase-uncertain"
+            self.clearPhaseSwitchCandidate()
+        elif limitExceeded:
+            self.siteCurrentGuardBlocked = True
+            self.siteCurrentGuardReason = "No phase headroom for the 6 A charging minimum"
+            self.clearPhaseSwitchCandidate()
+        else:
+            self.siteCurrentGuardBlocked = False
+            self.siteCurrentGuardReason = "Site-current headroom available"
+
+        threePhaseDecision = decisions[2]
+        if (
+            threePhaseDecision is None
+            or threePhaseDecision.allowed_current < self.minCurrentPerPhase
+        ):
+            self.clearPhaseSwitchCandidate()
+
+        return telemetryFresh, limitExceeded
+
+    def siteLimitedTargetCurrent(self, phaseMode, pvTarget, applyRecovery=True):
+        """Cap a PV target by physical per-phase site headroom."""
+        decision = self.siteCurrentDecision(phaseMode)
+        self.updateSiteCurrentRecovery(phaseMode, decision)
+        if decision is None:
+            return 0
+
+        target = min(int(pvTarget), decision.allowed_current)
+        if target < self.minCurrentPerPhase:
+            return 0
+        if not applyRecovery:
+            return target
+
+        current = DecisionInputs.finite_number(getattr(self.wattpilot, "amp", 0))
+        current = int(current) if current is not None and current > 0 else 0
+        if current < self.minCurrentPerPhase:
+            return target if self.siteCurrentRecoveryReady(phaseMode) else 0
+        since = getattr(self, "siteCurrentRecoverySince", {}).get(phaseMode, 0)
+        recovery = SiteCurrentDecisions.limit_current_recovery(
+            current,
+            target,
+            since,
+            self.siteCurrentRecoverySeconds,
+            time.time(),
+        )
+        recoveryTimers = getattr(self, "siteCurrentRecoverySince", {1: 0, 2: 0})
+        recoveryTimers[phaseMode] = recovery.next_recovery_since
+        self.siteCurrentRecoverySince = recoveryTimers
+        return recovery.allowed_current
+
+    def enforceSiteCurrentLimit(self):
+        """Immediately reduce an active Auto charge when site headroom shrinks."""
+        phaseMode = self.currentPhaseMode
+        if phaseMode not in (1, 2):
+            return False
+        decision = self.siteCurrentDecision(phaseMode, True)
+        if decision is None or decision.allowed_current < self.minCurrentPerPhase:
+            return False
+        current = DecisionInputs.finite_number(getattr(self.wattpilot, "amp", None))
+        if current is not None and current > decision.allowed_current:
+            self.siteCurrentGuardReason = "Charging current reduced by {0} headroom".format(
+                decision.limiting_phase
+            )
+            self.siteCurrentRecoverySince[phaseMode] = 0
+            self.wattpilot.set_power(decision.allowed_current)
+            return "reduced"
+        return "safe"
+
+    def _handleSiteCurrentTelemetryUnsafe(self):
+        self.publishServiceMessage(
+            self,
+            "Site-current telemetry is missing, invalid, stale, or phase-uncertain. "
+            "Stopping Auto/Eco charging for safety."
+        )
+        self.reportVRMStatus(
+            VrmEvChargerStatus.StopCharging
+            if self.wattpilotReportsActiveCharge()
+            else VrmEvChargerStatus.WaitingForSun,
+            "Stopped for stale site-current telemetry",
+        )
+        self.forceStopForSiteCurrentLimit()
+        return True
+
+    def _handleSiteCurrentLimitStop(self):
+        self.publishServiceMessage(
+            self,
+            "Whole-site phase headroom is below the 6 A EV minimum. "
+            "Stopping Auto/Eco charging immediately."
+        )
+        self.reportVRMStatus(
+            VrmEvChargerStatus.StopCharging,
+            "Stopped for site current limit",
+        )
+        self.forceStopForSiteCurrentLimit()
+        return True
 
     def batterySoc(self):
         if not DecisionInputs.timestamped_value_is_fresh(
@@ -2448,22 +2937,25 @@ class FroniusWattpilot (esESSService):
             and rawOverhead is not None
         ):
             usablePv = rawOverhead
-        targetAmps = self.targetCurrentForPhase(1, usablePv)
+        targetAmps = self.safeTargetCurrentForPhase(1, usablePv)
 
         self.publishServiceMessage(
             self,
             "PV allowance dropped below the three-phase threshold. "
             "Switching to 1-phase before applying battery-assist or stop logic."
         )
+        phaseResult = self.commandSiteSafePhaseTransition(1, targetAmps)
+        if not phaseResult:
+            self.forceStopForSiteCurrentLimit()
+            return VrmEvChargerStatus.StopCharging
+        if phaseResult == "reducing":
+            return VrmEvChargerStatus.Charging
         self.clearPhaseSwitchCandidate()
         self.lastPhaseSwitchTime = time.time()
         self.beginPhaseSwitchConfirmation(1)
         self.beginPowerTransitionGrace(
             1, targetAmps, "3-to-1 phase switch"
         )
-        self.wattpilot.set_phases(1)
-        self.currentPhaseMode = 1
-        self.wattpilot.set_power(targetAmps)
         return VrmEvChargerStatus.SwitchingTo1Phase
 
     def gridImportPower(self):
@@ -2502,6 +2994,35 @@ class FroniusWattpilot (esESSService):
         self.dbusService["/ChargeComplete/ResumeElapsed"] = int(
             round(self.getChargeCompleteResumeSeconds())
         )
+        now = time.time()
+        siteTelemetryHealthy = self.siteCurrentTelemetryIsFresh()
+        sitePaths = {
+            "/SiteCurrentLimit": self.siteMaxCurrent,
+            "/Charger1PhaseMapping": self.charger1PhaseMapping,
+            "/SiteAllowedCurrent": int(self.siteCurrentAllowedCurrent),
+            "/SiteLimitingPhase": self.siteCurrentLimitingPhase,
+            "/SiteCurrentTelemetryHealthy": int(siteTelemetryHealthy),
+            "/SiteCurrentGuardBlocked": int(self.siteCurrentGuardBlocked),
+            "/SiteCurrentGuardReason": self.siteCurrentGuardReason,
+        }
+        for index, phase in enumerate(("L1", "L2", "L3")):
+            value = getattr(self, "siteCurrent{0}Value".format(phase), None)
+            updatedAt = getattr(self, "siteCurrent{0}UpdatedAt".format(phase), 0)
+            sitePaths["/SiteCurrent{0}".format(phase)] = (
+                round(value, 2) if value is not None else 0
+            )
+            sitePaths["/SiteCurrentAge{0}".format(phase)] = (
+                round(max(0, now - updatedAt), 1) if updatedAt > 0 else -1
+            )
+            sitePaths["/SiteHeadroom{0}".format(phase)] = round(
+                self.siteCurrentHeadrooms[index], 2
+            )
+        diagnosticPhase = self.currentPhaseMode if self.currentPhaseMode in (1, 2) else 1
+        sitePaths["/SiteCurrentRecoveryElapsed"] = int(
+            round(self.siteCurrentRecoveryElapsed(diagnosticPhase))
+        )
+        for path, value in sitePaths.items():
+            self.publishRetained(path, value)
 
     def gridImportLimitExceeded(self):
         gridImport = self.gridImportPower()
@@ -2866,6 +3387,40 @@ class FroniusWattpilot (esESSService):
                 self.currentPhaseMode = 0
                 self.wattpilot.set_phases(0)
 
+    def forceStopForSiteCurrentLimit(self):
+        """Stop Auto/Eco without a phase command after a site guard trip."""
+        self.surplusSince = 0
+        self.surplusBelowMinimumSince = 0
+        self.allowanceBelowMinimumSince = 0
+        self.clearBatteryAssist()
+        self.clearPowerTransitionGrace()
+        self.clearPendingPhaseSwitch()
+        self.clearPhaseSwitchCandidate()
+        self.siteCurrentRecoverySince = {1: 0, 2: 0}
+        self.sitePhaseTransitionReductionAt = 0
+        self.sitePhaseTransitionTargetMode = 0
+        self.sitePhaseTransitionTargetAmps = 0
+
+        chargerStillActive = (
+            self.wattpilot.power is not None and self.wattpilot.power > 0
+        )
+        needsStop = (
+            not self.siteCurrentForcedOff
+            or self.wattpilot.startState != WattpilotStartStop.Off
+            or chargerStillActive
+        )
+        if needsStop:
+            self.wattpilot.set_power(0)
+            self.wattpilot.set_start_stop(WattpilotStartStop.Off)
+            if not self.siteCurrentForcedOff:
+                self.lastOnOffTime = time.time()
+
+        self.siteCurrentForcedOff = True
+        self.noAllowanceForcedOff = True
+        self.currentPhaseMode = 0
+        self.dbusService["/StartStop"] = VrmEvChargerStartStop.Stop.value
+        self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Stop.name
+
 
     def getOnOffCooldownSeconds(self):
         return max(0, self.lastOnOffTime + self.minimumOnOffSeconds - time.time())
@@ -2928,6 +3483,16 @@ class FroniusWattpilot (esESSService):
         desiredPhaseMode = self.desiredPhaseModeForPvAllowance()
         enteringPhaseMode = self.currentPhaseMode
 
+        if desiredPhaseMode == 2 and enteringPhaseMode != 2:
+            threePhaseSiteDecision = self.siteCurrentDecision(2)
+            self.updateSiteCurrentRecovery(2, threePhaseSiteDecision)
+            if (
+                threePhaseSiteDecision is None
+                or threePhaseSiteDecision.allowed_current < self.minCurrentPerPhase
+            ):
+                self.clearPhaseSwitchCandidate()
+                desiredPhaseMode = 1
+
         if enteringPhaseMode == 0:
             enteringPhaseMode = 1
 
@@ -2985,7 +3550,7 @@ class FroniusWattpilot (esESSService):
                 )
 
             if phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_WAIT_STABLE:
-                targetAmps = self.targetCurrentForPhase(1, self.allowance)
+                targetAmps = self.safeTargetCurrentForPhase(1, self.allowance)
                 self.currentPhaseMode = 1
                 self.wattpilot.set_power(targetAmps)
                 if phaseUpDropGraceActive:
@@ -3011,22 +3576,25 @@ class FroniusWattpilot (esESSService):
                 phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_READY
                 and self.allowance >= self.phaseUpThresholdW()
             ):
-                targetAmps = self.targetCurrentForPhase(2, self.allowance)
+                targetAmps = self.safeTargetCurrentForPhase(2, self.allowance)
                 i(self, "PV surplus supports 3-phase charging. Switching to 3-phase.")
                 self.publishServiceMessage(
                     self, "Switching to 3-phase from PV surplus."
                 )
+                phaseResult = self.commandSiteSafePhaseTransition(2, targetAmps)
+                if not phaseResult:
+                    self.clearPhaseSwitchCandidate()
+                    return VrmEvChargerStatus.Charging
+                if phaseResult == "reducing":
+                    return VrmEvChargerStatus.Charging
                 self.lastPhaseSwitchTime = time.time()
                 self.beginPhaseSwitchConfirmation(2)
                 self.beginPowerTransitionGrace(2, targetAmps, "1-to-3 phase switch")
-                self.wattpilot.set_phases(2)
-                self.currentPhaseMode = 2
                 self.clearPhaseSwitchCandidate()
-                self.wattpilot.set_power(targetAmps)
                 return VrmEvChargerStatus.SwitchingTo3Phase
 
             if phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_READY:
-                targetAmps = self.targetCurrentForPhase(1, self.allowance)
+                targetAmps = self.safeTargetCurrentForPhase(1, self.allowance)
                 self.currentPhaseMode = 1
                 self.wattpilot.set_power(targetAmps)
                 d(
@@ -3038,7 +3606,7 @@ class FroniusWattpilot (esESSService):
                 )
                 return VrmEvChargerStatus.Charging
 
-            targetAmps = self.targetCurrentForPhase(1, self.allowance)
+            targetAmps = self.safeTargetCurrentForPhase(1, self.allowance)
             self.currentPhaseMode = 1
             self.wattpilot.set_power(targetAmps)
             d(
@@ -3052,7 +3620,9 @@ class FroniusWattpilot (esESSService):
         # No phase change; adjust current from PV allowance only.
         self.clearPhaseSwitchCandidate()
         self.currentPhaseMode = desiredPhaseMode
-        targetAmps = self.targetCurrentForPhase(desiredPhaseMode, self.allowance)
+        targetAmps = self.safeTargetCurrentForPhase(
+            desiredPhaseMode, self.allowance
+        )
         i(
             self,
             "Adjusting charge current to {0}A on {1}-phase.".format(

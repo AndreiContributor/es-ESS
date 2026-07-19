@@ -163,7 +163,7 @@ The human and JSON reports contain:
 - runtime health: initialization/restart evidence, Wattpilot reconnects, log
   continuity, exceptions, dependencies, and compatibility;
 - sanitized configuration: enabled services and important Wattpilot safety
-  parameters only;
+  parameters, including site-current limit/mapping/freshness/recovery;
 - current state: optional service, mode, connectivity, authority, telemetry,
   phase, firmware, and native-setting snapshots;
 - approximate charging sessions: start/end, Auto/Manual/unknown mode, phases,
@@ -182,6 +182,7 @@ Version 3 detects or summarizes:
 - `CRITICAL`, `ERROR`, traceback, dependency, firmware, and Venus OS
   compatibility failures;
 - repeated service initializations or Wattpilot reconnect lifecycle events;
+- site-current stops and stale site-current telemetry found in controller logs;
 - Auto/Eco actions while command authority is blocked;
 - stale grid or distributor-allowance evidence;
 - grid-import guard activation when `AllowGridCharging=false`, distinguishing a
@@ -210,6 +211,11 @@ battery energy supplied a completed charge. D-Bus values are current snapshots,
 not historical storage, and Wattpilot session energy can reset after
 disconnection. Session boundaries and stop reasons are approximate unless the
 corresponding transition records exist.
+
+The optional read-only snapshot includes physical site-current values, sample
+ages, calculated headrooms, limiting phase, allowed current, guard health,
+blocked reason, and recovery elapsed time. These describe only the capture
+instant; absence from historical logs is not proof that the guard succeeded.
 
 For live investigation, run `scripts/es-ess-health-monitor.sh`. For stronger
 future historical summaries, add stable transition-only INFO records for

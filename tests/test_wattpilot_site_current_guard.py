@@ -1,0 +1,181 @@
+import unittest
+from unittest.mock import patch
+
+from tests import test_eco_pv_policy as eco_fixtures
+
+
+class WattpilotSiteCurrentGuardTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        eco_fixtures.EcoPvPolicyRegressionTests.setUpClass()
+        cls.fwp = eco_fixtures.EcoPvPolicyRegressionTests.fwp
+
+    def _controller(self):
+        fixture = eco_fixtures.EcoPvPolicyRegressionTests(
+            methodName="test_one_phase_start_waits_for_the_stable_pv_timer"
+        )
+        fixture.fwp = self.fwp
+        return fixture._controller()
+
+    @staticmethod
+    def _set_site(controller, l1, l2, l3, timestamp):
+        for phase, value in zip(("L1", "L2", "L3"), (l1, l2, l3)):
+            setattr(controller, "siteCurrent{0}Value".format(phase), value)
+            setattr(controller, "siteCurrent{0}Valid".format(phase), True)
+            setattr(controller, "siteCurrent{0}UpdatedAt".format(phase), timestamp)
+        controller.wattpilot.energyTelemetryUpdatedAt = timestamp
+
+    def _active_one_phase(self, controller, timestamp, amps=16):
+        controller.currentPhaseMode = 1
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.power = amps * 0.23
+        controller.wattpilot.amp = amps
+        controller.wattpilot.amps1 = amps
+        controller.wattpilot.amps2 = 0
+        controller.wattpilot.amps3 = 0
+        controller.wattpilot.energyTelemetryUpdatedAt = timestamp
+
+    def test_active_one_phase_is_reduced_to_physical_phase_headroom(self):
+        controller = self._controller()
+        self._active_one_phase(controller, 100, amps=16)
+        # 27 A site current minus 16 A EV = 11 A house load, leaving 9 A.
+        self._set_site(controller, 27, 4, 4, 100)
+        controller.allowance = 5000
+        controller.allowanceUpdatedAt = 100
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        controller.wattpilot.set_power.assert_called_once_with(9)
+        controller.wattpilot.set_start_stop.assert_not_called()
+        controller.wattpilot.set_phases.assert_not_called()
+
+    def test_active_charge_stops_below_six_amp_headroom_without_phase_command(self):
+        controller = self._controller()
+        self._active_one_phase(controller, 100, amps=6)
+        # 21 A total minus 6 A EV = 15 A house load, leaving only 5 A.
+        self._set_site(controller, 21, 4, 4, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+        controller.wattpilot.set_power.assert_called_once_with(0)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+        controller.wattpilot.set_phases.assert_not_called()
+
+    def test_stale_site_current_stops_even_when_grid_charging_and_assist_are_allowed(self):
+        controller = self._controller()
+        self._active_one_phase(controller, 100, amps=6)
+        self._set_site(controller, 6, 0, 0, 70)
+        controller.allowGridCharging = True
+        controller.batteryAssistEnabled = True
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+        controller.wattpilot.set_power.assert_called_once_with(0)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+
+    def test_three_phase_start_falls_back_to_one_phase_when_another_phase_is_full(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.allowanceUpdatedAt = 100
+        self._set_site(controller, 0, 15.5, 0, 100)
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.startFromPvAllowance()
+
+        self.assertEqual(controller.currentPhaseMode, 1)
+        controller.wattpilot.set_phases.assert_called_once_with(1)
+        controller.wattpilot.set_power.assert_called_once_with(16)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.On
+        )
+
+    def test_start_is_blocked_when_mapped_one_phase_and_three_phase_are_below_minimum(self):
+        controller = self._controller()
+        controller.allowance = 5000
+        controller.allowanceUpdatedAt = 100
+        self._set_site(controller, 15.5, 0, 0, 100)
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.startFromPvAllowance()
+
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+
+    def test_three_phase_current_uses_one_common_smallest_headroom(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.amp = 8
+        controller.wattpilot.amps1 = 8
+        controller.wattpilot.amps2 = 8
+        controller.wattpilot.amps3 = 8
+        self._set_site(controller, 19, 14, 12, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            decision = controller.siteCurrentDecision(2, True)
+
+        self.assertEqual(decision.headrooms, (9, 14, 16))
+        self.assertEqual(decision.allowed_current, 9)
+        self.assertEqual(decision.limiting_phase, "L1")
+
+    def test_phase_switch_waits_for_fresh_current_telemetry_after_reduction(self):
+        controller = self._controller()
+        self._active_one_phase(controller, 100, amps=16)
+        self._set_site(controller, 27, 4, 4, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            first = controller.commandSiteSafePhaseTransition(2, 9)
+
+        self.assertEqual(first, "reducing")
+        controller.wattpilot.set_power.assert_called_once_with(9)
+        controller.wattpilot.set_phases.assert_not_called()
+
+        controller.wattpilot.amp = 9
+        with patch.object(self.fwp.time, "time", return_value=105):
+            waiting = controller.commandSiteSafePhaseTransition(2, 9)
+
+        self.assertEqual(waiting, "reducing")
+        controller.wattpilot.set_phases.assert_not_called()
+
+        controller.wattpilot.energyTelemetryUpdatedAt = 106
+        controller.wattpilot.amps1 = 9
+        with patch.object(self.fwp.time, "time", return_value=110):
+            switched = controller.commandSiteSafePhaseTransition(2, 9)
+
+        self.assertEqual(switched, "switched")
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+
+    def test_final_command_boundary_fails_closed_but_allows_stop_commands(self):
+        controller = self._controller()
+        controller.siteCurrentL1Valid = False
+
+        self.assertFalse(controller.allowWattpilotCommand("amp", 6))
+        self.assertFalse(controller.allowWattpilotCommand("psm", 2))
+        self.assertFalse(
+            controller.allowWattpilotCommand(
+                "frc", self.fwp.WattpilotStartStop.On
+            )
+        )
+        self.assertTrue(controller.allowWattpilotCommand("amp", 0))
+        self.assertTrue(
+            controller.allowWattpilotCommand(
+                "frc", self.fwp.WattpilotStartStop.Off
+            )
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

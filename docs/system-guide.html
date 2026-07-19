@@ -611,7 +611,7 @@
         <article class="card">
           <p class="card-kicker">1 · Observe</p>
           <h3>Require fresh inputs</h3>
-          <p>Read all three grid phases, battery power/SOC, current consumer demand and Wattpilot state. Missing critical inputs produce zero allowance or a fail-safe stop.</p>
+          <p>Read all three grid phases, physical L1/L2/L3 site currents, battery power/SOC, current consumer demand and Wattpilot state. Missing critical inputs produce zero allowance or a fail-safe stop.</p>
         </article>
         <article class="card">
           <p class="card-kicker">2 · Allocate</p>
@@ -632,11 +632,11 @@
       <figure class="diagram">
         <svg viewBox="0 0 1080 340" role="img" aria-labelledby="flow-title flow-desc">
           <title id="flow-title">es-ESS Wattpilot Auto Eco decision flow</title>
-          <desc id="flow-desc">Fresh telemetry leads to a real PV allowance. If it cannot support one phase, charging waits or stops. If one phase is supported, charging starts or adjusts. Sustained higher allowance may switch to three phases. Grid import or stale telemetry invokes a safety guard.</desc>
+          <desc id="flow-desc">Fresh telemetry and physical per-phase site headroom lead to a real PV allowance. If either cannot support one phase, charging waits or stops. If one phase is supported, charging starts or adjusts. Sustained higher allowance plus headroom may switch to three phases. Grid import or stale telemetry invokes a safety guard.</desc>
           <defs><marker id="fArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#60727a"/></marker></defs>
           <g font-family="Inter,Segoe UI,sans-serif" text-anchor="middle">
             <rect x="30" y="110" width="170" height="80" rx="16" fill="#f0ecfa" stroke="#7765a8" stroke-width="2"/>
-            <text x="115" y="143" font-weight="800" font-size="16">Fresh GX data?</text><text x="115" y="167" font-size="12" fill="#5b6975">Grid L1/L2/L3 + battery</text>
+            <text x="115" y="143" font-weight="800" font-size="16">Fresh GX data?</text><text x="115" y="167" font-size="12" fill="#5b6975">Grid + site current L1/L2/L3</text>
             <path d="M200 150H260" stroke="#60727a" stroke-width="3" marker-end="url(#fArrow)"/>
             <rect x="260" y="110" width="180" height="80" rx="16" fill="#fff4d6" stroke="#e5a122" stroke-width="2"/>
             <text x="350" y="143" font-weight="800" font-size="16">PV allowance</text><text x="350" y="167" font-size="12" fill="#5b6975">≥ one-phase minimum?</text>
@@ -822,6 +822,10 @@ HibernateMode=<span class="value">false</span>                <span class="comme
 
 MinCurrentPerPhase=<span class="value">6</span>
 MaxCurrentPerPhase=<span class="value">16</span>               <span class="comment"># Example only; respect all electrical limits</span>
+SiteMaxCurrent=<span class="value">20</span>                    <span class="comment"># Per physical L1/L2/L3, no hidden margin</span>
+Charger1PhaseMapping=<span class="value">L1</span>              <span class="comment"># Physical phase after any plug rotation</span>
+SiteCurrentFreshSeconds=<span class="value">15</span>
+SiteCurrentRecoverySeconds=<span class="value">30</span>       <span class="comment"># Then increase 1 A per 5-second cycle</span>
 MinOnOffSeconds=<span class="value">60</span>
 MinPhaseSwitchSeconds=<span class="value">600</span>
 ThreePhasePvSurplusStartW=<span class="value">4500</span>
@@ -863,6 +867,7 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
         <article class="card">
           <h3>Current and phase thresholds</h3>
           <p>The Wattpilot family commonly starts around 6 A: approximately 1.38 kW on one phase and 4.14 kW on three phases at nominal voltage. Use hysteresis, so the three-phase start threshold is higher than the stop threshold.</p>
+          <p>The mandatory site guard caps one-phase charging on <code>Charger1PhaseMapping</code> and caps three-phase charging to the smallest physical-phase headroom because Wattpilot receives one equal current setting for all phases. It reacts on the normal five-second cycle, so the breaker remains primary protection.</p>
           <p>Do not infer a safe 32 A setting from a 22 kW product label. The lowest limit among supply, protection, cabling, adapter, wallbox, vehicle and local rules wins.</p>
         </article>
       </div>
@@ -1113,6 +1118,7 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
           <tr><td>No-surplus start</td><td>Connect the car when PV allowance is below about one-phase minimum.</td><td>Auto/Eco waits; battery assist does not create a start.</td></tr>
           <tr><td>One-phase start</td><td>During supervised operation, observe genuine PV naturally remain above minimum for <code>MinOnOffSeconds</code>.</td><td>Charge starts on one phase at a bounded current.</td></tr>
           <tr><td>Phase-up</td><td>Observe a natural interval with assigned allowance above <code>ThreePhasePvSurplusStartW</code>.</td><td>Three-phase command occurs only after <code>MinPhaseSwitchSeconds</code> and is confirmed from telemetry.</td></tr>
+          <tr><td>Site-current guard</td><td>Compare the read-only physical L1/L2/L3 currents and calculated headrooms during a naturally changing household load; use hardware-free tests for stale and overload injection.</td><td>One-phase uses the configured physical mapping. Three-phase uses one equal current capped by the smallest headroom. Reductions/stops precede assist or grace; recovery waits 30 seconds and rises 1 A per normal cycle.</td></tr>
           <tr><td>Transient three-phase allowance drop</td><td>Review a naturally observed event, retained production evidence, or hardware-free test where one fresh atomic <code>0 W</code> allowance recovers inside <code>AllowanceDropGraceSeconds</code>.</td><td><code>/PvAllowance</code> truthfully shows 0 W, but no phase or stop command occurs; recovery clears the grace timer. A sustained drop reduces phase or stops at expiry. Grid safety remains immediate.</td></tr>
           <tr><td>Cloud bridge</td><td>Observe a natural shortfall under 1 kW while SOC is above 50%, or use hardware-free tests.</td><td>Existing charge is held temporarily; runtime status shows assist active. Larger shortfalls should reduce current, phase down or stop earlier.</td></tr>
           <tr><td>Assist timeout</td><td>Use hardware-free tests or a naturally sustained supervised shortfall; do not prolong a production deficit solely for validation.</td><td>Assist locks out at the configured limit; the controller reduces to one phase or stops according to fresh allowance.</td></tr>
@@ -1125,7 +1131,7 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
 
       <details>
         <summary>Where to observe detailed controller state</summary>
-        <div><p>Use the Wattpilot D-Bus service paths <code>/ControlState</code>, <code>/PhaseMode</code>, <code>/BatteryAssistActive</code>, <code>/GridImportGuardActive</code>, <code>/TelemetryHealthy</code>, <code>/CommandAuthorityOk</code>, <code>/CommandAuthorityLiteral</code>, <code>/NativePvSurplusEnabled</code> and <code>/FlexibleTariffEnabled</code>, or the retained MQTT equivalents below <code>es-ESS/FroniusWattpilot/RuntimeStatus/...</code>. The standard EVCS overview tile intentionally remains compatible with normal Victron status values and does not show every safety detail.</p></div>
+        <div><p>Use the Wattpilot D-Bus service paths <code>/ControlState</code>, <code>/PhaseMode</code>, <code>/BatteryAssistActive</code>, <code>/GridImportGuardActive</code>, <code>/TelemetryHealthy</code>, <code>/SiteCurrentL1..L3</code>, <code>/SiteHeadroomL1..L3</code>, <code>/SiteAllowedCurrent</code>, <code>/SiteLimitingPhase</code>, <code>/SiteCurrentTelemetryHealthy</code>, <code>/SiteCurrentGuardReason</code>, <code>/CommandAuthorityOk</code>, <code>/CommandAuthorityLiteral</code>, <code>/NativePvSurplusEnabled</code> and <code>/FlexibleTariffEnabled</code>. Runtime status is retained below <code>es-ESS/FroniusWattpilot/RuntimeStatus/...</code>; site-current diagnostics are retained below <code>es-ESS/FroniusWattpilot/...</code>. The standard EVCS overview tile intentionally remains compatible with normal Victron status values and does not show every safety detail.</p></div>
       </details>
       <details>
         <summary>What to check after a Venus OS update</summary>

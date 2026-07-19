@@ -79,6 +79,7 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         controller.minCurrentPerPhase = 6
         controller.maxCurrentPerPhase = 16
         controller.currentPhaseMode = 1
+        controller.powerTransitionUntil = 0
         controller.mode = self.fwp.VrmEvChargerControlMode.Auto
         controller.autostart = 1
         controller.validatedVenusOsVersion = "v3.75"
@@ -95,6 +96,27 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
             self.fwp.COMMAND_AUTHORITY_VALIDATED,
         )
         controller.commandAuthorityForcedOff = False
+        controller.siteMaxCurrent = 20
+        controller.charger1PhaseMapping = "L1"
+        controller.siteCurrentFreshSeconds = 15
+        controller.siteCurrentRecoverySeconds = 30
+        controller.siteCurrentRecoverySince = {
+            1: self.fwp.time.time() - 31,
+            2: self.fwp.time.time() - 31,
+        }
+        controller.siteCurrentGuardBlocked = False
+        controller.siteCurrentGuardReason = "Site-current headroom available"
+        controller.siteCurrentAllowedCurrent = 16
+        controller.siteCurrentLimitingPhase = "L1"
+        controller.siteCurrentHeadrooms = (20, 20, 20)
+        for phase in ("L1", "L2", "L3"):
+            setattr(controller, "siteCurrent{0}Value".format(phase), 0)
+            setattr(controller, "siteCurrent{0}Valid".format(phase), True)
+            setattr(
+                controller,
+                "siteCurrent{0}UpdatedAt".format(phase),
+                self.fwp.time.time(),
+            )
         controller.dbusService = {
             "/Mode": self.fwp.VrmEvChargerControlMode.Auto.value,
             "/ModeLiteral": self.fwp.VrmEvChargerControlMode.Auto.name,
@@ -103,6 +125,11 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         }
         controller.wattpilot = SimpleNamespace(
             ampLimit=None,
+            amp=0,
+            amps1=0,
+            amps2=0,
+            amps3=0,
+            energyTelemetryUpdatedAt=self.fwp.time.time(),
             firmware="42.5",
             voltage1=230,
             mode=self.fwp.WattpilotControlMode.ECO,

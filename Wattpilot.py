@@ -244,6 +244,10 @@ class Wattpilot(object):
         return self._amps3
 
     @property
+    def energyTelemetryUpdatedAt(self):
+        return self._energyTelemetryUpdatedAt
+
+    @property
     def power1(self):
         return self._power1
 
@@ -435,6 +439,7 @@ class Wattpilot(object):
 
             self._carStateReady = False
             self._reset_command_authority_telemetry()
+            self._energyTelemetryUpdatedAt = 0
             self._stop_reconnect.clear()
             self._wst = threading.Thread(target=self.__connection_worker)
             self._wst.daemon = True
@@ -452,6 +457,7 @@ class Wattpilot(object):
         self._wsapp.close()
         self._connected=False
         self._reset_command_authority_telemetry()
+        self._energyTelemetryUpdatedAt = 0
         self.__call_event_handler(Event.WP_DISCONNECT)
         i(self, "Wattpilot disconnected")
 
@@ -536,8 +542,8 @@ class Wattpilot(object):
             if not allowed:
                 w(
                     self,
-                    "Blocked Wattpilot setValue {0}={1}: runtime firmware "
-                    "compatibility is not confirmed.".format(name, value),
+                    "Blocked Wattpilot setValue {0}={1}: command guard "
+                    "rejected the request.".format(name, value),
                 )
                 return False
 
@@ -671,6 +677,7 @@ class Wattpilot(object):
         elif name=="alw":
             self._AllowCharging = Wattpilot.alwValues[value]
         elif name=="nrg":
+            self._energyTelemetryUpdatedAt=time.time()
             self._voltage1=value[0]
             self._voltage2=value[1]
             self._voltage3=value[2]
@@ -800,6 +807,7 @@ class Wattpilot(object):
     def __on_close(self,wsapp,code,msg):
         self._connected=False
         self._reset_command_authority_telemetry()
+        self._energyTelemetryUpdatedAt = 0
         self.__call_event_handler(Event.WS_CLOSE, wsapp, code, msg)
 
     def __on_message(self, wsapp, message):
@@ -859,6 +867,7 @@ class Wattpilot(object):
         self._amps1=None
         self._amps2=None
         self._amps3=None
+        self._energyTelemetryUpdatedAt=0
         self._ampLimit=None
         self._startingPower=None
         self._nativePvSurplusEnabled=None

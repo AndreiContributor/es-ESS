@@ -378,6 +378,32 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
         self.assertIsNone(client.nativePvSurplusEnabled)
         self.assertIsNone(client.flexibleTariffEnabled)
 
+    def test_energy_telemetry_is_timestamped_and_reset_on_disconnect(self):
+        _install_wattpilot_client_stubs()
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_energy_timestamp_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+
+        with patch.object(wattpilot_module.time, "time", return_value=123.5):
+            client._Wattpilot__on_message(
+                client._wsapp,
+                json.dumps(
+                    {
+                        "type": "fullStatus",
+                        "partial": False,
+                        "status": {
+                            "nrg": [230, 230, 230, 0, 6, 6, 6, 1380,
+                                    1380, 1380, 0, 4140, 1, 1, 1]
+                        },
+                    }
+                ),
+            )
+
+        self.assertEqual(client.energyTelemetryUpdatedAt, 123.5)
+        client.disconnect(auto_reconnect=False)
+        self.assertEqual(client.energyTelemetryUpdatedAt, 0)
+
     def test_command_guard_blocks_every_state_changing_update(self):
         _install_wattpilot_client_stubs()
         wattpilot_module = self.load_wattpilot_module(

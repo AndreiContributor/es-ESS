@@ -31,6 +31,7 @@ CONTROL_STATE_STOPPED_FOR_GRID_IMPORT = 8
 CONTROL_STATE_STOPPED_FOR_STALE_TELEMETRY = 9
 CONTROL_STATE_FAULT = 10
 CONTROL_STATE_STOPPED_FOR_COMMAND_AUTHORITY = 11
+CONTROL_STATE_STOPPED_FOR_SITE_CURRENT_LIMIT = 12
 
 CONTROL_STATE_LITERALS = {
     CONTROL_STATE_STOPPED: "Stopped",
@@ -45,6 +46,7 @@ CONTROL_STATE_LITERALS = {
     CONTROL_STATE_STOPPED_FOR_STALE_TELEMETRY: "Stopped for stale telemetry",
     CONTROL_STATE_FAULT: "Fault",
     CONTROL_STATE_STOPPED_FOR_COMMAND_AUTHORITY: "Stopped: command authority blocked",
+    CONTROL_STATE_STOPPED_FOR_SITE_CURRENT_LIMIT: "Stopped for site current limit",
 }
 
 RUNTIME_STATUS_MQTT_PREFIX = "es-ESS/FroniusWattpilot/RuntimeStatus"
@@ -164,11 +166,13 @@ class WattpilotRuntimeStatusReporter:
         "_froniusHandleChangedValue",
         "startFromPvAllowance",
         "forceStopForNoAllowance",
+        "forceStopForSiteCurrentLimit",
         "switchToOnePhaseForPvDip",
         "adjustChargeForPvAllowance",
         "startOrContinueBatteryAssist",
         "clearBatteryAssist",
         "recordGridTelemetry",
+        "recordSiteCurrentTelemetry",
         "onMqttMessage",
         "reconcilePendingPhaseSwitch",
         "wakeUpWattpilot",
@@ -665,6 +669,8 @@ class WattpilotRuntimeStatusReporter:
                 return CONTROL_STATE_STOPPED
             if not telemetry_healthy:
                 return CONTROL_STATE_STOPPED_FOR_STALE_TELEMETRY
+            if bool(getattr(self.controller, "siteCurrentForcedOff", False)):
+                return CONTROL_STATE_STOPPED_FOR_SITE_CURRENT_LIMIT
             if grid_guard:
                 return CONTROL_STATE_STOPPED_FOR_GRID_IMPORT
             if battery_assist:
@@ -769,8 +775,20 @@ class WattpilotRuntimeStatusReporter:
             return False
         if self._transport_is_stale():
             return False
-        if not self._is_auto_mode() or bool(getattr(self.controller, "allowGridCharging", False)):
+        if not self._is_auto_mode():
             return True
+
+        site_fresh = self._call_bool("siteCurrentTelemetryIsFresh")
+        if site_fresh is None:
+            site_fresh = self._fallback_site_current_freshness()
+
+        if bool(getattr(self.controller, "allowGridCharging", False)):
+            if not self.telemetry_baseline_established:
+                if site_fresh:
+                    self.telemetry_baseline_established = True
+                else:
+                    return False
+            return bool(site_fresh)
 
         grid_fresh = self._call_bool("gridTelemetryIsFresh")
         if grid_fresh is None:
@@ -780,11 +798,38 @@ class WattpilotRuntimeStatusReporter:
             allowance_fresh = self._fallback_allowance_freshness()
 
         if not self.telemetry_baseline_established:
-            if grid_fresh and allowance_fresh:
+            if site_fresh and grid_fresh and allowance_fresh:
                 self.telemetry_baseline_established = True
             else:
                 return False
-        return bool(grid_fresh and allowance_fresh)
+        return bool(site_fresh and grid_fresh and allowance_fresh)
+
+    def _fallback_site_current_freshness(self) -> bool:
+        if not hasattr(self.controller, "siteCurrentL1Valid"):
+            return True
+        fresh_seconds = max(
+            1,
+            _number(
+                getattr(self.controller, "siteCurrentFreshSeconds", 15), 15
+            ),
+        )
+        now = time.time()
+        for phase in ("L1", "L2", "L3"):
+            if not bool(
+                getattr(self.controller, "siteCurrent{0}Valid".format(phase), False)
+            ):
+                return False
+            updated = _number(
+                getattr(
+                    self.controller,
+                    "siteCurrent{0}UpdatedAt".format(phase),
+                    0,
+                ),
+                0,
+            )
+            if updated <= 0 or now - updated > fresh_seconds:
+                return False
+        return True
 
     def _fallback_grid_freshness(self) -> bool:
         fresh_seconds = max(1, _number(getattr(self.controller, "gridTelemetryFreshSeconds", 15), 15))

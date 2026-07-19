@@ -203,7 +203,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "13")
         self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["Common"]["GridSetPointMinW"], "0")
@@ -222,6 +222,7 @@ class ConfigMigrationTests(unittest.TestCase):
             [
                 "config.ini.v10.backup",
                 "config.ini.v11.backup",
+                "config.ini.v12.backup",
                 "config.ini.v6.backup",
                 "config.ini.v7.backup",
                 "config.ini.v8.backup",
@@ -240,7 +241,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "13")
         self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["NoBatToEV"]["UseRelay"], "-1")
@@ -271,7 +272,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "13")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["Services"]["Shelly3EMGrid"], "true")
         self.assertEqual(migrated["Services"]["ShellyPMInverter"], "true")
@@ -294,7 +295,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "13")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "12")
 
     def test_version_10_removes_obsolete_phase_switch_delay(self):
@@ -310,7 +311,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "13")
         self.assertEqual(
             migrated["FroniusWattpilot"]["MinPhaseSwitchSeconds"], "600"
         )
@@ -322,6 +323,7 @@ class ConfigMigrationTests(unittest.TestCase):
             [
                 "config.ini.v10.backup",
                 "config.ini.v11.backup",
+                "config.ini.v12.backup",
                 "config.ini.v9.backup",
             ],
         )
@@ -339,14 +341,19 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "13")
         self.assertEqual(migrated["Common"]["GridSetPointMinW"], "-50")
         self.assertEqual(migrated["Common"]["GridSetPointMaxW"], "-50")
         self.assertEqual(migrated["Mqtt"]["SslVerification"], "Insecure")
         self.assertEqual(migrated["Mqtt"]["LocalSslVerification"], "Required")
         self.assertEqual(migrated["Mqtt"]["SslCaFile"], "")
         self.assertEqual(
-            backups, ["config.ini.v10.backup", "config.ini.v11.backup"]
+            backups,
+            [
+                "config.ini.v10.backup",
+                "config.ini.v11.backup",
+                "config.ini.v12.backup",
+            ],
         )
 
     def test_version_12_adds_default_log_retention_without_changing_level(self):
@@ -358,10 +365,12 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "12")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "13")
         self.assertEqual(migrated["Common"]["LogLevel"], "APP_DEBUG")
         self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
-        self.assertEqual(backups, ["config.ini.v11.backup"])
+        self.assertEqual(
+            backups, ["config.ini.v11.backup", "config.ini.v12.backup"]
+        )
 
     def test_version_12_preserves_existing_log_retention(self):
         migrated, _backups = self._run_migration(
@@ -373,6 +382,50 @@ class ConfigMigrationTests(unittest.TestCase):
         )
 
         self.assertEqual(migrated["Common"]["LogRetentionDays"], "21")
+
+    def test_version_13_adds_mandatory_site_current_guard_defaults(self):
+        migrated, backups = self._run_migration(
+            """
+            [Common]
+            ConfigVersion=12
+
+            [FroniusWattpilot]
+            MaxCurrentPerPhase=16
+            """
+        )
+
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "13")
+        self.assertEqual(migrated["FroniusWattpilot"]["SiteMaxCurrent"], "20")
+        self.assertEqual(
+            migrated["FroniusWattpilot"]["Charger1PhaseMapping"], "L1"
+        )
+        self.assertEqual(
+            migrated["FroniusWattpilot"]["SiteCurrentFreshSeconds"], "15"
+        )
+        self.assertEqual(
+            migrated["FroniusWattpilot"]["SiteCurrentRecoverySeconds"], "30"
+        )
+        self.assertEqual(backups, ["config.ini.v12.backup"])
+
+    def test_version_13_preserves_existing_site_current_values(self):
+        migrated, _backups = self._run_migration(
+            """
+            [Common]
+            ConfigVersion=12
+
+            [FroniusWattpilot]
+            SiteMaxCurrent=25
+            Charger1PhaseMapping=L3
+            SiteCurrentFreshSeconds=10
+            SiteCurrentRecoverySeconds=45
+            """
+        )
+
+        wattpilot = migrated["FroniusWattpilot"]
+        self.assertEqual(wattpilot["SiteMaxCurrent"], "25")
+        self.assertEqual(wattpilot["Charger1PhaseMapping"], "L3")
+        self.assertEqual(wattpilot["SiteCurrentFreshSeconds"], "10")
+        self.assertEqual(wattpilot["SiteCurrentRecoverySeconds"], "45")
 
 
 class LoggingConfigurationTests(unittest.TestCase):
@@ -603,6 +656,10 @@ class ConfigValueValidationTests(unittest.TestCase):
         wattpilot["GridTelemetryFreshSeconds"] = "1"
         wattpilot["AllowanceFreshSeconds"] = "1"
         wattpilot["RawOverheadFreshSeconds"] = "5"
+        wattpilot["SiteMaxCurrent"] = "6"
+        wattpilot["Charger1PhaseMapping"] = "L3"
+        wattpilot["SiteCurrentFreshSeconds"] = "1"
+        wattpilot["SiteCurrentRecoverySeconds"] = "0"
         wattpilot["BatteryAssistMaxShortfallW"] = "0"
         wattpilot["BatteryAssistRecoverySeconds"] = "0"
         wattpilot["StartupTelemetryRatio"] = "1"
@@ -770,6 +827,10 @@ class ConfigValueValidationTests(unittest.TestCase):
             ("FroniusWattpilot", "GridTelemetryFreshSeconds", "0"),
             ("FroniusWattpilot", "AllowanceFreshSeconds", "0"),
             ("FroniusWattpilot", "RawOverheadFreshSeconds", "4"),
+            ("FroniusWattpilot", "SiteMaxCurrent", "5"),
+            ("FroniusWattpilot", "Charger1PhaseMapping", "L4"),
+            ("FroniusWattpilot", "SiteCurrentFreshSeconds", "0"),
+            ("FroniusWattpilot", "SiteCurrentRecoverySeconds", "-1"),
             ("FroniusWattpilot", "BatteryAssistMaxShortfallW", "-1"),
             ("FroniusWattpilot", "BatteryAssistRecoverySeconds", "-1"),
             ("FroniusWattpilot", "StartupTelemetryRatio", "0"),

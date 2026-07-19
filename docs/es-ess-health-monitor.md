@@ -99,7 +99,8 @@ deployment, or Wattpilot validation work:
 - Pinned bundled `velib_python` integrity, the resolved `vedbus` import path,
   and a read-only per-file comparison with the Venus OS system copy.
 - Disk usage for `/` and `/data`.
-- Selected config values that affect Wattpilot safety and PV policy.
+- Selected config values that affect Wattpilot safety and PV policy, including
+  the mandatory site-current limit, one-phase mapping, freshness, and recovery.
 - Wattpilot standard EV-charger D-Bus paths such as `/Connected`,
   `/StatusLiteral`, `/ModeLiteral`, `/StartStopLiteral`, `/Ac/Power`,
   `/Current`, `/SetCurrent`, `/PvAllowance`, and `/PhaseModeLiteral`.
@@ -108,6 +109,9 @@ deployment, or Wattpilot validation work:
   `/CompatibilityOk`, `/CompatibilityLiteral`, `/CommandAuthorityOk`,
   `/CommandAuthorityLiteral`, `/NativePvSurplusEnabled`,
   `/FlexibleTariffEnabled`, and expected/actual firmware values.
+- Wattpilot site-current paths such as `/SiteCurrentL1..L3`, sample ages,
+  `/SiteHeadroomL1..L3`, `/SiteAllowedCurrent`, `/SiteLimitingPhase`, telemetry
+  health, blocked reason, and recovery elapsed time.
 - Recent log entries for compatibility, dependency, controller, battery-assist,
   grid-import, phase-switch, Wattpilot command evidence, and raw-to-published
   Wattpilot mode transitions.
@@ -175,6 +179,8 @@ Healthy output normally shows:
   `NativePvSurplusEnabled=0`, and `FlexibleTariffEnabled=0` before a vehicle is
   connected.
 - `TelemetryHealthy` is `1` during Auto/Eco decisions.
+- `SiteCurrentTelemetryHealthy` is `1`, each phase age remains inside
+  `SiteCurrentFreshSeconds`, and limiting phase/headroom matches live load.
 - `GridImportGuardActive` is `0` during normal no-grid operation.
 - Battery assist, when active, remains bounded and later recovers.
 - Manual mode reports state but does not produce repeated Wattpilot
@@ -193,6 +199,8 @@ Stop the active validation and inspect logs immediately if:
   literal and keep the vehicle disconnected until both native settings report
   `0` and authority reports `1`.
 - Battery assist exceeds configured duration or shortfall expectations.
+- Auto/Eco remains active while site-current telemetry is unhealthy, the guard
+  is blocked, or a physical phase has insufficient commanded headroom.
 - Manual mode produces Wattpilot start, stop, current, or phase commands.
 
 ## Useful Environment Overrides

@@ -42,6 +42,12 @@ Current validated state:
   assist, telemetry freshness, phase switching, reconnect handling, runtime
   status, configuration migration/validation, and graceful shutdown are
   implemented and tested.
+- Mandatory physical L1/L2/L3 whole-site current protection is implemented for
+  Auto/Eco. It caps one-phase charging on the configured physical phase, caps
+  three-phase charging at the smallest phase headroom, fails closed on stale or
+  uncertain current telemetry, and applies delayed/ramped recovery. Hardware-
+  free verification is complete; supervised live commissioning remains listed
+  under Outstanding Manual Validation.
 - Supervised Auto/Eco validation on 2026-07-14 confirmed that a phase-up
   candidate active at `20/600s` was cleared by a confirmed physical disconnect:
   after reconnect, without an es-ESS restart, the next candidate began at
@@ -64,9 +70,9 @@ Current validated state:
   later single-cycle atomic `0 W` assignment exposed that three-phase fallback
   bypassed `AllowanceDropGraceSeconds`; the controller and hardware-free tests
   now preserve truthful allowance telemetry while debouncing that fallback.
-  Supervised live revalidation is complete. No Wattpilot implementation or
-  mandatory production-validation task remains. The optional natural-winter
-  observation and battery-heartbeat fault simulation were safely retired; the
+  Supervised live revalidation of that allowance behavior is complete. The
+  optional natural-winter observation and battery-heartbeat fault simulation
+  were safely retired; the
   latter cannot be isolated on the production GX without risking broader
   battery/system telemetry.
 - The Victron `velib_python` dependency is pinned to the already validated
@@ -120,6 +126,37 @@ Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
+### Completed 2026-07-19 - Add Mandatory Per-Phase Site-Current Guard
+
+- Added mandatory Auto/Eco protection using the Victron system service's
+  physical `/Ac/Consumption/L1/Current` through `L3/Current` telemetry. The
+  guard applies `SiteMaxCurrent` independently to every physical phase and
+  fails closed on missing, invalid, negative, stale, or phase-uncertain inputs.
+- Added `Charger1PhaseMapping` for the electrician-verified physical phase used
+  by one-phase Wattpilot charging. Existing one-phase charger current is
+  subtracted only from that phase. Existing three-phase current is
+  conservatively calculated from the smallest measured charger phase current,
+  and one common Wattpilot current is capped by the smallest available site
+  headroom.
+- Site-current reductions and stops take priority over allowance-drop grace,
+  battery assist, grid charging, and phase-transition logic. Reductions occur
+  on the next control cycle; below 6 A headroom stops without issuing a phase
+  command. Recovery requires stable headroom for the configured interval and
+  then increases by 1 A per normal cycle. Phase changes after a reduction wait
+  for newer Wattpilot current telemetry that proves the reduction was applied.
+- Manual mode remains observation-only apart from the existing one-time Auto
+  constraint release. The guard protects the configured C20 site limit only
+  and intentionally does not claim to protect the shared downstream C16 EV/hob
+  circuit.
+- Added D-Bus and retained-MQTT diagnostics, runtime state 12 (`Stopped for site
+  current limit`), live-monitor and daily-report visibility, configuration v13
+  migration/validation, operator documentation, pure decision tests, and
+  hardware-free controller/command-boundary regressions.
+- Python and shell syntax checks, focused decision/controller/configuration/
+  backlog tests, and the full 488-test hardware-free suite passed. Supervised
+  GX validation is retained below because no live Venus OS, Wattpilot, or
+  vehicle is available in the development workspace.
 
 ### Completed 2026-07-15 - Make Log Timezone And Calendar-Day Retention Explicit
 
@@ -1244,9 +1281,26 @@ For implementation PRs:
 
 ## Outstanding Manual Validation
 
-No implementation-stage manual validation remains. Do not force grid import,
-disconnect a production grid, interrupt critical telemetry, or alter the
-production energy system solely to reproduce historical safety branches.
+One implementation-stage commissioning check remains. Do not force an
+overcurrent, force grid import, disconnect a production grid, interrupt
+critical telemetry, or alter the production energy system solely to exercise a
+safety branch.
+
+- Active charging required: on the approved Venus OS `v3.75`, Wattpilot
+  firmware `42.5`, and Solar.wattpilot app `2.1.0` baseline, first confirm that
+  `/SiteCurrentL1` through `/SiteCurrentL3` agree with the installation and that
+  `Charger1PhaseMapping` names the physical phase actually used in one-phase
+  charging. During a naturally safe Auto/Eco session, observe that
+  `/SiteAllowedCurrent` follows the limiting physical phase, three-phase uses
+  one equal current command, a natural house-load increase reduces EV current,
+  and recovery waits for `/SiteCurrentRecoveryElapsed` before rising 1 A per
+  cycle. Return to Manual and confirm es-ESS remains observation-only. A
+  naturally occurring stop below 6 A headroom may be recorded, but must not be
+  created by intentionally overloading the site or the shared C16 branch.
+- Log-only: capture the site-current diagnostic paths and health-monitor output
+  before, during, and after the supervised session; confirm no command-boundary
+  rejection, traceback, unintended grid charging, or battery-assist bypass of
+  the site guard.
 
 - Hibernate remote control was resolved as documentation-only unsupported
   behavior while disconnected; no hardware action remains.

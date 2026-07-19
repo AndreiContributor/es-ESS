@@ -12,6 +12,8 @@ NOT_CHARGING_STATUS_VALUES = frozenset([4, 5, 6, 16, 17, 18, 22, 24])
 class WattpilotControlState(Enum):
     TRANSPORT_UNAVAILABLE = "transport_unavailable"
     COMMAND_AUTHORITY_BLOCKED = "command_authority_blocked"
+    SITE_CURRENT_TELEMETRY_UNSAFE = "site_current_telemetry_unsafe"
+    SITE_CURRENT_LIMIT_STOP = "site_current_limit_stop"
     GRID_TELEMETRY_UNSAFE = "grid_telemetry_unsafe"
     GRID_IMPORT_PHASE_DOWN = "grid_import_phase_down"
     GRID_IMPORT_STOP = "grid_import_stop"
@@ -29,6 +31,8 @@ class ControlStateInputs:
     transport_unavailable: bool = False
     auto_mode: bool = False
     command_authority_ok: bool = True
+    site_current_telemetry_fresh: bool = True
+    site_current_limit_exceeded: bool = False
     allow_grid_charging: bool = False
     grid_telemetry_fresh: bool = True
     grid_import_limit_exceeded: bool = False
@@ -55,6 +59,12 @@ def select_control_state(inputs):
 
     if inputs.auto_mode and not inputs.command_authority_ok:
         return WattpilotControlState.COMMAND_AUTHORITY_BLOCKED
+
+    if inputs.auto_mode and not inputs.site_current_telemetry_fresh:
+        return WattpilotControlState.SITE_CURRENT_TELEMETRY_UNSAFE
+
+    if inputs.auto_mode and inputs.site_current_limit_exceeded:
+        return WattpilotControlState.SITE_CURRENT_LIMIT_STOP
 
     if (
         inputs.auto_mode
@@ -96,15 +106,18 @@ def select_control_state(inputs):
 def describe_control_inputs(inputs):
     return (
         "transport_unavailable={0}, auto_mode={1}, command_authority_ok={2}, "
-        "allow_grid_charging={3}, grid_telemetry_fresh={4}, "
-        "grid_import_limit_exceeded={5}, current_phase_mode={6}, "
-        "phase_down_for_pv_dip={7}, pending_phase_status={8}, "
-        "effective_car_connected={9}, model_status_value={10}, "
-        "external_low_price={11}, phase_switching={12}"
+        "site_current_telemetry_fresh={3}, site_current_limit_exceeded={4}, "
+        "allow_grid_charging={5}, grid_telemetry_fresh={6}, "
+        "grid_import_limit_exceeded={7}, current_phase_mode={8}, "
+        "phase_down_for_pv_dip={9}, pending_phase_status={10}, "
+        "effective_car_connected={11}, model_status_value={12}, "
+        "external_low_price={13}, phase_switching={14}"
     ).format(
         inputs.transport_unavailable,
         inputs.auto_mode,
         inputs.command_authority_ok,
+        inputs.site_current_telemetry_fresh,
+        inputs.site_current_limit_exceeded,
         inputs.allow_grid_charging,
         inputs.grid_telemetry_fresh,
         inputs.grid_import_limit_exceeded,

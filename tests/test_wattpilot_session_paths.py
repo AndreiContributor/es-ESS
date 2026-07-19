@@ -167,6 +167,9 @@ class WattpilotSessionPathTests(unittest.TestCase):
         controller.chargingTime = 0
         controller.autostart = 0
         controller.mode = self.fwp.VrmEvChargerControlMode.Manual
+        controller.siteMaxCurrent = 20
+        controller.charger1PhaseMapping = "L1"
+        controller.siteCurrentGuardReason = "Waiting for site-current telemetry"
 
         controller.initDbusService()
 

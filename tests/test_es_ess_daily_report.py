@@ -404,6 +404,10 @@ NoBatToEV=false
 [FroniusWattpilot]
 MinCurrentPerPhase=6
 MaxCurrentPerPhase=16
+SiteMaxCurrent=20
+Charger1PhaseMapping=L1
+SiteCurrentFreshSeconds=15
+SiteCurrentRecoverySeconds=30
 ThreePhasePvSurplusStartW=4500
 ThreePhasePvSurplusStopW=4100
 MinOnOffSeconds=60

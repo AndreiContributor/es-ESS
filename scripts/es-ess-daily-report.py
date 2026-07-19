@@ -76,6 +76,23 @@ SNAPSHOT_DBUS_PATHS = (
     "/BatteryAssistActive",
     "/GridImportGuardActive",
     "/TelemetryHealthy",
+    "/SiteCurrentLimit",
+    "/Charger1PhaseMapping",
+    "/SiteCurrentL1",
+    "/SiteCurrentL2",
+    "/SiteCurrentL3",
+    "/SiteCurrentAgeL1",
+    "/SiteCurrentAgeL2",
+    "/SiteCurrentAgeL3",
+    "/SiteHeadroomL1",
+    "/SiteHeadroomL2",
+    "/SiteHeadroomL3",
+    "/SiteAllowedCurrent",
+    "/SiteLimitingPhase",
+    "/SiteCurrentTelemetryHealthy",
+    "/SiteCurrentGuardBlocked",
+    "/SiteCurrentGuardReason",
+    "/SiteCurrentRecoveryElapsed",
     "/CompatibilityOk",
     "/CompatibilityLiteral",
     "/CommandAuthorityOk",
@@ -220,6 +237,8 @@ RAW_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 STOP_REASONS = (
+    ("whole-site phase headroom is below", "site current limit"),
+    ("site-current telemetry is missing", "stale site-current telemetry"),
     ("grid import guard triggered. stopping", "grid import guard"),
     ("grid telemetry is missing, invalid, or stale", "stale grid telemetry"),
     ("stopping auto/eco charging", "insufficient allowance"),
@@ -242,6 +261,9 @@ STOP_MARKERS = (
     "notcharging",
     "Grid telemetry",
     "grid telemetry",
+    "Site-current",
+    "site-current",
+    "Whole-site phase headroom",
 )
 
 
@@ -271,6 +293,10 @@ class AuditSettings:
     enabled_services: list[str] = field(default_factory=list)
     min_current_per_phase: int = 6
     max_current_per_phase: int = 16
+    site_max_current: int = 20
+    charger_one_phase_mapping: str = "L1"
+    site_current_fresh_seconds: int = 15
+    site_current_recovery_seconds: int = 30
     three_phase_start_w: float = 4500.0
     three_phase_stop_w: float = 4100.0
     min_on_off_seconds: int = 60
@@ -852,6 +878,16 @@ def load_settings(path: Path) -> tuple[AuditSettings, list[str]]:
         enabled_services=sorted(enabled_services),
         min_current_per_phase=_get_int(parser, section, "MinCurrentPerPhase", 6, warnings),
         max_current_per_phase=_get_int(parser, section, "MaxCurrentPerPhase", 16, warnings),
+        site_max_current=_get_int(parser, section, "SiteMaxCurrent", 20, warnings),
+        charger_one_phase_mapping=parser.get(
+            section, "Charger1PhaseMapping", fallback="L1"
+        ).upper(),
+        site_current_fresh_seconds=_get_int(
+            parser, section, "SiteCurrentFreshSeconds", 15, warnings
+        ),
+        site_current_recovery_seconds=_get_int(
+            parser, section, "SiteCurrentRecoverySeconds", 30, warnings
+        ),
         three_phase_start_w=_get_float(
             parser, section, "ThreePhasePvSurplusStartW", 4500.0, warnings
         ),
@@ -2742,6 +2778,10 @@ def render_human(result: AuditResult) -> str:
         f"EnabledServices={','.join(result.configuration.enabled_services) or 'unavailable'}",
         f"Current={result.configuration.min_current_per_phase}.."
         f"{result.configuration.max_current_per_phase} A per phase",
+        f"SiteCurrent={result.configuration.site_max_current} A per physical phase; "
+        f"1-phase={result.configuration.charger_one_phase_mapping}; "
+        f"fresh/recovery={result.configuration.site_current_fresh_seconds}/"
+        f"{result.configuration.site_current_recovery_seconds} s",
         f"ThreePhaseStart/Stop={result.configuration.three_phase_start_w:.0f}/"
         f"{result.configuration.three_phase_stop_w:.0f} W",
         f"MinOnOff/MinPhaseSwitch={result.configuration.min_on_off_seconds}/"

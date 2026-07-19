@@ -107,6 +107,9 @@ It owns:
 - Grid telemetry state updates and no-grid stop behavior, delegating pure
   telemetry freshness checks to `WattpilotDecisionInputs.py` and grid-import
   guard decisions to `WattpilotSafetyDecisions.py`.
+- Mandatory whole-site physical L1/L2/L3 current sampling, freshness,
+  headroom enforcement, and diagnostics, delegating pure calculations to
+  `WattpilotSiteCurrentDecisions.py`.
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
@@ -126,6 +129,10 @@ It owns:
   owns command side effects, D-Bus/MQTT publication, service messages, and
   mutable timers.
 - Wattpilot command issuing through the `Wattpilot` client.
+- A final common command guard that applies exact firmware validation first,
+  then rejects positive Auto/Eco current, start, or phase commands without
+  fresh and sufficient physical site-current headroom. Safe zero-current,
+  Force Off, and automatic-phase release commands remain available.
 - Read-only command-authority evaluation. Positive current, start, phase-up,
   and normal Auto/Eco dispatch require ECO plus `fup=false` and `ful=false`;
   missing or conflicting settings fail closed while zero-current and safe stop
@@ -225,6 +232,24 @@ user-visible messages, starts transition grace, confirms pending phase
 switches from live telemetry, and issues `set_phases()` / `set_power()`
 commands.
 
+### `WattpilotSiteCurrentDecisions.py`
+
+`WattpilotSiteCurrentDecisions.py` owns pure whole-site current calculations.
+
+It owns:
+
+- Validation of physical L1/L2/L3 site and Wattpilot phase-current snapshots.
+- One-phase EV subtraction on the configured physical phase.
+- Conservative three-phase EV subtraction using the smallest measured
+  Wattpilot phase current on every physical phase.
+- Per-phase non-EV load, headroom, limiting-phase, and equal three-phase
+  allowed-current calculation.
+- Immediate-reduction, stable-delay, and one-amp-per-cycle recovery decisions.
+
+It must not sample telemetry, store timestamps, publish status, decide command
+ownership, or issue Wattpilot commands. Those mutable and side-effect
+responsibilities remain in `FroniusWattpilot.py`.
+
 ### `WattpilotControlState.py`
 
 `WattpilotControlState.py` owns the explicit, pure control-state ordering for
@@ -233,15 +258,15 @@ the Wattpilot controller.
 It owns:
 
 - The named controller states used to describe each `_update()` branch,
-  including command-authority blocking before grid, phase, disconnect, or
-  model-status dispatch.
+  including command-authority and site-current blocking before grid, phase,
+  disconnect, or model-status dispatch.
 - Model-status classification for charging and not-charging Wattpilot states.
   The [upstream API specification](https://github.com/goecharger/go-eCharger-API-v2/blob/main/API_KEYS_FIRMWARE/apikeys-en.md)
   defines `modelStatus` as the reason charging is currently allowed or denied
   and labels values `8`-`11` and `13`-`14` as
   `ChargingBecause...`; es-ESS therefore classifies all six as active charging.
-  This classification is applied only after command-authority, no-grid
-  telemetry/import, pending-phase, and confirmed-disconnect gates.
+  This classification is applied only after command-authority, site-current,
+  no-grid telemetry/import, pending-phase, and confirmed-disconnect gates.
 - Pure selection of the next controller branch from an input snapshot.
 - Formatting of selector inputs for diagnostics and tests.
 
@@ -255,8 +280,9 @@ It must not own:
 - Live telemetry sampling.
 
 `FroniusWattpilot.py` gathers the safety facts in the same order as the
-pre-selector controller: stale no-grid telemetry short-circuits before
-grid-import checks, grid import is evaluated before pending phase-switch
+pre-selector controller: command authority is followed by mandatory stale or
+insufficient site-current headroom, then stale no-grid telemetry before
+grid-import checks. Grid import is evaluated before pending phase-switch
 reconciliation, and pending phase-switch reconciliation is evaluated before
 disconnect/model-status routing. The selector then chooses the explicit state,
 and the controller dispatches that state to the existing side-effect handlers.
@@ -281,6 +307,9 @@ It owns:
   `es-ESS/FroniusWattpilot/RuntimeStatus`.
 - Observation of controller transitions and Wattpilot transport health.
 - Fault/status publication that does not interrupt charger control.
+- Runtime state `12`, `Stopped for site current limit`, while the controller
+  remains latched off after a site-current intervention. Stale site inputs use
+  the existing stale-telemetry state.
 
 It must not issue Wattpilot commands. It is an observer and publisher only. Raw
 WebSocket callbacks should record lightweight evidence and let the normal
@@ -307,6 +336,9 @@ Future Wattpilot changes must preserve these invariants:
   remains valid only for deliberately immediate/non-negative thresholds; all
   freshness windows remain positive and raw-overhead freshness is at least the
   controller's five-second floor.
+- `SiteMaxCurrent` is a mandatory physical per-phase Auto/Eco limit.
+  `Charger1PhaseMapping` must be L1, L2, or L3; site-current freshness must be
+  positive and recovery time non-negative.
 - Wattpilot commands must remain blocked until `fwv` telemetry exactly matches
   validated firmware `42.5`. Missing telemetry fails closed.
 - Auto/Eco command authority additionally requires raw ECO telemetry,
@@ -314,6 +346,23 @@ Future Wattpilot changes must preserve these invariants:
   flexible tariff enabled must block positive current, start, phase-up, and
   normal control dispatch. A safe zero-current/stop remains permitted only in
   confirmed ECO; Manual remains user-controlled.
+- Auto/Eco always requires fresh, finite, non-negative physical consumption
+  currents for L1/L2/L3. An active charge also requires fresh Wattpilot `nrg`
+  phase-current telemetry. Missing, stale, invalid, negative, or phase-uncertain
+  data blocks starts and stops an active charge without a phase command.
+- One-phase charging subtracts measured EV current only from
+  `Charger1PhaseMapping`. Three-phase charging subtracts the smallest measured
+  EV phase current from all physical phases and receives one equal current
+  command capped by the smallest headroom. Wattpilot cannot receive different
+  current commands per phase.
+- Site-current reductions and stops run before allowance grace, battery assist,
+  grid fallback, or transition grace. Recovery must remain continuously safe
+  for `SiteCurrentRecoverySeconds`; increases then rise by 1 A per normal
+  controller cycle.
+- `SiteMaxCurrent` has no hidden margin and does not replace the site breaker or
+  downstream branch protection. A roughly five-second response cannot
+  guarantee interception of short inrush, and stopping the EV cannot correct a
+  house-only overload.
 - Solar.wattpilot app `2.1.0` is a commissioning baseline only; it cannot be
   asserted from the local es-ESS runtime.
 - The Wattpilot WebSocket query value `version=1.2.9` is a protocol/client
@@ -413,6 +462,8 @@ Future Wattpilot changes must preserve these invariants:
   authorizes the reduction.
 - Current limits must respect configured per-phase bounds and the
   Wattpilot-reported effective limit.
+- Phase-switch command ordering must keep both the old and requested phase mode
+  inside the calculated site-current headroom before any increase.
 - Public D-Bus and MQTT runtime-status paths are compatibility contracts.
 - Keep read-only diagnostics such as `scripts/es-ess-health-monitor.sh` and
   `scripts/es-ess-daily-report.py` command-free. Monitoring tools may read the

@@ -620,6 +620,29 @@ class esESS:
                     max_current,
                 )
 
+            site_max_current = integer(section, "SiteMaxCurrent", 20)
+            if (
+                site_max_current is not None
+                and not 6 <= site_max_current <= 100
+            ):
+                invalid(
+                    section,
+                    "SiteMaxCurrent",
+                    "must be between 6 and 100 A",
+                    site_max_current,
+                )
+
+            one_phase_mapping = self.config[section].get(
+                "Charger1PhaseMapping", "L1"
+            ).upper()
+            if one_phase_mapping not in ("L1", "L2", "L3"):
+                invalid(
+                    section,
+                    "Charger1PhaseMapping",
+                    "must be L1, L2, or L3",
+                    one_phase_mapping,
+                )
+
             phase_start = integer(section, "ThreePhasePvSurplusStartW", 4200)
             phase_stop = integer(section, "ThreePhasePvSurplusStopW", 4140)
             if (
@@ -679,6 +702,7 @@ class esESS:
             for key, default in (
                 ("GridImportStopSeconds", 5),
                 ("BatteryAssistRecoverySeconds", 60),
+                ("SiteCurrentRecoverySeconds", 30),
             ):
                 value = integer(section, key, default)
                 if (value is not None and value < 0):
@@ -688,6 +712,7 @@ class esESS:
                 ("GridTelemetryFreshSeconds", 15, 1),
                 ("AllowanceFreshSeconds", 15, 1),
                 ("RawOverheadFreshSeconds", 15, 5),
+                ("SiteCurrentFreshSeconds", 15, 1),
             ):
                 value = integer(section, key, default)
                 if (value is not None and value < minimum):
@@ -1178,6 +1203,22 @@ class esESS:
             self.config["Common"]["ConfigVersion"] = "{0}".format(version)
             self._setConfigDefault(
                 "Common", "LogRetentionDays", str(DEFAULT_LOG_RETENTION_DAYS)
+            )
+
+        version = 13
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+            self._setConfigDefault("FroniusWattpilot", "SiteMaxCurrent", "20")
+            self._setConfigDefault(
+                "FroniusWattpilot", "Charger1PhaseMapping", "L1"
+            )
+            self._setConfigDefault(
+                "FroniusWattpilot", "SiteCurrentFreshSeconds", "15"
+            )
+            self._setConfigDefault(
+                "FroniusWattpilot", "SiteCurrentRecoverySeconds", "30"
             )
 
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 
