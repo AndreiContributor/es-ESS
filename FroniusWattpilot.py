@@ -1242,10 +1242,30 @@ class FroniusWattpilot (esESSService):
             return current is None or current <= decision.allowed_current
 
         if name == "amp":
-            permitted = self.siteLimitedTargetCurrent(
-                requestedPhase, int(value), applyRecovery=True
+            requestedCurrent = int(value)
+            reportedCurrent = DecisionInputs.finite_number(
+                getattr(self.wattpilot, "amp", None)
             )
-            return int(value) >= self.minCurrentPerPhase and int(value) <= permitted
+            # The controller may intentionally repeat the present current
+            # while a site-headroom recovery timer is maturing. Reapplying the
+            # recovery state machine to that no-op would treat target ==
+            # current as a completed reduction and clear the timer every
+            # cycle, permanently preventing the pending increase. The final
+            # boundary still recalculates physical headroom; only the recovery
+            # timer mutation is skipped for an exactly unchanged command.
+            unchangedCurrent = (
+                reportedCurrent is not None
+                and float(requestedCurrent) == float(reportedCurrent)
+            )
+            permitted = self.siteLimitedTargetCurrent(
+                requestedPhase,
+                requestedCurrent,
+                applyRecovery=not unchangedCurrent,
+            )
+            return (
+                requestedCurrent >= self.minCurrentPerPhase
+                and requestedCurrent <= permitted
+            )
 
         return False
 

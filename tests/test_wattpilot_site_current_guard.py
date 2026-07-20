@@ -252,6 +252,52 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
             )
         )
 
+    def test_equal_current_final_guard_preserves_pending_recovery_timer(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.power = 5.0
+        controller.wattpilot.amp = 7
+        controller.wattpilot.amps1 = 7
+        controller.wattpilot.amps2 = 7
+        controller.wattpilot.amps3 = 7
+        self._set_site(controller, 7, 7, 7, 100)
+        controller.siteCurrentRecoverySince = {1: 0, 2: 0}
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            held_current = controller.siteLimitedTargetCurrent(2, 9)
+            self.assertEqual(held_current, 7)
+            self.assertEqual(controller.siteCurrentRecoverySince[2], 100)
+            self.assertTrue(
+                controller.allowWattpilotCommand("amp", held_current)
+            )
+
+        self.assertEqual(controller.siteCurrentRecoverySince[2], 100)
+
+        self._set_site(controller, 7, 7, 7, 129)
+        with patch.object(self.fwp.time, "time", return_value=129):
+            self.assertEqual(controller.siteLimitedTargetCurrent(2, 9), 7)
+
+        self._set_site(controller, 7, 7, 7, 130)
+        with patch.object(self.fwp.time, "time", return_value=130):
+            self.assertEqual(controller.siteLimitedTargetCurrent(2, 9), 8)
+
+    def test_equal_current_final_guard_still_enforces_lower_site_headroom(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.power = 5.0
+        controller.wattpilot.amp = 7
+        controller.wattpilot.amps1 = 7
+        controller.wattpilot.amps2 = 7
+        controller.wattpilot.amps3 = 7
+        # Removing the 7 A EV contribution leaves 14 A of non-EV load and
+        # therefore only 6 A of site-safe charger headroom.
+        self._set_site(controller, 21, 21, 21, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertFalse(controller.allowWattpilotCommand("amp", 7))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -127,6 +127,27 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-20 - Preserve Site-Current Recovery Across No-Op Commands
+
+- Supervised production evidence showed a stable 6.43-6.47 kW Wattpilot
+  allowance, 19-20 A of site-current headroom, healthy command authority, and
+  no grid guard or battery assist, while three-phase charging remained at 7 A
+  for more than four minutes and `/SiteCurrentRecoveryElapsed` stayed at zero.
+- The PV target calculation correctly started the configured recovery timer,
+  but its temporary unchanged-current command re-entered the final command
+  guard. Reapplying recovery with `target == current` cleared the timer every
+  five-second cycle, so the delayed 1 A ramp could never begin.
+- The final command boundary now treats an exactly unchanged current as a
+  no-op for recovery-timer mutation while still recalculating and enforcing
+  physical site headroom. Reductions remain immediate, genuine increases
+  retain the configured stable delay and 1 A-per-cycle ramp, and firmware,
+  command-authority, Manual-mode, no-grid, phase, and battery-assist boundaries
+  are unchanged.
+- Added hardware-free coverage proving the pending timer survives the no-op,
+  releases the next ampere at the configured boundary, and still rejects an
+  unchanged command above newly reduced physical headroom. Supervised live GX
+  revalidation remains required.
+
 ### Completed 2026-07-20 - Make Battery Assist Minimum-Current-First And Phase-Aware
 
 - Corrected both one- and three-phase Auto/Eco deficit paths so available PV
