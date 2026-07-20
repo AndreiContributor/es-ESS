@@ -609,6 +609,10 @@ Victron EV charger and lets es-ESS manage Auto/Eco charging from fresh PV
 surplus:
 
 - Wattpilot status is exposed on D-Bus, VRM, and MQTT.
+- Command-free session statistics retain connection and charging-interval
+  transitions, authoritative available counter deltas, bounded sampled-power
+  estimates, onboarding latency, and one APP_DEBUG checkpoint per connected
+  minute for the daily report. They do not identify the vehicle.
 - Auto/Eco charging uses [SolarOverheadDistributor](#solaroverheaddistributor)
   allowances, fresh grid telemetry, configured current limits, and no-grid
   guards.
@@ -1044,8 +1048,15 @@ an `ANOMALY`; it prints the report timezone, requested period, cutoff, evidence
 period/duration, span coverage, and full-day availability time. The report uses
 `GOOD`, `ATTENTION`, `ANOMALY`, and `INCOMPLETE`
 and includes runtime health, sanitized configuration, current state,
-approximate sessions, allowance/grace and phase behavior, safety interventions,
-and rare statuses 8–11 and 13–14. `NOT_OBSERVED` rare statuses are
+connection-session and charging-interval counts, authoritative available
+Wattpilot counter kWh, explicitly estimated one-/three-phase and physical-phase
+energy, onboarding latency, interruptions, allowance/grace and phase behavior,
+safety interventions, and rare statuses 8–11 and 13–14. Report JSON schema 4
+keeps total counter energy separate from sampled-power estimates and exposes
+counter resets, restarts, gaps, reconciliation error, and evidence
+completeness. Older logs without structured session records remain analyzable,
+but their energy and connection counts are explicitly unavailable.
+`NOT_OBSERVED` rare statuses are
 informational. Interactive runs show byte-level log and D-Bus snapshot progress
 on stderr; use `--no-progress` for automation or `--no-current-snapshot` to skip
 the optional live snapshot. The required timezone query still runs with that
@@ -1054,6 +1065,22 @@ historical analysis. Full commissioning, options,
 limitations, exit codes, and JSON
 output are documented in
 [docs/es-ess-daily-report.md](docs/es-ess-daily-report.md).
+
+The controller emits INFO records only for connection, first start attempt,
+measured charge start/stop, phase-segment completion, and final connection
+summary. While connected, one structured APP_DEBUG checkpoint is emitted per
+minute. Power is never integrated across stale telemetry or a gap longer than
+the accepted sampling bound; uncovered time lowers completeness instead of
+being extrapolated. Correlation IDs identify only one observed connection or
+charging interval and are not a car identity, VIN, account, or persistent
+device identifier.
+
+For one-phase energy, `Charger1PhaseMapping` identifies the physical phase. A
+three-phase interval proves that all three conductors were used, but individual
+L1/L2/L3 labels follow Wattpilot-reported conductor order until that ordering
+is independently verified on the installation. Schema 4 exposes this as an
+incomplete physical-phase mapping instead of implying electrician-verified
+labels.
 
 Native Solar.wattpilot PV/tariff/phase setting discovery uses the separate
 command-free `scripts/wattpilot-setting-capture.py` utility with the vehicle

@@ -104,6 +104,10 @@ It owns:
 - Mapping Wattpilot state into VRM-compatible status values.
 - Session energy/time compatibility paths: `/Ac/Energy/Forward` mirrors
   `/Session/Energy`, and `/ChargingTime` mirrors `/Session/Time`.
+- Command-free connection/charging statistics integration through
+  `WattpilotSessionStatistics.py`. The controller supplies confirmed state and
+  telemetry, logs returned versioned records at transition boundaries, and
+  emits at most one APP_DEBUG checkpoint per connected minute.
 - Auto/Eco PV surplus charging decisions.
 - SolarOverheadDistributor allowance requests and allowance consumption,
   delegating pure allowance freshness checks to `WattpilotDecisionInputs.py`.
@@ -157,6 +161,44 @@ It owns:
 This file remains the place where command side effects are allowed. Refactors
 should move decision logic only when the same behavior is covered by focused
 tests and command side effects remain easy to audit.
+
+### `WattpilotSessionStatistics.py`
+
+`WattpilotSessionStatistics.py` is the isolated mutable observer for durable
+connection and charging evidence.
+
+It owns:
+
+- Separate confirmed vehicle-connection and measured charging-interval state.
+- Process-local, non-identifying connection and interval correlation IDs.
+- Monotonic Wattpilot session-counter deltas, with explicit reset, missing,
+  partial-start, and partial-end evidence.
+- Fresh sampled-power integration by one-/three-phase mode and physical phase,
+  bounded by a maximum observation gap and accompanied by coverage and
+  counter-reconciliation fields.
+- First start-attempt and first measured-power timing, interruptions, current
+  range, peak power, phase segments, minute checkpoints, and final summaries.
+- Versioned, JSON-safe record dictionaries returned to the controller.
+
+It must not own or access:
+
+- Wattpilot command methods or the transport object.
+- Auto/Eco, Manual, site-current, no-grid, battery-assist, phase-switch, or
+  command-authority decisions.
+- D-Bus/MQTT publication, service messages, configuration writes, or logging.
+
+The component is stateful by design but command-free. `FroniusWattpilot.py`
+remains responsible for converting live client properties into observation
+samples and selecting INFO versus APP_DEBUG for returned records. A service
+restart begins a partial observed connection when the vehicle is already
+attached; it never joins unobserved energy across the restart.
+
+For one-phase observations, `Charger1PhaseMapping` assigns the sampled energy
+to the configured physical phase. In three-phase mode, the component records
+all three Wattpilot-reported conductors but does not claim their individual
+L1/L2/L3 ordering is electrician-verified. A session containing any
+three-phase interval therefore publishes incomplete physical-phase mapping
+unless a future separately validated mapping contract is introduced.
 
 ### `WattpilotDecisionInputs.py`
 
@@ -503,6 +545,17 @@ Future Wattpilot changes must preserve these invariants:
   on stderr so JSON stdout remains machine-readable. Snapshot commands must be
   time-bounded and may skip remaining paths after repeated timeouts without
   changing the historical findings.
+- Session statistics remain observer-only in both Manual and Auto/Eco. They may
+  record the first attempted start and whether the existing command sequence
+  accepted it, but they must never call a command, alter dispatch selection,
+  change a timer, or publish a control path. Structured INFO output is limited
+  to transitions/final summary and APP_DEBUG output to one checkpoint per
+  connected minute.
+- Wattpilot session-counter energy must not combine a decrease/reset or an
+  unobserved process gap into an authoritative total. Sampled one-/three-phase
+  and L1/L2/L3 energy must remain explicitly estimated, must not extrapolate
+  across stale/long-gap/phase-transition input, and must publish coverage and
+  reconciliation evidence. Correlation IDs are not vehicle identity.
 - Keep `scripts/wattpilot-setting-capture.py` command-free. It may authenticate,
   request complete status, and compare redacted property snapshots only while
   the vehicle is disconnected. It must reject unvalidated firmware, a missing

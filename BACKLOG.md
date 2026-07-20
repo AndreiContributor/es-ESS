@@ -1047,12 +1047,41 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   lower-priority load. Production validation is optional and not required for
   this isolated allocator correction.
 
-## Backlog
+## Completed Implementation Specifications
 
-Open implementation items appear first. Completed implementation records remain
-below them so their decisions and evidence are not lost.
+Detailed completed specifications and retained implementation records remain
+here so their decisions, risks, and evidence are not lost.
 
-### P3 - Add Wattpilot Charging-Session Energy And Onboarding Reports
+### Completed 2026-07-20 - Add Wattpilot Charging-Session Energy And Onboarding Reports
+
+Outcome:
+
+- Added the isolated, command-free `WattpilotSessionStatistics.py` observer.
+  It separates confirmed connection sessions from measured charging intervals,
+  uses non-identifying correlation IDs, retains first-start/onboarding and
+  interruption evidence, and emits transition-only INFO records plus at most
+  one structured APP_DEBUG checkpoint per connected minute.
+- Wattpilot session-counter deltas remain authoritative only when monotonic
+  continuity is proven. Resets, missing values, process restarts, report-window
+  boundaries, and partial endings remain explicit. Fresh sampled power is
+  integrated by one-/three-phase mode and conductor only across bounded
+  intervals, with uncovered time and reconciliation error published separately
+  from counter energy. The configured one-phase conductor maps to a physical
+  phase; three-phase conductor ordering remains explicitly unverified and is
+  reported as incomplete physical-phase mapping.
+- Daily-report JSON schema 4 reports connection and charging-interval counts,
+  complete and observed-only kWh, per-session timing/ranges/segments, command
+  rejections, safety correlations, coverage, and completeness. Older logs keep
+  legacy approximate reconstruction with unavailable energy fields rather than
+  invented values.
+- Manual observation remains command-free and no Auto/Eco dispatch, command
+  authority, site-current, no-grid, battery-assist, phase, D-Bus/MQTT control,
+  or configuration default changed. Documentation covers the record contract,
+  privacy boundary, accuracy labels, and normal supervised validation.
+- Python syntax checks, 153 focused statistics/controller/report/config/backlog
+  tests, and the complete 531-test hardware-free suite passed. Normal active-
+  charging and complete-yesterday GX report comparison remains manual
+  validation; no unsafe condition needs to be forced.
 
 Goal:
 
@@ -1216,14 +1245,13 @@ Risks and dependencies:
   must not claim that Victron consumption current is meter-grade breaker
   evidence.
 
-Open questions:
+Resolved implementation decisions:
 
-- Confirm during implementation approval whether the fixed one-minute
-  connected-session checkpoint is acceptable; the default plan avoids a new
-  configuration key.
-- Confirm whether any downstream consumer requires the JSON schema to remain
-  version 3. The preferred implementation increments it because the session
-  contract gains material fields.
+- The user approved a fixed one-minute connected-session checkpoint without a
+  new configuration key.
+- The user approved daily-report JSON schema version 4 for the material session
+  contract expansion. Structured log records carry their own independent event
+  version.
 
 Done criteria:
 
@@ -1521,6 +1549,11 @@ Completion record:
   `INCOMPLETE` status and exact truncation evidence rather than claiming
   `GOOD`.
 
+## Backlog
+
+Open implementation items appear here. The queue below remains authoritative
+for selecting the next PR-sized task.
+
 ### P1 - Integrate Shelly 3EM-63T Gen3 As The Dedicated C20 Site-Current Source
 
 Goal:
@@ -1745,9 +1778,6 @@ advance the queue on the next request.
 1. P1 Integrate Shelly 3EM-63T Gen3 As The Dedicated C20 Site-Current Source —
    safety-critical source correction on the current branch, gated until the
    meter is installed and live API/phase evidence is reviewed.
-2. P3 Add Wattpilot Charging-Session Energy And Onboarding Reports — additive,
-   command-free observability requested for diagnosing connection/start issues;
-   preserve the existing controller and safety boundaries.
 
 ## Verification Plan
 
@@ -1769,10 +1799,21 @@ For implementation PRs:
 
 ## Outstanding Manual Validation
 
-One implementation-stage commissioning check remains. Do not force an
+Two implementation-stage commissioning checks remain. Do not force an
 overcurrent, force grid import, disconnect a production grid, interrupt
 critical telemetry, or alter the production energy system solely to exercise a
 safety branch.
+
+- Active charging followed by log-only analysis: with APP_DEBUG enabled on the
+  approved Venus OS `v3.75`, Wattpilot firmware `42.5`, and Solar.wattpilot app
+  `2.1.0` baseline, retain one normal connection containing a naturally
+  available Auto/Eco charge. Confirm transition records and one-minute
+  checkpoints contain no secret or vehicle identity and introduce no command
+  source. After normal stop/disconnect, compare schema-4 connection/interval
+  counts, counter kWh, duration, phase/current/power ranges, onboarding latency,
+  coverage, reconciliation, and completeness with Wattpilot/VRM. Repeat with a
+  complete yesterday report after local midnight. A natural phase change may
+  be retained, but must not be forced solely for reporting validation.
 
 - Active charging required: on the approved Venus OS `v3.75`, Wattpilot
   firmware `42.5`, and Solar.wattpilot app `2.1.0` baseline, first confirm that

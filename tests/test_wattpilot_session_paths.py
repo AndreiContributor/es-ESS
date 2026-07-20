@@ -219,6 +219,91 @@ class WattpilotSessionPathTests(unittest.TestCase):
         self.assertEqual(controller.dbusService["/ChargingTime"], 95)
         self.assertEqual(controller.dbusService["/Session/Time"], 95)
 
+    def test_session_observation_is_command_free_in_manual_mode(self):
+        controller = self._controller()
+        controller.mode = self.fwp.VrmEvChargerControlMode.Manual
+        controller.siteCurrentFreshSeconds = 15
+        controller.charger1PhaseMapping = "L1"
+        controller.wattpilot.energyTelemetryUpdatedAt = 100
+        commands = []
+        controller.wattpilot.set_power = lambda value: commands.append(("amp", value))
+        controller.wattpilot.set_phases = lambda value: commands.append(("psm", value))
+        controller.wattpilot.set_start_stop = lambda value: commands.append(("frc", value))
+        controller.sessionStatistics = self.fwp.WattpilotSessionStatistics(
+            one_phase_mapping="L1"
+        )
+        records = []
+        controller.logSessionStatisticsRecords = records.extend
+
+        controller.recordSessionStatistics(True, now=100)
+        controller.recordSessionStatistics(True, now=105)
+
+        self.assertEqual(commands, [])
+        self.assertEqual(records[0]["event"], "connection_start")
+        self.assertEqual(records[1]["event"], "charge_start")
+        self.assertEqual(records[1]["phase_mode"], 1)
+
+    def test_session_observation_does_not_mutate_control_or_safety_state(self):
+        controller = self._controller()
+        controller.siteCurrentFreshSeconds = 15
+        controller.wattpilot.energyTelemetryUpdatedAt = 100
+        controller.sessionStatistics = self.fwp.WattpilotSessionStatistics()
+        controller.logSessionStatisticsRecords = lambda _records: None
+        controller.commandAuthorityOk = True
+        controller.siteCurrentGuardBlocked = False
+        controller.gridImportSince = 123
+        controller.batteryAssistActive = True
+        before = (
+            controller.mode,
+            controller.currentPhaseMode,
+            controller.commandAuthorityOk,
+            controller.siteCurrentGuardBlocked,
+            controller.gridImportSince,
+            controller.batteryAssistActive,
+        )
+
+        controller.recordSessionStatistics(True, now=100)
+
+        after = (
+            controller.mode,
+            controller.currentPhaseMode,
+            controller.commandAuthorityOk,
+            controller.siteCurrentGuardBlocked,
+            controller.gridImportSince,
+            controller.batteryAssistActive,
+        )
+        self.assertEqual(after, before)
+
+    def test_session_transition_and_checkpoint_log_levels_are_bounded(self):
+        controller = self._controller()
+        info_messages = []
+        debug_messages = []
+        prior_i, prior_d = self.fwp.i, self.fwp.d
+        self.fwp.i = lambda _module, message: info_messages.append(message)
+        self.fwp.d = lambda _module, message: debug_messages.append(message)
+        try:
+            controller.logSessionStatisticsRecords(
+                [
+                    {
+                        "event_version": 1,
+                        "event": "connection_start",
+                        "connection_id": "connection-1",
+                    },
+                    {
+                        "event_version": 1,
+                        "event": "checkpoint",
+                        "connection_id": "connection-1",
+                    },
+                ]
+            )
+        finally:
+            self.fwp.i, self.fwp.d = prior_i, prior_d
+
+        self.assertEqual(len(info_messages), 1)
+        self.assertEqual(len(debug_messages), 1)
+        self.assertIn('"event":"connection_start"', info_messages[0])
+        self.assertIn('"event":"checkpoint"', debug_messages[0])
+
 
 if __name__ == "__main__":
     unittest.main()

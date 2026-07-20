@@ -1,6 +1,7 @@
 
 from builtins import int
 from enum import Enum
+import json
 from math import isfinite
 import os
 import platform
@@ -23,6 +24,7 @@ import WattpilotDecisionInputs as DecisionInputs
 import WattpilotPhaseDecisions as PhaseDecisions
 import WattpilotSafetyDecisions as SafetyDecisions
 import WattpilotSiteCurrentDecisions as SiteCurrentDecisions
+from WattpilotSessionStatistics import SessionSample, WattpilotSessionStatistics
 import RuntimeCompatibility
 from Wattpilot import Wattpilot
 from enums import WattpilotModelStatus, WattpilotStartStop, WattpilotControlMode, VrmEvChargerControlMode, VrmEvChargerStatus, VrmEvChargerStartStop
@@ -96,6 +98,11 @@ class FroniusWattpilot (esESSService):
         )
         self.siteCurrentRecoverySeconds = max(
             0, int(settings.get("SiteCurrentRecoverySeconds", 30))
+        )
+        self.sessionStatistics = WattpilotSessionStatistics(
+            checkpoint_interval_seconds=60,
+            max_integration_gap_seconds=15,
+            one_phase_mapping=self.charger1PhaseMapping,
         )
 
         # Phase thresholds are PV-only allowance thresholds. Battery assist does
@@ -686,7 +693,11 @@ class FroniusWattpilot (esESSService):
             self.dbusService["/StartStopLiteral"] = state.name
 
             if state == VrmEvChargerStartStop.Start:
-                self.wattpilot.set_start_stop(WattpilotStartStop.On)
+                self.recordSessionStartAttempt("dbus_start")
+                accepted = self.wattpilot.set_start_stop(WattpilotStartStop.On)
+                self.recordSessionStartResult(
+                    bool(accepted), None if accepted else "start"
+                )
             elif state == VrmEvChargerStartStop.Stop:
                 self.wattpilot.set_start_stop(WattpilotStartStop.Off)
 
@@ -1362,6 +1373,7 @@ class FroniusWattpilot (esESSService):
                     self.releaseAutoControlLimitsForManualMode()
 
             self.refreshCommandAuthorityStatus()
+            self.recordSessionStatistics(effectiveCarConnected)
 
             self.reportStartStopValue(
                 VrmEvChargerStartStop.Start
@@ -1401,6 +1413,93 @@ class FroniusWattpilot (esESSService):
             c(self, "Exception during duty-cycle.", exc_info=ex)
             if self.autoControlActive():
                 self.failSafeStopForAutoControlFault()
+
+    def logSessionStatisticsRecords(self, records):
+        """Emit versioned command-free records at transition/checkpoint levels."""
+        for record in records or ():
+            message = "Wattpilot session statistics: {0}".format(
+                json.dumps(record, sort_keys=True, separators=(",", ":"))
+            )
+            if record.get("event") == "checkpoint":
+                d(self, message)
+            else:
+                i(self, message)
+
+    def observedSessionPhaseMode(self):
+        """Return the observed user-facing phase count without issuing commands."""
+        power2 = DecisionInputs.finite_number(
+            getattr(self.wattpilot, "power2", None)
+        )
+        power3 = DecisionInputs.finite_number(
+            getattr(self.wattpilot, "power3", None)
+        )
+        if (power2 is not None and power2 > 0) or (
+            power3 is not None and power3 > 0
+        ):
+            return 3
+        power1 = DecisionInputs.finite_number(
+            getattr(self.wattpilot, "power1", None)
+        )
+        if power1 is not None and power1 > 0:
+            return 1
+        if self.currentPhaseMode == 2:
+            return 3
+        if self.currentPhaseMode == 1:
+            return 1
+        return 0
+
+    def recordSessionStatistics(self, effectiveCarConnected, now=None):
+        """Observe one controller sample through the command-free statistics boundary."""
+        statistics = getattr(self, "sessionStatistics", None)
+        if statistics is None or self.wattpilot is None:
+            return
+        now = time.time() if now is None else float(now)
+        updatedAt = DecisionInputs.finite_number(
+            getattr(self.wattpilot, "energyTelemetryUpdatedAt", None)
+        )
+        telemetryFresh = bool(
+            updatedAt is not None
+            and 0 <= now - updatedAt <= self.siteCurrentFreshSeconds
+        )
+
+        def watts(value):
+            parsed = DecisionInputs.finite_number(value)
+            return parsed * 1000.0 if parsed is not None else None
+
+        sample = SessionSample(
+            observed_at=now,
+            connected=bool(effectiveCarConnected),
+            total_power_w=watts(getattr(self.wattpilot, "power", None)),
+            phase_powers_w=(
+                watts(getattr(self.wattpilot, "power1", None)),
+                watts(getattr(self.wattpilot, "power2", None)),
+                watts(getattr(self.wattpilot, "power3", None)),
+            ),
+            phase_currents_a=(
+                getattr(self.wattpilot, "amps1", None),
+                getattr(self.wattpilot, "amps2", None),
+                getattr(self.wattpilot, "amps3", None),
+            ),
+            phase_mode=self.observedSessionPhaseMode(),
+            energy_counter_wh=getattr(
+                self.wattpilot, "energyCounterSinceStart", None
+            ),
+            telemetry_fresh=telemetryFresh,
+            mode=self.mode.name,
+        )
+        self.logSessionStatisticsRecords(statistics.observe(sample))
+
+    def recordSessionStartAttempt(self, source):
+        statistics = getattr(self, "sessionStatistics", None)
+        if statistics is not None:
+            self.logSessionStatisticsRecords(
+                statistics.note_start_attempt(time.time(), source)
+            )
+
+    def recordSessionStartResult(self, accepted, failureStage=None):
+        statistics = getattr(self, "sessionStatistics", None)
+        if statistics is not None:
+            statistics.note_start_result(accepted, failureStage)
 
 
     def handleChargingState(self):
@@ -1636,16 +1735,21 @@ class FroniusWattpilot (esESSService):
 
         previousPhaseMode = self.currentPhaseMode
         self.currentPhaseMode = selectedPhaseMode
+        self.recordSessionStartAttempt("auto_pv")
         if not self.wattpilot.set_phases(selectedPhaseMode):
+            self.recordSessionStartResult(False, "phase")
             self.currentPhaseMode = previousPhaseMode
             self.handleRejectedStartCommand("phase")
             return False
         if not self.wattpilot.set_power(targetAmps):
+            self.recordSessionStartResult(False, "current")
             self.handleRejectedStartCommand("current")
             return False
         if not self.wattpilot.set_start_stop(WattpilotStartStop.On):
+            self.recordSessionStartResult(False, "start")
             self.handleRejectedStartCommand("start")
             return False
+        self.recordSessionStartResult(True)
 
         self.reportVRMStatus(VrmEvChargerStatus.StartCharging)
         self.publishServiceMessage(
@@ -4090,10 +4194,22 @@ class FroniusWattpilot (esESSService):
         self.publishMainMqtt("es-ESS/FroniusWattpilot{0}".format(path), value, 0, True)
 
     def handleSigterm(self):
-       self.publishServiceMessage(self, "SIGTERM received, sending STOP-command to wattpilot, if in auto mode.")
-       
-       if (self.wattpilot is not None and self.wattpilot.connected and self.mode == VrmEvChargerControlMode.Auto):
+        statistics = getattr(self, "sessionStatistics", None)
+        if statistics is not None:
+            self.logSessionStatisticsRecords(
+                statistics.finalize(time.time(), "service_shutdown")
+            )
+        self.publishServiceMessage(
+            self,
+            "SIGTERM received, sending STOP-command to wattpilot, if in auto mode."
+        )
+
+        if (
+            self.wattpilot is not None
+            and self.wattpilot.connected
+            and self.mode == VrmEvChargerControlMode.Auto
+        ):
             self.wattpilot.set_start_stop(WattpilotStartStop.Off)
-       
-       self.wattpilot._auto_reconnect = False
-       self.wattpilot.disconnect()
+
+        self.wattpilot._auto_reconnect = False
+        self.wattpilot.disconnect()

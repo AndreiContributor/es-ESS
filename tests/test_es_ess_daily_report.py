@@ -40,6 +40,40 @@ class EsEssDailyReportTests(unittest.TestCase):
         self.assertEqual(total, len(lines))
         return records
 
+    def _session_line(self, clock, payload, level="INFO"):
+        return self._line(
+            clock,
+            "Wattpilot session statistics: "
+            + json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            level,
+        )
+
+    @staticmethod
+    def _session_event(event, **changes):
+        payload = {
+            "event_version": 1,
+            "event": event,
+            "connection_id": "connection-1",
+            "partial_start": False,
+            "partial_end": False,
+            "counter_energy_wh": 0,
+            "counter_complete": False,
+            "counter_reset_count": 0,
+            "counter_missing_samples": 0,
+            "estimated_energy_by_mode_wh": {
+                "one_phase": 0,
+                "three_phase": 0,
+            },
+            "estimated_energy_by_phase_wh": {"L1": 0, "L2": 0, "L3": 0},
+            "integration_coverage_seconds": 0,
+            "integration_gap_seconds": 0,
+            "charging_interval_count": 0,
+            "interruption_count": 0,
+            "phase_modes_used": [],
+        }
+        payload.update(changes)
+        return payload
+
     def _run(self, lines, settings=None, partial=False):
         records = self._records(lines)
         audit_input = AUDIT.AuditInput(
@@ -529,7 +563,7 @@ NoBatToEV=false
             ]
         )
         payload = json.loads(json.dumps(result.to_dict()))
-        self.assertEqual(payload["schema"], 3)
+        self.assertEqual(payload["schema"], 4)
         self.assertEqual(payload["inputs"]["target_date"], self.target_date)
 
     def test_partial_json_contains_coverage_contract(self):
@@ -1265,6 +1299,333 @@ NoBatToEV=false
         self.assertEqual(result.sessions[0].phases, [3])
         self.assertEqual(result.sessions[0].current_adjustments_a, [7])
         self.assertEqual(result.sessions[0].stop_reason, "controller stop")
+
+    def test_structured_sessions_count_connections_intervals_and_energy(self):
+        lines = [
+            self._session_line(
+                "20:00:00",
+                self._session_event(
+                    "connection_start", mode="Auto", connection_started_at_epoch=1
+                ),
+            ),
+            self._session_line(
+                "20:00:10",
+                self._session_event(
+                    "start_attempt", source="auto_pv", connection_elapsed_seconds=10
+                ),
+            ),
+            self._session_line(
+                "20:00:20",
+                self._session_event(
+                    "charge_start",
+                    interval_id="charge-1",
+                    phase_mode=1,
+                    onboarding_latency_seconds=20,
+                ),
+            ),
+            self._session_line(
+                "20:01:00",
+                self._session_event(
+                    "charge_stop",
+                    interval_id="charge-1",
+                    duration_seconds=40,
+                    reason="measured_power_zero",
+                ),
+            ),
+            self._session_line(
+                "20:01:10",
+                self._session_event(
+                    "charge_start",
+                    interval_id="charge-2",
+                    phase_mode=3,
+                    onboarding_latency_seconds=20,
+                ),
+            ),
+            self._session_line(
+                "20:02:00",
+                self._session_event(
+                    "charge_stop",
+                    interval_id="charge-2",
+                    duration_seconds=50,
+                    reason="vehicle_disconnected",
+                ),
+            ),
+            self._session_line(
+                "20:02:05",
+                self._session_event(
+                    "connection_summary",
+                    ended_at_epoch=125,
+                    end_reason="vehicle_disconnected",
+                    counter_energy_wh=250,
+                    counter_complete=True,
+                    estimated_energy_by_mode_wh={
+                        "one_phase": 90,
+                        "three_phase": 150,
+                    },
+                    estimated_energy_by_phase_wh={
+                        "L1": 140,
+                        "L2": 50,
+                        "L3": 50,
+                    },
+                    integration_coverage_seconds=90,
+                    integration_gap_seconds=0,
+                    charging_interval_count=2,
+                    interruption_count=1,
+                    phase_modes_used=[1, 3],
+                    onboarding_latency_seconds=20,
+                    first_start_attempt_at_epoch=10,
+                    first_start_attempt_source="auto_pv",
+                    first_start_accepted=True,
+                    power_min_w=1200,
+                    peak_power_w=7000,
+                ),
+            ),
+        ]
+        result = self._run(lines)
+        session = result.sessions[0]
+
+        self.assertEqual(result.schema, 4)
+        self.assertEqual(result.metrics["connection_sessions"], 1)
+        self.assertEqual(result.metrics["charging_intervals"], 2)
+        self.assertEqual(result.metrics["authoritative_total_kwh"], 0.25)
+        self.assertEqual(session.source, "structured_v1")
+        self.assertEqual(session.charging_interval_count, 2)
+        self.assertEqual(len(session.charging_intervals), 2)
+        self.assertEqual(session.authoritative_energy_kwh, 0.25)
+        self.assertEqual(session.estimated_energy_by_mode_kwh["one_phase"], 0.09)
+        self.assertEqual(session.estimated_energy_by_phase_kwh["L1"], 0.14)
+        self.assertEqual(session.onboarding_latency_seconds, 20)
+        self.assertEqual((session.power_min_w, session.power_max_w), (1200, 7000))
+        self.assertTrue(session.evidence_complete)
+        self.assertEqual(result.overall, "GOOD")
+
+    def test_structured_counter_reset_and_gap_are_explicitly_incomplete(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "20:10:00",
+                    self._session_event("connection_start", mode="Manual"),
+                ),
+                self._session_line(
+                    "20:11:00",
+                    self._session_event(
+                        "connection_summary",
+                        end_reason="vehicle_disconnected",
+                        counter_energy_wh=50,
+                        counter_complete=False,
+                        counter_reset_count=1,
+                        estimated_energy_by_mode_wh={
+                            "one_phase": 40,
+                            "three_phase": 0,
+                        },
+                        estimated_energy_by_phase_wh={
+                            "L1": 40,
+                            "L2": 0,
+                            "L3": 0,
+                        },
+                        integration_coverage_seconds=30,
+                        integration_gap_seconds=30,
+                        charging_interval_count=1,
+                    ),
+                ),
+            ]
+        )
+        session = result.sessions[0]
+
+        self.assertIsNone(session.authoritative_energy_kwh)
+        self.assertEqual(session.observed_counter_energy_kwh, 0.05)
+        self.assertEqual(session.counter_reset_count, 1)
+        self.assertEqual(session.integration_coverage_percent, 50)
+        self.assertFalse(session.evidence_complete)
+        self.assertEqual(result.overall, "INCOMPLETE")
+        self.assertIn(
+            "WARN", self._statuses(result, "session statistics completeness")
+        )
+
+    def test_structured_missing_counter_samples_are_explicitly_incomplete(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "20:10:00",
+                    self._session_event("connection_start", mode="Auto"),
+                ),
+                self._session_line(
+                    "20:11:00",
+                    self._session_event(
+                        "connection_summary",
+                        end_reason="vehicle_disconnected",
+                        counter_energy_wh=50,
+                        counter_complete=False,
+                        counter_missing_samples=2,
+                    ),
+                ),
+            ]
+        )
+        session = result.sessions[0]
+
+        self.assertEqual(session.counter_missing_samples, 2)
+        self.assertIsNone(session.authoritative_energy_kwh)
+        self.assertIn("ATTENTION", self._statuses(result, "session counter gaps"))
+
+    def test_structured_checkpoint_without_start_marks_window_boundary_partial(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "00:00:30",
+                    self._session_event(
+                        "checkpoint",
+                        partial_start=True,
+                        partial_end=True,
+                        counter_energy_wh=100,
+                        estimated_energy_by_mode_wh={
+                            "one_phase": 100,
+                            "three_phase": 0,
+                        },
+                    ),
+                    "APP_DEBUG",
+                ),
+                self._session_line(
+                    "00:01:30",
+                    self._session_event(
+                        "checkpoint",
+                        partial_start=True,
+                        partial_end=True,
+                        counter_energy_wh=160,
+                        estimated_energy_by_mode_wh={
+                            "one_phase": 160,
+                            "three_phase": 0,
+                        },
+                        integration_coverage_seconds=60,
+                    ),
+                    "APP_DEBUG",
+                ),
+            ]
+        )
+        session = result.sessions[0]
+
+        self.assertTrue(session.partial_start)
+        self.assertTrue(session.partial_end)
+        self.assertEqual(session.observed_counter_energy_kwh, 0.06)
+        self.assertIsNone(session.authoritative_energy_kwh)
+
+    def test_malformed_structured_session_record_is_an_evidence_gap(self):
+        result = self._run(
+            [
+                self._line(
+                    "20:20:00",
+                    "Wattpilot session statistics: {not-json}",
+                    "INFO",
+                )
+            ]
+        )
+
+        self.assertIn("WARN", self._statuses(result, "session statistics"))
+        self.assertEqual(result.overall, "INCOMPLETE")
+
+    def test_structured_human_render_includes_accuracy_and_onboarding(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "20:30:00",
+                    self._session_event("connection_start", mode="Auto"),
+                ),
+                self._session_line(
+                    "20:31:00",
+                    self._session_event(
+                        "connection_summary",
+                        end_reason="vehicle_disconnected",
+                        counter_energy_wh=100,
+                        counter_complete=True,
+                        estimated_energy_by_mode_wh={
+                            "one_phase": 95,
+                            "three_phase": 0,
+                        },
+                        estimated_energy_by_phase_wh={
+                            "L1": 95,
+                            "L2": 0,
+                            "L3": 0,
+                        },
+                        integration_coverage_seconds=60,
+                        onboarding_latency_seconds=5,
+                    ),
+                ),
+            ]
+        )
+        report = AUDIT.render_human(result)
+
+        self.assertIn("authoritative", report)
+        self.assertIn("estimated energy", report)
+        self.assertIn("onboarding latency", report)
+        self.assertIn("physical phase", report)
+
+    def test_structured_unknown_fields_and_secrets_are_not_copied_to_json(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "20:40:00",
+                    self._session_event(
+                        "connection_start",
+                        mode="Manual",
+                        Password="do-not-copy",
+                        Host="private.example",
+                    ),
+                ),
+                self._session_line(
+                    "20:41:00",
+                    self._session_event(
+                        "connection_summary",
+                        end_reason="vehicle_disconnected",
+                        Password="do-not-copy",
+                        counter_complete=True,
+                    ),
+                ),
+            ]
+        )
+        serialized = json.dumps(result.to_dict())
+
+        self.assertNotIn("do-not-copy", serialized)
+        self.assertNotIn("private.example", serialized)
+
+    def test_full_day_minute_checkpoints_remain_one_compact_session(self):
+        lines = [
+            self._session_line(
+                "00:00:00",
+                self._session_event("connection_start", mode="Auto"),
+            )
+        ]
+        for minute in range(1, 24 * 60):
+            hour, minute_in_hour = divmod(minute, 60)
+            lines.append(
+                self._session_line(
+                    f"{hour:02d}:{minute_in_hour:02d}:00",
+                    self._session_event(
+                        "checkpoint",
+                        partial_end=True,
+                        counter_energy_wh=minute,
+                        integration_coverage_seconds=minute * 60,
+                    ),
+                    "APP_DEBUG",
+                )
+            )
+        lines.append(
+            self._session_line(
+                "23:59:59",
+                self._session_event(
+                    "connection_summary",
+                    end_reason="vehicle_disconnected",
+                    counter_energy_wh=1440,
+                    counter_complete=True,
+                    integration_coverage_seconds=24 * 60 * 60,
+                ),
+            )
+        )
+
+        result = self._run(lines)
+
+        self.assertEqual(result.metrics["records"], 1441)
+        self.assertEqual(result.metrics["connection_sessions"], 1)
+        self.assertEqual(len(result.sessions), 1)
+        self.assertEqual(result.sessions[0].authoritative_energy_kwh, 1.44)
 
     def test_session_reconstruction_distinguishes_auto_and_manual_boundaries(self):
         result = self._run(
