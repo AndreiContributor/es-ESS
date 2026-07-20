@@ -512,17 +512,17 @@ class Wattpilot(object):
 
 
     def set_power(self,power):
-        self.send_update("amp",power)
+        return self.send_update("amp",power)
 
     def set_start_stop(self, v:WattpilotStartStop):
         d(self, "Start/Stop to send: frc={0}:{1}".format(v, v.value))
-        self.send_update("frc", v.value)
+        return self.send_update("frc", v.value)
 
     def set_phases(self, v):
         if (v==3):
             v=2
 
-        self.send_update("psm", v)
+        return self.send_update("psm", v)
 
     def set_mode(self, mode:WattpilotControlMode):
         d(self, "Sending Conrol Mode {0}:{1} to Wattpilot.".format(mode, mode.value))

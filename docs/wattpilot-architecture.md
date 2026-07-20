@@ -70,6 +70,9 @@ It owns:
   telemetry so delayed external mode transitions can be diagnosed.
 - Sending direct Wattpilot protocol updates such as `amp`, `frc`, `psm`, and
   `lmo` when the controller asks for them.
+- Returning the common guarded-send acceptance result from the phase, current,
+  and start/stop command helpers so the controller does not publish a
+  transition for a command rejected before transport.
 - Enforcing a controller-installed compatibility callback at the common
   `setValue` transport boundary. Authentication and status requests remain
   available while commands are blocked so firmware can be identified.
@@ -138,6 +141,10 @@ It owns:
   then rejects positive Auto/Eco current, start, or phase commands without
   fresh and sufficient physical site-current headroom. Safe zero-current,
   Force Off, and automatic-phase release commands remain available.
+- Transactional Auto/Eco start-state publication. The controller sends the
+  guarded phase, current, and Start commands in that order and begins public
+  transition grace only after all three are accepted. A rejection leaves the
+  session stopped and rebuilds the stable-PV interval.
 - Read-only command-authority evaluation. Positive current, start, phase-up,
   and normal Auto/Eco dispatch require ECO plus `fup=false` and `ful=false`;
   missing or conflicting settings fail closed while zero-current and safe stop
@@ -371,6 +378,14 @@ Future Wattpilot changes must preserve these invariants:
   grid fallback, or transition grace. Recovery must remain continuously safe
   for `SiteCurrentRecoverySeconds`; increases then rise by 1 A per normal
   controller cycle.
+- A stopped Wattpilot may retain its prior configured `amp` value. Changing
+  that inactive setpoint before a start must not be treated as measured EV
+  current or clear an already-mature site-recovery timer. The following Start
+  command still requires the same fresh headroom and completed recovery delay.
+- Auto/Eco start commands remain ordered phase, current, then Force On. If the
+  final command boundary rejects any stage, later stages are not sent and the
+  controller must not publish Start state, transition power, or a successful
+  on/off timestamp.
 - `SiteMaxCurrent` has no hidden margin and does not replace the site breaker or
   downstream branch protection. A roughly five-second response cannot
   guarantee interception of short inrush, and stopping the EV cannot correct a

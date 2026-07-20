@@ -127,7 +127,7 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
-### Completed 2026-07-20 - Preserve Site-Current Recovery Across No-Op Commands
+### Completed 2026-07-20 - Preserve Site-Current Recovery Across No-Op And Pre-Start Commands
 
 - Supervised production evidence showed a stable 6.43-6.47 kW Wattpilot
   allowance, 19-20 A of site-current headroom, healthy command authority, and
@@ -143,10 +143,24 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   retain the configured stable delay and 1 A-per-cycle ramp, and firmware,
   command-authority, Manual-mode, no-grid, phase, and battery-assist boundaries
   are unchanged.
+- Follow-up supervised evidence at 13:03:57 and 16:20:34 local time showed a
+  second form of the same defect. Wattpilot retained a higher configured
+  current while stopped; the lower pre-start `amp` command cleared mature
+  recovery state, so the immediately following `frc=2` Start was rejected.
+  The controller then incorrectly began transition grace and advertised about
+  4.33 kW of EV demand even though measured EV power remained zero.
+- Stopped current commands now use fresh site headroom and completed recovery
+  without applying active-current recovery to the retained setpoint. Command
+  helpers return guarded-send acceptance, and Auto/Eco publishes Start,
+  transition power, and the successful on/off timestamp only after phase,
+  current, and Start commands are all accepted. A rejection remains stopped,
+  sends no later stage, and rebuilds the stable-PV interval.
 - Added hardware-free coverage proving the pending timer survives the no-op,
-  releases the next ampere at the configured boundary, and still rejects an
-  unchanged command above newly reduced physical headroom. Supervised live GX
-  revalidation remains required.
+  releases the next ampere at the configured boundary, rejects an unchanged
+  command above newly reduced physical headroom, permits a lower stopped
+  setpoint only after recovery, and prevents rejected start sequences from
+  publishing false transition state. Supervised live GX revalidation remains
+  required.
 
 ### Completed 2026-07-20 - Make Battery Assist Minimum-Current-First And Phase-Aware
 

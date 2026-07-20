@@ -1243,6 +1243,20 @@ class FroniusWattpilot (esESSService):
 
         if name == "amp":
             requestedCurrent = int(value)
+
+            # While stopped, Wattpilot retains the previously configured amp
+            # value even though no EV current is flowing. Do not feed that
+            # stale setpoint into the active-charge recovery state machine: a
+            # lower pre-start setpoint would be mistaken for a live reduction
+            # and clear the recovery timer immediately before frc=On. Starts
+            # still require fresh headroom and the complete recovery delay.
+            if not activeCharge:
+                return (
+                    requestedCurrent >= self.minCurrentPerPhase
+                    and requestedCurrent <= decision.allowed_current
+                    and self.siteCurrentRecoveryReady(requestedPhase)
+                )
+
             reportedCurrent = DecisionInputs.finite_number(
                 getattr(self.wattpilot, "amp", None)
             )
@@ -1620,6 +1634,19 @@ class FroniusWattpilot (esESSService):
             self.reportVRMStatus(VrmEvChargerStatus.WaitingForSun)
             return
 
+        previousPhaseMode = self.currentPhaseMode
+        self.currentPhaseMode = selectedPhaseMode
+        if not self.wattpilot.set_phases(selectedPhaseMode):
+            self.currentPhaseMode = previousPhaseMode
+            self.handleRejectedStartCommand("phase")
+            return False
+        if not self.wattpilot.set_power(targetAmps):
+            self.handleRejectedStartCommand("current")
+            return False
+        if not self.wattpilot.set_start_stop(WattpilotStartStop.On):
+            self.handleRejectedStartCommand("start")
+            return False
+
         self.reportVRMStatus(VrmEvChargerStatus.StartCharging)
         self.publishServiceMessage(
             self,
@@ -1627,11 +1654,6 @@ class FroniusWattpilot (esESSService):
                 self.getContinuousSurplusSeconds()
             )
         )
-
-        self.currentPhaseMode = selectedPhaseMode
-        self.wattpilot.set_phases(selectedPhaseMode)
-        self.wattpilot.set_power(targetAmps)
-        self.wattpilot.set_start_stop(WattpilotStartStop.On)
         self.beginPowerTransitionGrace(
             selectedPhaseMode,
             targetAmps,
@@ -1645,6 +1667,22 @@ class FroniusWattpilot (esESSService):
         self.surplusBelowMinimumSince = 0
         self.dbusService["/StartStop"] = VrmEvChargerStartStop.Start.value
         self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Start.name
+        return True
+
+    def handleRejectedStartCommand(self, stage):
+        """Keep public state stopped when a guarded start command is rejected."""
+        self.surplusSince = 0
+        self.reportVRMStatus(
+            VrmEvChargerStatus.WaitingForSun,
+            "Wattpilot start command rejected ({0})".format(stage),
+        )
+        self.publishServiceMessage(
+            self,
+            "Wattpilot {0} command was rejected before EV activation; "
+            "remaining stopped and rebuilding the stable-PV interval.".format(
+                stage
+            ),
+        )
 
 
     def controlAutomaticCharging(self):

@@ -8,7 +8,7 @@ import types
 import unittest
 from enum import Enum
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -436,6 +436,32 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
 
         self.assertEqual(len(sent), 1)
         self.assertEqual(client._Wattpilot__requestid, 1)
+
+    def test_command_helpers_return_the_guarded_send_result(self):
+        _install_wattpilot_client_stubs()
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_command_helper_result_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+        client.send_update = Mock(side_effect=(True, False, True))
+
+        self.assertTrue(client.set_phases(2))
+        self.assertFalse(client.set_power(6))
+        self.assertTrue(
+            client.set_start_stop(wattpilot_module.WattpilotStartStop.On)
+        )
+
+        self.assertEqual(
+            client.send_update.call_args_list,
+            [
+                call("psm", 2),
+                call("amp", 6),
+                call(
+                    "frc",
+                    wattpilot_module.WattpilotStartStop.On.value,
+                ),
+            ],
+        )
 
 
 if __name__ == "__main__":

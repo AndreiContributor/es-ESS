@@ -298,6 +298,151 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         with patch.object(self.fwp.time, "time", return_value=100):
             self.assertFalse(controller.allowWattpilotCommand("amp", 7))
 
+    def test_stopped_lower_setpoint_preserves_recovery_before_start(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.wattpilot.modelStatus.value = 4
+        controller.wattpilot.power = 0
+        controller.wattpilot.amp = 16
+        self._set_site(controller, 0, 0, 0, 100)
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.siteCurrentRecoveryReady(2))
+            self.assertTrue(controller.allowWattpilotCommand("psm", 2))
+            self.assertTrue(controller.allowWattpilotCommand("amp", 6))
+            self.assertEqual(controller.siteCurrentRecoverySince[2], 1)
+            self.assertTrue(
+                controller.allowWattpilotCommand(
+                    "frc",
+                    int(
+                        getattr(
+                            self.fwp.WattpilotStartStop.On,
+                            "value",
+                            self.fwp.WattpilotStartStop.On,
+                        )
+                    ),
+                )
+            )
+
+    def test_stopped_setpoint_still_waits_for_site_recovery(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.wattpilot.modelStatus.value = 4
+        controller.wattpilot.power = 0
+        controller.wattpilot.amp = 16
+        self._set_site(controller, 0, 0, 0, 100)
+        controller.siteCurrentRecoverySince = {1: 0, 2: 100}
+
+        with patch.object(self.fwp.time, "time", return_value=120):
+            self.assertFalse(controller.allowWattpilotCommand("amp", 6))
+            self.assertFalse(
+                controller.allowWattpilotCommand(
+                    "frc",
+                    int(
+                        getattr(
+                            self.fwp.WattpilotStartStop.On,
+                            "value",
+                            self.fwp.WattpilotStartStop.On,
+                        )
+                    ),
+                )
+            )
+
+    def test_auto_start_with_retained_higher_setpoint_reaches_start_command(self):
+        controller = self._controller()
+        controller.allowance = 4200
+        controller.allowanceUpdatedAt = 100
+        controller.surplusSince = 1
+        controller.wattpilot.amp = 16
+        self._set_site(controller, 0, 0, 0, 100)
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+        controller.wattpilot.set_phases.side_effect = (
+            lambda value: controller.allowWattpilotCommand("psm", value)
+        )
+        controller.wattpilot.set_power.side_effect = (
+            lambda value: controller.allowWattpilotCommand("amp", value)
+        )
+        controller.wattpilot.set_start_stop.side_effect = (
+            lambda value: controller.allowWattpilotCommand(
+                "frc", int(getattr(value, "value", value))
+            )
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            started = controller.startFromPvAllowance()
+
+        self.assertTrue(started)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+        controller.wattpilot.set_power.assert_called_once_with(6)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.On
+        )
+        self.assertGreater(controller.powerTransitionUntil, 100)
+        self.assertEqual(
+            controller.dbusService["/StartStop"],
+            self.fwp.VrmEvChargerStartStop.Start.value,
+        )
+
+    def test_rejected_auto_start_does_not_publish_false_transition_state(self):
+        controller = self._controller()
+        controller.allowance = 4200
+        controller.allowanceUpdatedAt = 100
+        controller.surplusSince = 1
+        controller.lastOnOffTime = 0
+        self._set_site(controller, 0, 0, 0, 100)
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+        controller.wattpilot.set_phases.return_value = True
+        controller.wattpilot.set_power.return_value = True
+        controller.wattpilot.set_start_stop.return_value = False
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            started = controller.startFromPvAllowance()
+
+        self.assertFalse(started)
+        self.assertEqual(controller.powerTransitionUntil, 0)
+        self.assertEqual(controller.lastOnOffTime, 0)
+        self.assertEqual(controller.surplusSince, 0)
+        self.assertEqual(
+            controller.dbusService["/StartStop"],
+            self.fwp.VrmEvChargerStartStop.Stop.value,
+        )
+        self.assertEqual(
+            controller.dbusService["/StartStopLiteral"],
+            self.fwp.VrmEvChargerStartStop.Stop.name,
+        )
+
+    def test_rejected_phase_or_current_aborts_the_remaining_start_sequence(self):
+        for rejected_stage in ("phase", "current"):
+            with self.subTest(rejected_stage=rejected_stage):
+                controller = self._controller()
+                controller.allowance = 4200
+                controller.allowanceUpdatedAt = 100
+                controller.surplusSince = 1
+                controller.lastOnOffTime = 0
+                self._set_site(controller, 0, 0, 0, 100)
+                controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+                controller.wattpilot.set_phases.return_value = (
+                    rejected_stage != "phase"
+                )
+                controller.wattpilot.set_power.return_value = (
+                    rejected_stage != "current"
+                )
+
+                with patch.object(self.fwp.time, "time", return_value=100):
+                    started = controller.startFromPvAllowance()
+
+                self.assertFalse(started)
+                self.assertEqual(controller.powerTransitionUntil, 0)
+                self.assertEqual(controller.lastOnOffTime, 0)
+                self.assertEqual(controller.surplusSince, 0)
+                controller.wattpilot.set_start_stop.assert_not_called()
+                if rejected_stage == "phase":
+                    controller.wattpilot.set_power.assert_not_called()
+                    self.assertEqual(controller.currentPhaseMode, 1)
+                else:
+                    controller.wattpilot.set_power.assert_called_once_with(6)
+
 
 if __name__ == "__main__":
     unittest.main()
