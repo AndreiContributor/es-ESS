@@ -693,7 +693,7 @@ class esESS:
 
             for key, default in (
                 ("GridImportStopW", 150),
-                ("BatteryAssistMaxShortfallW", 3000),
+                ("BatteryAssistMaxShortfallPerPhaseW", 1500),
             ):
                 value = number(section, key, default)
                 if (value is not None and value < 0):
@@ -1219,6 +1219,21 @@ class esESS:
             )
             self._setConfigDefault(
                 "FroniusWattpilot", "SiteCurrentRecoverySeconds", "30"
+            )
+
+        version = 14
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+            if (self.config.has_section("FroniusWattpilot")):
+                self.config.remove_option(
+                    "FroniusWattpilot", "BatteryAssistMaxShortfallW"
+                )
+            self._setConfigDefault(
+                "FroniusWattpilot",
+                "BatteryAssistMaxShortfallPerPhaseW",
+                "1500",
             )
 
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 

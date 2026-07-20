@@ -127,6 +127,25 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-20 - Make Battery Assist Minimum-Current-First And Phase-Aware
+
+- Corrected both one- and three-phase Auto/Eco deficit paths so available PV
+  reduces the active Wattpilot current before any battery or grid fallback.
+  When PV cannot sustain the configured minimum, the controller commands that
+  minimum and waits for fresh charger-current telemetry before assistance.
+- Replaced the aggregate `BatteryAssistMaxShortfallW` setting with
+  `BatteryAssistMaxShortfallPerPhaseW=1500` in configuration v14. The effective
+  limit is 1500 W for one active phase and 4500 W for three active phases; the
+  controller publishes total, per-phase, phase-count, and effective-limit
+  diagnostics.
+- Battery assist remains continuation-only, cannot preserve a higher current or
+  phase-up candidate, and uses the original deficit timestamp for its duration.
+  A completed assist window no longer receives a new allowance grace period.
+- Updated configuration migration/validation, daily reporting, health
+  monitoring, operator documentation, architecture/service contracts, and
+  hardware-free regression coverage. Supervised GX validation remains required
+  before treating the changed live behavior as commissioned.
+
 ### Completed 2026-07-20 - Correct Site-Current Freshness For Unchanged Values
 
 - Supervised production diagnostics proved that
@@ -652,7 +671,7 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   `ThreePhasePvSurplusStartW=4500` keeps phase-up above the typical 3-phase
   6 A electrical floor while matching Wattpilot-app-style behavior more closely
   than the earlier 5000 W threshold, and
-  `BatteryAssistMaxShortfallW=1000` preserves a small cloud bridge while
+  the then-current `BatteryAssistMaxShortfallW=1000` preserved a small cloud bridge while
   reducing current, phasing down, or stopping earlier to protect the home
   battery.
 
@@ -694,8 +713,9 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   battery-assist safety state instead of waiting for idle polling.
 - Production phase-up validation confirmed the 600-second interval and led to
   short-drop grace above the electrical three-phase floor. Deeper/longer normal
-  dips reset timing; an eligible assist may preserve, but never create, an
-  existing candidate, and full fresh allowance is still required to switch.
+  dips reset timing. The historical eligible-assist candidate preservation was
+  later superseded by the 2026-07-20 minimum-current-first policy, which resets
+  deep-deficit candidates; full fresh allowance is still required to switch.
 - Added regression coverage for timing, recovery resets, bridging, early
   phase-down/stop, continuation-only grid fallback, stale raw overhead,
   disconnect publication, short dips, and migration.

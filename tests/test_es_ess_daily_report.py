@@ -253,7 +253,10 @@ class EsEssDailyReportTests(unittest.TestCase):
             ),
             self._line("12:00:01", "Adjusting charge current to 17A on 1-phase.", "INFO"),
             self._line(
-                "12:00:02", "ServiceMessage: Battery assist active: 1200W shortfall for 10s."
+                "12:00:02",
+                "ServiceMessage: Battery assist active at 6A: 3600W total "
+                "shortfall, 1200W/phase across 3 phase(s), 3000W effective "
+                "limit, for 10s.",
             ),
         ]
         result = self._run(
@@ -261,13 +264,38 @@ class EsEssDailyReportTests(unittest.TestCase):
             AUDIT.AuditSettings(
                 log_level="APP_DEBUG",
                 max_current_per_phase=16,
-                battery_assist_max_shortfall_w=1000,
+                battery_assist_max_shortfall_per_phase_w=1000,
             ),
         )
 
         self.assertIn("FAIL", self._statuses(result, "current limits"))
         self.assertIn("FAIL", self._statuses(result, "battery assist"))
         self.assertEqual(result.overall, "ANOMALY")
+
+    def test_minimum_and_continuation_pv_reductions_are_collected(self):
+        records = self._records(
+            [
+                self._line(
+                    "12:10:00",
+                    "ServiceMessage: PV no longer supports the current EV "
+                    "setpoint. Reducing to 6A on 3 phase(s) before any battery "
+                    "or grid assistance.",
+                ),
+                self._line(
+                    "12:10:05",
+                    "Reducing charge current from continuation PV to 7A on "
+                    "1 phase(s).",
+                    "INFO",
+                ),
+            ]
+        )
+        audit = self._audit(records)
+        audit.collect()
+
+        self.assertEqual(
+            [(amps, phases) for _record, amps, phases in audit.current_adjustments],
+            [(6, 3), (7, 1)],
+        )
 
     def test_early_phase_up_and_low_allowance_fail(self):
         lines = [
@@ -416,7 +444,7 @@ AllowanceFreshSeconds=15
 AllowanceDropGraceSeconds=30
 BatteryAssistEnabled=true
 BatteryAssistMaxSeconds=600
-BatteryAssistMaxShortfallW=1000
+BatteryAssistMaxShortfallPerPhaseW=1500
 AllowGridCharging=false
 GridImportPositive=true
 GridImportStopW=300
@@ -999,6 +1027,8 @@ NoBatToEV=false
             "ALLOWANCE_RE",
             "GRID_RE",
             "CURRENT_RE",
+            "CONTINUATION_CURRENT_RE",
+            "MINIMUM_CURRENT_RE",
             "ASSIST_RE",
             "GRACE_RE",
             "PHASE_UP_WAIT_RE",

@@ -174,6 +174,12 @@ health, blocked reason, and recovery elapsed time. These paths observe the
 controller-owned mandatory Auto/Eco guard; they do not create a second command
 owner.
 
+The same EV-charger service exposes phase-aware battery-assist diagnostics at
+`/BatteryAssist/Shortfall`, `/BatteryAssist/ShortfallPerPhase`,
+`/BatteryAssist/ActivePhases`, and `/BatteryAssist/EffectiveLimit`. These are
+controller-owned observations of the minimum-current continuation policy; they
+do not grant command authority or change the separate runtime-status contract.
+
 After the controller confirms that no vehicle is present, the runtime-status
 contract publishes `Stopped`, `/PhaseMode=0`, and
 `/PhaseModeLiteral=Unknown`. Transient raw disconnect samples inside the

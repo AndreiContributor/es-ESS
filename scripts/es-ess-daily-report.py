@@ -195,7 +195,23 @@ GRID_RE = re.compile(
 CURRENT_RE = re.compile(
     r"Adjusting charge current to (?P<amps>\d+)A on (?P<phase>[13])-phase"
 )
+CONTINUATION_CURRENT_RE = re.compile(
+    r"Reducing charge current from continuation PV to (?P<amps>\d+)A on "
+    r"(?P<phase>[13]) phase\(s\)"
+)
+MINIMUM_CURRENT_RE = re.compile(
+    r"PV no longer supports the current EV setpoint\. Reducing to "
+    r"(?P<amps>\d+)A on (?P<phase>[13]) phase\(s\)"
+)
 ASSIST_RE = re.compile(
+    r"Battery assist active at (?P<amps>\d+)A: "
+    r"(?P<shortfall>\d+(?:\.\d+)?)W total shortfall, "
+    r"(?P<per_phase>\d+(?:\.\d+)?)W/phase across "
+    r"(?P<phases>[13]) phase\(s\), "
+    r"(?P<limit>\d+(?:\.\d+)?)W effective limit, for "
+    r"(?P<elapsed>\d+(?:\.\d+)?)s"
+)
+LEGACY_ASSIST_RE = re.compile(
     r"Battery assist active: (?P<shortfall>\d+(?:\.\d+)?)W shortfall "
     r"for (?P<elapsed>\d+(?:\.\d+)?)s"
 )
@@ -305,7 +321,7 @@ class AuditSettings:
     allowance_drop_grace_seconds: int = 15
     battery_assist_enabled: bool = True
     battery_assist_max_seconds: int = 600
-    battery_assist_max_shortfall_w: float = 1000.0
+    battery_assist_max_shortfall_per_phase_w: float = 1500.0
     allow_grid_charging: bool = False
     grid_import_positive: bool = True
     grid_import_stop_w: float = 300.0
@@ -914,8 +930,12 @@ def load_settings(path: Path) -> tuple[AuditSettings, list[str]]:
         battery_assist_max_seconds=_get_int(
             parser, section, "BatteryAssistMaxSeconds", 600, warnings
         ),
-        battery_assist_max_shortfall_w=_get_float(
-            parser, section, "BatteryAssistMaxShortfallW", 1000.0, warnings
+        battery_assist_max_shortfall_per_phase_w=_get_float(
+            parser,
+            section,
+            "BatteryAssistMaxShortfallPerPhaseW",
+            1500.0,
+            warnings,
         ),
         allow_grid_charging=_get_bool(
             parser, section, "AllowGridCharging", False, warnings
@@ -1156,7 +1176,9 @@ class EsEssDailyReport:
         self._allowance_timestamps: list[datetime] = []
         self.grid_samples: list[GridSample] = []
         self.current_adjustments: list[tuple[LogRecord, int, int]] = []
-        self.assist_samples: list[tuple[LogRecord, float, float]] = []
+        self.assist_samples: list[
+            tuple[LogRecord, float, float | None, int | None, float]
+        ] = []
         self.grace_starts: list[tuple[LogRecord, int]] = []
         self.phase_actions: list[PhaseAction] = []
         self.phase_confirmations: list[tuple[LogRecord, int]] = []
@@ -1237,6 +1259,10 @@ class EsEssDailyReport:
                 if "Adjusting charge current to " in message
                 else None
             )
+            if current_match is None and "continuation PV" in message:
+                current_match = CONTINUATION_CURRENT_RE.search(message)
+            if current_match is None and "current EV setpoint" in message:
+                current_match = MINIMUM_CURRENT_RE.search(message)
             if current_match:
                 self.current_adjustments.append(
                     (
@@ -1247,19 +1273,32 @@ class EsEssDailyReport:
                 )
                 self.charge_records.append(record)
 
-            assist_match = (
-                ASSIST_RE.search(message)
-                if "Battery assist active: " in message
-                else None
-            )
+            assist_message = "Battery assist active" in message
+            assist_match = ASSIST_RE.search(message) if assist_message else None
             if assist_match:
                 self.assist_samples.append(
                     (
                         record,
                         float(assist_match.group("shortfall")),
+                        float(assist_match.group("per_phase")),
+                        int(assist_match.group("phases")),
                         float(assist_match.group("elapsed")),
                     )
                 )
+            else:
+                legacy_assist_match = (
+                    LEGACY_ASSIST_RE.search(message) if assist_message else None
+                )
+                if legacy_assist_match:
+                    self.assist_samples.append(
+                        (
+                            record,
+                            float(legacy_assist_match.group("shortfall")),
+                            None,
+                            None,
+                            float(legacy_assist_match.group("elapsed")),
+                        )
+                    )
             if "Battery assist time limit reached" in message:
                 self.battery_assist_limit_records.append(record)
 
@@ -2162,8 +2201,21 @@ class EsEssDailyReport:
 
         violations = [
             record
-            for record, shortfall, elapsed in self.assist_samples
-            if shortfall > self.settings.battery_assist_max_shortfall_w + 1
+            for record, shortfall, per_phase, phases, elapsed in self.assist_samples
+            if (
+                per_phase is not None
+                and (
+                    per_phase
+                    > self.settings.battery_assist_max_shortfall_per_phase_w + 1
+                    or (
+                        phases is not None
+                        and shortfall
+                        > self.settings.battery_assist_max_shortfall_per_phase_w
+                        * phases
+                        + phases
+                    )
+                )
+            )
             or elapsed > self.settings.battery_assist_max_seconds + 1
         ]
         if violations:
@@ -2175,12 +2227,24 @@ class EsEssDailyReport:
             )
         else:
             max_shortfall = max(sample[1] for sample in self.assist_samples)
-            max_elapsed = max(sample[2] for sample in self.assist_samples)
+            max_per_phase = max(
+                (sample[2] for sample in self.assist_samples if sample[2] is not None),
+                default=None,
+            )
+            max_elapsed = max(sample[4] for sample in self.assist_samples)
             self.add(
                 "PASS",
                 "battery assist",
-                f"Battery assist stayed within configured bounds: maximum {max_shortfall:.0f} W "
-                f"shortfall and {max_elapsed:.0f} s elapsed observed.",
+                "Battery assist stayed within configured bounds: maximum "
+                "{0:.0f} W total{1} and {2:.0f} s elapsed observed.".format(
+                    max_shortfall,
+                    (
+                        ", {0:.0f} W/phase".format(max_per_phase)
+                        if max_per_phase is not None
+                        else " (legacy aggregate log)"
+                    ),
+                    max_elapsed,
+                ),
             )
 
     def _charging_near(self, timestamp: datetime, seconds: int = 10) -> bool:
@@ -2303,7 +2367,9 @@ class EsEssDailyReport:
         )
         auto_control_records.extend(action.record for action in self.phase_actions)
         auto_control_records.extend(
-            record for record, _shortfall, _elapsed in self.assist_samples
+            record
+            for record, _shortfall, _per_phase, _phases, _elapsed
+            in self.assist_samples
         )
         for blocked in self.authority_blocked:
             next_valid = next(
@@ -2530,7 +2596,8 @@ class EsEssDailyReport:
                     battery_assist_events=len(
                         [
                             record
-                            for record, _shortfall, _elapsed in self.assist_samples
+                            for record, _shortfall, _per_phase, _phases, _elapsed
+                            in self.assist_samples
                             if start <= record.timestamp <= end
                         ]
                     ),
@@ -2788,8 +2855,10 @@ def render_human(result: AuditResult) -> str:
         f"{result.configuration.min_phase_switch_seconds} s",
         f"AllowanceFresh/DropGrace={result.configuration.allowance_fresh_seconds}/"
         f"{result.configuration.allowance_drop_grace_seconds} s",
-        f"BatteryAssistMax={result.configuration.battery_assist_max_shortfall_w:.0f} W/"
-        f"{result.configuration.battery_assist_max_seconds} s",
+        "BatteryAssistMax={0:.0f} W/active phase/{1} s".format(
+            result.configuration.battery_assist_max_shortfall_per_phase_w,
+            result.configuration.battery_assist_max_seconds,
+        ),
         f"AllowGridCharging={str(result.configuration.allow_grid_charging).lower()} "
         f"GridImportStop={result.configuration.grid_import_stop_w:.0f} W/"
         f"{result.configuration.grid_import_stop_seconds} s",

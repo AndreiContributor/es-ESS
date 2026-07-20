@@ -115,6 +115,9 @@ It owns:
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
+- Phase-aware EV-charger diagnostics under `/BatteryAssist/Shortfall`,
+  `/BatteryAssist/ShortfallPerPhase`, `/BatteryAssist/ActivePhases`, and
+  `/BatteryAssist/EffectiveLimit`.
 - Battery-SOC validity and receive-time tracking for battery assist and the
   EV-priority battery-reservation bypass, delegating pure timestamp freshness
   evaluation to `WattpilotDecisionInputs.py`.
@@ -159,7 +162,8 @@ It owns:
 - Grid telemetry validity and freshness evaluation across required phases.
 - SolarOverheadDistributor assigned-allowance freshness evaluation.
 - Minimum-allowance evaluation for Auto/Eco charging.
-- Fresh raw-overhead evaluation for the safe three-to-one fallback path.
+- Fresh raw-overhead evaluation for reduction or minimum-current continuation
+  of an already-running charge.
 
 It must not own:
 
@@ -398,8 +402,11 @@ Future Wattpilot changes must preserve these invariants:
   despite import, but must not authorize a new grid-only start. The controller
   does not claim to select battery versus grid as the physical energy source.
 - Battery assist may only bridge a short PV dip during an already-running
-  charge and must remain bounded by SOC, duration, shortfall, and recovery
-  settings.
+  charge. Auto/Eco must first reduce the common Wattpilot current to the
+  PV-supported value and then to the configured minimum, requiring fresh
+  charger-current telemetry before assistance begins. Assistance covers only
+  the remaining minimum-current deficit and remains bounded by SOC, duration,
+  per-active-phase shortfall, and recovery settings.
 - Battery assist and the EV-priority battery-reservation bypass require valid
   finite system SOC plus selected-battery activity within
   `BatterySocFreshSeconds`. Venus OS does not periodically republish unchanged
@@ -407,11 +414,10 @@ Future Wattpilot changes must preserve these invariants:
   provide the liveness heartbeat for its cached SOC. Missing or invalid SOC,
   or a missing, invalid, or stale heartbeat, fails closed for both features
   and does not change Manual charging.
-- Battery assist must not start a charge, create a phase-up candidate, or issue
-  a switch to three phases. An eligible continuation bridge may intentionally
-  leave an already-existing one-to-three candidate timer unchanged; fresh
-  assigned allowance must still meet the full phase-up threshold before the
-  controller can issue the phase command.
+- Battery assist must not start a charge, preserve or create a phase-up
+  candidate, increase current, or issue a switch to three phases. Fresh
+  assigned allowance must satisfy the normal phase-up timing and threshold
+  before the controller can issue that phase command.
 - Fresh grid telemetry and fresh allowance data are required for no-grid
   Auto/Eco decisions.
 - Protocol charging statuses `8`-`11` and `13`-`14` follow the normal active
@@ -419,12 +425,12 @@ Future Wattpilot changes must preserve these invariants:
   grid-import, pending-phase, or confirmed-disconnect guards. In Manual mode
   they change reporting only and do not grant es-ESS command authority.
 - A fresh distributor allowance below the usable minimum, including a truthful
-  atomic `0 W` assignment during an already-running three-phase charge, must
-  remain truthfully published on `/PvAllowance`. The controller may retain the
-  existing phase/current command for `AllowanceDropGraceSeconds`; recovery
-  clears that debounce, while a sustained deficit phase-reduces or stops at
-  expiry. This allowance-only grace must not delay stale-grid handling or the
-  sustained grid-import guard.
+  atomic `0 W` assignment during an already-running charge, must remain
+  truthfully published on `/PvAllowance`. Current reduction is immediate;
+  `AllowanceDropGraceSeconds` debounces only phase-down or stop and begins at
+  the original deficit. A completed battery-assist window cannot receive a new
+  grace period. This allowance-only grace must not delay stale-grid handling or
+  the sustained grid-import guard.
 - A confirmed physical vehicle disconnect must stop Auto/Eco current and phase
   control even if Wattpilot briefly continues to report a stale active charging
   model status.
@@ -441,13 +447,12 @@ Future Wattpilot changes must preserve these invariants:
   fresh assigned PV; transient false connection telemetry inside
   `CarDisconnectConfirmSeconds` does not clear the candidate, and the last
   confirmed phase-command cooldown remains unchanged.
-- Raw overhead may help with a safe three-to-one fallback, but must not start
-  charging or authorize a phase-up.
-- Assigned Wattpilot allowance is authoritative for whether the consumer owns
-  enough PV to remain on three phases. Raw overhead may estimate the physical
-  shortfall and support a safer one-phase fallback, but must not override an
-  insufficient assigned three-phase allowance or mutate controller phase state
-  without a matching Wattpilot phase command.
+- Fresh raw overhead may estimate continuation PV only for an already-running
+  charge. It may reduce or maintain the current setpoint and support a safer
+  one-phase fallback, but must not start charging, increase current, authorize
+  phase-up, or mutate phase state without a matching Wattpilot phase command.
+- Assigned Wattpilot allowance remains authoritative for starts, increases,
+  and phase-up. Raw overhead never replaces the truthful public allowance.
 - `MinPhaseSwitchSeconds` is the single normal stability/cooldown timer for
   both phase directions. A no-grid session may reduce phase or stop before the
   timer expires when bounded battery assist cannot safely bridge the deficit,
@@ -456,18 +461,15 @@ Future Wattpilot changes must preserve these invariants:
 - On the normal current-adjustment path, `SurplusDropGraceSeconds` may preserve
   an active one-to-three candidate through a shorter-than-grace dip below the
   phase-up threshold only while fresh assigned allowance remains above the
-  effective three-phase floor. A deeper or longer dip resets the candidate when
-  that path evaluates it. An eligible battery-assist continuation returns while
-  holding the existing one-phase command and may therefore leave an already-
-  existing candidate's wall-clock timer running through the bounded assist
-  window. Battery assist cannot create the candidate or issue phase-up. Raw
-  overhead cannot authorize phase-up, and fresh assigned allowance must meet
-  the full phase-up threshold at the command boundary.
-- During a sustained three-phase PV deficit, bounded battery assist or
-  explicitly allowed grid fallback may hold the running phase/current. A
-  transient below-minimum assignment may also hold only for the allowance-drop
-  debounce. Once the applicable hold expires, one-phase PV availability
-  authorizes the reduction.
+  effective three-phase floor. A deeper deficit that enters minimum-current
+  fallback resets the candidate. Battery assist and raw overhead cannot preserve
+  or authorize phase-up.
+- During a sustained three-phase PV deficit, the controller first reduces the
+  equal phase current from PV. After fresh telemetry confirms the configured
+  minimum, bounded battery assist may hold that phase mode until its window
+  expires. Explicit grid fallback follows the same minimum-current-first rule.
+  Once the applicable fallback ends, one-phase continuation PV authorizes
+  phase-down; otherwise Auto/Eco stops.
 - Current limits must respect configured per-phase bounds and the
   Wattpilot-reported effective limit.
 - Phase-switch command ordering must keep both the old and requested phase mode
