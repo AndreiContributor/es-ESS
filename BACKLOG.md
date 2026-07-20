@@ -159,8 +159,15 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   releases the next ampere at the configured boundary, rejects an unchanged
   command above newly reduced physical headroom, permits a lower stopped
   setpoint only after recovery, and prevents rejected start sequences from
-  publishing false transition state. Supervised live GX revalidation remains
-  required.
+  publishing false transition state.
+- Supervised production revalidation completed on Venus OS `v3.75` on
+  2026-07-20. After a controlled restart, the connected Auto/Eco session sent
+  `frc=2` once without rejection, published transition grace only afterward,
+  and reached measured three-phase charging at approximately 4.24-4.31 kW and
+  5.6-6.1 A per phase. PID `4325` remained stable, site-current telemetry and
+  command authority stayed healthy, battery assist remained inactive, and the
+  post-restart log contained no blocked command, rejected start, traceback, or
+  duty-cycle exception.
 
 ### Completed 2026-07-20 - Make Battery Assist Minimum-Current-First And Phase-Aware
 
