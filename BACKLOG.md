@@ -987,8 +987,199 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ## Backlog
 
-This section retains implementation records that originated as backlog items.
-Every record below is completed; no open item remains.
+Open implementation items appear first. Completed implementation records remain
+below them so their decisions and evidence are not lost.
+
+### P3 - Add Wattpilot Charging-Session Energy And Onboarding Reports
+
+Goal:
+
+Extend the existing read-only daily report with durable per-connection and
+per-charge evidence so operators can review how many EV charges occurred, how
+many kWh were delivered, which phase modes and physical phases were used, and
+where car/charger onboarding or start behavior was delayed or interrupted.
+
+Problem:
+
+The daily report currently reconstructs approximate charging sessions, phase
+modes, current adjustments, phase commands, stop reasons, safety events, and
+restarts from APP_DEBUG transition evidence. Historical logs do not retain the
+Wattpilot session-energy counter or bounded phase-power checkpoints, so the
+report cannot calculate delivered kWh, split energy by one-/three-phase mode or
+physical L1/L2/L3, distinguish a vehicle connection session from multiple
+charging intervals, or quantify plug-to-first-charge latency. Current D-Bus
+energy values are live, resettable snapshots and cannot reconstruct a prior
+day after disconnect.
+
+Evidence:
+
+- `scripts/es-ess-daily-report.py` `ChargingSession` and `build_sessions()`
+  contain start/end, mode, phases, current adjustments, phase switches, stop
+  reason, assist/grid/stale events, rare statuses, and restart evidence, but no
+  energy, duration-by-phase, connection-session, or onboarding fields.
+- `scripts/es-ess-daily-report.py` explicitly states that current D-Bus values
+  are snapshots rather than historical storage and that sessions are
+  reconstructed approximately.
+- `FroniusWattpilot.py` publishes the live
+  `wattpilot.energyCounterSinceStart / 1000` value on `/Session/Energy` and
+  `/Ac/Energy/Forward`, plus live L1/L2/L3 power/current and phase mode, but it
+  does not emit historical session-energy checkpoints or a final structured
+  session summary.
+- `Wattpilot.py` exposes the total `energyCounterSinceStart` and per-phase
+  power/current telemetry. It does not expose a vehicle identity or VIN, so a
+  report can count connection/charging sessions but cannot identify which car
+  was attached.
+
+Implementation:
+
+- Add an isolated, command-free Wattpilot session-statistics component. Track
+  confirmed vehicle connection sessions separately from actual charging
+  intervals, including plug time, first start attempt, first measured charging
+  power, interruptions, stop/disconnect, current range, peak power, and phase
+  changes.
+- Treat monotonic Wattpilot session-counter deltas as the authoritative total
+  delivered energy when the counter remains valid. Detect and explicitly mark
+  resets, decreases, missing samples, disconnect reset policy, and service
+  restarts rather than combining incompatible values.
+- Integrate fresh Wattpilot L1/L2/L3 power over the controller interval to
+  produce clearly labelled estimated energy by physical phase and by one-phase
+  versus three-phase mode. Reconcile those estimates with the authoritative
+  total and publish a coverage/error indicator; do not present estimated
+  splits as meter-grade values.
+- Emit transition-only INFO records for connection, charge start/stop, phase
+  segment, and final session summary, plus at most one structured APP_DEBUG
+  checkpoint per connected minute. Keep raw WebSocket callbacks lightweight
+  and command-free and avoid five-second logging spam.
+- Extend daily-report human and JSON output, with a schema-version increase, to
+  report connection-session count, charging-interval count, total kWh,
+  per-session energy/duration, estimated one-/three-phase and L1/L2/L3 energy,
+  phase/current/power ranges, onboarding latency, command rejections,
+  interruptions, stop reasons, telemetry/safety events, restart/gap flags, and
+  evidence completeness.
+- Correlate the existing `Blocked Wattpilot setValue`, command-authority,
+  stale-telemetry, grid-guard, phase-confirmation, and restart records with the
+  enclosing connection/charge session. Reporting must remain read-only and
+  must not change Manual ownership, Auto/Eco commands, current limits, phase
+  policy, no-grid behavior, battery assist, D-Bus/MQTT control contracts, or
+  configuration defaults.
+- Do not add a car-identity claim. If more than one vehicle uses the charger,
+  distinguish sessions only by timestamps and observed charger state unless a
+  future validated Wattpilot field provides a stable non-sensitive identity.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `scripts/es-ess-daily-report.py`
+- `tests/test_es_ess_daily_report.py`
+- `README.md`
+- `docs/es-ess-daily-report.md`
+- `docs/wattpilot-architecture.md`
+- `docs/service-inventory.md`
+- `docs/system-guide.html`
+- `BACKLOG.md`
+
+Files to add:
+
+- `WattpilotSessionStatistics.py`
+- `tests/test_wattpilot_session_statistics.py`
+
+Tests:
+
+- Add hardware-free pure-statistics tests for one-phase, three-phase, mixed
+  phase, multiple charge intervals in one plug session, counter reset/decrease,
+  missing/non-finite telemetry, disconnect reset policies, phase-power
+  integration, reconciliation coverage, and service-restart partial sessions.
+- Add controller characterization tests proving Manual reporting never issues
+  a command and session logging does not change controller dispatch, command
+  authority, site-current, grid, battery-assist, or phase decisions.
+- Extend `tests/test_es_ess_daily_report.py` for connection versus charging
+  counts, exact total counter deltas, estimated phase splits, start latency,
+  rejected commands, incomplete checkpoints, restart/gap flags, JSON schema,
+  human rendering, secret exclusion, and compatibility with older logs that
+  contain no session-energy records.
+- Keep the new test filename compatible with `python -m unittest discover -s
+  tests`; no CI workflow change is expected.
+
+Expected coverage:
+
+- Proves the report counts vehicle connections and actual charging intervals
+  independently and never invents kWh across an invalid/reset counter or an
+  evidence gap.
+- Proves total kWh and estimated phase splits retain distinct accuracy labels
+  and incomplete historical evidence cannot produce a misleading complete
+  result.
+- Proves session observation remains command-free in Manual and does not alter
+  any existing Auto/Eco safety or control behavior.
+- Existing daily-report input, safety findings, and old-log compatibility
+  remain covered and unchanged.
+
+Manual validation:
+
+Active charging required, followed by log-only analysis. Use only a normal
+supervised PV charge; do not force grid import, overload, telemetry failure, or
+a phase switch merely to exercise reporting.
+
+Manual test steps:
+
+1. Deploy with APP_DEBUG on the approved Venus OS `v3.75`, Wattpilot firmware
+   `42.5`, and Solar.wattpilot app `2.1.0` baseline.
+2. Connect the vehicle and allow one naturally available Auto/Eco charge. If a
+   natural one-/three-phase change occurs, retain it; otherwise accept a
+   single-phase-mode session.
+3. Confirm transition records and minute checkpoints contain no credential or
+   vehicle-identity data and do not coincide with any new charger command
+   source.
+4. Stop or disconnect normally, then run the current-day report and confirm
+   the connection count, charging-interval count, total session kWh, durations,
+   phase modes, currents, stop reason, and completeness against the Wattpilot
+   app/VRM values within documented estimation tolerance.
+5. After the calendar day closes, run the complete yesterday report and retain
+   the human and private JSON outputs for comparison.
+
+Risks and dependencies:
+
+- Per-phase and one-/three-phase energy are numerical integrations of sampled
+  power, not certified meter counters. Sampling gaps, phase transitions, and
+  service downtime reduce accuracy and must be visible in coverage/error
+  fields.
+- `energyCounterSinceStart` reset timing depends on Wattpilot telemetry and
+  `ResetChargedEnergyCounter`; a reset or reconnect must split/mark evidence
+  instead of producing a negative or inflated delta.
+- A final disconnect summary alone is lost on abrupt process/GX failure. The
+  bounded minute checkpoint provides recovery evidence but cannot reconstruct
+  energy delivered while es-ESS was not observing the charger.
+- APP_DEBUG checkpoint volume must remain bounded and included in the existing
+  daily-report performance regression expectations.
+- This reporting task is independent of the future dedicated C20 meter and
+  must not claim that Victron consumption current is meter-grade breaker
+  evidence.
+
+Open questions:
+
+- Confirm during implementation approval whether the fixed one-minute
+  connected-session checkpoint is acceptable; the default plan avoids a new
+  configuration key.
+- Confirm whether any downstream consumer requires the JSON schema to remain
+  version 3. The preferred implementation increments it because the session
+  contract gains material fields.
+
+Done criteria:
+
+- Human and JSON reports show independent connection and charging counts,
+  authoritative available total kWh, explicitly estimated phase/mode splits,
+  onboarding latency, transitions, safety evidence, and completeness per
+  session.
+- Counter resets, stale/missing phase power, restarts, gaps, and partial-day
+  input are never silently treated as complete energy evidence.
+- Older logs without the new records remain analyzable with unavailable energy
+  fields and an explicit limitation.
+- Manual mode remains observation-only, and all existing Wattpilot control and
+  safety invariants remain unchanged.
+- README, daily-report guide, architecture, service inventory, system guide,
+  and backlog describe the new report and its accuracy limits.
+- Changed Python files pass syntax checks; focused statistics and daily-report
+  tests pass.
+- Full unittest suite passes.
 
 #### Implementation record - completed in Group B: Define Safe Grid-Setpoint Bounds
 
@@ -1268,6 +1459,216 @@ Completion record:
   `INCOMPLETE` status and exact truncation evidence rather than claiming
   `GOOD`.
 
+### P1 - Integrate Shelly 3EM-63T Gen3 As The Dedicated C20 Site-Current Source
+
+Goal:
+
+Use a correctly installed Shelly 3EM-63T Gen3 to provide direct, fresh
+physical L1/L2/L3 current measurements at the downstream house C20 boundary
+for the mandatory Wattpilot Auto/Eco site-current guard.
+
+Problem:
+
+The current guard reads calculated Venus system consumption currents. Live
+commissioning showed those current values alternating between approximately
+4.5 A and 8.6 A while one-phase Wattpilot power remained near 1.33-1.37 kW and
+the charger reported approximately 5.8 A. That calculated source is therefore
+not sufficiently trustworthy as the future authoritative C20 measurement.
+The existing Shelly integration cannot be substituted directly: it consumes
+the Gen1 `/status`/`emeters[]` schema and registers a Venus
+`com.victronenergy.grid` service at position 0, while the planned Gen3 meter
+uses local RPC and must not compete with the existing Fronius grid meter.
+
+Evidence:
+
+- `FroniusWattpilot.py` registers the mandatory site-current subscriptions at
+  `com.victronenergy.system` `/Ac/Consumption/L1/Current` through
+  `/Ac/Consumption/L3/Current`.
+- `Shelly3EMGrid.py` requests `http://<host>/status`, expects
+  `total_power` and `emeters[]`, and publishes as
+  `com.victronenergy.grid` with `/Position=0`.
+- The official Shelly Gen3 API documents the `triphase` profile with `em:0`
+  and `emdata:0`. `EM.GetStatus?id=0` exposes direct `a_current`, `b_current`,
+  and `c_current` plus phase errors; `EMData.GetStatus?id=0` exposes per-phase
+  forward and returned active-energy counters in Wh.
+- The official device specifications rate the integrated phase-current
+  measurements at 0-63 A, with +/-1% current accuracy from 2-63 A. This is a
+  measurement input for software load management, not a replacement for the
+  physical C20 protective device.
+
+Implementation:
+
+- Do not start production implementation until the Shelly is installed at the
+  C20 boundary and read-only captures prove its model/generation, firmware,
+  `triphase` profile, authentication state, live `EM.GetStatus`,
+  `EMData.GetStatus`, phase order, and physical A/B/C-to-L1/L2/L3 mapping.
+- Add a bounded local Shelly Gen3 RPC client. Identify the device through the
+  unauthenticated `/shelly` endpoint, require the expected Gen3 model/profile,
+  poll `EM.GetStatus?id=0` for live current/voltage/power, and read
+  `EMData.GetStatus?id=0` only for diagnostic/reporting energy. When device
+  authentication is enabled, use Shelly's SHA-256 HTTP digest flow with user
+  `admin`; never embed credentials in URLs or logs.
+- Validate every required live phase value as finite and non-negative, reject
+  missing phases and meter/phase errors, and timestamp only a fully successful
+  upstream poll. A cached D-Bus `GetValue` must never refresh Shelly sample
+  freshness after the HTTP source has stopped updating.
+- Publish the meter through a dedicated es-ESS site-current boundary that
+  cannot be selected or aggregated by Venus as a second grid meter. Keep the
+  Fronius Smart Meter as the existing Venus/system grid meter and do not
+  change grid-setpoint ownership.
+- Add an explicit, validated Wattpilot site-current source selection and
+  physical phase mapping. The default/migrated configuration must preserve the
+  existing Venus-system source until the operator deliberately selects the
+  commissioned Shelly source.
+- Feed the Shelly source into the existing mandatory site-current decisions
+  without adding overload grace. Missing, invalid, error-marked, stale, or
+  unreachable Shelly data must fail Auto/Eco closed within the configured
+  freshness contract. Recovery must retain the existing stable delay and
+  1 A-per-cycle ramp.
+- Preserve Manual observation-only behavior, equal current on all active
+  three-phase conductors, the one-phase physical mapping, no-grid behavior,
+  battery-assist bounds, command ownership, and every existing public
+  Wattpilot diagnostic unless an explicitly documented source-status field is
+  added.
+- Keep this work on branch
+  `feature/wattpilot-per-phase-site-current-guard` after the physical meter is
+  installed and the prerequisite captures are reviewed.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `es-ESS.py`
+- `config.sample.ini`
+- `README.md`
+- `docs/wattpilot-architecture.md`
+- `docs/service-inventory.md`
+- `docs/system-guide.html`
+- `scripts/es-ess-health-monitor.sh`
+- `scripts/es-ess-daily-report.py`
+- `tests/test_wattpilot_site_current_guard.py`
+- `tests/test_config_contract.py`
+- `tests/test_config_migration.py`
+- `BACKLOG.md`
+
+Files to add:
+
+- `Shelly3EMGen3Client.py`
+- `Shelly3EMSiteCurrent.py`
+- `tests/test_shelly3em_gen3_client.py`
+- `tests/test_shelly3em_site_current.py`
+
+Tests:
+
+- Add hardware-free Gen3 RPC tests for unauthenticated and digest-authenticated
+  access, exact `triphase` field mapping, energy-unit conversion, timeout,
+  malformed/non-finite/negative values, missing phase fields, phase and device
+  errors, wrong model/generation/profile, recovery, and secret-safe logging.
+- Add source-service tests proving only complete successful polls update the
+  sample timestamp, repeated identical zero/nonzero values remain fresh, an
+  HTTP outage cannot be hidden by cached D-Bus values, and failure publishes a
+  disconnected/invalid source state without registering a competing grid
+  meter.
+- Extend site-current guard tests for explicit source selection, A/B/C phase
+  mapping, one- and three-phase headroom, stale/invalid/error fail-closed
+  behavior, recovery delay/ramp, and configuration migration preserving the
+  current source by default.
+- Add characterization tests proving Manual mode issues no command and the
+  Shelly source cannot change grid-meter selection, grid-setpoint ownership,
+  no-grid policy, battery assist, or command authority.
+- Keep all new test files compatible with `python -m unittest discover -s
+  tests`; no CI workflow change is expected.
+
+Expected coverage:
+
+- Proves the mandatory Auto/Eco guard uses direct C20-boundary phase currents
+  only after explicit commissioning and never silently falls back to a stale
+  or calculated source.
+- Proves Shelly loss, invalid data, wrong profile, phase errors, and
+  authentication failures stop or block Auto/Eco safely while Manual remains
+  user-controlled.
+- Proves enabling the dedicated source does not create a second Venus grid
+  meter or alter the existing Fronius/system energy topology.
+- Existing site-current, phase-switching, no-grid, battery-assist, command-
+  boundary, configuration, and reporting tests remain passing.
+
+Manual validation:
+
+Hardware installation and fault simulation in a low-risk window, followed by
+active charging only after read-only commissioning succeeds. Installation and
+phase identification must be performed or verified by the electrician; do not
+create an overload to test the guard.
+
+Manual test steps:
+
+1. After installation, reserve the Shelly IP address and capture `/shelly`,
+   `EM.GetStatus?id=0`, and `EMData.GetStatus?id=0` locally from the GX without
+   enabling the new es-ESS source.
+2. Confirm the device is the expected Gen3 model in `triphase` profile, record
+   firmware/authentication state, and verify no reported phase/device error.
+3. With the electrician, correlate Shelly A/B/C with physical C20 L1/L2/L3
+   using normal safe loads; confirm current direction and compare readings
+   against an independent clamp meter where available.
+4. Deploy the implementation with the old source still selected and confirm
+   the Fronius service remains the sole Venus grid meter.
+5. Select the Shelly site-current source, restart es-ESS, and confirm fresh
+   phase currents, ages, limiting phase, allowed current, connection state,
+   and no critical/traceback/command-boundary errors while the car is stopped.
+6. During a normal supervised Auto/Eco PV charge, confirm one-phase mapping,
+   equal three-phase commands, natural house-load current reduction, and
+   delayed/ramped recovery. Do not deliberately exceed 20 A.
+7. In a low-risk window, briefly isolate only Shelly network access and confirm
+   Auto/Eco fails closed within the documented freshness bound while the
+   physical C20 remains the final protection. Restore access and confirm
+   recovery follows the existing delay/ramp.
+8. Return to Manual and confirm es-ESS remains observation-only.
+
+Risks and dependencies:
+
+- Blocked until the Shelly 3EM-63T Gen3 is physically installed at the correct
+  downstream C20 boundary and its live API/phase mapping evidence is supplied.
+- Wi-Fi, digest-authentication compatibility on Venus OS `v3.75`, device
+  firmware behavior, response cadence, and actual measurement latency require
+  live validation; no API claim alone establishes breaker-protection timing.
+- Incorrect conductor placement, phase mapping, voltage-reference pairing, or
+  profile selection could produce plausible but unsafe headroom calculations.
+- Registering the source as `com.victronenergy.grid` could compete with the
+  Fronius meter and corrupt system topology; the implementation must retain a
+  dedicated non-grid source boundary.
+- The Shelly and es-ESS remain monitoring/load-management layers. Neither
+  replaces the physical C20 or electrician-approved protection and wiring.
+- The separate charging-session reporting item may consume Shelly energy
+  diagnostics later, but it is not a prerequisite for this safety source and
+  must not expand this task into energy reconciliation.
+
+Open questions:
+
+- Exact Shelly model identifier, firmware version, authentication state, local
+  IP, `triphase` profile response, and A/B/C-to-L1/L2/L3 mapping remain pending
+  until installation.
+- Confirm from the installed device whether one-second polling is reliable on
+  the production Wi-Fi network and whether the supported GX `requests` build
+  completes SHA-256 digest authentication within the required timeout.
+
+Done criteria:
+
+- Installation/API/phase-mapping evidence is retained and matches the expected
+  Gen3 `triphase` contract.
+- The dedicated source supplies direct, fresh, validated C20 phase currents
+  without appearing as a second Venus grid meter.
+- Auto/Eco fails closed on source loss, invalid values, meter errors, wrong
+  profile, authentication failure, and stale samples; recovery retains the
+  existing stable delay and ramp.
+- Normal supervised charging confirms correct physical phase mapping and safe
+  current limiting without intentionally overloading the site.
+- Manual mode remains observation-only and the existing Fronius grid meter,
+  no-grid policy, battery-assist bounds, phase behavior, and command ownership
+  remain unchanged.
+- README, sample configuration, architecture, service inventory, system guide,
+  health monitor, daily report, and backlog document the source and its limits.
+- Changed Python files pass syntax checks; focused Shelly, site-current,
+  configuration, and reporting tests pass.
+- Full unittest suite passes.
+
 ## Suggested Implementation Order / PR Execution Queue
 
 Use this queue as the implementation order. Entries carrying the same PR-group
@@ -1279,7 +1680,12 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-No unfinished implementation items remain.
+1. P1 Integrate Shelly 3EM-63T Gen3 As The Dedicated C20 Site-Current Source —
+   safety-critical source correction on the current branch, gated until the
+   meter is installed and live API/phase evidence is reviewed.
+2. P3 Add Wattpilot Charging-Session Energy And Onboarding Reports — additive,
+   command-free observability requested for diagnosing connection/start issues;
+   preserve the existing controller and safety boundaries.
 
 ## Verification Plan
 
