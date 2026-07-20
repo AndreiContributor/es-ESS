@@ -127,6 +127,26 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-20 - Correct Site-Current Freshness For Unchanged Values
+
+- Supervised production diagnostics proved that
+  `com.victronenergy.system` continued returning valid `0 A` on L1 and L3,
+  while `/SiteCurrentAgeL1` and `/SiteCurrentAgeL3` exceeded 500 seconds and
+  stopped Auto/Eco as stale. L2 remained healthy only because its load kept
+  changing.
+- Root cause was the use of D-Bus value-change callbacks as a freshness
+  heartbeat. Venus does not emit another callback while a valid zero or
+  nonzero value remains unchanged.
+- Each site-current guard refresh now performs a bounded live BusItem
+  `GetValue` read for L1, L2, and L3. Successful unchanged reads refresh the
+  receive timestamp. A missing service/path, transport failure, invalid value,
+  or negative value still invalidates the affected phase and fails Auto/Eco
+  closed; read failures preserve the last successful sample age.
+- Added hardware-free coverage for unchanged zero and nonzero currents,
+  per-phase read failure, invalid live values, and the orchestrator's direct
+  BusItem read contract. Charging limits, Manual ownership, no-grid behavior,
+  battery assist, phase mapping, and the public diagnostic paths are unchanged.
+
 ### Completed 2026-07-19 - Add Mandatory Per-Phase Site-Current Guard
 
 - Added mandatory Auto/Eco protection using the Victron system service's

@@ -490,6 +490,26 @@ class FroniusWattpilot (esESSService):
         setattr(self, "siteCurrent{0}Valid".format(phase), valid)
         setattr(self, "siteCurrent{0}UpdatedAt".format(phase), time.time())
 
+    def refreshSiteCurrentTelemetryHeartbeat(self):
+        """Refresh site-current liveness even when a D-Bus value is unchanged."""
+        for phase in ("L1", "L2", "L3"):
+            subscription = getattr(
+                self, "siteCurrent{0}Dbus".format(phase), None
+            )
+            if subscription is None:
+                continue
+
+            try:
+                success, value = self.readDbusSubscription(subscription)
+            except Exception:
+                success, value = False, None
+
+            if success:
+                subscription.value = value
+                self.recordSiteCurrentTelemetry(phase, value)
+            else:
+                setattr(self, "siteCurrent{0}Valid".format(phase), False)
+
     def onMqttMessage(self, client, userdata, msg):
         """Receive Wattpilot allowance and raw distributor-overhead updates."""
         topic = getattr(msg, "topic", None)
@@ -2605,6 +2625,7 @@ class FroniusWattpilot (esESSService):
 
     def refreshSiteCurrentGuard(self):
         """Refresh safety state before Auto/Eco state selection and commands."""
+        self.refreshSiteCurrentTelemetryHeartbeat()
         active = self.wattpilotReportsActiveCharge()
         decisions = {
             phase: self.siteCurrentDecision(phase, active)

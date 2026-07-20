@@ -1,5 +1,6 @@
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from tests import test_eco_pv_policy as eco_fixtures
 
@@ -82,6 +83,81 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         controller.wattpilot.set_start_stop.assert_called_once_with(
             self.fwp.WattpilotStartStop.Off
         )
+
+    def test_live_reads_refresh_unchanged_zero_and_nonzero_site_currents(self):
+        controller = self._controller()
+        self._set_site(controller, 0, 1.5, 0, 100)
+        for phase, value in zip(("L1", "L2", "L3"), (0, 1.5, 0)):
+            subscription = SimpleNamespace(value=value, phase=phase)
+            setattr(controller, "siteCurrent{0}Dbus".format(phase), subscription)
+
+        controller.readDbusSubscription = Mock(
+            side_effect=lambda subscription: (True, subscription.value)
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=200):
+            controller.refreshSiteCurrentTelemetryHeartbeat()
+            healthy = controller.siteCurrentTelemetryIsFresh(False)
+
+        self.assertTrue(healthy)
+        self.assertEqual(controller.siteCurrentL1Value, 0.0)
+        self.assertEqual(controller.siteCurrentL2Value, 1.5)
+        self.assertEqual(controller.siteCurrentL3Value, 0.0)
+        self.assertEqual(controller.siteCurrentL1UpdatedAt, 200)
+        self.assertEqual(controller.siteCurrentL2UpdatedAt, 200)
+        self.assertEqual(controller.siteCurrentL3UpdatedAt, 200)
+        self.assertEqual(controller.readDbusSubscription.call_count, 3)
+
+    def test_failed_live_read_invalidates_phase_and_preserves_last_sample_age(self):
+        controller = self._controller()
+        self._set_site(controller, 2, 3, 4, 100)
+        for phase, value in zip(("L1", "L2", "L3"), (2, 3, 4)):
+            setattr(
+                controller,
+                "siteCurrent{0}Dbus".format(phase),
+                SimpleNamespace(value=value, phase=phase),
+            )
+
+        controller.readDbusSubscription = Mock(
+            side_effect=lambda subscription: (
+                (False, None)
+                if subscription.phase == "L3"
+                else (True, subscription.value)
+            )
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=200):
+            controller.refreshSiteCurrentTelemetryHeartbeat()
+            healthy = controller.siteCurrentTelemetryIsFresh(False)
+
+        self.assertFalse(healthy)
+        self.assertTrue(controller.siteCurrentL1Valid)
+        self.assertTrue(controller.siteCurrentL2Valid)
+        self.assertFalse(controller.siteCurrentL3Valid)
+        self.assertEqual(controller.siteCurrentL1UpdatedAt, 200)
+        self.assertEqual(controller.siteCurrentL2UpdatedAt, 200)
+        self.assertEqual(controller.siteCurrentL3UpdatedAt, 100)
+
+    def test_successful_invalid_live_read_fails_closed(self):
+        controller = self._controller()
+        self._set_site(controller, 2, 3, 4, 100)
+        for phase, value in zip(("L1", "L2", "L3"), (2, -1, 4)):
+            setattr(
+                controller,
+                "siteCurrent{0}Dbus".format(phase),
+                SimpleNamespace(value=value),
+            )
+        controller.readDbusSubscription = Mock(
+            side_effect=lambda subscription: (True, subscription.value)
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=200):
+            controller.refreshSiteCurrentTelemetryHeartbeat()
+            healthy = controller.siteCurrentTelemetryIsFresh(False)
+
+        self.assertFalse(healthy)
+        self.assertFalse(controller.siteCurrentL2Valid)
+        self.assertEqual(controller.siteCurrentL2UpdatedAt, 200)
 
     def test_three_phase_start_falls_back_to_one_phase_when_another_phase_is_full(self):
         controller = self._controller()

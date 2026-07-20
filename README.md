@@ -781,7 +781,7 @@ or force-state commands.
 | [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. Must be within `6..32 A` and at least `MinCurrentPerPhase`; the controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
 | [FroniusWattpilot] | SiteMaxCurrent | Mandatory Auto/Eco whole-site limit applied independently to physical L1, L2, and L3. Must be within `6..100 A`. This protects the site supply calculation, not a shared downstream branch. | Integer (A) | 20 |
 | [FroniusWattpilot] | Charger1PhaseMapping | Physical site phase used by Wattpilot one-phase charging after any electrician-installed phase rotation. Allowed values are `L1`, `L2`, or `L3`. | String | L1 |
-| [FroniusWattpilot] | SiteCurrentFreshSeconds | Positive maximum age of whole-site L1/L2/L3 current and, during an active charge, Wattpilot phase-current telemetry. Missing or stale data fails Auto/Eco closed. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | SiteCurrentFreshSeconds | Positive maximum age of whole-site L1/L2/L3 current and, during an active charge, Wattpilot phase-current telemetry. Each guard pass live-reads the site-current paths, so valid unchanged values remain fresh; failed, missing, invalid, or stale data fails Auto/Eco closed. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | SiteCurrentRecoverySeconds | Non-negative continuous safe-headroom time before a stopped charge may restart or current may increase; increases then rise by 1 A per normal controller cycle. | Integer (seconds) | 30 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. Must be greater than `ThreePhasePvSurplusStopW`. The maintained 4500 W default is above the typical 3-phase 6 A electrical floor while matching observed Wattpilot-app-style behavior more closely than a very conservative 5000 W threshold. | Integer (W) | 4500 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStopW | PV threshold below which Auto/Eco falls back from 3 phases to 1 phase when one-phase charging is still supportable. Must be lower than `ThreePhasePvSurplusStartW`. | Integer (W) | 4100 |
@@ -853,6 +853,14 @@ therefore make the result conservative. Invalid, negative, missing, stale, or
 phase-uncertain data blocks starts and stops active Auto/Eco charging without a
 phase command. `AllowGridCharging`, battery assist, and PV/transition grace do
 not bypass this guard. Manual mode only reports these values.
+
+Venus D-Bus change notifications are not a liveness heartbeat: a valid current
+may remain exactly `0 A` or at another unchanged value for minutes without a
+new signal. Before each guard calculation, es-ESS therefore performs a live
+`GetValue` read for all three site-current paths. A successful read refreshes
+the sample timestamp even when the value is unchanged. A failed read
+invalidates that phase and preserves the age of its last received sample, so
+Auto/Eco still fails closed when the system service or path is unavailable.
 
 `SiteMaxCurrent=20` has no hidden margin and is not a replacement for the C20
 breaker. The controller normally reacts every five seconds, so short inrush or
@@ -1641,7 +1649,7 @@ The following D-Bus values are published on the existing
 | `/SiteCurrentLimit` | Integer | Configured physical per-phase site limit in amperes. |
 | `/Charger1PhaseMapping` | String | Physical site phase used for one-phase Wattpilot charging. |
 | `/SiteCurrentL1`, `/SiteCurrentL2`, `/SiteCurrentL3` | Number | Latest whole-site physical phase currents in amperes. |
-| `/SiteCurrentAgeL1`, `/SiteCurrentAgeL2`, `/SiteCurrentAgeL3` | Number | Age in seconds of each site-current sample, or `-1` before the first sample. |
+| `/SiteCurrentAgeL1`, `/SiteCurrentAgeL2`, `/SiteCurrentAgeL3` | Number | Age in seconds of each site-current sample or successful live-read heartbeat, or `-1` before the first sample. A failed live read preserves the prior sample age and marks telemetry unhealthy. |
 | `/SiteHeadroomL1`, `/SiteHeadroomL2`, `/SiteHeadroomL3` | Number | Calculated EV-current headroom after conservatively removing measured EV contribution. |
 | `/SiteAllowedCurrent` | Integer | Current site-headroom cap for the evaluated one- or three-phase mode. |
 | `/SiteLimitingPhase` | String | Physical phase that currently sets the cap. |

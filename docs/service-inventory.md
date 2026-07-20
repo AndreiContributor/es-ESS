@@ -163,12 +163,16 @@ the fail-closed native-controller boundary actionable without writing Wattpilot
 settings. A value of `-1` for either native setting means unavailable or
 malformed telemetry, not disabled.
 
-The Wattpilot EV-charger service also exposes retained D-Bus/main-MQTT
-diagnostics for `/SiteCurrentLimit`, `/Charger1PhaseMapping`, physical
-`/SiteCurrentL1..L3`, their sample ages and calculated headrooms,
-`/SiteAllowedCurrent`, `/SiteLimitingPhase`, telemetry health, blocked reason,
-and recovery elapsed time. These paths observe the controller-owned mandatory
-Auto/Eco guard; they do not create a second command owner.
+The Wattpilot EV-charger service also live-reads the subscribed physical
+site-current BusItems on each guard pass because unchanged D-Bus values do not
+emit a liveness signal. Successful unchanged reads refresh freshness; failed
+reads invalidate the affected phase and fail Auto/Eco closed. The service
+exposes retained D-Bus/main-MQTT diagnostics for `/SiteCurrentLimit`,
+`/Charger1PhaseMapping`, physical `/SiteCurrentL1..L3`, their sample ages and
+calculated headrooms, `/SiteAllowedCurrent`, `/SiteLimitingPhase`, telemetry
+health, blocked reason, and recovery elapsed time. These paths observe the
+controller-owned mandatory Auto/Eco guard; they do not create a second command
+owner.
 
 After the controller confirms that no vehicle is present, the runtime-status
 contract publishes `Stopped`, `/PhaseMode=0`, and

@@ -109,7 +109,9 @@ It owns:
   guard decisions to `WattpilotSafetyDecisions.py`.
 - Mandatory whole-site physical L1/L2/L3 current sampling, freshness,
   headroom enforcement, and diagnostics, delegating pure calculations to
-  `WattpilotSiteCurrentDecisions.py`.
+  `WattpilotSiteCurrentDecisions.py`. Each guard refresh live-reads the three
+  subscribed BusItem paths through the es-ESS D-Bus orchestrator so unchanged
+  valid values still provide a liveness heartbeat.
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
@@ -350,6 +352,12 @@ Future Wattpilot changes must preserve these invariants:
   currents for L1/L2/L3. An active charge also requires fresh Wattpilot `nrg`
   phase-current telemetry. Missing, stale, invalid, negative, or phase-uncertain
   data blocks starts and stops an active charge without a phase command.
+- D-Bus value-change callbacks are not site-current heartbeats because a valid
+  zero or nonzero current may remain unchanged. Every site-current guard pass
+  must perform a live `GetValue` read of all three physical phase paths. A
+  successful unchanged read refreshes receive time; a read failure invalidates
+  that phase without refreshing its last-sample timestamp and therefore fails
+  Auto/Eco closed.
 - One-phase charging subtracts measured EV current only from
   `Charger1PhaseMapping`. Three-phase charging subtracts the smallest measured
   EV phase current from all physical phases and receives one equal current

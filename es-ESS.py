@@ -1435,6 +1435,26 @@ class esESS:
     def publishDbusValue(self, sub:DbusSubscription, value):
         d(self, "Exporting dbus value: {0}{1} => {2}".format(sub.serviceName, sub.dbusPath, value))
         self._dbusMonitor.set_value(sub.serviceName, sub.dbusPath, value)
+
+    def readDbusSubscription(self, sub:DbusSubscription, timeout=1.0):
+        """Perform a live BusItem read instead of returning the monitor cache."""
+        monitor = getattr(self, "_dbusMonitor", None)
+        if monitor is None:
+            return False, None
+
+        try:
+            value = monitor.dbusConn.call_blocking(
+                sub.serviceName,
+                sub.dbusPath,
+                "com.victronenergy.BusItem",
+                "GetValue",
+                "",
+                [],
+                timeout=timeout,
+            )
+            return True, value
+        except Exception:
+            return False, None
     
     def _runThread(self, workerThread: WorkerThread):
         try:
