@@ -213,6 +213,25 @@ class ConfigContractTests(unittest.TestCase):
         self.assertEqual(set(documented), expected_keys)
         self.assertEqual(documented, {key: sample[key] for key in expected_keys})
 
+    def test_shelly_site_current_sample_section_is_complete(self):
+        config = configparser.ConfigParser()
+        config.optionxform = str
+        config.read(ROOT / "config.sample.ini", encoding="utf-8")
+
+        self.assertEqual(
+            set(config._sections["Shelly3EMSiteCurrent"]) - {"__name__"},
+            {
+                "Host",
+                "Username",
+                "Password",
+                "PollFrequencyMs",
+                "RequestTimeoutSeconds",
+                "PhaseA",
+                "PhaseB",
+                "PhaseC",
+            },
+        )
+
     def test_system_guide_wattpilot_examples_match_maintained_sample(self):
         sample = _sample_wattpilot_config()
         documented = _system_guide_wattpilot_examples()

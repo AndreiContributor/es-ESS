@@ -224,7 +224,7 @@ configuration value as `%%`.
 | [Common]                 | LogRetentionDays     | Number of local calendar days retained, including the active `current.log`. Must be greater than `0`. | Integer       | 10                           |
 | [Common]                 | NumberOfThreads      | Number of Threads to use. 3-XX depending on enabled service count.                                     | Integer       | 5                            |
 | [Common]                 | ServiceMessageCount  | Number of ServiceMessages to publish on Mqtt. See [Service Messages](#service-messages)                | Integer       | 20                           |
-| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 14                           |
+| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 15                           |
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
 | [Common]                 | BatteryMaxChargeInWh | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
@@ -783,6 +783,7 @@ or force-state commands.
 | [FroniusWattpilot]  | HibernateMode | When `false`, idle polling keeps the Wattpilot connection available. When `true`, es-ESS intentionally disconnects while no EV is connected and reconnects about every five minutes for a status probe, which can delay car detection. Remote mode changes through VRM are unsupported while disconnected; Scheduled is only a best-effort probe, not a supported keep-awake/control path. | Boolean  | false |
 | [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. Must be within `6..32 A`. | Integer (A) | 6 |
 | [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. Must be within `6..32 A` and at least `MinCurrentPerPhase`; the controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
+| [FroniusWattpilot] | SiteCurrentSource | Mandatory site-current provider. `VenusSystem` preserves the calculated Victron consumption-current source; `Shelly3EMGen3` selects the explicitly configured dedicated meter. The selected source never falls back automatically. | String | VenusSystem |
 | [FroniusWattpilot] | SiteMaxCurrent | Mandatory Auto/Eco whole-site limit in amperes, applied independently to physical L1, L2, and L3. Must be within `6..100 A`; the `20 A` default is not universal and must be configured for the site's protective device and wiring. This protects the site supply calculation, not a lower-rated downstream branch. | Integer (A per phase) | 20 |
 | [FroniusWattpilot] | Charger1PhaseMapping | Physical site phase used by Wattpilot one-phase charging after any electrician-installed phase rotation. Allowed values are `L1`, `L2`, or `L3`. | String | L1 |
 | [FroniusWattpilot] | SiteCurrentFreshSeconds | Positive maximum age of whole-site L1/L2/L3 current and, during an active charge, Wattpilot phase-current telemetry. Each guard pass live-reads the site-current paths, so valid unchanged values remain fresh; failed, missing, invalid, or stale data fails Auto/Eco closed. | Integer (seconds) | 15 |
@@ -813,6 +814,20 @@ or force-state commands.
 | [FroniusWattpilot] | ChargeCompleteConfirmSeconds | Time low EV power must remain below `ChargeCompletePowerThresholdW` before charge-complete hold starts. | Integer (seconds) | 300 |
 | [FroniusWattpilot] | ChargeCompleteResumePowerW | EV power above this value starts the confirmation for leaving charge-complete hold. | Number (W) | 300 |
 | [FroniusWattpilot] | ChargeCompleteResumeSeconds | Time EV power must remain above `ChargeCompleteResumePowerW` before charge-complete hold clears. | Integer (seconds) | 30 |
+
+The optional dedicated Shelly provider has its own section and is used only
+when `SiteCurrentSource=Shelly3EMGen3`:
+
+| Section | Value name | Description | Type | Example Value |
+| ------- | ---------- | ----------- | ---- | ------------- |
+| [Shelly3EMSiteCurrent] | Host | Local IP address or hostname without a scheme, path, or credentials. Required only when selected. | String | 192.0.2.40 |
+| [Shelly3EMSiteCurrent] | Username | Shelly digest-authentication user; Shelly requires `admin`. | String | admin |
+| [Shelly3EMSiteCurrent] | Password | Local device password. May be empty only when device authentication is disabled. | String | `<device password>` |
+| [Shelly3EMSiteCurrent] | PollFrequencyMs | Asynchronous RPC polling interval; must be at least 500 ms. | Integer (ms) | 1000 |
+| [Shelly3EMSiteCurrent] | RequestTimeoutSeconds | Bounded HTTP request timeout, greater than 0 and at most 10 seconds. | Number (seconds) | 2 |
+| [Shelly3EMSiteCurrent] | PhaseA | Physical site phase measured by Shelly channel A. | L1/L2/L3 | L1 |
+| [Shelly3EMSiteCurrent] | PhaseB | Physical site phase measured by Shelly channel B. | L1/L2/L3 | L2 |
+| [Shelly3EMSiteCurrent] | PhaseC | Physical site phase measured by Shelly channel C. The A/B/C mapping must be a permutation of L1/L2/L3. | L1/L2/L3 | L3 |
 
 ### Eco/PV policy
 
@@ -848,24 +863,27 @@ authority result. Exit records include the next status and observed duration.
 
 ### Auto/Eco telemetry fail-safe
 
-The mandatory site-current guard reads `/Ac/Consumption/L1/Current` through
-`/Ac/Consumption/L3/Current` from `com.victronenergy.system`. During an active
-charge it also requires recent Wattpilot `nrg` phase-current telemetry so the
-EV contribution can be removed from whole-site current. One-phase removal is
-applied to `Charger1PhaseMapping`. For three phases, the smallest measured
-Wattpilot phase current is removed from every physical phase; unequal readings
-therefore make the result conservative. Invalid, negative, missing, stale, or
+The mandatory site-current guard reads the explicitly selected provider.
+`VenusSystem` live-reads `/Ac/Consumption/L1/Current` through
+`/Ac/Consumption/L3/Current` from `com.victronenergy.system`.
+`Shelly3EMGen3` asynchronously reads a validated Gen3 `triphase` meter and maps
+its A/B/C channels to physical L1/L2/L3. During an active charge the guard also
+requires recent Wattpilot `nrg` phase-current telemetry so the EV contribution
+can be removed from whole-site current. One-phase removal is applied to
+`Charger1PhaseMapping`. For three phases, the smallest measured Wattpilot phase
+current is removed from every physical phase; unequal readings therefore make
+the result conservative. Invalid, negative, missing, stale, error-marked, or
 phase-uncertain data blocks starts and stops active Auto/Eco charging without a
 phase command. `AllowGridCharging`, battery assist, and PV/transition grace do
 not bypass this guard. Manual mode only reports these values.
 
 Venus D-Bus change notifications are not a liveness heartbeat: a valid current
 may remain exactly `0 A` or at another unchanged value for minutes without a
-new signal. Before each guard calculation, es-ESS therefore performs a live
-`GetValue` read for all three site-current paths. A successful read refreshes
-the sample timestamp even when the value is unchanged. A failed read
-invalidates that phase and preserves the age of its last received sample, so
-Auto/Eco still fails closed when the system service or path is unavailable.
+new signal. The Venus provider therefore performs a live `GetValue` read for
+all three paths before each guard calculation. The Shelly provider timestamps
+only a complete successful HTTP sample. A failed read invalidates the selected
+source while preserving the age of the last successful value, so Auto/Eco
+fails closed. There is no automatic fallback between providers.
 
 `SiteMaxCurrent` is expressed in amperes and applied independently to each
 physical phase. The `20 A` default is not a fixed product limit: configure it
@@ -1611,7 +1629,7 @@ Additionally there are the following configuration options available:
 | ---------- | ---------|---- | ------------- |--|
 | [Common]    | NumberOfThreads |  Number of threads, es-ESS should use. | int | 5 |
 | [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 20 |
-| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 14 |
+| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 15 |
 | [Common]    | HttpRequestTimeout | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers. | double | 5 |
 
 ### Service Messages
@@ -1681,6 +1699,13 @@ The following D-Bus values are published on the existing
 | `/GridImportGuardActive` | Integer | `1` while the Auto/Eco grid-import guard is active; otherwise `0`. |
 | `/TelemetryHealthy` | Integer | `1` when the telemetry needed for the current control mode is healthy; otherwise `0`. |
 | `/SiteCurrentLimit` | Integer | Configured physical per-phase site limit in amperes. |
+| `/SiteCurrentSource` | String | Selected provider: `VenusSystem` or `Shelly3EMGen3`. |
+| `/SiteCurrentSourceConnected` | Integer | `1` when the selected provider's latest read completed successfully. |
+| `/SiteCurrentSourceStatus` | String | Provider state such as `Initializing`, `Healthy`, `Unavailable`, or `Invalid`. |
+| `/SiteCurrentSourceError` | String | Sanitized current provider error, or an empty string while healthy. |
+| `/SiteCurrentSourceDeviceModel` | String | Validated external meter model when supplied by the provider. |
+| `/SiteCurrentSourceFirmware` | String | External meter firmware when supplied by the provider. |
+| `/SiteCurrentSourceLastSampleAge` | Number | Age of the oldest phase in the last successful provider sample, or `-1` before any success. |
 | `/Charger1PhaseMapping` | String | Physical site phase used for one-phase Wattpilot charging. |
 | `/SiteCurrentL1`, `/SiteCurrentL2`, `/SiteCurrentL3` | Number | Latest whole-site physical phase currents in amperes. |
 | `/SiteCurrentAgeL1`, `/SiteCurrentAgeL2`, `/SiteCurrentAgeL3` | Number | Age in seconds of each site-current sample or successful live-read heartbeat, or `-1` before the first sample. A failed live read preserves the prior sample age and marks telemetry unhealthy. |

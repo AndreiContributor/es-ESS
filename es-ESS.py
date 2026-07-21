@@ -632,6 +632,91 @@ class esESS:
                     site_max_current,
                 )
 
+            site_current_source = self.config[section].get(
+                "SiteCurrentSource", "VenusSystem"
+            ).strip()
+            if site_current_source not in ("VenusSystem", "Shelly3EMGen3"):
+                invalid(
+                    section,
+                    "SiteCurrentSource",
+                    "must be VenusSystem or Shelly3EMGen3",
+                    site_current_source,
+                )
+            elif site_current_source == "Shelly3EMGen3":
+                source_section = "Shelly3EMSiteCurrent"
+                if not self.config.has_section(source_section):
+                    invalid(
+                        source_section,
+                        "Host",
+                        "section is required when SiteCurrentSource=Shelly3EMGen3",
+                        "missing",
+                    )
+                else:
+                    host = self.config[source_section].get("Host", "").strip()
+                    if (
+                        not host
+                        or "://" in host
+                        or "@" in host
+                        or "/" in host
+                    ):
+                        invalid(
+                            source_section,
+                            "Host",
+                            "must be an IP address or hostname without scheme, path, or credentials",
+                            "<redacted invalid host>",
+                        )
+
+                    username = self.config[source_section].get(
+                        "Username", "admin"
+                    ).strip()
+                    if username != "admin":
+                        invalid(
+                            source_section,
+                            "Username",
+                            "must be admin for Shelly digest authentication",
+                            username,
+                        )
+
+                    poll_frequency = integer(
+                        source_section, "PollFrequencyMs", 1000
+                    )
+                    if poll_frequency is not None and poll_frequency < 500:
+                        invalid(
+                            source_section,
+                            "PollFrequencyMs",
+                            "must be greater than or equal to 500",
+                            poll_frequency,
+                        )
+
+                    request_timeout = number(
+                        source_section, "RequestTimeoutSeconds", 2
+                    )
+                    if request_timeout is not None and not 0 < request_timeout <= 10:
+                        invalid(
+                            source_section,
+                            "RequestTimeoutSeconds",
+                            "must be greater than 0 and less than or equal to 10",
+                            request_timeout,
+                        )
+
+                    source_mapping = [
+                        self.config[source_section].get(
+                            "Phase{0}".format(channel), default
+                        ).upper()
+                        for channel, default in (
+                            ("A", "L1"),
+                            ("B", "L2"),
+                            ("C", "L3"),
+                        )
+                    ]
+                    if sorted(source_mapping) != ["L1", "L2", "L3"]:
+                        invalid(
+                            source_section,
+                            "PhaseA/PhaseB/PhaseC",
+                            "must be a one-to-one permutation of L1, L2, and L3",
+                            ",".join(source_mapping),
+                        )
+
             one_phase_mapping = self.config[section].get(
                 "Charger1PhaseMapping", "L1"
             ).upper()
@@ -1235,6 +1320,27 @@ class esESS:
                 "BatteryAssistMaxShortfallPerPhaseW",
                 "1500",
             )
+
+        version = 15
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+            self._setConfigDefault(
+                "FroniusWattpilot", "SiteCurrentSource", "VenusSystem"
+            )
+            self._setConfigDefault("Shelly3EMSiteCurrent", "Host", "")
+            self._setConfigDefault("Shelly3EMSiteCurrent", "Username", "admin")
+            self._setConfigDefault("Shelly3EMSiteCurrent", "Password", "")
+            self._setConfigDefault(
+                "Shelly3EMSiteCurrent", "PollFrequencyMs", "1000"
+            )
+            self._setConfigDefault(
+                "Shelly3EMSiteCurrent", "RequestTimeoutSeconds", "2"
+            )
+            self._setConfigDefault("Shelly3EMSiteCurrent", "PhaseA", "L1")
+            self._setConfigDefault("Shelly3EMSiteCurrent", "PhaseB", "L2")
+            self._setConfigDefault("Shelly3EMSiteCurrent", "PhaseC", "L3")
 
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 
         if (loadedVersion < int(self.config["Common"]["ConfigVersion"])):

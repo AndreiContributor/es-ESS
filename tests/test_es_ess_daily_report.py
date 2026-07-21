@@ -466,6 +466,7 @@ NoBatToEV=false
 [FroniusWattpilot]
 MinCurrentPerPhase=6
 MaxCurrentPerPhase=16
+SiteCurrentSource=Shelly3EMGen3
 SiteMaxCurrent=20
 Charger1PhaseMapping=L1
 SiteCurrentFreshSeconds=15
@@ -492,6 +493,7 @@ StartupGraceSeconds=60
 
         self.assertEqual(warnings, [])
         self.assertEqual(settings.allowance_drop_grace_seconds, 30)
+        self.assertEqual(settings.site_current_source, "Shelly3EMGen3")
         self.assertNotIn("secret-value", json.dumps(AUDIT.asdict(settings)))
 
     def test_default_documentation_values_are_not_treated_as_service_flags(self):

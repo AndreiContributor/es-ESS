@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from tests import test_eco_pv_policy as eco_fixtures
+from WattpilotSiteCurrentSource import SiteCurrentSnapshot
 
 
 class WattpilotSiteCurrentGuardTests(unittest.TestCase):
@@ -158,6 +159,132 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         self.assertFalse(healthy)
         self.assertFalse(controller.siteCurrentL2Valid)
         self.assertEqual(controller.siteCurrentL2UpdatedAt, 200)
+
+    def test_selected_provider_supplies_normalized_site_current_snapshot(self):
+        controller = self._controller()
+        controller.siteCurrentSource = Mock()
+        controller.siteCurrentSource.read_sample.return_value = SiteCurrentSnapshot(
+            source="Shelly3EMGen3",
+            values={"L1": 1.0, "L2": 2.0, "L3": 3.0},
+            valid={"L1": True, "L2": True, "L3": True},
+            updated_at={"L1": 100.0, "L2": 100.0, "L3": 100.0},
+            connected=True,
+            status="Healthy",
+            device_model="S3EM-003CXCEU63",
+            firmware="1.7.0",
+        )
+
+        controller.refreshSiteCurrentTelemetryHeartbeat()
+
+        self.assertEqual(controller.siteCurrentL1Value, 1.0)
+        self.assertEqual(controller.siteCurrentL2Value, 2.0)
+        self.assertEqual(controller.siteCurrentL3Value, 3.0)
+        self.assertTrue(controller.siteCurrentSourceConnected)
+        self.assertEqual(controller.siteCurrentSourceName, "Shelly3EMGen3")
+        self.assertEqual(
+            controller.siteCurrentSourceDeviceModel, "S3EM-003CXCEU63"
+        )
+
+    def test_selected_provider_failure_never_falls_back_to_venus_subscriptions(self):
+        controller = self._controller()
+        self._set_site(controller, 1, 2, 3, 50)
+        controller.siteCurrentL1Dbus = SimpleNamespace(value=0)
+        controller.siteCurrentL2Dbus = SimpleNamespace(value=0)
+        controller.siteCurrentL3Dbus = SimpleNamespace(value=0)
+        controller.readDbusSubscription = Mock(return_value=(True, 0))
+        controller.siteCurrentSource = Mock()
+        controller.siteCurrentSource.read_sample.return_value = SiteCurrentSnapshot(
+            source="Shelly3EMGen3",
+            values={"L1": 1.0, "L2": 2.0, "L3": 3.0},
+            valid={"L1": False, "L2": False, "L3": False},
+            updated_at={"L1": 50.0, "L2": 50.0, "L3": 50.0},
+            connected=False,
+            status="Unavailable",
+            error="Shelly RPC request failed: Timeout",
+        )
+
+        controller.refreshSiteCurrentTelemetryHeartbeat()
+
+        self.assertFalse(controller.siteCurrentL1Valid)
+        self.assertFalse(controller.siteCurrentL2Valid)
+        self.assertFalse(controller.siteCurrentL3Valid)
+        self.assertEqual(controller.siteCurrentL1UpdatedAt, 50.0)
+        controller.readDbusSubscription.assert_not_called()
+
+    def test_shelly_selection_registers_no_consumption_or_grid_meter_source(self):
+        controller = self._controller()
+        controller.siteCurrentSourceName = "Shelly3EMGen3"
+        controller.config["Shelly3EMSiteCurrent"] = {
+            "Host": "192.0.2.40",
+            "Username": "admin",
+            "Password": "secret",
+            "PollFrequencyMs": "1000",
+            "RequestTimeoutSeconds": "2",
+            "PhaseA": "L3",
+            "PhaseB": "L1",
+            "PhaseC": "L2",
+        }
+        subscriptions = []
+
+        def register(service_name, dbus_path, **_kwargs):
+            subscriptions.append((service_name, dbus_path))
+            return SimpleNamespace(value=None)
+
+        controller.registerDbusSubscription = Mock(side_effect=register)
+        client = Mock()
+        source = Mock()
+
+        with patch.object(
+            self.fwp, "Shelly3EMGen3Client", return_value=client
+        ) as client_class, patch.object(
+            self.fwp, "Shelly3EMSiteCurrentSource", return_value=source
+        ) as source_class:
+            controller.initDbusSubscriptions()
+
+        self.assertIs(controller.siteCurrentSource, source)
+        self.assertFalse(
+            any(path.startswith("/Ac/Consumption/") for _service, path in subscriptions)
+        )
+        self.assertFalse(
+            any(service == "com.victronenergy.grid" for service, _path in subscriptions)
+        )
+        client_class.assert_called_once_with(
+            host="192.0.2.40",
+            username="admin",
+            password="secret",
+            timeout_seconds=2.0,
+        )
+        source_class.assert_called_once_with(
+            client=client,
+            phase_mapping={"A": "L3", "B": "L1", "C": "L2"},
+            poll_frequency_ms=1000,
+        )
+
+    def test_source_cleanup_failure_cannot_interrupt_auto_shutdown_stop(self):
+        controller = self._controller()
+        events = []
+        controller.wattpilot = Mock()
+        controller.wattpilot.connected = True
+        controller.wattpilot.set_start_stop.side_effect = (
+            lambda _state: events.append("stop")
+        )
+        controller.wattpilot.disconnect.side_effect = (
+            lambda: events.append("disconnect")
+        )
+        controller.siteCurrentSource = Mock()
+
+        def fail_cleanup():
+            events.append("source-close")
+            raise RuntimeError("cleanup failed")
+
+        controller.siteCurrentSource.close.side_effect = fail_cleanup
+
+        controller.handleSigterm()
+
+        self.assertEqual(events, ["stop", "disconnect", "source-close"])
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
 
     def test_three_phase_start_falls_back_to_one_phase_when_another_phase_is_full(self):
         controller = self._controller()

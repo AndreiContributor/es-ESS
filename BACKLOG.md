@@ -1562,9 +1562,21 @@ Use a correctly installed Shelly 3EM-63T Gen3 to provide direct, fresh
 physical L1/L2/L3 current measurements at the configured site-current
 measurement boundary for the mandatory Wattpilot Auto/Eco guard.
 
+Implementation status (2026-07-21):
+
+- Hardware-free implementation and regression coverage are complete on
+  `feature/wattpilot-per-phase-site-current-guard`.
+- Configuration version 15 preserves `SiteCurrentSource=VenusSystem` for
+  existing and migrated installations. The new source is never selected
+  automatically and never falls back silently to Venus data after selection.
+- The item remains open only for installation-dependent commissioning. Do not
+  select `Shelly3EMGen3` in production until the installed meter identity,
+  authentication, phase order, A/B/C-to-L1/L2/L3 mapping, polling reliability,
+  and fail-closed behavior have been verified from the GX device.
+
 Problem:
 
-The current guard reads calculated Venus system consumption currents. Live
+The default current source reads calculated Venus system consumption currents. Live
 commissioning showed those current values alternating between approximately
 4.5 A and 8.6 A while one-phase Wattpilot power remained near 1.33-1.37 kW and
 the charger reported approximately 5.8 A. That calculated source is therefore
@@ -1592,44 +1604,34 @@ Evidence:
   measurement input for software load management, not a replacement for the
   site's physical overcurrent protective device.
 
-Implementation:
+Implemented:
 
-- Do not start production implementation until the Shelly is installed at the
-  configured site-current measurement boundary and read-only captures prove
-  its model/generation, firmware, `triphase` profile, authentication state,
-  live `EM.GetStatus`, `EMData.GetStatus`, phase order, and physical
-  A/B/C-to-L1/L2/L3 mapping.
-- Add a bounded local Shelly Gen3 RPC client. Identify the device through the
-  unauthenticated `/shelly` endpoint, require the expected Gen3 model/profile,
-  poll `EM.GetStatus?id=0` for live current/voltage/power, and read
-  `EMData.GetStatus?id=0` only for diagnostic/reporting energy. When device
-  authentication is enabled, use Shelly's SHA-256 HTTP digest flow with user
-  `admin`; never embed credentials in URLs or logs.
-- Validate every required live phase value as finite and non-negative, reject
-  missing phases and meter/phase errors, and timestamp only a fully successful
-  upstream poll. A cached D-Bus `GetValue` must never refresh Shelly sample
-  freshness after the HTTP source has stopped updating.
-- Publish the meter through a dedicated es-ESS site-current boundary that
-  cannot be selected or aggregated by Venus as a second grid meter. Keep the
-  Fronius Smart Meter as the existing Venus/system grid meter and do not
-  change grid-setpoint ownership.
-- Add an explicit, validated Wattpilot site-current source selection and
-  physical phase mapping. The default/migrated configuration must preserve the
-  existing Venus-system source until the operator deliberately selects the
-  commissioned Shelly source.
-- Feed the Shelly source into the existing mandatory site-current decisions
-  without adding overload grace. Missing, invalid, error-marked, stale, or
-  unreachable Shelly data must fail Auto/Eco closed within the configured
-  freshness contract. Recovery must retain the existing stable delay and
-  1 A-per-cycle ramp.
-- Preserve Manual observation-only behavior, equal current on all active
-  three-phase conductors, the one-phase physical mapping, no-grid behavior,
-  battery-assist bounds, command ownership, and every existing public
-  Wattpilot diagnostic unless an explicitly documented source-status field is
-  added.
-- Keep this work on branch
-  `feature/wattpilot-per-phase-site-current-guard` after the physical meter is
-  installed and the prerequisite captures are reviewed.
+- Added a generic, command-free site-current provider contract with separate
+  Venus-system and Shelly Gen3 implementations. The Shelly provider is private
+  to Wattpilot and never registers a `com.victronenergy.grid` service, so the
+  Fronius Smart Meter and grid-setpoint ownership remain unchanged.
+- Added a bounded local Gen3 RPC client. It validates `/shelly` identity as the
+  expected Gen3 `S3EM-003CXCEU63` in `triphase` profile, supports HTTP digest
+  authentication with user `admin`, and polls `EM.GetStatus?id=0` for the live
+  A/B/C currents used by the guard. Credentials and response bodies are not
+  included in diagnostics.
+- Added explicit, validated source selection and A/B/C phase mapping. Existing
+  and migrated configurations remain on `VenusSystem`; selecting
+  `Shelly3EMGen3` requires a complete `[Shelly3EMSiteCurrent]` section.
+- Required all three Shelly currents to be finite, non-negative, and free of
+  component/phase errors before updating their shared successful-poll
+  timestamp. A failed poll invalidates all phases while preserving their age;
+  it cannot refresh from cached Venus D-Bus values or fall back to Venus.
+- Reused the existing mandatory current guard without overload grace. Missing,
+  invalid, error-marked, stale, or unreachable selected-source data blocks or
+  stops Auto/Eco; recovery retains the existing stable delay and 1 A-per-cycle
+  ramp. Manual behavior and every other charging safety boundary are unchanged.
+- Published source name, connection, state, sanitized error, device model,
+  firmware, and last-sample age through Wattpilot D-Bus diagnostics and the
+  maintained MQTT/runtime reporting, health-monitor, and daily-report paths.
+- Deliberately left energy-counter polling outside the safety-source runtime.
+  `EMData.GetStatus?id=0` remains a read-only commissioning/reporting capture,
+  not an input to instantaneous current protection.
 
 Files to change:
 
@@ -1651,29 +1653,30 @@ Files to add:
 
 - `Shelly3EMGen3Client.py`
 - `Shelly3EMSiteCurrent.py`
+- `WattpilotSiteCurrentSource.py`
 - `tests/test_shelly3em_gen3_client.py`
 - `tests/test_shelly3em_site_current.py`
 
 Tests:
 
-- Add hardware-free Gen3 RPC tests for unauthenticated and digest-authenticated
-  access, exact `triphase` field mapping, energy-unit conversion, timeout,
-  malformed/non-finite/negative values, missing phase fields, phase and device
-  errors, wrong model/generation/profile, recovery, and secret-safe logging.
-- Add source-service tests proving only complete successful polls update the
+- Added hardware-free Gen3 RPC tests for unauthenticated and digest-authenticated
+  access, exact `triphase` current mapping, timeout, malformed/non-finite/
+  negative values, missing phase fields, phase and device errors, wrong model/
+  generation/profile, recovery, host validation, and secret-safe errors.
+- Added source-provider tests proving only complete successful polls update the
   sample timestamp, repeated identical zero/nonzero values remain fresh, an
   HTTP outage cannot be hidden by cached D-Bus values, and failure publishes a
   disconnected/invalid source state without registering a competing grid
   meter.
-- Extend site-current guard tests for explicit source selection, A/B/C phase
+- Extended site-current guard tests for explicit source selection, A/B/C phase
   mapping, one- and three-phase headroom, stale/invalid/error fail-closed
   behavior, recovery delay/ramp, and configuration migration preserving the
   current source by default.
-- Add characterization tests proving Manual mode issues no command and the
+- Existing characterization tests continue proving Manual mode issues no command and the
   Shelly source cannot change grid-meter selection, grid-setpoint ownership,
   no-grid policy, battery assist, or command authority.
-- Keep all new test files compatible with `python -m unittest discover -s
-  tests`; no CI workflow change is expected.
+- All new test files remain compatible with `python -m unittest discover -s
+  tests`; no CI workflow change was required.
 
 Expected coverage:
 
@@ -1722,9 +1725,10 @@ Manual test steps:
 
 Risks and dependencies:
 
-- Blocked until the Shelly 3EM-63T Gen3 is physically installed at the
-  configured site-current measurement boundary and its live API/phase mapping
-  evidence is supplied.
+- Production activation is blocked until the Shelly 3EM-63T Gen3 is physically
+  installed at the configured site-current measurement boundary and its live
+  API/phase-mapping evidence is supplied. Implementation and deployment with
+  the default `VenusSystem` selection are not blocked.
 - Wi-Fi, digest-authentication compatibility on Venus OS `v3.75`, device
   firmware behavior, response cadence, and actual measurement latency require
   live validation; no API claim alone establishes breaker-protection timing.
@@ -1782,8 +1786,8 @@ After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
 1. P1 Integrate Shelly 3EM-63T Gen3 As The Dedicated Site-Current Source —
-   safety-critical source correction on the current branch, gated until the
-   meter is installed and live API/phase evidence is reviewed.
+   implementation complete; production selection and closure remain gated
+   until the meter is installed and live API/phase evidence is reviewed.
 
 ## Verification Plan
 
@@ -1805,7 +1809,7 @@ For implementation PRs:
 
 ## Outstanding Manual Validation
 
-Two implementation-stage commissioning checks remain. Do not force an
+Three implementation-stage commissioning checks remain. Do not force an
 overcurrent, force grid import, disconnect a production grid, interrupt
 critical telemetry, or alter the production energy system solely to exercise a
 safety branch.
@@ -1832,6 +1836,14 @@ safety branch.
   cycle. Return to Manual and confirm es-ESS remains observation-only. A
   naturally occurring stop below 6 A headroom may be recorded, but must not be
   created by intentionally overloading the site or a downstream branch.
+- Shelly source commissioning required after installation: retain read-only
+  `/shelly`, `EM.GetStatus?id=0`, and `EMData.GetStatus?id=0` captures from the
+  GX; verify the exact model/profile, digest authentication, A/B/C physical
+  mapping, and one-second poll reliability before selecting
+  `Shelly3EMGen3`. Then validate fresh source diagnostics, normal supervised
+  Auto/Eco limiting, source-loss fail-closed timing, delayed/ramped recovery,
+  Manual observation-only behavior, and that the Fronius meter remains the
+  sole Venus grid meter.
 - Log-only: capture the site-current diagnostic paths and health-monitor output
   before, during, and after the supervised session; confirm no command-boundary
   rejection, traceback, unintended grid charging, or battery-assist bypass of

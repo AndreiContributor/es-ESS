@@ -114,7 +114,7 @@ flag is set to `true`.
 | `TimeToGoCalculator` | `TimeToGoCalculator.py` | `[TimeToGoCalculator]`, `[Common]` | Calculates a diagnostic battery time-to-go estimate. | Reads Victron system battery power, SOC, and active SOC limit D-Bus paths; skips incomplete telemetry without publishing stale calculations, then publishes the estimate only to main MQTT. It does not write the system-owned `/Dc/Battery/TimeToGo` path or a battery-service `/TimeToGo` path. |
 | `FroniusSmartmeterJSON` | `FroniusSmartmeterJSON.py` | `[FroniusSmartmeterJSON]` | Exposes a Fronius smart meter as a Victron grid meter. | Polls the Fronius JSON API over HTTP and publishes a `com.victronenergy.grid` D-Bus service. |
 | `MqttExporter` | `MqttExporter.py` | `MqttExporter:*` | Exports selected D-Bus values to main MQTT. | Subscribes to configured D-Bus service/path pairs and republishes on configured MQTT topics on change or at 1 s, 10 s, or 60 s intervals. |
-| `FroniusWattpilot` | `FroniusWattpilot.py` | `[FroniusWattpilot]` | Integrates and controls a Fronius Wattpilot EV charger. | Owns Victron EV-charger D-Bus paths, including session energy/time compatibility paths and site-current diagnostics, Wattpilot WebSocket commands through `Wattpilot.py`, SolarOverheadDistributor requests, grid telemetry safety checks, mandatory physical L1/L2/L3 whole-site current protection through `WattpilotSiteCurrentDecisions.py`, read-only native `fup`/`ful` command-authority enforcement, runtime-status publication, and shutdown behavior. It supplies confirmed state to the command-free `WattpilotSessionStatistics.py` observer and logs transition records plus at most one APP_DEBUG checkpoint per connected minute; the observer has no D-Bus, MQTT, transport, or command access. The underlying `Wattpilot.py` client timestamps `nrg` current telemetry and owns a single worker reconnect loop for WebSocket outages. With `HibernateMode=true`, es-ESS intentionally disconnects while no EV is present; VRM mode changes are unsupported while disconnected, and Scheduled is only a best-effort status probe. See `docs/wattpilot-architecture.md` before changing it. |
+| `FroniusWattpilot` | `FroniusWattpilot.py` | `[FroniusWattpilot]`, `[Shelly3EMSiteCurrent]` | Integrates and controls a Fronius Wattpilot EV charger. | Owns Victron EV-charger D-Bus paths, including session energy/time compatibility paths and site-current diagnostics, Wattpilot WebSocket commands through `Wattpilot.py`, SolarOverheadDistributor requests, grid telemetry safety checks, and mandatory physical L1/L2/L3 whole-site current protection through an explicitly selected `VenusSystem` or `Shelly3EMGen3` provider plus `WattpilotSiteCurrentDecisions.py`. The Shelly provider is a private read-only input and never registers as a Victron grid meter. The service also owns read-only native `fup`/`ful` command-authority enforcement, runtime-status publication, and shutdown behavior. It supplies confirmed state to the command-free `WattpilotSessionStatistics.py` observer and logs transition records plus at most one APP_DEBUG checkpoint per connected minute; the observer has no D-Bus, MQTT, transport, or command access. The underlying `Wattpilot.py` client timestamps `nrg` current telemetry and owns a single worker reconnect loop for WebSocket outages. With `HibernateMode=true`, es-ESS intentionally disconnects while no EV is present; VRM mode changes are unsupported while disconnected, and Scheduled is only a best-effort status probe. See `docs/wattpilot-architecture.md` before changing it. |
 | `MqttTemperature` | `MqttTemperature.py` | `MqttTemperature:*` | Exposes MQTT temperature sensors in VRM/D-Bus. | Subscribes to configured MQTT value, humidity, and pressure topics; publishes one `com.victronenergy.temperature` D-Bus service per configured sensor. |
 | `NoBatToEV` | `NoBatToEV.py` | `[NoBatToEV]`, `[Common]` | Offloads EV load to grid-setpoint requests so an AC-out EV charge does not drain the home battery. | Reads Victron system consumption, PV, phase-count, optional relay, and EV-charger power data; registers or revokes shared grid-setpoint requests through the es-ESS runtime. |
 | `Shelly3EMGrid` | `Shelly3EMGrid.py` | `[Shelly3EMGrid]` | Exposes a Shelly 3EM as a Victron grid meter. | Polls the Shelly HTTP status API and publishes a `com.victronenergy.grid` D-Bus service; net-meter counters use atomic persistence, corrupt-value recovery, and exclude unknown failed-poll intervals. |
@@ -163,16 +163,17 @@ the fail-closed native-controller boundary actionable without writing Wattpilot
 settings. A value of `-1` for either native setting means unavailable or
 malformed telemetry, not disabled.
 
-The Wattpilot EV-charger service also live-reads the subscribed physical
-site-current BusItems on each guard pass because unchanged D-Bus values do not
-emit a liveness signal. Successful unchanged reads refresh freshness; failed
-reads invalidate the affected phase and fail Auto/Eco closed. The service
-exposes retained D-Bus/main-MQTT diagnostics for `/SiteCurrentLimit`,
-`/Charger1PhaseMapping`, physical `/SiteCurrentL1..L3`, their sample ages and
-calculated headrooms, `/SiteAllowedCurrent`, `/SiteLimitingPhase`, telemetry
-health, blocked reason, and recovery elapsed time. These paths observe the
-controller-owned mandatory Auto/Eco guard; they do not create a second command
-owner.
+The Wattpilot EV-charger service consumes one explicitly selected site-current
+provider. `VenusSystem` live-reads the subscribed physical site-current
+BusItems because unchanged D-Bus values do not emit a liveness signal.
+`Shelly3EMGen3` polls local RPC asynchronously and updates freshness only for a
+complete validated sample. Failed reads invalidate the selected source without
+automatic fallback. The service exposes retained D-Bus/main-MQTT diagnostics
+for source identity/health, `/SiteCurrentLimit`, `/Charger1PhaseMapping`,
+physical `/SiteCurrentL1..L3`, their sample ages and calculated headrooms,
+`/SiteAllowedCurrent`, `/SiteLimitingPhase`, telemetry health, blocked reason,
+and recovery elapsed time. These paths observe the controller-owned mandatory
+Auto/Eco guard; they do not create a second command owner or grid meter.
 
 The same EV-charger service exposes phase-aware battery-assist diagnostics at
 `/BatteryAssist/Shortfall`, `/BatteryAssist/ShortfallPerPhase`,
@@ -213,8 +214,10 @@ Services consume Victron system state through `DbusSubscription` registered via
 - `MqttPVInverter` reads consumption, phase count, SOC, and PV-disabled state
   for optional inverter control.
 - `FroniusWattpilot` reads `com.victronenergy.system`
-  `/Ac/Consumption/L1/Current` through `/Ac/Consumption/L3/Current` for its
-  mandatory physical per-phase Auto/Eco site-current guard.
+  `/Ac/Consumption/L1/Current` through `/Ac/Consumption/L3/Current` when its
+  mandatory site-current source is `VenusSystem`. When `Shelly3EMGen3` is
+  selected, the dedicated HTTP provider supplies those physical phase values
+  instead and the Venus consumption-current subscriptions are not registered.
 - Dormant `ChargeCurrentReducer` reads battery, grid voltage, and CGwacs
   setpoint paths.
 
@@ -249,6 +252,9 @@ feed the same threshold; one transient failure retains the current debounce:
 
 - `FroniusSmartmeterJSON` polls the Fronius inverter meter JSON API.
 - `Shelly3EMGrid` polls the Shelly 3EM `/status` endpoint.
+- The private Wattpilot `Shelly3EMGen3` provider identifies the expected device
+  through `/shelly` and polls `/rpc/EM.GetStatus?id=0` with a bounded timeout
+  and optional digest authentication. It does not publish a D-Bus grid meter.
 - `ShellyPMInverter` polls Shelly Gen2 `Switch.GetStatus` RPC endpoints.
 - `SolarOverheadDistributor` can call configured HTTP consumer control,
   status, and power URLs with `[Common] HttpRequestTimeout`.

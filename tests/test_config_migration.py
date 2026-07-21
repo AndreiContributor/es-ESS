@@ -203,7 +203,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "14")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "15")
         self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["Common"]["GridSetPointMinW"], "0")
@@ -224,6 +224,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 "config.ini.v11.backup",
                 "config.ini.v12.backup",
                 "config.ini.v13.backup",
+                "config.ini.v14.backup",
                 "config.ini.v6.backup",
                 "config.ini.v7.backup",
                 "config.ini.v8.backup",
@@ -242,7 +243,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "14")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "15")
         self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["NoBatToEV"]["UseRelay"], "-1")
@@ -273,7 +274,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "14")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "15")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["Services"]["Shelly3EMGrid"], "true")
         self.assertEqual(migrated["Services"]["ShellyPMInverter"], "true")
@@ -296,7 +297,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "14")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "15")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "12")
 
     def test_version_10_removes_obsolete_phase_switch_delay(self):
@@ -312,7 +313,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "14")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "15")
         self.assertEqual(
             migrated["FroniusWattpilot"]["MinPhaseSwitchSeconds"], "600"
         )
@@ -326,6 +327,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 "config.ini.v11.backup",
                 "config.ini.v12.backup",
                 "config.ini.v13.backup",
+                "config.ini.v14.backup",
                 "config.ini.v9.backup",
             ],
         )
@@ -343,7 +345,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "14")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "15")
         self.assertEqual(migrated["Common"]["GridSetPointMinW"], "-50")
         self.assertEqual(migrated["Common"]["GridSetPointMaxW"], "-50")
         self.assertEqual(migrated["Mqtt"]["SslVerification"], "Insecure")
@@ -356,6 +358,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 "config.ini.v11.backup",
                 "config.ini.v12.backup",
                 "config.ini.v13.backup",
+                "config.ini.v14.backup",
             ],
         )
 
@@ -368,7 +371,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "14")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "15")
         self.assertEqual(migrated["Common"]["LogLevel"], "APP_DEBUG")
         self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
         self.assertEqual(
@@ -377,6 +380,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 "config.ini.v11.backup",
                 "config.ini.v12.backup",
                 "config.ini.v13.backup",
+                "config.ini.v14.backup",
             ],
         )
 
@@ -402,7 +406,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "14")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "15")
         self.assertEqual(migrated["FroniusWattpilot"]["SiteMaxCurrent"], "20")
         self.assertEqual(
             migrated["FroniusWattpilot"]["Charger1PhaseMapping"], "L1"
@@ -414,7 +418,12 @@ class ConfigMigrationTests(unittest.TestCase):
             migrated["FroniusWattpilot"]["SiteCurrentRecoverySeconds"], "30"
         )
         self.assertEqual(
-            backups, ["config.ini.v12.backup", "config.ini.v13.backup"]
+            backups,
+            [
+                "config.ini.v12.backup",
+                "config.ini.v13.backup",
+                "config.ini.v14.backup",
+            ],
         )
 
     def test_version_13_preserves_existing_site_current_values(self):
@@ -449,12 +458,42 @@ class ConfigMigrationTests(unittest.TestCase):
         )
 
         wattpilot = migrated["FroniusWattpilot"]
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "14")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "15")
         self.assertNotIn("BatteryAssistMaxShortfallW", wattpilot)
         self.assertEqual(
             wattpilot["BatteryAssistMaxShortfallPerPhaseW"], "1500"
         )
-        self.assertEqual(backups, ["config.ini.v13.backup"])
+        self.assertEqual(
+            backups, ["config.ini.v13.backup", "config.ini.v14.backup"]
+        )
+
+    def test_version_15_adds_extensible_site_current_source_defaults(self):
+        migrated, backups = self._run_migration(
+            """
+            [Common]
+            ConfigVersion=14
+
+            [FroniusWattpilot]
+            SiteMaxCurrent=25
+            """
+        )
+
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "15")
+        self.assertEqual(
+            migrated["FroniusWattpilot"]["SiteCurrentSource"],
+            "VenusSystem",
+        )
+        shelly = migrated["Shelly3EMSiteCurrent"]
+        self.assertEqual(shelly["Host"], "")
+        self.assertEqual(shelly["Username"], "admin")
+        self.assertEqual(shelly["Password"], "")
+        self.assertEqual(shelly["PollFrequencyMs"], "1000")
+        self.assertEqual(shelly["RequestTimeoutSeconds"], "2")
+        self.assertEqual(
+            [shelly["PhaseA"], shelly["PhaseB"], shelly["PhaseC"]],
+            ["L1", "L2", "L3"],
+        )
+        self.assertEqual(backups, ["config.ini.v14.backup"])
 
 
 class LoggingConfigurationTests(unittest.TestCase):
@@ -718,6 +757,84 @@ class ConfigValueValidationTests(unittest.TestCase):
         app = self._app_with_sample_config()
 
         app._validateRuntimeBootstrap()
+
+    def test_valid_shelly_site_current_source_configuration_passes(self):
+        app = self._app_with_sample_config()
+        app.config["FroniusWattpilot"]["SiteCurrentSource"] = "Shelly3EMGen3"
+        shelly = app.config["Shelly3EMSiteCurrent"]
+        shelly["Host"] = "192.0.2.40"
+        shelly["PhaseA"] = "L3"
+        shelly["PhaseB"] = "L1"
+        shelly["PhaseC"] = "L2"
+
+        app._validateConfigValues()
+
+    def test_invalid_site_current_source_name_is_rejected(self):
+        app = self._app_with_sample_config()
+        app.config["FroniusWattpilot"]["SiteCurrentSource"] = "Automatic"
+
+        with patch.object(self.es_ess, "c") as critical:
+            with self.assertRaises(SystemExit):
+                app._validateConfigValues()
+
+        self.assertIn("SiteCurrentSource", critical.call_args.args[1])
+
+    def test_selected_shelly_source_requires_valid_connection_and_mapping(self):
+        cases = (
+            ("Host", ""),
+            ("Host", "http://192.0.2.40"),
+            ("Username", "operator"),
+            ("PollFrequencyMs", "499"),
+            ("RequestTimeoutSeconds", "0"),
+            ("RequestTimeoutSeconds", "11"),
+            ("PhaseC", "L2"),
+        )
+        for key, value in cases:
+            with self.subTest(key=key, value=value):
+                app = self._app_with_sample_config()
+                app.config["FroniusWattpilot"][
+                    "SiteCurrentSource"
+                ] = "Shelly3EMGen3"
+                shelly = app.config["Shelly3EMSiteCurrent"]
+                shelly["Host"] = "192.0.2.40"
+                if key == "PhaseC":
+                    shelly["PhaseA"] = "L1"
+                    shelly["PhaseB"] = "L2"
+                shelly[key] = value
+
+                with patch.object(self.es_ess, "c") as critical:
+                    with self.assertRaises(SystemExit):
+                        app._validateConfigValues()
+
+                self.assertIn(key.split("/")[0], critical.call_args.args[1])
+
+    def test_selected_shelly_source_requires_provider_section(self):
+        app = self._app_with_sample_config()
+        app.config["FroniusWattpilot"]["SiteCurrentSource"] = "Shelly3EMGen3"
+        app.config.remove_section("Shelly3EMSiteCurrent")
+
+        with patch.object(self.es_ess, "c") as critical:
+            with self.assertRaises(SystemExit):
+                app._validateConfigValues()
+
+        self.assertIn("Shelly3EMSiteCurrent", critical.call_args.args[1])
+
+    def test_invalid_shelly_host_credentials_are_not_logged(self):
+        app = self._app_with_sample_config()
+        app.config["FroniusWattpilot"]["SiteCurrentSource"] = (
+            "Shelly3EMGen3"
+        )
+        app.config["Shelly3EMSiteCurrent"]["Host"] = (
+            "admin:super-secret@192.0.2.40"
+        )
+
+        with patch.object(self.es_ess, "c") as critical:
+            with self.assertRaises(SystemExit):
+                app._validateConfigValues()
+
+        message = critical.call_args.args[1]
+        self.assertIn("<redacted invalid host>", message)
+        self.assertNotIn("super-secret", message)
 
     def test_runtime_bootstrap_aggregates_missing_structure(self):
         app = self._app_with_sample_config()

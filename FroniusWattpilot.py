@@ -24,7 +24,10 @@ import WattpilotDecisionInputs as DecisionInputs
 import WattpilotPhaseDecisions as PhaseDecisions
 import WattpilotSafetyDecisions as SafetyDecisions
 import WattpilotSiteCurrentDecisions as SiteCurrentDecisions
+from Shelly3EMGen3Client import Shelly3EMGen3Client
+from Shelly3EMSiteCurrent import Shelly3EMSiteCurrentSource
 from WattpilotSessionStatistics import SessionSample, WattpilotSessionStatistics
+from WattpilotSiteCurrentSource import VenusSystemSiteCurrentSource
 import RuntimeCompatibility
 from Wattpilot import Wattpilot
 from enums import WattpilotModelStatus, WattpilotStartStop, WattpilotControlMode, VrmEvChargerControlMode, VrmEvChargerStatus, VrmEvChargerStartStop
@@ -90,6 +93,9 @@ class FroniusWattpilot (esESSService):
             self.minCurrentPerPhase, int(settings.get("MaxCurrentPerPhase", 16))
         )
         self.siteMaxCurrent = int(settings.get("SiteMaxCurrent", 20))
+        self.siteCurrentSourceName = settings.get(
+            "SiteCurrentSource", "VenusSystem"
+        )
         self.charger1PhaseMapping = settings.get(
             "Charger1PhaseMapping", "L1"
         ).upper()
@@ -308,6 +314,13 @@ class FroniusWattpilot (esESSService):
         self.siteCurrentL1Dbus = None
         self.siteCurrentL2Dbus = None
         self.siteCurrentL3Dbus = None
+        self.siteCurrentSource = None
+        self.siteCurrentSourceConnected = False
+        self.siteCurrentSourceStatus = "Initializing"
+        self.siteCurrentSourceError = ""
+        self.siteCurrentSourceDeviceModel = ""
+        self.siteCurrentSourceFirmware = ""
+        self.siteCurrentSourceLastSampleAt = 0
         for phase in ("L1", "L2", "L3"):
             setattr(self, "siteCurrent{0}Value".format(phase), None)
             setattr(self, "siteCurrent{0}Valid".format(phase), False)
@@ -390,6 +403,19 @@ class FroniusWattpilot (esESSService):
         self.dbusService.add_path('/ChargeComplete/ResumeElapsed', 0)
         self.dbusService.add_path('/GridImport', 0)
         self.dbusService.add_path('/SiteCurrentLimit', self.siteMaxCurrent)
+        self.dbusService.add_path(
+            '/SiteCurrentSource',
+            getattr(self, "siteCurrentSourceName", "VenusSystem"),
+        )
+        self.dbusService.add_path('/SiteCurrentSourceConnected', 0)
+        self.dbusService.add_path(
+            '/SiteCurrentSourceStatus',
+            getattr(self, "siteCurrentSourceStatus", "Initializing"),
+        )
+        self.dbusService.add_path('/SiteCurrentSourceError', '')
+        self.dbusService.add_path('/SiteCurrentSourceDeviceModel', '')
+        self.dbusService.add_path('/SiteCurrentSourceFirmware', '')
+        self.dbusService.add_path('/SiteCurrentSourceLastSampleAge', -1)
         self.dbusService.add_path('/Charger1PhaseMapping', self.charger1PhaseMapping)
         for phase in ("L1", "L2", "L3"):
             self.dbusService.add_path('/SiteCurrent{0}'.format(phase), 0)
@@ -427,21 +453,54 @@ class FroniusWattpilot (esESSService):
             "com.victronenergy.system", "/Ac/Grid/L3/Power",
             callback=self.onGridL3Telemetry
         )
-        self.siteCurrentL1Dbus = self.registerDbusSubscription(
-            "com.victronenergy.system", "/Ac/Consumption/L1/Current",
-            callback=self.onSiteCurrentL1Telemetry,
-            initialValueDefault=None,
+        site_current_source_name = getattr(
+            self, "siteCurrentSourceName", "VenusSystem"
         )
-        self.siteCurrentL2Dbus = self.registerDbusSubscription(
-            "com.victronenergy.system", "/Ac/Consumption/L2/Current",
-            callback=self.onSiteCurrentL2Telemetry,
-            initialValueDefault=None,
-        )
-        self.siteCurrentL3Dbus = self.registerDbusSubscription(
-            "com.victronenergy.system", "/Ac/Consumption/L3/Current",
-            callback=self.onSiteCurrentL3Telemetry,
-            initialValueDefault=None,
-        )
+        if site_current_source_name == "VenusSystem":
+            self.siteCurrentL1Dbus = self.registerDbusSubscription(
+                "com.victronenergy.system", "/Ac/Consumption/L1/Current",
+                callback=self.onSiteCurrentL1Telemetry,
+                initialValueDefault=None,
+            )
+            self.siteCurrentL2Dbus = self.registerDbusSubscription(
+                "com.victronenergy.system", "/Ac/Consumption/L2/Current",
+                callback=self.onSiteCurrentL2Telemetry,
+                initialValueDefault=None,
+            )
+            self.siteCurrentL3Dbus = self.registerDbusSubscription(
+                "com.victronenergy.system", "/Ac/Consumption/L3/Current",
+                callback=self.onSiteCurrentL3Telemetry,
+                initialValueDefault=None,
+            )
+            self.siteCurrentSource = VenusSystemSiteCurrentSource(
+                {
+                    "L1": self.siteCurrentL1Dbus,
+                    "L2": self.siteCurrentL2Dbus,
+                    "L3": self.siteCurrentL3Dbus,
+                },
+                lambda subscription: self.readDbusSubscription(subscription),
+            )
+        elif site_current_source_name == "Shelly3EMGen3":
+            source_settings = self.config["Shelly3EMSiteCurrent"]
+            client = Shelly3EMGen3Client(
+                host=source_settings["Host"],
+                username=source_settings.get("Username", "admin"),
+                password=source_settings.get("Password", ""),
+                timeout_seconds=float(
+                    source_settings.get("RequestTimeoutSeconds", 2)
+                ),
+            )
+            self.siteCurrentSource = Shelly3EMSiteCurrentSource(
+                client=client,
+                phase_mapping={
+                    "A": source_settings.get("PhaseA", "L1").upper(),
+                    "B": source_settings.get("PhaseB", "L2").upper(),
+                    "C": source_settings.get("PhaseC", "L3").upper(),
+                },
+                poll_frequency_ms=int(
+                    source_settings.get("PollFrequencyMs", 1000)
+                ),
+            )
         self.overheadAvailableDbus = self.registerDbusSubscription(
             "com.victronenergy.settings.esESS_SolarOverheadDistributor",
             "/Calculations/OverheadAvailable"
@@ -508,6 +567,47 @@ class FroniusWattpilot (esESSService):
 
     def refreshSiteCurrentTelemetryHeartbeat(self):
         """Refresh site-current liveness even when a D-Bus value is unchanged."""
+        source = getattr(self, "siteCurrentSource", None)
+        if source is not None:
+            try:
+                sample = source.read_sample()
+            except Exception as ex:
+                for phase in ("L1", "L2", "L3"):
+                    setattr(self, "siteCurrent{0}Valid".format(phase), False)
+                self.siteCurrentSourceConnected = False
+                self.siteCurrentSourceStatus = "Invalid"
+                self.siteCurrentSourceError = (
+                    "Site-current source read failed: {0}".format(
+                        ex.__class__.__name__
+                    )
+                )
+                return
+
+            for phase in ("L1", "L2", "L3"):
+                setattr(
+                    self,
+                    "siteCurrent{0}Value".format(phase),
+                    sample.values.get(phase),
+                )
+                setattr(
+                    self,
+                    "siteCurrent{0}Valid".format(phase),
+                    bool(sample.valid.get(phase, False)),
+                )
+                setattr(
+                    self,
+                    "siteCurrent{0}UpdatedAt".format(phase),
+                    sample.updated_at.get(phase, 0),
+                )
+            self.siteCurrentSourceName = sample.source
+            self.siteCurrentSourceConnected = sample.connected
+            self.siteCurrentSourceStatus = sample.status
+            self.siteCurrentSourceError = sample.error
+            self.siteCurrentSourceDeviceModel = sample.device_model
+            self.siteCurrentSourceFirmware = sample.firmware
+            self.siteCurrentSourceLastSampleAt = sample.last_sample_at
+            return
+
         for phase in ("L1", "L2", "L3"):
             subscription = getattr(
                 self, "siteCurrent{0}Dbus".format(phase), None
@@ -555,6 +655,10 @@ class FroniusWattpilot (esESSService):
             )
 
     def initWorkerThreads(self):
+        source = getattr(self, "siteCurrentSource", None)
+        interval = getattr(source, "worker_interval_ms", None)
+        if interval is not None:
+            self.registerWorkerThread(source.poll, interval)
         self.registerWorkerThread(self._update, 5000)
 
     def signOfLive(self):
@@ -3336,6 +3440,36 @@ class FroniusWattpilot (esESSService):
         siteTelemetryHealthy = self.siteCurrentTelemetryIsFresh()
         sitePaths = {
             "/SiteCurrentLimit": self.siteMaxCurrent,
+            "/SiteCurrentSource": getattr(
+                self, "siteCurrentSourceName", "VenusSystem"
+            ),
+            "/SiteCurrentSourceConnected": int(
+                getattr(self, "siteCurrentSourceConnected", False)
+            ),
+            "/SiteCurrentSourceStatus": getattr(
+                self, "siteCurrentSourceStatus", "Initializing"
+            ),
+            "/SiteCurrentSourceError": getattr(
+                self, "siteCurrentSourceError", ""
+            ),
+            "/SiteCurrentSourceDeviceModel": getattr(
+                self, "siteCurrentSourceDeviceModel", ""
+            ),
+            "/SiteCurrentSourceFirmware": getattr(
+                self, "siteCurrentSourceFirmware", ""
+            ),
+            "/SiteCurrentSourceLastSampleAge": (
+                round(
+                    max(
+                        0,
+                        now
+                        - getattr(self, "siteCurrentSourceLastSampleAt", 0),
+                    ),
+                    1,
+                )
+                if getattr(self, "siteCurrentSourceLastSampleAt", 0) > 0
+                else -1
+            ),
             "/Charger1PhaseMapping": self.charger1PhaseMapping,
             "/SiteAllowedCurrent": int(self.siteCurrentAllowedCurrent),
             "/SiteLimitingPhase": self.siteCurrentLimitingPhase,
@@ -4213,3 +4347,15 @@ class FroniusWattpilot (esESSService):
 
         self.wattpilot._auto_reconnect = False
         self.wattpilot.disconnect()
+        source = getattr(self, "siteCurrentSource", None)
+        close_source = getattr(source, "close", None)
+        if callable(close_source):
+            try:
+                close_source()
+            except Exception as ex:
+                w(
+                    self,
+                    "Site-current source cleanup failed: {0}.".format(
+                        ex.__class__.__name__
+                    ),
+                )

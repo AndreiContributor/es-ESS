@@ -90,6 +90,13 @@ SNAPSHOT_DBUS_PATHS = (
     "/GridImportGuardActive",
     "/TelemetryHealthy",
     "/SiteCurrentLimit",
+    "/SiteCurrentSource",
+    "/SiteCurrentSourceConnected",
+    "/SiteCurrentSourceStatus",
+    "/SiteCurrentSourceError",
+    "/SiteCurrentSourceDeviceModel",
+    "/SiteCurrentSourceFirmware",
+    "/SiteCurrentSourceLastSampleAge",
     "/Charger1PhaseMapping",
     "/SiteCurrentL1",
     "/SiteCurrentL2",
@@ -323,6 +330,7 @@ class AuditSettings:
     min_current_per_phase: int = 6
     max_current_per_phase: int = 16
     site_max_current: int = 20
+    site_current_source: str = "VenusSystem"
     charger_one_phase_mapping: str = "L1"
     site_current_fresh_seconds: int = 15
     site_current_recovery_seconds: int = 30
@@ -937,6 +945,9 @@ def load_settings(path: Path) -> tuple[AuditSettings, list[str]]:
         min_current_per_phase=_get_int(parser, section, "MinCurrentPerPhase", 6, warnings),
         max_current_per_phase=_get_int(parser, section, "MaxCurrentPerPhase", 16, warnings),
         site_max_current=_get_int(parser, section, "SiteMaxCurrent", 20, warnings),
+        site_current_source=parser.get(
+            section, "SiteCurrentSource", fallback="VenusSystem"
+        ),
         charger_one_phase_mapping=parser.get(
             section, "Charger1PhaseMapping", fallback="L1"
         ).upper(),
@@ -3378,7 +3389,8 @@ def render_human(result: AuditResult) -> str:
         f"EnabledServices={','.join(result.configuration.enabled_services) or 'unavailable'}",
         f"Current={result.configuration.min_current_per_phase}.."
         f"{result.configuration.max_current_per_phase} A per phase",
-        f"SiteCurrent={result.configuration.site_max_current} A per physical phase; "
+        f"SiteCurrentSource={result.configuration.site_current_source}; "
+        f"limit={result.configuration.site_max_current} A per physical phase; "
         f"1-phase={result.configuration.charger_one_phase_mapping}; "
         f"fresh/recovery={result.configuration.site_current_fresh_seconds}/"
         f"{result.configuration.site_current_recovery_seconds} s",

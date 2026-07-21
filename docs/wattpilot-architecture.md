@@ -115,10 +115,12 @@ It owns:
   telemetry freshness checks to `WattpilotDecisionInputs.py` and grid-import
   guard decisions to `WattpilotSafetyDecisions.py`.
 - Mandatory whole-site physical L1/L2/L3 current sampling, freshness,
-  headroom enforcement, and diagnostics, delegating pure calculations to
-  `WattpilotSiteCurrentDecisions.py`. Each guard refresh live-reads the three
-  subscribed BusItem paths through the es-ESS D-Bus orchestrator so unchanged
-  valid values still provide a liveness heartbeat.
+  headroom enforcement, and diagnostics. `WattpilotSiteCurrentSource.py`
+  normalizes the explicitly selected provider, `Shelly3EMSiteCurrent.py` owns
+  the asynchronous Shelly snapshot, and pure calculations remain delegated to
+  `WattpilotSiteCurrentDecisions.py`. The default Venus provider live-reads the
+  three subscribed BusItems; the Shelly provider timestamps only a complete
+  successful RPC sample. There is no automatic provider fallback.
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
@@ -305,6 +307,25 @@ It must not sample telemetry, store timestamps, publish status, decide command
 ownership, or issue Wattpilot commands. Those mutable and side-effect
 responsibilities remain in `FroniusWattpilot.py`.
 
+### Site-current providers
+
+`WattpilotSiteCurrentSource.py` defines the normalized, command-free provider
+snapshot and the default `VenusSystem` implementation. The Venus provider
+live-reads all three configured D-Bus subscriptions and preserves the previous
+timestamp for a phase whose transport read fails.
+
+`Shelly3EMGen3Client.py` is a bounded, read-only HTTP RPC client. It validates
+generation 3, model `S3EM-003CXCEU63`, the `triphase` profile, component id 0,
+finite non-negative A/B/C currents, and empty phase/component error lists. It
+uses local digest authentication when configured and never embeds credentials
+in URLs or logs.
+
+`Shelly3EMSiteCurrent.py` owns the lock-protected asynchronous meter snapshot,
+periodic identity revalidation, and electrician-verified A/B/C-to-L1/L2/L3
+mapping. Only a complete successful poll refreshes all three timestamps. A
+failure invalidates the selected source without refreshing cached age. These
+provider modules do not publish commands or register a Victron grid service.
+
 ### `WattpilotControlState.py`
 
 `WattpilotControlState.py` owns the explicit, pure control-state ordering for
@@ -392,8 +413,10 @@ Future Wattpilot changes must preserve these invariants:
   freshness windows remain positive and raw-overhead freshness is at least the
   controller's five-second floor.
 - `SiteMaxCurrent` is a mandatory physical per-phase Auto/Eco limit.
-  `Charger1PhaseMapping` must be L1, L2, or L3; site-current freshness must be
-  positive and recovery time non-negative.
+  `SiteCurrentSource` must explicitly select `VenusSystem` or
+  `Shelly3EMGen3`; `Charger1PhaseMapping` must be L1, L2, or L3;
+  site-current freshness must be positive and recovery time non-negative.
+  Shelly channel mapping must be a one-to-one permutation of L1/L2/L3.
 - Wattpilot commands must remain blocked until `fwv` telemetry exactly matches
   validated firmware `42.5`. Missing telemetry fails closed.
 - Auto/Eco command authority additionally requires raw ECO telemetry,
@@ -406,11 +429,11 @@ Future Wattpilot changes must preserve these invariants:
   phase-current telemetry. Missing, stale, invalid, negative, or phase-uncertain
   data blocks starts and stops an active charge without a phase command.
 - D-Bus value-change callbacks are not site-current heartbeats because a valid
-  zero or nonzero current may remain unchanged. Every site-current guard pass
-  must perform a live `GetValue` read of all three physical phase paths. A
-  successful unchanged read refreshes receive time; a read failure invalidates
-  that phase without refreshing its last-sample timestamp and therefore fails
-  Auto/Eco closed.
+  zero or nonzero current may remain unchanged. The Venus provider performs a
+  live `GetValue` read of all three physical phase paths on every guard pass.
+  The Shelly provider uses the timestamp of its last complete HTTP poll. A
+  failed selected-source read never refreshes cached age and fails Auto/Eco
+  closed; the controller must not silently fall back to another provider.
 - One-phase charging subtracts measured EV current only from
   `Charger1PhaseMapping`. Three-phase charging subtracts the smallest measured
   EV phase current from all physical phases and receives one equal current

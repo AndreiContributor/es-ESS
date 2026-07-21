@@ -178,7 +178,7 @@ print_config() {
         return
     fi
 
-    grep -E '^(FroniusWattpilot|SolarOverheadDistributor|AllowGridCharging|MinCurrentPerPhase|MaxCurrentPerPhase|SiteMaxCurrent|Charger1PhaseMapping|SiteCurrentFreshSeconds|SiteCurrentRecoverySeconds|ThreePhasePvSurplusStartW|ThreePhasePvSurplusStopW|MinOnOffSeconds|MinPhaseSwitchSeconds|BatteryAssistEnabled|BatteryAssistSocMin|BatteryAssistMaxSeconds|BatteryAssistMaxShortfallPerPhaseW|BatterySocFreshSeconds|BatteryAssistRecoverySeconds|GridImportPositive)=' "$CONFIG_FILE" 2>/dev/null || echo "No selected config values found"
+    grep -E '^(FroniusWattpilot|SolarOverheadDistributor|SiteCurrentSource|AllowGridCharging|MinCurrentPerPhase|MaxCurrentPerPhase|SiteMaxCurrent|Charger1PhaseMapping|SiteCurrentFreshSeconds|SiteCurrentRecoverySeconds|ThreePhasePvSurplusStartW|ThreePhasePvSurplusStopW|MinOnOffSeconds|MinPhaseSwitchSeconds|BatteryAssistEnabled|BatteryAssistSocMin|BatteryAssistMaxSeconds|BatteryAssistMaxShortfallPerPhaseW|BatterySocFreshSeconds|BatteryAssistRecoverySeconds|GridImportPositive)=' "$CONFIG_FILE" 2>/dev/null || echo "No selected config values found"
 }
 
 print_wattpilot_dbus() {
@@ -201,6 +201,13 @@ print_wattpilot_dbus() {
         /GridImportGuardActive \
         /TelemetryHealthy \
         /SiteCurrentLimit \
+        /SiteCurrentSource \
+        /SiteCurrentSourceConnected \
+        /SiteCurrentSourceStatus \
+        /SiteCurrentSourceError \
+        /SiteCurrentSourceDeviceModel \
+        /SiteCurrentSourceFirmware \
+        /SiteCurrentSourceLastSampleAge \
         /Charger1PhaseMapping \
         /SiteCurrentL1 \
         /SiteCurrentL2 \
@@ -297,6 +304,7 @@ print_interpretation_hint() {
     echo "  - CommandAuthorityOk is 1 before Auto/Eco charging."
     echo "  - NativePvSurplusEnabled and FlexibleTariffEnabled are both 0."
     echo "  - TelemetryHealthy is 1 during Auto/Eco decisions."
+    echo "  - SiteCurrentSource matches config, SourceConnected is 1, and SourceStatus is Healthy."
     echo "  - SiteCurrentTelemetryHealthy is 1 and each SiteCurrentAge remains inside SiteCurrentFreshSeconds."
     echo "  - SiteAllowedCurrent and SiteLimitingPhase match the smallest physical phase headroom."
     echo "  - GridImportGuardActive stays 0 during normal no-grid operation."
@@ -308,6 +316,7 @@ print_interpretation_hint() {
     echo "  - Recent logs show CRITICAL, Traceback, ModuleNotFoundError, or not validated."
     echo "  - Auto/Eco is selected while CommandAuthorityOk is 0."
     echo "  - Auto/Eco charging shows sustained grid import with AllowGridCharging=false."
+    echo "  - The selected site-current source is unavailable, invalid, or unexpectedly changes identity."
     echo "  - Auto/Eco is charging while SiteCurrentGuardBlocked is 1, telemetry is stale, or a physical phase has insufficient headroom."
     echo "  - Battery assist exceeds configured duration/shortfall expectations."
     echo "  - Manual mode produces Wattpilot start/stop/current/phase commands."
