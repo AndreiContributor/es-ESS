@@ -822,7 +822,7 @@ HibernateMode=<span class="value">false</span>                <span class="comme
 
 MinCurrentPerPhase=<span class="value">6</span>
 MaxCurrentPerPhase=<span class="value">16</span>               <span class="comment"># Example only; respect all electrical limits</span>
-SiteMaxCurrent=<span class="value">20</span>                    <span class="comment"># Per physical L1/L2/L3, no hidden margin</span>
+SiteMaxCurrent=<span class="value">20</span>                    <span class="comment"># Default example; A per phase, configure for the site</span>
 Charger1PhaseMapping=<span class="value">L1</span>              <span class="comment"># Physical phase after any plug rotation</span>
 SiteCurrentFreshSeconds=<span class="value">15</span>
 SiteCurrentRecoverySeconds=<span class="value">30</span>       <span class="comment"># Then increase 1 A per 5-second cycle</span>
@@ -867,7 +867,7 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
         <article class="card">
           <h3>Current and phase thresholds</h3>
           <p>The Wattpilot family commonly starts around 6 A: approximately 1.38 kW on one phase and 4.14 kW on three phases at nominal voltage. Use hysteresis, so the three-phase start threshold is higher than the stop threshold.</p>
-          <p>The mandatory site guard caps one-phase charging on <code>Charger1PhaseMapping</code> and caps three-phase charging to the smallest physical-phase headroom because Wattpilot receives one equal current setting for all phases. It reacts on the normal five-second cycle, so the breaker remains primary protection.</p>
+          <p><code>SiteMaxCurrent</code> is expressed in amperes and applied independently to physical L1, L2 and L3. The 20 A value above is a configurable default example, not a universal installation limit; set it for the site's protective device and wiring. The mandatory site guard caps one-phase charging on <code>Charger1PhaseMapping</code> and caps three-phase charging to the smallest physical-phase headroom because Wattpilot receives one equal current setting for all phases. It reacts on the normal five-second cycle, supplements rather than replaces physical overcurrent protection, and does not independently protect lower-rated downstream circuits.</p>
           <p>Do not infer a safe 32 A setting from a 22 kW product label. The lowest limit among supply, protection, cabling, adapter, wallbox, vehicle and local rules wins.</p>
         </article>
       </div>

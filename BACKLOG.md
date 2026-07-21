@@ -227,9 +227,9 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   then increases by 1 A per normal cycle. Phase changes after a reduction wait
   for newer Wattpilot current telemetry that proves the reduction was applied.
 - Manual mode remains observation-only apart from the existing one-time Auto
-  constraint release. The guard protects the configured C20 site limit only
-  and intentionally does not claim to protect the shared downstream C16 EV/hob
-  circuit.
+  constraint release. The guard applies the configured per-phase
+  `SiteMaxCurrent` at the site-current measurement boundary and intentionally
+  does not claim to protect lower-rated downstream circuits.
 - Added D-Bus and retained-MQTT diagnostics, runtime state 12 (`Stopped for site
   current limit`), live-monitor and daily-report visibility, configuration v13
   migration/validation, operator documentation, pure decision tests, and
@@ -1241,9 +1241,9 @@ Risks and dependencies:
   energy delivered while es-ESS was not observing the charger.
 - APP_DEBUG checkpoint volume must remain bounded and included in the existing
   daily-report performance regression expectations.
-- This reporting task is independent of the future dedicated C20 meter and
-  must not claim that Victron consumption current is meter-grade breaker
-  evidence.
+- This reporting task is independent of the future dedicated site-current
+  meter and must not claim that Victron consumption current is meter-grade
+  breaker evidence.
 
 Resolved implementation decisions:
 
@@ -1554,13 +1554,13 @@ Completion record:
 Open implementation items appear here. The queue below remains authoritative
 for selecting the next PR-sized task.
 
-### P1 - Integrate Shelly 3EM-63T Gen3 As The Dedicated C20 Site-Current Source
+### P1 - Integrate Shelly 3EM-63T Gen3 As The Dedicated Site-Current Source
 
 Goal:
 
 Use a correctly installed Shelly 3EM-63T Gen3 to provide direct, fresh
-physical L1/L2/L3 current measurements at the downstream house C20 boundary
-for the mandatory Wattpilot Auto/Eco site-current guard.
+physical L1/L2/L3 current measurements at the configured site-current
+measurement boundary for the mandatory Wattpilot Auto/Eco guard.
 
 Problem:
 
@@ -1568,7 +1568,8 @@ The current guard reads calculated Venus system consumption currents. Live
 commissioning showed those current values alternating between approximately
 4.5 A and 8.6 A while one-phase Wattpilot power remained near 1.33-1.37 kW and
 the charger reported approximately 5.8 A. That calculated source is therefore
-not sufficiently trustworthy as the future authoritative C20 measurement.
+not sufficiently trustworthy as the future authoritative site-current
+measurement.
 The existing Shelly integration cannot be substituted directly: it consumes
 the Gen1 `/status`/`emeters[]` schema and registers a Venus
 `com.victronenergy.grid` service at position 0, while the planned Gen3 meter
@@ -1589,14 +1590,15 @@ Evidence:
 - The official device specifications rate the integrated phase-current
   measurements at 0-63 A, with +/-1% current accuracy from 2-63 A. This is a
   measurement input for software load management, not a replacement for the
-  physical C20 protective device.
+  site's physical overcurrent protective device.
 
 Implementation:
 
 - Do not start production implementation until the Shelly is installed at the
-  C20 boundary and read-only captures prove its model/generation, firmware,
-  `triphase` profile, authentication state, live `EM.GetStatus`,
-  `EMData.GetStatus`, phase order, and physical A/B/C-to-L1/L2/L3 mapping.
+  configured site-current measurement boundary and read-only captures prove
+  its model/generation, firmware, `triphase` profile, authentication state,
+  live `EM.GetStatus`, `EMData.GetStatus`, phase order, and physical
+  A/B/C-to-L1/L2/L3 mapping.
 - Add a bounded local Shelly Gen3 RPC client. Identify the device through the
   unauthenticated `/shelly` endpoint, require the expected Gen3 model/profile,
   poll `EM.GetStatus?id=0` for live current/voltage/power, and read
@@ -1675,9 +1677,9 @@ Tests:
 
 Expected coverage:
 
-- Proves the mandatory Auto/Eco guard uses direct C20-boundary phase currents
-  only after explicit commissioning and never silently falls back to a stale
-  or calculated source.
+- Proves the mandatory Auto/Eco guard uses direct phase currents from the
+  configured site-current measurement boundary only after explicit
+  commissioning and never silently falls back to a stale or calculated source.
 - Proves Shelly loss, invalid data, wrong profile, phase errors, and
   authentication failures stop or block Auto/Eco safely while Manual remains
   user-controlled.
@@ -1700,7 +1702,7 @@ Manual test steps:
    enabling the new es-ESS source.
 2. Confirm the device is the expected Gen3 model in `triphase` profile, record
    firmware/authentication state, and verify no reported phase/device error.
-3. With the electrician, correlate Shelly A/B/C with physical C20 L1/L2/L3
+3. With the electrician, correlate Shelly A/B/C with physical site L1/L2/L3
    using normal safe loads; confirm current direction and compare readings
    against an independent clamp meter where available.
 4. Deploy the implementation with the old source still selected and confirm
@@ -1710,17 +1712,19 @@ Manual test steps:
    and no critical/traceback/command-boundary errors while the car is stopped.
 6. During a normal supervised Auto/Eco PV charge, confirm one-phase mapping,
    equal three-phase commands, natural house-load current reduction, and
-   delayed/ramped recovery. Do not deliberately exceed 20 A.
+   delayed/ramped recovery. Do not deliberately exceed the configured
+   per-phase `SiteMaxCurrent`.
 7. In a low-risk window, briefly isolate only Shelly network access and confirm
    Auto/Eco fails closed within the documented freshness bound while the
-   physical C20 remains the final protection. Restore access and confirm
-   recovery follows the existing delay/ramp.
+   site's physical overcurrent protection remains the final protection.
+   Restore access and confirm recovery follows the existing delay/ramp.
 8. Return to Manual and confirm es-ESS remains observation-only.
 
 Risks and dependencies:
 
-- Blocked until the Shelly 3EM-63T Gen3 is physically installed at the correct
-  downstream C20 boundary and its live API/phase mapping evidence is supplied.
+- Blocked until the Shelly 3EM-63T Gen3 is physically installed at the
+  configured site-current measurement boundary and its live API/phase mapping
+  evidence is supplied.
 - Wi-Fi, digest-authentication compatibility on Venus OS `v3.75`, device
   firmware behavior, response cadence, and actual measurement latency require
   live validation; no API claim alone establishes breaker-protection timing.
@@ -1730,7 +1734,8 @@ Risks and dependencies:
   Fronius meter and corrupt system topology; the implementation must retain a
   dedicated non-grid source boundary.
 - The Shelly and es-ESS remain monitoring/load-management layers. Neither
-  replaces the physical C20 or electrician-approved protection and wiring.
+  replaces the site's physical overcurrent protection or electrician-approved
+  wiring.
 - The separate charging-session reporting item may consume Shelly energy
   diagnostics later, but it is not a prerequisite for this safety source and
   must not expand this task into energy reconciliation.
@@ -1748,8 +1753,9 @@ Done criteria:
 
 - Installation/API/phase-mapping evidence is retained and matches the expected
   Gen3 `triphase` contract.
-- The dedicated source supplies direct, fresh, validated C20 phase currents
-  without appearing as a second Venus grid meter.
+- The dedicated source supplies direct, fresh, validated phase currents from
+  the configured site-current measurement boundary without appearing as a
+  second Venus grid meter.
 - Auto/Eco fails closed on source loss, invalid values, meter errors, wrong
   profile, authentication failure, and stale samples; recovery retains the
   existing stable delay and ramp.
@@ -1775,7 +1781,7 @@ then follow the repository working agreement for approval and implementation.
 After delivery, move every finished item in that group to `Completed` and
 advance the queue on the next request.
 
-1. P1 Integrate Shelly 3EM-63T Gen3 As The Dedicated C20 Site-Current Source —
+1. P1 Integrate Shelly 3EM-63T Gen3 As The Dedicated Site-Current Source —
    safety-critical source correction on the current branch, gated until the
    meter is installed and live API/phase evidence is reviewed.
 
@@ -1825,7 +1831,7 @@ safety branch.
   and recovery waits for `/SiteCurrentRecoveryElapsed` before rising 1 A per
   cycle. Return to Manual and confirm es-ESS remains observation-only. A
   naturally occurring stop below 6 A headroom may be recorded, but must not be
-  created by intentionally overloading the site or the shared C16 branch.
+  created by intentionally overloading the site or a downstream branch.
 - Log-only: capture the site-current diagnostic paths and health-monitor output
   before, during, and after the supervised session; confirm no command-boundary
   rejection, traceback, unintended grid charging, or battery-assist bypass of

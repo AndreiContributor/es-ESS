@@ -783,7 +783,7 @@ or force-state commands.
 | [FroniusWattpilot]  | HibernateMode | When `false`, idle polling keeps the Wattpilot connection available. When `true`, es-ESS intentionally disconnects while no EV is connected and reconnects about every five minutes for a status probe, which can delay car detection. Remote mode changes through VRM are unsupported while disconnected; Scheduled is only a best-effort probe, not a supported keep-awake/control path. | Boolean  | false |
 | [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. Must be within `6..32 A`. | Integer (A) | 6 |
 | [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. Must be within `6..32 A` and at least `MinCurrentPerPhase`; the controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
-| [FroniusWattpilot] | SiteMaxCurrent | Mandatory Auto/Eco whole-site limit applied independently to physical L1, L2, and L3. Must be within `6..100 A`. This protects the site supply calculation, not a shared downstream branch. | Integer (A) | 20 |
+| [FroniusWattpilot] | SiteMaxCurrent | Mandatory Auto/Eco whole-site limit in amperes, applied independently to physical L1, L2, and L3. Must be within `6..100 A`; the `20 A` default is not universal and must be configured for the site's protective device and wiring. This protects the site supply calculation, not a lower-rated downstream branch. | Integer (A per phase) | 20 |
 | [FroniusWattpilot] | Charger1PhaseMapping | Physical site phase used by Wattpilot one-phase charging after any electrician-installed phase rotation. Allowed values are `L1`, `L2`, or `L3`. | String | L1 |
 | [FroniusWattpilot] | SiteCurrentFreshSeconds | Positive maximum age of whole-site L1/L2/L3 current and, during an active charge, Wattpilot phase-current telemetry. Each guard pass live-reads the site-current paths, so valid unchanged values remain fresh; failed, missing, invalid, or stale data fails Auto/Eco closed. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | SiteCurrentRecoverySeconds | Non-negative continuous safe-headroom time before a stopped charge may restart or current may increase; increases then rise by 1 A per normal controller cycle. | Integer (seconds) | 30 |
@@ -867,12 +867,15 @@ the sample timestamp even when the value is unchanged. A failed read
 invalidates that phase and preserves the age of its last received sample, so
 Auto/Eco still fails closed when the system service or path is unavailable.
 
-`SiteMaxCurrent=20` has no hidden margin and is not a replacement for the C20
-breaker. The controller normally reacts every five seconds, so short inrush or
-a sudden overload may still trip first. If house load alone exceeds 20 A,
-stopping the EV cannot correct that condition. The guard also cannot protect a
-shared downstream C16 EV/hob circuit because it sees only whole-site phase
-current; that branch remains dependent on its own breaker and installation.
+`SiteMaxCurrent` is expressed in amperes and applied independently to each
+physical phase. The `20 A` default is not a fixed product limit: configure it
+for the site's protective device and wiring. It has no hidden margin and does
+not replace physical overcurrent protection. The controller normally reacts
+every five seconds, so short inrush or a sudden overload may still trip first.
+If house load alone exceeds the configured limit, stopping the EV cannot
+correct that condition. Because the guard sees only current at its configured
+measurement boundary, lower-rated downstream circuits remain dependent on
+their own protection and installation.
 
 When `AllowGridCharging=false` (the recommended no-grid configuration), Auto/Eco charging requires valid, fresh grid-power telemetry for all three grid phases. If any L1, L2, or L3 value is missing, invalid, or older than `GridTelemetryFreshSeconds`, es-ESS will not start a new Auto/Eco session and will stop an active Auto/Eco session immediately. This means a grid-meter or D-Bus telemetry outage can stop charging until fresh values recover.
 
