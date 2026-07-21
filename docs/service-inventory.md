@@ -73,21 +73,20 @@ calendar windows. `--no-current-snapshot` disables optional service/runtime
 snapshot reads but not this timezone lookup. Report analysis remains isolated
 from controller imports and all D-Bus writes.
 
-The documented electrical installation has an interlocked maintenance bypass
-around the Victron AC path. Normal power flows from the grid-boundary Fronius
-Smart Meter through Victron AC-in/AC-out to a load-side bus; bypass connects the
-grid directly to that bus while isolating Victron. The Fronius PV inverter is a
-lateral load-side connection, and the house main breaker feeds ordinary loads
-plus the Wattpilot's dedicated 16 A branch. Cerbo GX and battery connections
-are supervisory/DC boundaries, not additional AC series elements.
+Deployments may include an optional interlocked maintenance bypass around the
+Victron AC path, but the repository assumes no particular physical layout.
+Grid-exchange metering, AC-coupled PV placement, the boundary governed by
+`SiteMaxCurrent`, and downstream protective devices must be established from
+the installation's electrical design. Cerbo GX and battery connections are
+supervisory/DC boundaries, not additional AC series elements.
 
 No active service currently subscribes to bypass-switch state or owns a
 Wattpilot controller-loss fallback. If the GX loses power, neither the
 orchestrator nor `FroniusWattpilot.handleSigterm()` can run. If it stays powered
 while Victron is bypassed, present D-Bus telemetry does not independently prove
-the switch position. The required investigation remains an open backlog item;
-the current runtime must not claim an automatic return to standalone Wattpilot
-use.
+the switch position. An optional, gated backlog investigation covers explicit
+bypass indication and fallback semantics; the current runtime must not claim
+an automatic return to standalone Wattpilot use.
 
 ## Victron D-Bus Dependency Ownership
 

@@ -1774,23 +1774,25 @@ Done criteria:
   configuration, and reporting tests pass.
 - Full unittest suite passes.
 
-### P1 - Investigate Wattpilot Standalone Fallback During Victron Maintenance Bypass
+### Optional / Gated - Define Wattpilot Fallback For Explicitly Signalled Maintenance Bypass
 
 Goal:
 
-Establish and implement a verified operating contract that returns the
-Wattpilot to the explicitly approved standalone behavior when the Victron path
-is maintenance-bypassed or the controlling Cerbo GX becomes unavailable,
-without causing unintended grid charging or violating Manual-mode ownership.
+For a target installation that has a maintenance bypass and an explicit,
+validated indication of its state, establish an opt-in operating contract for
+the Wattpilot without causing unintended grid charging or violating Manual-mode
+ownership. Do not enable this work for installations without that evidence and
+an approved fallback definition.
 
 Problem:
 
-The documented installation routes normal power through the Victron
-inverter/chargers and provides an interlocked direct-grid maintenance bypass to
-the same load-side bus. The Wattpilot remains powered behind the house main and
-its dedicated 16 A breaker, but the Cerbo GX may lose power or may remain alive
-with telemetry that no longer represents the active AC path. The current
-runtime has no bypass-switch input or controller-loss fallback contract.
+Some installations route normal power through Victron inverter/chargers and
+provide an interlocked maintenance bypass to a site-side bus. Depending on the
+wiring, the Wattpilot may remain powered while the Cerbo GX loses power or
+remains alive with telemetry that no longer represents the active AC path.
+Downstream EV protection is installation-specific; a 16 A EV branch is only an
+example. The current runtime has no bypass-switch input or controller-loss
+fallback contract.
 
 `FroniusWattpilot.handleSigterm()` sends Force Off only during a graceful Auto
 shutdown and then disconnects. An abrupt GX power loss cannot execute that
@@ -1813,26 +1815,26 @@ Evidence:
 - `es-ESS.py` invokes service cleanup on SIGTERM/SIGINT, but sudden power loss
   bypasses the complete shutdown sequence.
 - `config.sample.ini`, `README.md`, `docs/wattpilot-architecture.md`,
-  `docs/service-inventory.md`, and `docs/system-guide.html` now document the
-  normal Victron path, direct-grid bypass, downstream house/Wattpilot branches,
-  and the absence of a validated automatic fallback.
+  `docs/service-inventory.md`, and `docs/system-guide.html` describe an example
+  topology, installation-dependent downstream protection, and the absence of a
+  validated automatic fallback.
 - No active service subscribes to a bypass auxiliary contact or publishes a
   bypass state through D-Bus or MQTT.
 
 Implementation:
 
-- First retain an electrician-verified one-line drawing and identify whether
-  the bypass switch has an isolated auxiliary contact, whether Cerbo remains
-  powered from DC in bypass, and which grid/site/battery telemetry stays valid
-  in each switch position.
+- For each target installation, first retain an electrician-verified one-line
+  drawing and identify whether the bypass switch has an isolated auxiliary
+  contact, whether Cerbo remains powered from DC in bypass, and which
+  grid/site/battery telemetry stays valid in each switch position.
 - With the vehicle disconnected, characterize Wattpilot firmware `42.5`
   behavior after WebSocket loss, Cerbo loss, graceful es-ESS shutdown,
   Wattpilot power cycle, and later controller reconnection. Record retained
   `lmo`, `frc`, `psm`, and `amp` state without assuming a native watchdog.
 - Define the operator-approved fallback explicitly: for example remain Off,
   restore the pre-Auto Manual/Standard state, or require an app action. Specify
-  whether a connected vehicle may start from grid and how the 16 A branch cap
-  remains enforced.
+  whether a connected vehicle may start from grid and how the installation's
+  EV branch limit remains physically enforced.
 - Prefer a deterministic physical bypass indication if automatic behavior is
   required while GX remains powered. Do not infer bypass from MQTT loss,
   Wattpilot WebSocket loss, stale D-Bus telemetry, or a generic Victron service
@@ -1845,7 +1847,7 @@ Implementation:
   smallest one-time state transition behind the existing firmware and command
   boundaries. Preserve ordinary Manual observation-only behavior, the current
   Auto/Eco no-grid policy, continuation-only battery assist, transactional
-  starts, and the prohibition on generic shared 16 A cable limiting.
+  starts, and the prohibition on generic shared cable/current-limiting logic.
 - Publish an explicit bypass/fallback state and actionable reason if runtime
   detection is implemented. Update monitoring and daily reporting without
   adding another command owner.
@@ -1967,8 +1969,9 @@ Open questions:
 
 Done criteria:
 
-- The as-built power, control and bypass contact topology is retained and
-  electrician-verified.
+- The target installation's power, control, protective-device, and bypass
+  contact topology is retained and electrician-verified before the optional
+  integration is enabled.
 - GX availability and Wattpilot firmware behavior are characterized for every
   relevant transition without an active vehicle.
 - The operator explicitly approves the standalone fallback and grid-charging
@@ -1998,9 +2001,10 @@ advance the queue on the next request.
 1. P1 Integrate Shelly 3EM-63T Gen3 As The Dedicated Site-Current Source —
    implementation complete; production selection and closure remain gated
    until the meter is installed and live API/phase evidence is reviewed.
-2. P1 Investigate Wattpilot Standalone Fallback During Victron Maintenance
-   Bypass — establish the physical/GX behavior and operator-approved fallback
-   before adding any automatic Manual or controller-loss command.
+2. Optional/Gated Define Wattpilot Fallback For Explicitly Signalled
+   Maintenance Bypass — consider only for a target installation with explicit
+   indication and an approved fallback contract; do not infer bypass from
+   controller, transport, or telemetry loss.
 
 ## Verification Plan
 

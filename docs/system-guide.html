@@ -416,43 +416,118 @@
 
     <section id="architecture">
       <p class="eyebrow">02 · Architecture</p>
-      <h2>As-built power path and information flows</h2>
-      <p class="section-intro">The maintained installation routes normal grid power through the Victron system before the backed-up loads. An interlocked maintenance changeover can isolate Victron and feed the same load-side bus directly. This hierarchy matters; the Cerbo and batteries are supervisory/DC connections rather than additional AC series elements.</p>
+      <h2>Example power path and information flows</h2>
+      <p class="section-intro">This illustrative topology shows one possible arrangement with Victron in the normal AC path and an optional interlocked maintenance changeover. Actual installations vary. The Cerbo and batteries are supervisory/DC connections rather than additional AC series elements.</p>
 
       <figure class="diagram">
         <svg viewBox="0 0 1200 1220" role="img" aria-labelledby="clean-topology-title clean-topology-desc">
-          <title id="clean-topology-title">As-built Victron bypass and Wattpilot power path</title>
-          <desc id="clean-topology-desc">A top-to-bottom electrical diagram. Grid power passes through the utility and Fronius meters to an interlocked changeover. Its normal path passes through Victron and its bypass path goes directly to a shared load bus. Fronius PV connects from the left. The load bus supplies the house main breaker, then ordinary circuits and a dedicated sixteen amp Wattpilot circuit. Batteries connect only to Victron DC. Cerbo communications are shown in a separate control strip.</desc>
+          <title id="clean-topology-title">Example Victron bypass and Wattpilot power path</title>
+          <desc id="clean-topology-desc">An illustrative top-to-bottom electrical diagram. Grid power passes through utility and grid-exchange meters to an optional interlocked changeover. Its normal path passes through Victron and its bypass path goes directly to a shared load bus. AC-coupled PV connects from the left. A site protective device and dedicated site-current meter precede separately protected site and EV circuits. Batteries connect only to Victron DC. Cerbo communications are shown in a separate control strip.</desc>
           <defs>
             <marker id="cleanArrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#a94f4f"/></marker>
             <marker id="cleanArrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#2877a8"/></marker>
             <marker id="cleanArrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#d99418"/></marker>
             <marker id="cleanArrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#39896d"/></marker>
             <filter id="cleanShadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-opacity=".08"/></filter>
+            <symbol id="icon-grid" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M16 3L7 29M16 3l9 26M10 12h12M8 19h16M5 29h22M4 9h24M8 9l-4 5M24 9l4 5"/>
+              </g>
+            </symbol>
+            <symbol id="icon-meter" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="6" y="3" width="20" height="26" rx="3"/><rect x="10" y="7" width="12" height="6" rx="1"/>
+                <path d="M11 21a5 5 0 0 1 10 0M16 21l3-3M11 25h10"/>
+              </g>
+            </symbol>
+            <symbol id="icon-smart-meter" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="3" width="22" height="26" rx="3"/><rect x="9" y="7" width="14" height="8" rx="1"/>
+                <path d="M10 20h3l2-3 3 6 2-3h2M11 26h10"/>
+              </g>
+            </symbol>
+            <symbol id="icon-changeover" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="6" cy="16" r="2"/><circle cx="26" cy="8" r="2"/><circle cx="26" cy="24" r="2"/>
+                <path d="M8 16l14-7M22 23h-7M18 20l4 3-4 3"/>
+              </g>
+            </symbol>
+            <symbol id="icon-ess" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="4" width="24" height="24" rx="4"/><path d="M8 11h16M10 17c2-4 4-4 6 0s4 4 6 0M10 23h12"/>
+              </g>
+            </symbol>
+            <symbol id="icon-solar" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="24" cy="7" r="3"/><path d="M24 1v2M24 11v2M18 7h2M28 7h2M20 3l1.5 1.5M27 10l1.5 1.5"/>
+                <path d="M5 14h20l3 14H2l3-14zM4 21h22M10 14L8 28M17 14v14M23 14l2 14"/>
+              </g>
+            </symbol>
+            <symbol id="icon-inverter" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="3" width="24" height="26" rx="4"/><path d="M9 10h14M9 19c2-4 4-4 7 0s5 4 7 0M10 25h12"/>
+              </g>
+            </symbol>
+            <symbol id="icon-battery" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="8" width="25" height="17" rx="3"/><path d="M28 13h2v7h-2M10 13v7M6.5 16.5h7M20 13v7M16.5 16.5h7"/>
+              </g>
+            </symbol>
+            <symbol id="icon-bus" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 12h26M3 20h26M8 8v16M16 8v16M24 8v16"/>
+                <circle cx="8" cy="16" r="2" fill="currentColor" stroke="none"/><circle cx="16" cy="16" r="2" fill="currentColor" stroke="none"/><circle cx="24" cy="16" r="2" fill="currentColor" stroke="none"/>
+              </g>
+            </symbol>
+            <symbol id="icon-breaker" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="3" width="22" height="26" rx="3"/><circle cx="11" cy="10" r="2"/><circle cx="21" cy="22" r="2"/><path d="M12.5 11.5l7 8M10 26h12"/>
+              </g>
+            </symbol>
+            <symbol id="icon-house" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 15L16 4l13 11M6 13v15h20V13M13 28v-9h6v9M10 16h3M19 16h3"/>
+              </g>
+            </symbol>
+            <symbol id="icon-ev" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 19l3-8h13l3 8v7H4v-7zM7 19h16M9 26v2M19 26v2"/><circle cx="9" cy="22" r="1.5"/><circle cx="19" cy="22" r="1.5"/>
+                <path d="M25 5v8M22 8h6M28 13v4c0 2-1 3-3 3h-2"/>
+              </g>
+            </symbol>
+            <symbol id="icon-controller" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="19" height="15" rx="2"/><path d="M7 8h11v7H7zM8 24h18M12 19v5M24 8h5v17h-5M26.5 12h.01M26.5 16h.01"/>
+              </g>
+            </symbol>
           </defs>
 
           <text x="600" y="30" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">AC POWER PATH</text>
 
           <!-- One consistent top-to-bottom grid path. -->
-          <rect x="510" y="50" width="180" height="55" rx="14" fill="#f9eaea" stroke="#a94f4f" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="600" y="76" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">National grid</text>
-          <text x="600" y="96" text-anchor="middle" font-size="11" fill="#5b6975">Three phase</text>
+          <rect x="480" y="50" width="240" height="55" rx="14" fill="#f9eaea" stroke="#a94f4f" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-grid" x="496" y="62" width="31" height="31" color="#a94f4f" aria-hidden="true"/>
+          <text x="618" y="76" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">National grid</text>
+          <text x="618" y="96" text-anchor="middle" font-size="11" fill="#5b6975">Three phase</text>
           <path d="M600 105V145" stroke="#a94f4f" stroke-width="5" marker-end="url(#cleanArrowRed)"/>
 
-          <rect x="510" y="145" width="180" height="55" rx="14" fill="#fff" stroke="#a94f4f" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="600" y="171" text-anchor="middle" font-size="16" font-weight="850" fill="#16212b">Utility meter</text>
-          <text x="600" y="191" text-anchor="middle" font-size="11" fill="#5b6975">National metering</text>
+          <rect x="480" y="145" width="240" height="55" rx="14" fill="#fff" stroke="#a94f4f" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-meter" x="496" y="157" width="31" height="31" color="#a94f4f" aria-hidden="true"/>
+          <text x="618" y="171" text-anchor="middle" font-size="16" font-weight="850" fill="#16212b">Utility meter</text>
+          <text x="618" y="191" text-anchor="middle" font-size="11" fill="#5b6975">National metering</text>
           <path d="M600 200V240" stroke="#a94f4f" stroke-width="5" marker-end="url(#cleanArrowRed)"/>
 
-          <rect x="500" y="240" width="200" height="60" rx="14" fill="#fff" stroke="#a94f4f" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="600" y="267" text-anchor="middle" font-size="16" font-weight="850" fill="#16212b">Fronius Smart Meter</text>
-          <text x="600" y="289" text-anchor="middle" font-size="11" fill="#5b6975">Whole-site grid boundary</text>
+          <rect x="455" y="240" width="290" height="60" rx="14" fill="#fff" stroke="#a94f4f" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-smart-meter" x="472" y="254" width="32" height="32" color="#a94f4f" aria-hidden="true"/>
+          <text x="620" y="267" text-anchor="middle" font-size="16" font-weight="850" fill="#16212b">Fronius Smart Meter</text>
+          <text x="620" y="289" text-anchor="middle" font-size="11" fill="#5b6975">Grid-exchange boundary</text>
           <path d="M600 300V340" stroke="#a94f4f" stroke-width="5" marker-end="url(#cleanArrowRed)"/>
 
-          <rect x="480" y="340" width="240" height="90" rx="16" fill="#fff7df" stroke="#c38b1e" stroke-width="2.5" filter="url(#cleanShadow)"/>
-          <text x="600" y="372" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">Interlocked changeover</text>
-          <text x="600" y="397" text-anchor="middle" font-size="11" fill="#5b6975">Normal · Off · Bypass</text>
-          <text x="600" y="416" text-anchor="middle" font-size="10" font-weight="750" fill="#a94f4f">Only one route can be connected</text>
+          <rect x="445" y="340" width="310" height="90" rx="16" fill="#fff7df" stroke="#c38b1e" stroke-width="2.5" filter="url(#cleanShadow)"/>
+          <use href="#icon-changeover" x="463" y="361" width="42" height="42" color="#c38b1e" aria-hidden="true"/>
+          <text x="628" y="372" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">Optional changeover example</text>
+          <text x="628" y="397" text-anchor="middle" font-size="11" fill="#5b6975">Normal · Off · Bypass</text>
+          <text x="628" y="416" text-anchor="middle" font-size="10" font-weight="750" fill="#a94f4f">Only one route can be connected</text>
 
           <!-- The switch splits into two uncluttered lanes. -->
           <path d="M560 430V460H430V500" fill="none" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
@@ -461,68 +536,78 @@
           <text x="820" y="453" text-anchor="middle" font-size="11" font-weight="850" fill="#a94f4f">BYPASS</text>
 
           <rect x="300" y="500" width="260" height="115" rx="18" fill="#e6f4ed" stroke="#39896d" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="430" y="536" text-anchor="middle" font-size="18" font-weight="850" fill="#16212b">Victron ESS</text>
-          <text x="430" y="565" text-anchor="middle" font-size="12" fill="#5b6975">AC-in → 3 inverter/chargers → AC-out</text>
-          <text x="430" y="591" text-anchor="middle" font-size="11" fill="#39896d">Normal route only</text>
+          <use href="#icon-ess" x="304" y="543" width="30" height="30" color="#39896d" aria-hidden="true"/>
+          <text x="450" y="536" text-anchor="middle" font-size="18" font-weight="850" fill="#16212b">Victron ESS</text>
+          <text x="450" y="565" text-anchor="middle" font-size="11" fill="#5b6975">AC-in → 3 inverter/chargers → AC-out</text>
+          <text x="450" y="591" text-anchor="middle" font-size="11" fill="#39896d">Normal route only</text>
           <path d="M430 615V650" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
 
           <!-- PV and battery have separate, short side connections. -->
           <rect x="45" y="348" width="190" height="75" rx="14" fill="#fff4d6" stroke="#d99418" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="140" y="379" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">PV panels</text>
-          <text x="140" y="403" text-anchor="middle" font-size="11" fill="#5b6975">Three-phase array</text>
+          <use href="#icon-solar" x="59" y="369" width="37" height="37" color="#d99418" aria-hidden="true"/>
+          <text x="164" y="379" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">PV panels</text>
+          <text x="164" y="403" text-anchor="middle" font-size="11" fill="#5b6975">Three-phase array</text>
           <path d="M140 423V515" stroke="#d99418" stroke-width="5" marker-end="url(#cleanArrowOrange)"/>
 
           <rect x="45" y="515" width="190" height="85" rx="14" fill="#fff" stroke="#d99418" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="140" y="547" text-anchor="middle" font-size="16" font-weight="850" fill="#16212b">Fronius PV inverter</text>
-          <text x="140" y="573" text-anchor="middle" font-size="11" fill="#5b6975">AC-coupled on load side</text>
+          <use href="#icon-inverter" x="52" y="538" width="39" height="39" color="#d99418" aria-hidden="true"/>
+          <text x="165" y="547" text-anchor="middle" font-size="14" font-weight="850" fill="#16212b">Fronius PV inverter</text>
+          <text x="165" y="573" text-anchor="middle" font-size="10" fill="#5b6975">AC-coupled on load side</text>
           <path d="M140 600V682H260" fill="none" stroke="#d99418" stroke-width="5" marker-end="url(#cleanArrowOrange)"/>
 
           <rect x="650" y="518" width="190" height="80" rx="14" fill="#fff" stroke="#39896d" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="745" y="551" text-anchor="middle" font-size="16" font-weight="850" fill="#16212b">Battery bank</text>
-          <text x="745" y="576" text-anchor="middle" font-size="11" fill="#5b6975">DC connection only</text>
+          <use href="#icon-battery" x="664" y="540" width="37" height="37" color="#39896d" aria-hidden="true"/>
+          <text x="765" y="551" text-anchor="middle" font-size="16" font-weight="850" fill="#16212b">Battery bank</text>
+          <text x="765" y="576" text-anchor="middle" font-size="11" fill="#5b6975">DC connection only</text>
           <path d="M560 558H650" stroke="#39896d" stroke-width="5" marker-start="url(#cleanArrowGreen)" marker-end="url(#cleanArrowGreen)"/>
 
           <!-- Both switch routes and PV meet at one clearly named bus. -->
           <rect x="260" y="650" width="800" height="65" rx="16" fill="#eef2f3" stroke="#7c8a90" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="660" y="679" text-anchor="middle" font-size="18" font-weight="850" fill="#16212b">Load-side three-phase AC bus</text>
-          <text x="660" y="701" text-anchor="middle" font-size="11" fill="#5b6975">Victron in normal operation · direct grid during maintenance bypass</text>
+          <use href="#icon-bus" x="282" y="665" width="36" height="36" color="#7c8a90" aria-hidden="true"/>
+          <text x="680" y="679" text-anchor="middle" font-size="18" font-weight="850" fill="#16212b">Load-side three-phase AC bus</text>
+          <text x="680" y="701" text-anchor="middle" font-size="11" fill="#5b6975">Example: Victron normal route · optional direct-grid bypass</text>
           <path d="M660 715V750" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
 
-          <rect x="555" y="750" width="210" height="85" rx="16" fill="#fff" stroke="#2877a8" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="660" y="784" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">House main breaker</text>
-          <text x="660" y="809" text-anchor="middle" font-size="11" fill="#5b6975">Protected three-phase boundary</text>
+          <rect x="520" y="750" width="280" height="85" rx="16" fill="#fff" stroke="#2877a8" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-breaker" x="537" y="773" width="39" height="39" color="#2877a8" aria-hidden="true"/>
+          <text x="686" y="784" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">Site protective device</text>
+          <text x="686" y="809" text-anchor="middle" font-size="11" fill="#5b6975">Example: 20 A per phase</text>
           <path d="M660 835V870" stroke="#2877a8" stroke-width="5"/>
 
           <!-- Measurement point and downstream branch split. -->
           <circle cx="660" cy="870" r="9" fill="#e6f4ed" stroke="#39896d" stroke-width="3"/>
-          <text x="680" y="865" font-size="10" font-weight="800" fill="#39896d">Site-current measurement before split</text>
+          <text x="680" y="865" font-size="10" font-weight="800" fill="#39896d">Dedicated site-current meter before split</text>
           <path d="M660 879V900H460V945" fill="none" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
           <path d="M660 900H860V945" fill="none" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
 
           <rect x="330" y="945" width="260" height="90" rx="16" fill="#fff" stroke="#2877a8" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="460" y="981" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">Ordinary house circuits</text>
-          <text x="460" y="1009" text-anchor="middle" font-size="11" fill="#5b6975">Downstream protected loads</text>
+          <use href="#icon-house" x="340" y="970" width="40" height="40" color="#2877a8" aria-hidden="true"/>
+          <text x="485" y="981" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">Protected site circuits</text>
+          <text x="485" y="1009" text-anchor="middle" font-size="11" fill="#5b6975">Each circuit appropriately protected</text>
 
-          <rect x="750" y="945" width="220" height="90" rx="16" fill="#fff" stroke="#2877a8" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="860" y="981" text-anchor="middle" font-size="16" font-weight="850" fill="#16212b">Dedicated 16 A breaker</text>
-          <text x="860" y="1009" text-anchor="middle" font-size="11" fill="#5b6975">Wattpilot branch</text>
+          <rect x="735" y="945" width="250" height="90" rx="16" fill="#fff" stroke="#2877a8" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-breaker" x="759" y="971" width="38" height="38" color="#2877a8" aria-hidden="true"/>
+          <text x="885" y="981" text-anchor="middle" font-size="15" font-weight="850" fill="#16212b">EV circuit protection</text>
+          <text x="885" y="1009" text-anchor="middle" font-size="11" fill="#5b6975">Example: 16 A branch</text>
           <path d="M860 1035V1070" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
 
-          <rect x="750" y="1070" width="220" height="70" rx="16" fill="#e7f2f8" stroke="#2877a8" stroke-width="2" filter="url(#cleanShadow)"/>
-          <text x="860" y="1099" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">Wattpilot → EV</text>
-          <text x="860" y="1123" text-anchor="middle" font-size="11" fill="#5b6975">Normal profile: Position=0</text>
+          <rect x="735" y="1070" width="250" height="70" rx="16" fill="#e7f2f8" stroke="#2877a8" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-ev" x="765" y="1087" width="37" height="37" color="#2877a8" aria-hidden="true"/>
+          <text x="885" y="1099" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">Wattpilot → EV</text>
+          <text x="885" y="1123" text-anchor="middle" font-size="11" fill="#5b6975">Worked example: Position=0</text>
 
           <!-- Communications are summarized separately so they do not cross power lines. -->
           <rect x="45" y="1160" width="1110" height="45" rx="13" fill="#f0ecfa" stroke="#7765a8" stroke-width="2"/>
-          <text x="600" y="1179" text-anchor="middle" font-size="13" font-weight="850" fill="#4d3d78">CERBO GX / es-ESS — CONTROL AND DATA ONLY</text>
-          <text x="600" y="1197" text-anchor="middle" font-size="10" fill="#6b5a91">VE.Bus: Victron · LAN: Fronius inverter · WebSocket: Wattpilot · BMS-CAN: batteries · D-Bus/MQTT: system data</text>
+          <use href="#icon-controller" x="62" y="1167" width="31" height="31" color="#7765a8" aria-hidden="true"/>
+          <text x="620" y="1179" text-anchor="middle" font-size="13" font-weight="850" fill="#4d3d78">CERBO GX / es-ESS — CONTROL AND DATA ONLY</text>
+          <text x="620" y="1197" text-anchor="middle" font-size="10" fill="#6b5a91">VE.Bus: Victron · LAN: Fronius inverter · WebSocket: Wattpilot · BMS-CAN: batteries · D-Bus/MQTT: system data</text>
         </svg>
 
-        <figcaption>As-built hierarchy documented for this installation. Normal operation uses Victron AC-in to AC-out; maintenance bypass connects the grid directly to the load-side bus while isolating Victron. The Fronius PV inverter is lateral at that bus. The site-current measurement is after the house main and before ordinary house circuits and Wattpilot split; Wattpilot also has its own 16 A branch breaker.</figcaption>
+        <figcaption>Illustrative hierarchy only; actual placement and ratings must follow the installation design. In this example, normal operation uses Victron AC-in to AC-out and an optional maintenance bypass can connect the grid directly to the site-side bus. The dedicated site-current meter measures all loads governed by the example 20 A-per-phase <code>SiteMaxCurrent</code> boundary before separately protected site and EV circuits split. The 16 A EV branch is an example, not a repository requirement.</figcaption>
       </figure>
 
       <div class="callout warning">
-        <p><strong>Bypass is not yet an es-ESS state:</strong> <code>Position=0</code> describes normal Wattpilot AC-out placement, not the changeover position. If bypass removes Cerbo power, es-ESS cannot issue a final release command. The open backlog investigation must establish GX power, switch indication and Wattpilot firmware fallback before any automatic return to standalone use is claimed.</p>
+        <p><strong>An optional bypass is not an es-ESS state:</strong> <code>Position</code> describes Wattpilot AC placement, not a changeover position. If a bypass removes Cerbo power, es-ESS cannot issue a final release command. Any fallback integration is optional and must use an explicit, validated switch indication and an operator-approved contract for the target installation.</p>
       </div>
 
       <details style="margin-top:22px">
@@ -538,7 +623,7 @@
         </div>
         <svg viewBox="0 0 1200 910" role="img" aria-labelledby="system-title system-desc">
           <title id="system-title">Generic Fronius, Victron and Wattpilot system architecture</title>
-          <desc id="system-desc">Generic component and data-flow map. It is not the physical one-line drawing. The as-built diagram above defines the interlocked normal and bypass paths, load-side Fronius PV connection, house main breaker, and downstream Wattpilot branch.</desc>
+          <desc id="system-desc">Generic component and data-flow map. It is not a physical one-line drawing. The example above illustrates one optional changeover arrangement, a site protective boundary, and separately protected downstream circuits.</desc>
           <defs>
             <marker id="arrowSolar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#e5a122"/></marker>
             <marker id="arrowBattery" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#3b8c6e"/></marker>
@@ -591,7 +676,7 @@
           <text x="675" y="119" text-anchor="middle" font-size="16" font-weight="800" fill="#16212b">Smart Meter</text>
           <rect x="588" y="133" width="48" height="55" rx="4" fill="#e8ecec" stroke="#7f8b8d"/>
           <rect x="597" y="143" width="30" height="15" rx="2" fill="#92b8a7"/>
-          <text x="709" y="153" text-anchor="middle" font-size="11" fill="#5b6975">Whole-site boundary</text>
+          <text x="709" y="153" text-anchor="middle" font-size="11" fill="#5b6975">Grid-exchange boundary</text>
           <text x="709" y="177" text-anchor="middle" font-size="11" fill="#5b6975">Import / export meter</text>
 
           <rect x="1000" y="90" width="175" height="120" rx="18" fill="#f9eaea" stroke="#aa4f4f" stroke-width="2" filter="url(#softShadow)"/>
@@ -645,14 +730,14 @@
           <rect x="645" y="836" width="210" height="30" rx="9" fill="#7765a8"/>
           <text x="750" y="857" text-anchor="middle" font-size="14" font-weight="850" fill="#fff">es-ESS controller</text>
         </svg>
-        <figcaption>This generic map separates power-related components from data/control links; it is not the installation one-line drawing. For the maintained installation, use the as-built diagram above: Wattpilot and ordinary house circuits are separate final branches, but both are downstream of the house main breaker and the Victron/bypass load-side bus. The Cerbo/GX uses LAN for the Fronius inverter, VE.Bus for the inverter/chargers, BMS-CAN for the managed battery, and es-ESS uses the Wattpilot WebSocket interface.</figcaption>
+        <figcaption>This generic map separates power-related components from data/control links; it is not an installation one-line drawing. The example above illustrates one possible protected site-current boundary and separately protected downstream circuits. The Cerbo/GX uses LAN for the Fronius inverter, VE.Bus for the inverter/chargers, BMS-CAN for the managed battery, and es-ESS uses the Wattpilot WebSocket interface.</figcaption>
       </figure>
       </details>
 
       <div class="grid grid-2" style="margin-top:22px">
         <article class="card">
           <h3>Example placement: Wattpilot <code>Position=0</code></h3>
-          <p>es-ESS publishes <code>0</code> as AC-out and <code>1</code> as AC-in. The documented installation uses <code>0</code> for the normal Victron path. This is a configured reporting value, not automatic proof of physical wiring or bypass position. Check the deployed <code>/data/es-ESS/config.ini</code>, the Cerbo device view, changeover state and electrical diagram.</p>
+          <p>es-ESS publishes <code>0</code> as AC-out and <code>1</code> as AC-in. This worked example uses <code>0</code>; the configured value must match the actual Wattpilot placement. It is not automatic proof of physical wiring or an optional bypass position. Check the deployed <code>/data/es-ESS/config.ini</code>, the Cerbo device view and the installation's electrical diagram.</p>
         </article>
         <article class="card">
           <h3>Grid failure is a separate design case</h3>
@@ -978,8 +1063,8 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
         <article class="card">
           <h3>Current and phase thresholds</h3>
           <p>The Wattpilot family commonly starts around 6 A: approximately 1.38 kW on one phase and 4.14 kW on three phases at nominal voltage. Use hysteresis, so the three-phase start threshold is higher than the stop threshold.</p>
-          <p><code>SiteCurrentSource=VenusSystem</code> preserves the calculated GX consumption-current source. After a dedicated Shelly 3EM Gen3 is installed and its A/B/C phase mapping is verified, select <code>Shelly3EMGen3</code> and configure its host, digest password, polling timeout and one-to-one phase mapping in <code>[Shelly3EMSiteCurrent]</code>. In the documented installation, measure the protected house boundary before ordinary house circuits and the Wattpilot branch split, so both are included. The selected source never falls back automatically, and <code>Shelly3EMGrid</code> remains disabled.</p>
-          <p><code>SiteMaxCurrent</code> is expressed in amperes and applied independently to physical L1, L2 and L3. The 20 A value above is a configurable default example, not a universal installation limit; set it for the house-boundary protective device and wiring. The mandatory site guard caps one-phase charging on <code>Charger1PhaseMapping</code> and caps three-phase charging to the smallest physical-phase headroom because Wattpilot receives one equal current setting for all phases. The separate 16 A Wattpilot breaker remains downstream physical protection. The software reacts on the normal five-second cycle, supplements rather than replaces physical overcurrent protection, and does not independently protect lower-rated downstream circuits.</p>
+          <p><code>SiteCurrentSource=VenusSystem</code> preserves the calculated GX consumption-current source. After a dedicated Shelly 3EM Gen3 is installed and its A/B/C phase mapping is verified, select <code>Shelly3EMGen3</code> and configure its host, digest password, polling timeout and one-to-one phase mapping in <code>[Shelly3EMSiteCurrent]</code>. Place the selected meter at the boundary governed by <code>SiteMaxCurrent</code> so every load contributing to that boundary, including Wattpilot, is measured. The selected source never falls back automatically, and <code>Shelly3EMGrid</code> remains disabled.</p>
+          <p><code>SiteMaxCurrent</code> is expressed in amperes and applied independently to physical L1, L2 and L3. The 20 A value above is a configurable default example, not a universal installation limit; set it for the site's protective device and wiring. The mandatory site guard caps one-phase charging on <code>Charger1PhaseMapping</code> and caps three-phase charging to the smallest physical-phase headroom because Wattpilot receives one equal current setting for all phases. Every lower-rated downstream circuit needs its own protection; a 16 A EV branch is an example only. The software reacts on the normal five-second cycle, supplements rather than replaces physical overcurrent protection, and does not independently protect downstream circuits.</p>
           <p>Do not infer a safe 32 A setting from a 22 kW product label. The lowest limit among supply, protection, cabling, adapter, wallbox, vehicle and local rules wins.</p>
         </article>
       </div>
