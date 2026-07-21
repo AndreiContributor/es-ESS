@@ -642,6 +642,48 @@ surplus:
 | VRM and the Wattpilot app both show useful status. Auto/Eco PV control is owned by es-ESS; Manual mode remains owned by the Wattpilot user. |
 </div>
 
+### Documented installation topology
+
+The installation documented by this checkout places the Victron ESS in the
+normal AC path after the grid-boundary Fronius Smart Meter and before the
+backed-up load bus. An interlocked maintenance bypass can instead connect the
+grid directly to that load bus while isolating the Victron AC path. The
+AC-coupled Fronius PV inverter connects laterally at the load-side bus. The
+house main breaker is downstream of that bus; ordinary house circuits and the
+Wattpilot's dedicated 16 A circuit are separate branches behind the house main
+breaker.
+
+```text
+Grid -> utility meter -> Fronius Smart Meter -> interlocked changeover
+                                                   | normal: Victron AC-in
+                                                   |         -> AC-out
+                                                   | bypass: direct grid
+                                                   v
+                                            load-side AC bus
+                                              |          |
+                                     Fronius PV          house main breaker
+                                     inverter                 |
+                                                   +----------+----------+
+                                                   |                     |
+                                              house circuits      16 A breaker
+                                                                         |
+                                                                     Wattpilot
+```
+
+`Position=0` describes the Wattpilot's normal AC-out/load-side placement. It
+does not prove the wiring and does not indicate whether the maintenance bypass
+is selected. The selected site-current source must measure the protected house
+boundary with ordinary house load and Wattpilot current both included; the
+dedicated 16 A breaker remains separate physical branch protection.
+
+The current runtime has no maintenance-bypass input or validated automatic
+fallback contract. If bypass also removes Cerbo GX power, es-ESS cannot send a
+command at transfer time. Do not assume that the Wattpilot will release prior
+Auto/Eco constraints or return to normal standalone use after an abrupt GX
+loss. Until the backlog investigation is complete, prepare bypass with the
+vehicle disconnected and use the Wattpilot app to select and verify the
+operator's intended standalone mode before operating the changeover.
+
 ### Installation
 Despite the installation of es-ESS, an additional python module *websocket-client* is required to communicate with Wattpilot. 
 The installation is a *one-liner* through *pythons pip* - which in turn might need to be installed first. 

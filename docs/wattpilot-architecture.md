@@ -17,6 +17,32 @@ and phase-switch EV charging. Changes in this area must preserve Manual mode,
 PV-only Auto/Eco behavior, grid-use guards, battery-assist limits, telemetry
 freshness checks, and the public D-Bus/MQTT status contract.
 
+### Documented electrical topology
+
+The maintained installation profile places the grid-boundary Fronius Smart
+Meter first, followed by an interlocked maintenance changeover. In normal
+operation the selected path runs through the three-phase Victron
+inverter/chargers from AC-in to AC-out. In maintenance bypass the grid is routed
+directly to the same load-side bus while the Victron AC path is isolated. The
+Fronius AC PV inverter connects laterally at that load-side bus. The house main
+breaker is downstream, with ordinary house circuits and a dedicated 16 A
+Wattpilot circuit as separate branches behind it.
+
+The Cerbo GX is a supervisory/data device rather than an AC series component;
+the two batteries are on the Victron DC side. `Position=0` describes the
+Wattpilot's normal AC-out/load-side placement and does not detect the
+changeover position. The selected site-current boundary must include house and
+Wattpilot current before their downstream split so the existing EV-subtraction
+and headroom calculation remains valid.
+
+Maintenance bypass is not currently a controller state or command-authority
+input. The GX may remain powered from DC or may become unavailable, depending
+on installation wiring. An abrupt loss cannot execute the graceful SIGTERM
+stop path, and no verified Wattpilot-native controller-loss fallback is owned
+by this checkout. The open backlog investigation must establish the physical
+switch/GX behavior and the meaning of "normal standalone use" before any
+automatic release or Manual-mode command is introduced.
+
 For post-deploy, post-firmware, morning daylight and mid-day PV-surplus
 validation, `scripts/es-ess-health-monitor.sh` reads the public service state
 and Wattpilot D-Bus/runtime-status contract without issuing commands. Its
@@ -455,6 +481,11 @@ Future Wattpilot changes must preserve these invariants:
   downstream branch protection. A roughly five-second response cannot
   guarantee interception of short inrush, and stopping the EV cannot correct a
   house-only overload.
+- Selecting the documented maintenance bypass is not currently visible to the
+  controller. Do not infer bypass from a missing GX, stale D-Bus value, MQTT
+  disconnect, or Wattpilot transport event. A powered-down GX cannot issue a
+  release command, while automatically selecting Manual before the operating
+  contract is validated could enable unintended grid charging.
 - Solar.wattpilot app `2.1.0` is a commissioning baseline only; it cannot be
   asserted from the local es-ESS runtime.
 - The Wattpilot WebSocket query value `version=1.2.9` is a protocol/client

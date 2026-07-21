@@ -1774,6 +1774,216 @@ Done criteria:
   configuration, and reporting tests pass.
 - Full unittest suite passes.
 
+### P1 - Investigate Wattpilot Standalone Fallback During Victron Maintenance Bypass
+
+Goal:
+
+Establish and implement a verified operating contract that returns the
+Wattpilot to the explicitly approved standalone behavior when the Victron path
+is maintenance-bypassed or the controlling Cerbo GX becomes unavailable,
+without causing unintended grid charging or violating Manual-mode ownership.
+
+Problem:
+
+The documented installation routes normal power through the Victron
+inverter/chargers and provides an interlocked direct-grid maintenance bypass to
+the same load-side bus. The Wattpilot remains powered behind the house main and
+its dedicated 16 A breaker, but the Cerbo GX may lose power or may remain alive
+with telemetry that no longer represents the active AC path. The current
+runtime has no bypass-switch input or controller-loss fallback contract.
+
+`FroniusWattpilot.handleSigterm()` sends Force Off only during a graceful Auto
+shutdown and then disconnects. An abrupt GX power loss cannot execute that
+path, release phase/current constraints, select a Wattpilot mode, or prove what
+the charger does after its WebSocket controller disappears. Automatically
+selecting Manual/Standard without evidence could also start grid charging when
+the operator expected a stopped EV. "Return to normal usage" therefore needs a
+precise, hardware-validated definition before code changes.
+
+Evidence:
+
+- `FroniusWattpilot.py` `handleSigterm()` sends `frc=Off` only when the client
+  is connected and the controller is in Auto, then disables reconnect and
+  disconnects. It does not release `psm`/`amp` constraints or select Manual.
+- `Wattpilot.py` command helpers send `amp`, `frc`, `psm`, and `lmo` only while
+  the process is running; no local daemon can act after Cerbo power is lost.
+- `FroniusWattpilot.py` permits a one-time phase/current release only after an
+  observed or requested Auto-to-Manual transition. That approved exception is
+  not a generic controller-loss policy.
+- `es-ESS.py` invokes service cleanup on SIGTERM/SIGINT, but sudden power loss
+  bypasses the complete shutdown sequence.
+- `config.sample.ini`, `README.md`, `docs/wattpilot-architecture.md`,
+  `docs/service-inventory.md`, and `docs/system-guide.html` now document the
+  normal Victron path, direct-grid bypass, downstream house/Wattpilot branches,
+  and the absence of a validated automatic fallback.
+- No active service subscribes to a bypass auxiliary contact or publishes a
+  bypass state through D-Bus or MQTT.
+
+Implementation:
+
+- First retain an electrician-verified one-line drawing and identify whether
+  the bypass switch has an isolated auxiliary contact, whether Cerbo remains
+  powered from DC in bypass, and which grid/site/battery telemetry stays valid
+  in each switch position.
+- With the vehicle disconnected, characterize Wattpilot firmware `42.5`
+  behavior after WebSocket loss, Cerbo loss, graceful es-ESS shutdown,
+  Wattpilot power cycle, and later controller reconnection. Record retained
+  `lmo`, `frc`, `psm`, and `amp` state without assuming a native watchdog.
+- Define the operator-approved fallback explicitly: for example remain Off,
+  restore the pre-Auto Manual/Standard state, or require an app action. Specify
+  whether a connected vehicle may start from grid and how the 16 A branch cap
+  remains enforced.
+- Prefer a deterministic physical bypass indication if automatic behavior is
+  required while GX remains powered. Do not infer bypass from MQTT loss,
+  Wattpilot WebSocket loss, stale D-Bus telemetry, or a generic Victron service
+  outage.
+- If bypass removes GX power, select a mechanism that can operate without
+  es-ESS: a documented pre-bypass procedure, a validated Wattpilot-native
+  setting/watchdog, or an electrician-approved external interlock. Do not claim
+  that Python shutdown code can handle loss of its own power.
+- Only after the evidence and product decision are approved, implement the
+  smallest one-time state transition behind the existing firmware and command
+  boundaries. Preserve ordinary Manual observation-only behavior, the current
+  Auto/Eco no-grid policy, continuation-only battery assist, transactional
+  starts, and the prohibition on generic shared 16 A cable limiting.
+- Publish an explicit bypass/fallback state and actionable reason if runtime
+  detection is implemented. Update monitoring and daily reporting without
+  adding another command owner.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `Wattpilot.py` only if a validated charger-side fallback command is required
+- `WattpilotControlState.py` only if a live, explicit bypass input becomes a
+  controller state
+- `WattpilotRuntimeStatus.py`
+- `es-ESS.py` only if an explicit bypass input/lifecycle boundary is added
+- `config.sample.ini`
+- `README.md`
+- `docs/wattpilot-architecture.md`
+- `docs/service-inventory.md`
+- `docs/system-guide.html`
+- `scripts/es-ess-health-monitor.sh`
+- `scripts/es-ess-daily-report.py`
+- `tests/test_wattpilot_command_boundary.py`
+- `tests/test_wattpilot_runtime_status.py`
+- `tests/test_config_contract.py` and `tests/test_config_migration.py` if a
+  setting is added
+- `BACKLOG.md`
+
+Files to add:
+
+- `tests/test_wattpilot_bypass_fallback.py` if the approved behavior is large
+  enough to justify an isolated hardware-free contract test.
+
+Tests:
+
+- Characterize the existing graceful Auto shutdown as Force Off followed by
+  disconnect, and prove Manual shutdown remains command-free.
+- Prove missing or ambiguous bypass evidence cannot select Manual, start,
+  phase-switch, increase current, or widen command authority.
+- If an explicit live bypass input is approved, cover transition entry,
+  one-time fallback, repeated samples, process restart while already bypassed,
+  return to normal topology, input loss, and command rejection.
+- Prove the approved fallback cannot be triggered by only MQTT loss,
+  Wattpilot transport loss, stale site/grid telemetry, or a generic Victron
+  D-Bus outage.
+- Prove a release-to-Manual design, if explicitly approved, restores only the
+  validated phase/current constraints and does not issue Start/Stop as part of
+  normal Manual operation.
+- Follow the existing hardware-free stub patterns in `tests/test.py` and
+  `tests/test_eco_pv_policy.py`; no real bypass switch, charger, D-Bus, MQTT, or
+  network is used in CI.
+
+Expected coverage:
+
+- Distinguishes graceful shutdown, abrupt controller loss, explicit live
+  bypass, and ordinary telemetry/transport faults instead of treating them as
+  equivalent.
+- Proves any implemented fallback is one-time, firmware-guarded, observable,
+  and cannot silently enable grid charging or interfere with ordinary Manual
+  mode.
+- Existing site-current, no-grid, phase, battery-assist, command-authority,
+  shutdown, and reconnect tests remain passing.
+
+Manual validation:
+
+Fault simulation in a low-risk, electrician-approved window with the vehicle
+disconnected. Initial evidence collection must not rely on an active charge or
+force grid import. Active charging may be considered only after the exact
+fallback contract passes disconnected validation and receives separate
+approval.
+
+Manual test steps:
+
+1. Retain the electrician's one-line diagram, switch make/model and contact
+   schedule; identify normal, off and bypass positions plus any auxiliary
+   contact and neutral switching.
+2. With no vehicle connected, record Cerbo power, Victron services, Fronius
+   grid/PV visibility, site-current source, MQTT and network availability in
+   normal, off and bypass positions. Do not operate the switch unless the
+   installer confirms the procedure and load conditions.
+3. Separately capture Wattpilot `lmo`, `frc`, `psm`, `amp`, connection state
+   and app-visible mode before and after graceful es-ESS shutdown and isolated
+   controller/network loss. Do not change native settings during capture.
+4. Confirm the desired standalone result in writing, including whether the EV
+   must remain stopped or may charge from grid and which user/app action owns
+   the transition.
+5. After implementation, repeat the disconnected transitions and verify one
+   fallback action, truthful runtime status, no command loop, no stale Auto
+   limit, and correct recovery when normal topology returns.
+6. Perform any later connected/charging check only under a separately approved
+   supervised procedure; do not use maintenance bypass merely to exercise a
+   software branch.
+
+Risks and dependencies:
+
+- If bypass removes GX power, es-ESS cannot guarantee a final network command;
+  the solution must be procedural, charger-native, or externally interlocked.
+- Automatically selecting Manual/Standard may permit immediate grid charging
+  and conflicts with the established Manual ownership boundary unless the
+  operator explicitly approves the transition semantics.
+- A bypass auxiliary contact, GX digital input, D-Bus path, or external relay
+  interface is installation-specific and must be electrically isolated and
+  commissioned by the installer.
+- Incorrect switch-state detection could disable PV-only protection or create
+  a second command owner. Generic telemetry loss must continue to use existing
+  fail-closed paths.
+- Wattpilot firmware behavior after controller loss or power cycling is not
+  established by the repository and requires direct evidence on firmware
+  `42.5`.
+
+Open questions:
+
+- Does the Cerbo GX remain powered from the batteries in normal, off and bypass
+  positions, and do its D-Bus/MQTT services remain operational?
+- Does the bypass provide a safe auxiliary contact that can be read by the GX?
+- What exact state means "normal usage": remain stopped, restore the prior
+  Manual/Standard state, or allow immediate standalone grid charging?
+- Which `lmo`, `frc`, `psm`, and `amp` values does Wattpilot firmware `42.5`
+  retain after WebSocket loss, GX loss, charger power loss and reconnection?
+- Is the Fronius AC PV inverter on the maintained load-side bus in every switch
+  position, and what monitoring/control remains available while bypassed?
+
+Done criteria:
+
+- The as-built power, control and bypass contact topology is retained and
+  electrician-verified.
+- GX availability and Wattpilot firmware behavior are characterized for every
+  relevant transition without an active vehicle.
+- The operator explicitly approves the standalone fallback and grid-charging
+  semantics.
+- Any runtime implementation uses explicit evidence, remains one-time and
+  observable, and cannot be triggered by generic telemetry or network loss.
+- Abrupt GX loss has an honest non-Python fallback or a documented limitation;
+  no shutdown guarantee depends on code running after its power is removed.
+- Manual ownership, Auto/Eco no-grid behavior, battery-assist bounds,
+  site-current protection, command authority and public contracts are
+  preserved or intentionally updated with matching documentation and tests.
+- Changed Python files pass syntax checks; focused fallback, shutdown,
+  configuration and reporting tests pass.
+- Full unittest suite passes.
+
 ## Suggested Implementation Order / PR Execution Queue
 
 Use this queue as the implementation order. Entries carrying the same PR-group
@@ -1788,6 +1998,9 @@ advance the queue on the next request.
 1. P1 Integrate Shelly 3EM-63T Gen3 As The Dedicated Site-Current Source —
    implementation complete; production selection and closure remain gated
    until the meter is installed and live API/phase evidence is reviewed.
+2. P1 Investigate Wattpilot Standalone Fallback During Victron Maintenance
+   Bypass — establish the physical/GX behavior and operator-approved fallback
+   before adding any automatic Manual or controller-loss command.
 
 ## Verification Plan
 
