@@ -112,6 +112,13 @@ and rendering. This is particularly useful on GX hardware when a large
 APP_DEBUG log contains more than 100,000 records. Progress never enters report
 stdout, so JSON remains parseable. The report header records separate log-load
 and evidence-analysis durations to make GX performance regressions visible.
+Automatic discovery reads only rotations whose Venus-local calendar dates
+intersect the requested window. The active `current.log` is included for the
+current day and as a conservative fallback when an expected completed-day
+rotation is missing. Parsed timestamps and the existing coverage checks remain
+authoritative, so filename selection cannot turn incomplete evidence into a
+complete report. Report cost therefore follows the requested window instead of
+the total retention period.
 Disable progress for automation with:
 
 ```sh
@@ -122,8 +129,9 @@ python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday --no-progres
 `INCOMPLETE`, unless it detects an anomaly and exits `2`. It stops only when
 there are no parseable current-day records or no diagnostic-level record.
 `--hours` accepts only 24 hours or more. Current and rotated logs are discovered
-automatically. `--log-file` is available for a copied raw log; historical and
-rolling requests still require complete-window evidence.
+and selected automatically. `--log-file` is available for a copied raw log;
+historical and rolling requests still require complete-window evidence.
+Pressing `Ctrl+C` stops cleanly with exit code `130`.
 
 To retain a private JSON report:
 
@@ -156,7 +164,8 @@ Individual checks use `PASS`, `INFO`, `NOT_OBSERVED`, `ATTENTION`, `WARN`, and
 a healthy result.
 
 Exit codes are `0` for `GOOD`, `1` for `ATTENTION` or `INCOMPLETE`, `2` for
-`ANOMALY`, and `3` for invalid arguments or unreadable explicit input.
+`ANOMALY`, `3` for invalid arguments or unreadable explicit input, and `130`
+when the operator interrupts the report.
 
 ## Report Sections
 

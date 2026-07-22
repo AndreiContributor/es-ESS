@@ -887,6 +887,92 @@ NoBatToEV=false
             ["current.log", "current.log.2026-07-14", "current.log.2026-07-15"],
         )
 
+    def test_selects_only_rotation_for_complete_historical_day(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_log = root / "current.log"
+            paths = [base_log]
+            for suffix in ("2026-07-14", "2026-07-15", "2026-07-16"):
+                paths.append(root / f"current.log.{suffix}")
+            for path in paths:
+                path.write_text("", encoding="utf-8")
+
+            selected = AUDIT.select_log_files_for_window(
+                base_log,
+                AUDIT.discover_log_files(base_log),
+                datetime(2026, 7, 15),
+                datetime(2026, 7, 16),
+                datetime(2026, 7, 17).date(),
+            )
+
+        self.assertEqual(
+            [path.name for path in selected],
+            ["current.log.2026-07-15"],
+        )
+
+    def test_selects_active_log_only_for_current_partial_day(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_log = root / "current.log"
+            paths = [
+                base_log,
+                root / "current.log.2026-07-14",
+                root / "current.log.2026-07-15",
+            ]
+            for path in paths:
+                path.write_text("", encoding="utf-8")
+
+            selected = AUDIT.select_log_files_for_window(
+                base_log,
+                AUDIT.discover_log_files(base_log),
+                datetime(2026, 7, 16),
+                datetime(2026, 7, 16, 12),
+                datetime(2026, 7, 16).date(),
+            )
+
+        self.assertEqual([path.name for path in selected], ["current.log"])
+
+    def test_selects_rotation_and_active_log_for_cross_midnight_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_log = root / "current.log"
+            paths = [
+                base_log,
+                root / "current.log.2026-07-14",
+                root / "current.log.2026-07-15",
+            ]
+            for path in paths:
+                path.write_text("", encoding="utf-8")
+
+            selected = AUDIT.select_log_files_for_window(
+                base_log,
+                AUDIT.discover_log_files(base_log),
+                datetime(2026, 7, 15, 12),
+                datetime(2026, 7, 16, 12),
+                datetime(2026, 7, 16).date(),
+            )
+
+        self.assertEqual(
+            [path.name for path in selected],
+            ["current.log", "current.log.2026-07-15"],
+        )
+
+    def test_active_log_is_rollover_fallback_for_missing_rotation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_log = root / "current.log"
+            base_log.write_text("", encoding="utf-8")
+
+            selected = AUDIT.select_log_files_for_window(
+                base_log,
+                AUDIT.discover_log_files(base_log),
+                datetime(2026, 7, 15),
+                datetime(2026, 7, 16),
+                datetime(2026, 7, 16).date(),
+            )
+
+        self.assertEqual([path.name for path in selected], ["current.log"])
+
     def test_load_window_crosses_midnight_and_deduplicates_rotation_overlap(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -906,6 +992,16 @@ NoBatToEV=false
             )
         self.assertEqual(total, 4)
         self.assertEqual([record.message for record in records], ["before", "duplicate", "after"])
+
+    def test_cli_handles_keyboard_interrupt_without_traceback(self):
+        stderr = io.StringIO()
+        with mock.patch.object(
+            AUDIT, "main", side_effect=KeyboardInterrupt
+        ), contextlib.redirect_stderr(stderr):
+            exit_code = AUDIT.cli([])
+
+        self.assertEqual(exit_code, 130)
+        self.assertIn("Daily report interrupted.", stderr.getvalue())
 
     def test_offset_timestamp_orders_repeated_dst_hour_by_actual_instant(self):
         with tempfile.TemporaryDirectory() as directory:

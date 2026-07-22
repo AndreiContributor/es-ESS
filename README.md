@@ -1099,7 +1099,12 @@ python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday --json \
   > /data/es-ESS-validation/es-ess-daily-report-$(date +%Y%m%d).json
 ```
 
-The read-only analyzer automatically includes `current.log` and dated rotations.
+The read-only analyzer discovers `current.log` and dated rotations, then reads
+only the active or completed local-calendar files that can contain the
+requested window. It uses `current.log` as a safe fallback when an expected
+rotation is missing, and verifies completeness from record timestamps rather
+than filenames alone. This keeps a one-day report independent of the total log
+retention size.
 It makes one bounded, allowlisted `GetValue` query for the authoritative Venus
 `/Settings/System/TimeZone`, then optionally reads current service/D-Bus
 snapshots. It never writes D-Bus, MQTT, Wattpilot, configuration, or service
@@ -1124,9 +1129,10 @@ but their energy and connection counts are explicitly unavailable.
 `NOT_OBSERVED` rare statuses are
 informational. Interactive runs show byte-level log and D-Bus snapshot progress
 on stderr; use `--no-progress` for automation or `--no-current-snapshot` to skip
-the optional live snapshot. The required timezone query still runs with that
-flag. Three consecutive snapshot timeouts skip remaining paths without blocking
-historical analysis. Full commissioning, options,
+the optional live snapshot. Pressing `Ctrl+C` stops cleanly with exit code
+`130`. The required timezone query still runs with that flag. Three consecutive
+snapshot timeouts skip remaining paths without blocking historical analysis.
+Full commissioning, options,
 limitations, exit codes, and JSON
 output are documented in
 [docs/es-ess-daily-report.md](docs/es-ess-daily-report.md).

@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional, TextIO
 
@@ -42,6 +42,7 @@ EXIT_PASS = 0
 EXIT_INCOMPLETE = 1
 EXIT_FAIL = 2
 EXIT_INPUT_ERROR = 3
+EXIT_INTERRUPTED = 130
 
 DEFAULT_LOG_FILE = "/data/log/es-ESS/current.log"
 DEFAULT_CONFIG_FILE = "/data/es-ESS/config.ini"
@@ -710,6 +711,75 @@ def discover_log_files(base_log: Path) -> list[Path]:
             if path.is_file() and rotated_name.fullmatch(path.name)
         )
     return sorted(set(candidates), key=lambda path: path.name)
+
+
+def _window_calendar_dates(
+    window_start: datetime, window_end: datetime
+) -> set[date]:
+    """Return local calendar dates touched by the half-open report window."""
+    if window_end <= window_start:
+        return set()
+    final_date = (window_end - timedelta(microseconds=1)).date()
+    current_date = window_start.date()
+    dates: set[date] = set()
+    while current_date <= final_date:
+        dates.add(current_date)
+        current_date += timedelta(days=1)
+    return dates
+
+
+def select_log_files_for_window(
+    base_log: Path,
+    discovered_paths: Iterable[Path],
+    window_start: datetime,
+    window_end: datetime,
+    current_date: date,
+) -> list[Path]:
+    """Select only rotations that can contain the requested calendar window.
+
+    Rotated files are named after the completed Venus-local calendar day by
+    LocalCalendarTimedRotatingFileHandler. The active log is also selected for
+    the current day, or as a conservative fallback when an expected rotation
+    is absent (for example, before the first post-midnight record triggers
+    rollover). Actual record timestamps and coverage checks remain the source
+    of truth after this filename-based fast path.
+    """
+    paths = sorted(set(discovered_paths), key=lambda path: path.name)
+    target_dates = _window_calendar_dates(window_start, window_end)
+    rotated_name = re.compile(
+        re.escape(base_log.name) + r"\.(\d{4}-\d{2}-\d{2})$"
+    )
+    rotations_by_date: dict[date, Path] = {}
+    active_log: Optional[Path] = None
+
+    for path in paths:
+        if path == base_log:
+            active_log = path
+            continue
+        match = rotated_name.fullmatch(path.name)
+        if match is None:
+            continue
+        try:
+            rotation_date = date.fromisoformat(match.group(1))
+        except ValueError:
+            continue
+        rotations_by_date[rotation_date] = path
+
+    selected = [
+        rotations_by_date[target_date]
+        for target_date in sorted(target_dates)
+        if target_date in rotations_by_date
+    ]
+    missing_rotation = any(
+        target_date != current_date and target_date not in rotations_by_date
+        for target_date in target_dates
+    )
+    if active_log is not None and (
+        current_date in target_dates or missing_rotation
+    ):
+        selected.append(active_log)
+
+    return sorted(set(selected), key=lambda path: path.name)
 
 
 def resolve_window(
@@ -3666,13 +3736,17 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     progress.update(1, "Discovering log files")
     base_log = Path(args.log_file or DEFAULT_LOG_FILE)
-    log_paths = [base_log] if args.log_file else discover_log_files(base_log)
-    if not log_paths:
+    discovered_log_paths = (
+        [base_log] if args.log_file else discover_log_files(base_log)
+    )
+    if not discovered_log_paths:
         reason = f"No current or rotated es-ESS log files were found at {base_log}."
         progress.stop("Stopped: logs not found")
         print(render_prerequisite(reason, str(config_path), args.json))
         return EXIT_INCOMPLETE
-    unreadable = [str(path) for path in log_paths if not path.is_file()]
+    unreadable = [
+        str(path) for path in discovered_log_paths if not path.is_file()
+    ]
     if unreadable:
         progress.stop("Stopped: unreadable log input")
         print(f"ERROR: log file is not readable: {', '.join(unreadable)}", file=sys.stderr)
@@ -3684,6 +3758,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         and window_end > report_now
     )
     analysis_cutoff = report_now if partial_today else window_end
+    log_paths = (
+        discovered_log_paths
+        if args.log_file
+        else select_log_files_for_window(
+            base_log,
+            discovered_log_paths,
+            window_start,
+            analysis_cutoff,
+            report_now.date(),
+        )
+    )
+    if not log_paths:
+        reason = (
+            "No current or rotated es-ESS log file can contain the requested "
+            "report window."
+        )
+        progress.stop("Stopped: requested logs not found")
+        print(render_prerequisite(reason, str(config_path), args.json))
+        return EXIT_INCOMPLETE
 
     log_load_started = time.monotonic()
     try:
@@ -3807,5 +3900,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     return result.exit_code
 
 
+def cli(argv: Optional[list[str]] = None) -> int:
+    try:
+        return main(argv)
+    except KeyboardInterrupt:
+        print("\nDaily report interrupted.", file=sys.stderr)
+        return EXIT_INTERRUPTED
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli())
