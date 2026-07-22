@@ -127,6 +127,39 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-22 - Reuse One Site-Current Snapshot Per Wattpilot Control Cycle
+
+- Production APP_DEBUG evidence from 2026-07-21 showed a three-phase Auto/Eco
+  charge stop 149 ms after the grid-import debounce started, without a grid
+  guard trigger, normal stop marker, phase command, or attributed safety
+  intervention. The controller had already accepted the first site-current
+  guard result for state selection.
+- Root cause was a second live site-current provider read inside the active-
+  charging branch after `_update()` had already sampled all three phases. A
+  transiently different second D-Bus result could therefore select `CHARGING`
+  from the first sample and issue an otherwise silent `frc=Off` from the
+  second.
+- `_update()` now creates one immutable, timestamped site-current guard
+  snapshot and passes it through control-state dispatch to active charging.
+  Direct callers still acquire one snapshot. A snapshot that expires before
+  dispatch fails closed without another provider read.
+- Site-current telemetry and insufficient-headroom stops now share explicit,
+  daily-report-recognized service messages and update the guard reason before
+  applying the existing zero-current/Force-Off path. Immediate stop priority,
+  recovery timing, command authority, no-grid policy, battery assist, phase
+  thresholds, and command ordering are unchanged.
+- The daily report now includes both site-current stop classes in its safety-
+  intervention finding instead of reporting that no safety system intervened;
+  its existing session stop-reason classification remains unchanged.
+- Added hardware-free full-cycle coverage proving one L1/L2/L3 read set per
+  active controller cycle, no stop from a hypothetical second-read failure,
+  attributed fail-closed behavior for an unsafe first or expired snapshot, and
+  no phase command during either stop. Python syntax, 239 focused Wattpilot/
+  reporting/configuration/backlog tests, and the complete 566-test suite passed.
+- Normal supervised active-charging observation remains appropriate after
+  deployment; do not induce an overload or telemetry outage solely to validate
+  this change.
+
 ### Completed 2026-07-20 - Preserve Site-Current Recovery Across No-Op And Pre-Start Commands
 
 - Supervised production evidence showed a stable 6.43-6.47 kW Wattpilot

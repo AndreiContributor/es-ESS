@@ -1320,6 +1320,7 @@ class EsEssDailyReport:
         self.restart_records: list[LogRecord] = []
         self.reconnect_records: list[LogRecord] = []
         self.stale_telemetry_records: list[LogRecord] = []
+        self.site_current_stop_records: list[LogRecord] = []
         self.battery_assist_limit_records: list[LogRecord] = []
         self.raw_command_records: list[LogRecord] = []
         self._manual_control_records: list[LogRecord] = []
@@ -1527,6 +1528,12 @@ class EsEssDailyReport:
             if "Grid telemetry is missing, invalid, or stale" in message:
                 self.safety_override_records.append(record)
                 self.stale_telemetry_records.append(record)
+            if (
+                "Site-current telemetry is missing" in message
+                or "Whole-site phase headroom is below" in message
+            ):
+                self.site_current_stop_records.append(record)
+                self.safety_override_records.append(record)
             if authority_blocked:
                 self.safety_override_records.append(record)
 
@@ -1833,6 +1840,7 @@ class EsEssDailyReport:
         events = (
             self.grid_guard_actions
             + self.stale_telemetry_records
+            + self.site_current_stop_records
             + self.battery_assist_limit_records
             + self.authority_blocked
         )
@@ -1847,7 +1855,7 @@ class EsEssDailyReport:
             self.add(
                 "INFO",
                 "safety interventions",
-                "No grid, stale-telemetry, battery-assist-timeout, or authority-block intervention was observed.",
+                "No grid, site-current, stale-telemetry, battery-assist-timeout, or authority-block intervention was observed.",
             )
 
     def check_charging(self) -> None:

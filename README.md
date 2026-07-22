@@ -830,7 +830,7 @@ or force-state commands.
 | [FroniusWattpilot] | SiteCurrentSource | Mandatory site-current provider. `VenusSystem` preserves the calculated Victron consumption-current source; `Shelly3EMGen3` selects the explicitly configured dedicated meter. The selected source never falls back automatically. | String | VenusSystem |
 | [FroniusWattpilot] | SiteMaxCurrent | Mandatory Auto/Eco whole-site limit in amperes, applied independently to physical L1, L2, and L3. Must be within `6..100 A`; the `20 A` default is not universal and must be configured for the site's protective device and wiring. This protects the site supply calculation, not a lower-rated downstream branch. | Integer (A per phase) | 20 |
 | [FroniusWattpilot] | Charger1PhaseMapping | Physical site phase used by Wattpilot one-phase charging after any electrician-installed phase rotation. Allowed values are `L1`, `L2`, or `L3`. | String | L1 |
-| [FroniusWattpilot] | SiteCurrentFreshSeconds | Positive maximum age of whole-site L1/L2/L3 current and, during an active charge, Wattpilot phase-current telemetry. Each guard pass live-reads the site-current paths, so valid unchanged values remain fresh; failed, missing, invalid, or stale data fails Auto/Eco closed. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | SiteCurrentFreshSeconds | Positive maximum age of whole-site L1/L2/L3 current and, during an active charge, Wattpilot phase-current telemetry. Each eligible controller cycle live-reads the site-current paths once and reuses that timestamped safety result through command dispatch, so valid unchanged values remain fresh while failed, missing, invalid, stale, or dispatch-expired data fails Auto/Eco closed. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | SiteCurrentRecoverySeconds | Non-negative continuous safe-headroom time before a stopped charge may restart or current may increase; increases then rise by 1 A per normal controller cycle. | Integer (seconds) | 30 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. Must be greater than `ThreePhasePvSurplusStopW`. The maintained 4500 W default is above the typical 3-phase 6 A electrical floor while matching observed Wattpilot-app-style behavior more closely than a very conservative 5000 W threshold. | Integer (W) | 4500 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStopW | PV threshold below which Auto/Eco falls back from 3 phases to 1 phase when one-phase charging is still supportable. Must be lower than `ThreePhasePvSurplusStartW`. | Integer (W) | 4100 |
@@ -924,10 +924,14 @@ not bypass this guard. Manual mode only reports these values.
 Venus D-Bus change notifications are not a liveness heartbeat: a valid current
 may remain exactly `0 A` or at another unchanged value for minutes without a
 new signal. The Venus provider therefore performs a live `GetValue` read for
-all three paths before each guard calculation. The Shelly provider timestamps
-only a complete successful HTTP sample. A failed read invalidates the selected
-source while preserving the age of the last successful value, so Auto/Eco
-fails closed. There is no automatic fallback between providers.
+all three paths once at the start of each eligible controller cycle. The same
+timestamped safety result is used for state selection and active-charge command
+dispatch, preventing contradictory reads within one cycle. If that result
+expires before dispatch, Auto/Eco fails closed without another provider read.
+The Shelly provider timestamps only a complete successful HTTP sample. A failed
+read invalidates the selected source while preserving the age of the last
+successful value, so Auto/Eco fails closed. There is no automatic fallback
+between providers.
 
 `SiteMaxCurrent` is expressed in amperes and applied independently to each
 physical phase. The `20 A` default is not a fixed product limit: configure it

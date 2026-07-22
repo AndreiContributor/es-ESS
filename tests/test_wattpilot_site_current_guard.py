@@ -58,6 +58,7 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         self._active_one_phase(controller, 100, amps=6)
         # 21 A total minus 6 A EV = 15 A house load, leaving only 5 A.
         self._set_site(controller, 21, 4, 4, 100)
+        controller.publishServiceMessage = Mock()
 
         with patch.object(self.fwp.time, "time", return_value=100):
             status = controller.controlAutomaticCharging()
@@ -68,6 +69,101 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
             self.fwp.WattpilotStartStop.Off
         )
         controller.wattpilot.set_phases.assert_not_called()
+        self.assertTrue(controller.siteCurrentGuardBlocked)
+        self.assertIn("No phase headroom", controller.siteCurrentGuardReason)
+        self.assertTrue(
+            any(
+                "Whole-site phase headroom is below" in call.args[1]
+                for call in controller.publishServiceMessage.call_args_list
+            )
+        )
+
+    def test_update_reuses_one_site_current_snapshot_for_active_charging(self):
+        controller = self._controller()
+        self._active_one_phase(controller, 100, amps=6)
+        self._set_site(controller, 6, 0, 0, 100)
+        controller.allowance = 1380
+        controller.allowanceUpdatedAt = 100
+
+        reads = []
+        for phase, value in zip(("L1", "L2", "L3"), (6, 0, 0)):
+            subscription = SimpleNamespace(value=value, phase=phase)
+            setattr(controller, "siteCurrent{0}Dbus".format(phase), subscription)
+
+        def read_once_per_phase(subscription):
+            reads.append(subscription.phase)
+            if len(reads) <= 3:
+                return True, subscription.value
+            return False, None
+
+        controller.readDbusSubscription = Mock(side_effect=read_once_per_phase)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller._update()
+
+        self.assertEqual(reads, ["L1", "L2", "L3"])
+        controller.wattpilot.set_start_stop.assert_not_called()
+
+    def test_update_attributes_an_unsafe_first_site_current_snapshot(self):
+        controller = self._controller()
+        self._active_one_phase(controller, 100, amps=6)
+        self._set_site(controller, 6, 0, 0, 100)
+        controller.allowance = 1380
+        controller.allowanceUpdatedAt = 100
+        controller.publishServiceMessage = Mock()
+
+        for phase, value in zip(("L1", "L2", "L3"), (6, 0, 0)):
+            subscription = SimpleNamespace(value=value, phase=phase)
+            setattr(controller, "siteCurrent{0}Dbus".format(phase), subscription)
+
+        controller.readDbusSubscription = Mock(
+            side_effect=lambda subscription: (
+                (False, None)
+                if subscription.phase == "L2"
+                else (True, subscription.value)
+            )
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller._update()
+
+        self.assertEqual(controller.readDbusSubscription.call_count, 3)
+        controller.wattpilot.set_power.assert_called_once_with(0)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+        controller.wattpilot.set_phases.assert_not_called()
+        self.assertTrue(controller.siteCurrentGuardBlocked)
+        self.assertIn("telemetry missing", controller.siteCurrentGuardReason)
+        self.assertTrue(
+            any(
+                "Site-current telemetry is missing" in call.args[1]
+                for call in controller.publishServiceMessage.call_args_list
+            )
+        )
+
+    def test_expired_cycle_snapshot_fails_closed_without_a_second_read(self):
+        controller = self._controller()
+        self._active_one_phase(controller, 100, amps=6)
+        self._set_site(controller, 6, 0, 0, 100)
+        controller.publishServiceMessage = Mock()
+        controller.refreshSiteCurrentGuard = Mock()
+        snapshot = self.fwp.SiteCurrentGuardSnapshot(
+            telemetry_fresh=True,
+            limit_exceeded=False,
+            evaluated_at=80,
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging(snapshot)
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+        controller.refreshSiteCurrentGuard.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+        controller.wattpilot.set_phases.assert_not_called()
+        self.assertIn("telemetry missing", controller.siteCurrentGuardReason)
 
     def test_stale_site_current_stops_even_when_grid_charging_and_assist_are_allowed(self):
         controller = self._controller()

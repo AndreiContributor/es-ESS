@@ -145,8 +145,11 @@ It owns:
   normalizes the explicitly selected provider, `Shelly3EMSiteCurrent.py` owns
   the asynchronous Shelly snapshot, and pure calculations remain delegated to
   `WattpilotSiteCurrentDecisions.py`. The default Venus provider live-reads the
-  three subscribed BusItems; the Shelly provider timestamps only a complete
-  successful RPC sample. There is no automatic provider fallback.
+  three subscribed BusItems once at the start of each controller cycle. That
+  immutable guard result is passed through state selection and command
+  dispatch, so one cycle cannot act on two contradictory provider reads. The
+  Shelly provider timestamps only a complete successful RPC sample. There is
+  no automatic provider fallback.
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
@@ -456,10 +459,13 @@ Future Wattpilot changes must preserve these invariants:
   data blocks starts and stops an active charge without a phase command.
 - D-Bus value-change callbacks are not site-current heartbeats because a valid
   zero or nonzero current may remain unchanged. The Venus provider performs a
-  live `GetValue` read of all three physical phase paths on every guard pass.
-  The Shelly provider uses the timestamp of its last complete HTTP poll. A
-  failed selected-source read never refreshes cached age and fails Auto/Eco
-  closed; the controller must not silently fall back to another provider.
+  live `GetValue` read of all three physical phase paths once per eligible
+  controller cycle. The resulting timestamped guard snapshot is reused for
+  state selection and active-charge dispatch; it fails closed without another
+  provider read if it expires before dispatch. The Shelly provider uses the
+  timestamp of its last complete HTTP poll. A failed selected-source read never
+  refreshes cached age and fails Auto/Eco closed; the controller must not
+  silently fall back to another provider.
 - One-phase charging subtracts measured EV current only from
   `Charger1PhaseMapping`. Three-phase charging subtracts the smallest measured
   EV phase current from all physical phases and receives one equal current

@@ -1801,6 +1801,27 @@ NoBatToEV=false
         self.assertEqual(result.overall, "ATTENTION")
         self.assertIn("ATTENTION", self._statuses(result, "safety interventions"))
 
+    def test_site_current_stop_reasons_are_reported_as_safety_attention(self):
+        result = self._run(
+            [
+                self._line(
+                    "21:46:00",
+                    "Site-current telemetry is missing, invalid, stale, or phase-uncertain. "
+                    "Stopping Auto/Eco charging for safety.",
+                    "WARNING",
+                ),
+                self._line(
+                    "21:46:05",
+                    "Whole-site phase headroom is below the 6 A EV minimum. "
+                    "Stopping Auto/Eco charging immediately.",
+                    "WARNING",
+                ),
+            ]
+        )
+
+        self.assertEqual(result.overall, "ATTENTION")
+        self.assertIn("ATTENTION", self._statuses(result, "safety interventions"))
+
     def test_no_grid_commissioning_profile_rejects_conflicting_services(self):
         settings = AUDIT.AuditSettings(
             log_level="APP_DEBUG",

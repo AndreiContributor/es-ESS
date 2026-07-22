@@ -6,7 +6,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -575,6 +575,7 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
             self.fwp.ControlStates.WattpilotControlState.CHARGING,
             True,
             None,
+            ANY,
         )
 
         controller.wattpilot.set_phases.reset_mock()
@@ -589,6 +590,7 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
             self.fwp.ControlStates.WattpilotControlState.CHARGING,
             True,
             None,
+            ANY,
         )
 
 

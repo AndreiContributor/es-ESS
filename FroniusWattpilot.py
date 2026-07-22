@@ -7,6 +7,7 @@ import os
 import platform
 import sys
 import time
+from typing import NamedTuple
 
 import paho.mqtt.client as mqtt # type: ignore
 
@@ -54,6 +55,14 @@ COMMAND_AUTHORITY_SELECT_AUTO = (
 COMMAND_AUTHORITY_VALIDATED = (
     "Validated: es-ESS is the sole Auto/Eco command owner"
 )
+
+
+class SiteCurrentGuardSnapshot(NamedTuple):
+    """One immutable site-current safety decision for a controller cycle."""
+
+    telemetry_fresh: bool
+    limit_exceeded: bool
+    evaluated_at: float
 
 class FroniusWattpilot (esESSService):
     
@@ -1072,6 +1081,7 @@ class FroniusWattpilot (esESSService):
         selectedState,
         effectiveCarConnected,
         pendingPhaseStatus,
+        siteCurrentGuard=None,
     ):
         state = ControlStates.WattpilotControlState
 
@@ -1103,7 +1113,10 @@ class FroniusWattpilot (esESSService):
             return self._handleDisconnected()
 
         if selectedState == state.CHARGING:
-            self.handleChargingState()
+            if siteCurrentGuard is None:
+                self.handleChargingState()
+            else:
+                self.handleChargingState(siteCurrentGuard)
             return False
 
         if selectedState == state.NOT_CHARGING:
@@ -1489,21 +1502,22 @@ class FroniusWattpilot (esESSService):
                 d(self, "Car state not ready yet.")
                 return
 
-            siteTelemetryFresh, siteLimitExceeded = self.refreshSiteCurrentGuard()
+            siteCurrentGuard = self.refreshSiteCurrentGuard()
             self.publishSafetyTelemetry()
             gridTelemetryFresh = self.gridTelemetryIsFresh()
 
             selectedState, pendingPhaseStatus, _inputs = self.selectControlState(
                 effectiveCarConnected,
                 gridTelemetryFresh,
-                siteTelemetryFresh,
-                siteLimitExceeded,
+                siteCurrentGuard.telemetry_fresh,
+                siteCurrentGuard.limit_exceeded,
             )
             self.logProtocolChargingStatusTransition(selectedState, _inputs)
             shouldReturn = self.dispatchControlState(
                 selectedState,
                 effectiveCarConnected,
                 pendingPhaseStatus,
+                siteCurrentGuard,
             )
             if shouldReturn:
                 self.reportBaseRequest()
@@ -1606,7 +1620,7 @@ class FroniusWattpilot (esESSService):
             statistics.note_start_result(accepted, failureStage)
 
 
-    def handleChargingState(self):
+    def handleChargingState(self, siteCurrentGuard=None):
         measuredPowerW = self.actualMeasuredPowerW()
 
         # Near a vehicle's target SOC, it can report a Charging model state
@@ -1648,7 +1662,9 @@ class FroniusWattpilot (esESSService):
         self.publishRetained("/LastChargeModeLiteral", "SolarOverhead")
 
         if self.mode == VrmEvChargerControlMode.Auto:
-            self.reportVRMStatus(self.controlAutomaticCharging())
+            self.reportVRMStatus(
+                self.controlAutomaticCharging(siteCurrentGuard)
+            )
         else:
             d(self, "Charging in manual mode.")
             self.reportVRMStatus(VrmEvChargerStatus.Charging)
@@ -1893,19 +1909,46 @@ class FroniusWattpilot (esESSService):
         )
 
 
-    def controlAutomaticCharging(self):
-        siteTelemetryFresh, siteLimitExceeded = self.refreshSiteCurrentGuard()
-        if not siteTelemetryFresh or siteLimitExceeded:
-            self.clearBatteryAssist()
-            self.forceStopForSiteCurrentLimit()
+    def controlAutomaticCharging(self, siteCurrentGuard=None):
+        # _update() supplies the immutable result sampled before state
+        # selection. Direct callers acquire one result here. Never live-read
+        # the provider twice in one controller cycle: two different D-Bus
+        # outcomes could otherwise select CHARGING and then issue an
+        # unattributed safety stop milliseconds later.
+        if siteCurrentGuard is None:
+            siteCurrentGuard = self.refreshSiteCurrentGuard()
+
+        siteTelemetryFresh = siteCurrentGuard.telemetry_fresh
+        siteLimitExceeded = siteCurrentGuard.limit_exceeded
+        if (
+            time.time() - siteCurrentGuard.evaluated_at
+            > self.siteCurrentFreshSeconds
+        ):
+            siteTelemetryFresh = False
+
+        if not siteTelemetryFresh:
+            self._stopForUnsafeSiteCurrentTelemetry()
+            return VrmEvChargerStatus.StopCharging
+        if siteLimitExceeded:
+            self._stopForSiteCurrentHeadroom()
             return VrmEvChargerStatus.StopCharging
 
         # Site-current protection has priority over PV allowance grace,
         # battery assist and grid fallback. Reduce before any continuation path.
         siteEnforcement = self.enforceSiteCurrentLimit()
         if not siteEnforcement:
-            self.clearBatteryAssist()
-            self.forceStopForSiteCurrentLimit()
+            # This is a defensive fail-closed fallback. It normally cannot
+            # differ from the cycle snapshot because no provider is read here,
+            # but a phase transition or freshness boundary may invalidate the
+            # cached calculation before command dispatch.
+            decision = self.siteCurrentDecision(
+                self.currentPhaseMode,
+                True,
+            )
+            if decision is None:
+                self._stopForUnsafeSiteCurrentTelemetry()
+            else:
+                self._stopForSiteCurrentHeadroom()
             return VrmEvChargerStatus.StopCharging
         if siteEnforcement == "reduced":
             return VrmEvChargerStatus.Charging
@@ -3073,7 +3116,11 @@ class FroniusWattpilot (esESSService):
         ):
             self.clearPhaseSwitchCandidate()
 
-        return telemetryFresh, limitExceeded
+        return SiteCurrentGuardSnapshot(
+            telemetry_fresh=telemetryFresh,
+            limit_exceeded=limitExceeded,
+            evaluated_at=now,
+        )
 
     def siteLimitedTargetCurrent(self, phaseMode, pvTarget, applyRecovery=True):
         """Cap a PV target by physical per-phase site headroom."""
@@ -3124,32 +3171,50 @@ class FroniusWattpilot (esESSService):
         return "safe"
 
     def _handleSiteCurrentTelemetryUnsafe(self):
-        self.publishServiceMessage(
-            self,
-            "Site-current telemetry is missing, invalid, stale, or phase-uncertain. "
-            "Stopping Auto/Eco charging for safety."
-        )
+        self._stopForUnsafeSiteCurrentTelemetry()
         self.reportVRMStatus(
             VrmEvChargerStatus.StopCharging
             if self.wattpilotReportsActiveCharge()
             else VrmEvChargerStatus.WaitingForSun,
             "Stopped for stale site-current telemetry",
         )
-        self.forceStopForSiteCurrentLimit()
         return True
 
     def _handleSiteCurrentLimitStop(self):
+        self._stopForSiteCurrentHeadroom()
+        self.reportVRMStatus(
+            VrmEvChargerStatus.StopCharging,
+            "Stopped for site current limit",
+        )
+        return True
+
+    def _stopForUnsafeSiteCurrentTelemetry(self):
+        """Attribute and apply a fail-closed site-telemetry stop."""
+        self.siteCurrentGuardBlocked = True
+        self.siteCurrentGuardReason = (
+            "Site-current telemetry missing, invalid, stale, or phase-uncertain"
+        )
+        self.clearBatteryAssist()
+        self.publishServiceMessage(
+            self,
+            "Site-current telemetry is missing, invalid, stale, or phase-uncertain. "
+            "Stopping Auto/Eco charging for safety."
+        )
+        self.forceStopForSiteCurrentLimit()
+
+    def _stopForSiteCurrentHeadroom(self):
+        """Attribute and apply an immediate insufficient-headroom stop."""
+        self.siteCurrentGuardBlocked = True
+        self.siteCurrentGuardReason = (
+            "No phase headroom for the 6 A charging minimum"
+        )
+        self.clearBatteryAssist()
         self.publishServiceMessage(
             self,
             "Whole-site phase headroom is below the 6 A EV minimum. "
             "Stopping Auto/Eco charging immediately."
         )
-        self.reportVRMStatus(
-            VrmEvChargerStatus.StopCharging,
-            "Stopped for site current limit",
-        )
         self.forceStopForSiteCurrentLimit()
-        return True
 
     def batterySoc(self):
         if not DecisionInputs.timestamped_value_is_fresh(
