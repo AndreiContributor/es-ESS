@@ -220,6 +220,15 @@ Version 4 detects or summarizes:
   commissioning profile; and
 - rare charging-status entry/exit through recognized active or safety states.
 
+Wattpilot firmware may be `<unavailable>` before the initial authentication
+and telemetry exchange. The report treats that record as an informational
+resolved startup interval only when ordered evidence proves initialization,
+authentication, confirmation of the same expected firmware, and no charger
+command, reconnect, or second initialization before confirmation. A wrong
+version, missing confirmation, incomplete sequence, or intervening control or
+connection-lifecycle event remains a compatibility failure and produces an
+`ANOMALY`.
+
 ## Structured Session Evidence
 
 `FroniusWattpilot.py` observes confirmed controller state once per normal duty

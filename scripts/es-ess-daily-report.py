@@ -273,6 +273,15 @@ RAW_COMMAND_RE = re.compile(
     r"\b(?:amp|frc|psm)=)",
     re.IGNORECASE,
 )
+FIRMWARE_UNAVAILABLE_RE = re.compile(
+    r"Wattpilot firmware compatibility not confirmed\. Expected "
+    r"(?P<expected>[0-9A-Za-z_-]+(?:\.[0-9A-Za-z_-]+)*), "
+    r"received <unavailable>\."
+)
+FIRMWARE_CONFIRMED_RE = re.compile(
+    r"Wattpilot firmware compatibility confirmed: "
+    r"(?P<actual>[0-9A-Za-z_-]+(?:\.[0-9A-Za-z_-]+)*)\."
+)
 STOP_REASONS = (
     ("whole-site phase headroom is below", "site current limit"),
     ("site-current telemetry is missing", "stale site-current telemetry"),
@@ -1317,6 +1326,12 @@ class EsEssDailyReport:
         self.grid_guard_actions: list[LogRecord] = []
         self.safety_override_records: list[LogRecord] = []
         self.failure_records: list[LogRecord] = []
+        self.firmware_unavailable_records: list[tuple[LogRecord, str]] = []
+        self.firmware_confirmed_records: list[tuple[LogRecord, str]] = []
+        self.authentication_records: list[LogRecord] = []
+        self.resolved_startup_compatibility: list[
+            tuple[LogRecord, LogRecord, LogRecord, LogRecord]
+        ] = []
         self.restart_records: list[LogRecord] = []
         self.reconnect_records: list[LogRecord] = []
         self.stale_telemetry_records: list[LogRecord] = []
@@ -1539,6 +1554,13 @@ class EsEssDailyReport:
 
             if "Initialization completed." in message and "is up and running" in message:
                 self.restart_records.append(record)
+            if "Authentication successful" in message:
+                self.authentication_records.append(record)
+            firmware_confirmed = FIRMWARE_CONFIRMED_RE.search(message)
+            if firmware_confirmed:
+                self.firmware_confirmed_records.append(
+                    (record, firmware_confirmed.group("actual"))
+                )
             if (
                 "Wattpilot disconnected" in message
                 or "Previous Wattpilot WebSocket worker did not stop" in message
@@ -1582,13 +1604,22 @@ class EsEssDailyReport:
             if rare_exit:
                 self.rare_exits.append((record, rare_exit.groupdict()))
 
+            firmware_unavailable = FIRMWARE_UNAVAILABLE_RE.search(message)
+            if firmware_unavailable:
+                self.firmware_unavailable_records.append(
+                    (record, firmware_unavailable.group("expected"))
+                )
+
             if (
                 record.level in ("ERROR", "CRITICAL")
                 or "Traceback (most recent call last)" in message
                 or "ModuleNotFoundError" in message
                 or "CompatibilityError" in message
                 or "Unsupported Venus OS" in message
-                or "Wattpilot firmware compatibility not confirmed" in message
+                or (
+                    "Wattpilot firmware compatibility not confirmed" in message
+                    and firmware_unavailable is None
+                )
             ):
                 self.failure_records.append(record)
             if (
@@ -1621,6 +1652,68 @@ class EsEssDailyReport:
         self._manual_control_timestamps = [
             record.timestamp for record in self._manual_control_records
         ]
+        self._classify_startup_compatibility()
+
+    def _classify_startup_compatibility(self) -> None:
+        """Resolve only the proven fail-closed pre-authentication startup gap."""
+        resolved_confirmation_timestamps: set[datetime] = set()
+        for warning, expected in self.firmware_unavailable_records:
+            initialization = next(
+                (
+                    record
+                    for record in self.restart_records
+                    if record.timestamp > warning.timestamp
+                ),
+                None,
+            )
+            if initialization is None:
+                self.failure_records.append(warning)
+                continue
+
+            authentication = next(
+                (
+                    record
+                    for record in self.authentication_records
+                    if record.timestamp > initialization.timestamp
+                ),
+                None,
+            )
+            if authentication is None:
+                self.failure_records.append(warning)
+                continue
+
+            confirmation = next(
+                (
+                    record
+                    for record, actual in self.firmware_confirmed_records
+                    if record.timestamp > authentication.timestamp
+                    and actual == expected
+                ),
+                None,
+            )
+            if confirmation is None:
+                self.failure_records.append(warning)
+                continue
+
+            sequence_invalid = any(
+                warning.timestamp < record.timestamp < confirmation.timestamp
+                for record in self.raw_command_records
+            ) or any(
+                initialization.timestamp < record.timestamp < confirmation.timestamp
+                for record in self.restart_records
+            ) or any(
+                warning.timestamp < record.timestamp < confirmation.timestamp
+                for record in self.reconnect_records
+            )
+            if sequence_invalid:
+                self.failure_records.append(warning)
+                continue
+
+            if confirmation.timestamp not in resolved_confirmation_timestamps:
+                self.resolved_startup_compatibility.append(
+                    (warning, initialization, authentication, confirmation)
+                )
+                resolved_confirmation_timestamps.add(confirmation.timestamp)
         self.failure_records = sorted(
             {record.timestamp: record for record in self.failure_records}.values(),
             key=lambda record: record.timestamp,
@@ -1686,6 +1779,19 @@ class EsEssDailyReport:
                 "runtime errors",
                 "No error, critical, traceback, compatibility, or failed phase-confirmation "
                 "events were detected.",
+            )
+        if self.resolved_startup_compatibility:
+            evidence = []
+            for interval in self.resolved_startup_compatibility:
+                evidence.extend(interval)
+            self.add(
+                "INFO",
+                "startup compatibility",
+                "Resolved {0} fail-closed pre-authentication Wattpilot firmware "
+                "compatibility interval(s) before any charger command.".format(
+                    len(self.resolved_startup_compatibility)
+                ),
+                evidence,
             )
 
     def check_runtime_health(self) -> None:

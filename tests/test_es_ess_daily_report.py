@@ -413,6 +413,200 @@ class EsEssDailyReportTests(unittest.TestCase):
 
         self.assertIn("FAIL", self._statuses(result, "runtime errors"))
 
+    def test_resolved_pre_auth_firmware_unavailability_is_informational(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:29:59",
+                    "Start/Stop to send: frc=WattpilotStartStop.Off:1",
+                ),
+                self._line(
+                    "15:29:59", "Wattpilot disconnected", "INFO", "100"
+                ),
+                self._line(
+                    "15:30:00",
+                    "ServiceMessage: Wattpilot firmware compatibility not confirmed. "
+                    "Expected 42.5, received <unavailable>. All es-ESS Wattpilot "
+                    "commands are blocked.",
+                    millis="100",
+                ),
+                self._line(
+                    "15:30:00",
+                    "Wattpilot firmware compatibility not confirmed. Expected 42.5, "
+                    "received <unavailable>. All es-ESS Wattpilot commands are blocked.",
+                    "WARNING",
+                    "200",
+                ),
+                self._line(
+                    "15:30:00",
+                    "Initialization completed. es-ESS is up and running.",
+                    "INFO",
+                    "300",
+                ),
+                self._line(
+                    "15:30:05", "Authentication successful", "INFO"
+                ),
+                self._line(
+                    "15:30:08",
+                    "ServiceMessage: Wattpilot firmware compatibility confirmed: 42.5.",
+                    millis="100",
+                ),
+                self._line(
+                    "15:30:08",
+                    "Wattpilot firmware compatibility confirmed: 42.5.",
+                    "INFO",
+                    "200",
+                ),
+            ]
+        )
+
+        self.assertIn("PASS", self._statuses(result, "runtime errors"))
+        self.assertIn("INFO", self._statuses(result, "startup compatibility"))
+        self.assertEqual(result.overall, "GOOD")
+        finding = next(
+            finding
+            for finding in result.findings
+            if finding.check == "startup compatibility"
+        )
+        self.assertIn("Resolved 1", finding.message)
+
+    def test_unresolved_pre_auth_firmware_unavailability_is_a_failure(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:30:00",
+                    "Wattpilot firmware compatibility not confirmed. Expected 42.5, "
+                    "received <unavailable>. All es-ESS Wattpilot commands are blocked.",
+                    "WARNING",
+                ),
+                self._line(
+                    "15:30:01",
+                    "Initialization completed. es-ESS is up and running.",
+                    "INFO",
+                ),
+            ]
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+        self.assertNotIn("INFO", self._statuses(result, "startup compatibility"))
+
+    def test_confirmation_without_complete_startup_sequence_remains_a_failure(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:30:00",
+                    "Wattpilot firmware compatibility not confirmed. Expected 42.5, "
+                    "received <unavailable>. All es-ESS Wattpilot commands are blocked.",
+                    "WARNING",
+                ),
+                self._line(
+                    "15:30:08",
+                    "Wattpilot firmware compatibility confirmed: 42.5.",
+                    "INFO",
+                ),
+            ]
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+
+    def test_command_during_startup_compatibility_gap_remains_a_failure(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:30:00",
+                    "Wattpilot firmware compatibility not confirmed. Expected 42.5, "
+                    "received <unavailable>. All es-ESS Wattpilot commands are blocked.",
+                    "WARNING",
+                ),
+                self._line(
+                    "15:30:01",
+                    "Initialization completed. es-ESS is up and running.",
+                    "INFO",
+                ),
+                self._line(
+                    "15:30:05", "Authentication successful", "INFO"
+                ),
+                self._line(
+                    "15:30:06",
+                    "Start/Stop to send: frc=WattpilotStartStop.On:2",
+                ),
+                self._line(
+                    "15:30:08",
+                    "Wattpilot firmware compatibility confirmed: 42.5.",
+                    "INFO",
+                ),
+            ]
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+        self.assertNotIn("INFO", self._statuses(result, "startup compatibility"))
+
+    def test_lifecycle_break_during_startup_compatibility_gap_remains_a_failure(self):
+        lifecycle_breaks = (
+            ("Wattpilot disconnected", "INFO"),
+            ("Initialization completed. es-ESS is up and running.", "INFO"),
+        )
+        for message, level in lifecycle_breaks:
+            with self.subTest(message=message):
+                result = self._run(
+                    [
+                        self._line(
+                            "15:30:00",
+                            "Wattpilot firmware compatibility not confirmed. "
+                            "Expected 42.5, received <unavailable>. All es-ESS "
+                            "Wattpilot commands are blocked.",
+                            "WARNING",
+                        ),
+                        self._line(
+                            "15:30:01",
+                            "Initialization completed. es-ESS is up and running.",
+                            "INFO",
+                        ),
+                        self._line(
+                            "15:30:05", "Authentication successful", "INFO"
+                        ),
+                        self._line("15:30:06", message, level),
+                        self._line(
+                            "15:30:08",
+                            "Wattpilot firmware compatibility confirmed: 42.5.",
+                            "INFO",
+                        ),
+                    ]
+                )
+
+                self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+                self.assertNotIn(
+                    "INFO", self._statuses(result, "startup compatibility")
+                )
+
+    def test_different_confirmed_firmware_does_not_resolve_startup_warning(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:30:00",
+                    "Wattpilot firmware compatibility not confirmed. Expected 42.5, "
+                    "received <unavailable>. All es-ESS Wattpilot commands are blocked.",
+                    "WARNING",
+                ),
+                self._line(
+                    "15:30:01",
+                    "Initialization completed. es-ESS is up and running.",
+                    "INFO",
+                ),
+                self._line(
+                    "15:30:05", "Authentication successful", "INFO"
+                ),
+                self._line(
+                    "15:30:08",
+                    "Wattpilot firmware compatibility confirmed: 42.5.1.",
+                    "INFO",
+                ),
+            ]
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+        self.assertNotIn("INFO", self._statuses(result, "startup compatibility"))
+
     def test_blocked_authority_does_not_fail_for_passive_charge_status(self):
         result = self._run(
             [

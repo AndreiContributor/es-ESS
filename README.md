@@ -1052,6 +1052,11 @@ sequence continues with `Authentication successful`, actual firmware `42.5`,
 `0`, and `CommandAuthorityOk=1` before an Auto/Eco vehicle connection. A
 missing later confirmation is not a harmless startup warning: commands remain
 blocked and the actionable runtime-status literal must be investigated.
+The daily report classifies the initial `<unavailable>` record as an
+informational resolved startup interval only when the log proves
+initialization, authentication, matching firmware confirmation, and no charger
+command, reconnect, or second initialization during that interval. Wrong,
+unresolved, or incomplete compatibility evidence remains an anomaly.
 
 ### Production health monitor
 

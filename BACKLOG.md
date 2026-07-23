@@ -127,6 +127,31 @@ ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
+### Completed 2026-07-22 - Resolve Proven Pre-Authentication Compatibility Warnings In The Daily Report
+
+- Supervised production validation showed the normal controlled-restart
+  sequence logging two firmware-compatibility warnings while Wattpilot `fwv`
+  was unavailable. Commands remained blocked, authentication succeeded seven
+  seconds later, firmware `42.5` was confirmed three seconds after that, and
+  sole Auto/Eco command ownership was then validated. The daily report still
+  returned `ANOMALY` solely because it classified each initial warning as an
+  unresolved compatibility failure.
+- The read-only analyzer now resolves only an explicit `<unavailable>` startup
+  warning when ordered evidence proves initialization, authentication, matching
+  firmware confirmation, and no charger command, reconnect, or second
+  initialization before confirmation. Duplicate service-message/WARNING lines
+  for the same confirmation become one informational startup interval.
+- Wrong firmware, unresolved unavailability, missing initialization or
+  authentication evidence, a mismatched confirmation, and any intervening
+  command or connection-lifecycle break remain runtime failures. A shutdown
+  `Off` from the previous process before the warning does not invalidate the
+  new process's proven sequence.
+- Added production-shaped hardware-free regressions for the resolved lifecycle,
+  unresolved unavailability, incomplete lifecycle evidence, wrong firmware,
+  and a command inside the blocked interval. Updated the maintained report
+  documentation without changing controller behavior, command authority,
+  configuration, D-Bus/MQTT contracts, or charging safety policy.
+
 ### Completed 2026-07-22 - Reuse One Site-Current Snapshot Per Wattpilot Control Cycle
 
 - Production APP_DEBUG evidence from 2026-07-21 showed a three-phase Auto/Eco
