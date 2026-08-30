@@ -13,7 +13,8 @@ controllers issuing conflicting current and phase decisions.
 
 ## Safety boundaries
 
-- Use Venus OS `v3.75`, Wattpilot firmware `42.5`, and operator-verified
+- Use an explicitly supported clean Venus OS release (`v3.75` or `v3.79`),
+  Wattpilot firmware `42.5`, and operator-verified
   Solar.wattpilot app `2.1.0` only.
 - Keep the vehicle physically disconnected throughout setting discovery.
 - Keep flexible-tariff charging disabled when the vehicle is connected.
@@ -38,7 +39,7 @@ call added to the script.
 
 Before changing anything, record:
 
-- Venus OS version: `v3.75`;
+- Venus OS version and build (either clean `v3.75` or clean `v3.79`);
 - Wattpilot firmware: `42.5`;
 - Solar.wattpilot app version: `2.1.0`;
 - vehicle physically disconnected;

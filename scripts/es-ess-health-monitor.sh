@@ -14,7 +14,7 @@ LOG_FILE="${LOG_FILE:-/data/log/es-ESS/current.log}"
 SERVICE_DIR="${SERVICE_DIR:-/service/es-ESS}"
 APP_DIR="${APP_DIR:-/data/es-ESS}"
 WATTPILOT_DBUS_SERVICE="${WATTPILOT_DBUS_SERVICE:-com.victronenergy.evcharger.esESS_FroniusWattpilot}"
-EXPECTED_VENUS_OS="${EXPECTED_VENUS_OS:-v3.75}"
+EXPECTED_VENUS_OS_VERSIONS="${EXPECTED_VENUS_OS_VERSIONS:-${EXPECTED_VENUS_OS:-v3.75 v3.79}}"
 
 sample=0
 
@@ -53,6 +53,18 @@ read_first_line() {
     else
         echo "unavailable"
     fi
+}
+
+venus_os_version_is_expected() {
+    actual_version="$1"
+    for expected_version in $EXPECTED_VENUS_OS_VERSIONS
+    do
+        if [ "$actual_version" = "$expected_version" ]
+        then
+            return 0
+        fi
+    done
+    return 1
 }
 
 dbus_get_from() {
@@ -113,11 +125,11 @@ print_runtime() {
     version="$(read_first_line /opt/victronenergy/version)"
     print_kv "Venus OS version" "$version"
 
-    if [ "$version" = "$EXPECTED_VENUS_OS" ]
+    if venus_os_version_is_expected "$version"
     then
-        print_kv "Venus OS compatibility" "OK: expected $EXPECTED_VENUS_OS"
+        print_kv "Venus OS compatibility" "OK: expected one of $EXPECTED_VENUS_OS_VERSIONS"
     else
-        print_kv "Venus OS compatibility" "WARN: expected $EXPECTED_VENUS_OS"
+        print_kv "Venus OS compatibility" "WARN: expected one of $EXPECTED_VENUS_OS_VERSIONS"
     fi
 
     if command_exists svstat

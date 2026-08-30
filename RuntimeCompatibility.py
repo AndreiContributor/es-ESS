@@ -17,8 +17,11 @@ import os
 
 # Keep every approved release in this explicit set.
 # Exact comparison remains intentional: beta/build qualifiers are not accepted.
-VALIDATED_VENUS_OS_VERSION = "v3.75"
+# v3.79 is the preferred production target. Keep v3.75 explicitly approved so
+# the same checkout remains usable after a stored-firmware rollback.
+VALIDATED_VENUS_OS_VERSION = "v3.79"
 VALIDATED_VENUS_OS_VERSIONS = (
+    "v3.75",
     VALIDATED_VENUS_OS_VERSION,
 )
 VALIDATED_VENUS_OS_VERSIONS_LITERAL = ", ".join(VALIDATED_VENUS_OS_VERSIONS)

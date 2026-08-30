@@ -1,13 +1,15 @@
 # Cerbo GX Firmware Upgrade And Rollback
 
 This runbook covers a controlled Venus OS upgrade on a Cerbo GX that runs
-es-ESS, with special notes for upgrading to `v3.75`. It also covers both
-firmware rollback methods: booting the stored backup firmware and installing a
-specific older firmware from USB or microSD.
+es-ESS, with special notes for upgrading from `v3.75` to `v3.79`. It also
+covers both firmware rollback methods: booting the stored backup firmware and
+installing a specific older firmware from USB or microSD.
 
 The es-ESS checkout accepts only the clean Venus OS releases explicitly listed
-in `RuntimeCompatibility.py`. It currently accepts only clean `v3.75` and
-rejects beta/build-qualified releases such as `v3.75~1`.
+in `RuntimeCompatibility.py`. It accepts clean `v3.75` and clean `v3.79` and
+rejects beta/build-qualified releases such as `v3.79~1` as well as unvalidated
+future releases. v3.79 is the preferred target; v3.75 remains accepted so the
+same checkout can operate after a stored-firmware rollback.
 
 ## Safety Notes
 
@@ -16,6 +18,9 @@ rejects beta/build-qualified releases such as `v3.75~1`.
 - Do not update while an EV is actively charging. Put Wattpilot in Manual mode
   or disconnect the vehicle before the GX reboot, and supervise the first
   Auto/Eco session after the update.
+- Keep es-ESS stopped across the first v3.79 boot. Complete the read-only
+  dependency, D-Bus-path, device-assignment, and telemetry checks before
+  starting it with the vehicle disconnected or Wattpilot confirmed in Manual.
 - Disable automatic firmware updates. Select and install official releases
   deliberately.
 - Do not use a factory reset or recovery-image reinstall for an ordinary
@@ -56,34 +61,44 @@ rejects beta/build-qualified releases such as `v3.75~1`.
    enabled es-ESS services.
 7. Confirm Remote Console and SSH both work, then disconnect the EV or leave
    Wattpilot in Manual mode for the update.
+8. Stop es-ESS and create the persistent runit `down` marker so the service
+   cannot start automatically on the first v3.79 boot:
 
-## Upgrade To Venus OS v3.75 Online
+   ```sh
+   svc -d /service/es-ESS
+   touch /data/es-ESS/service/down
+   svstat /service/es-ESS
+   ```
+
+## Upgrade To Venus OS v3.79 Online
 
 1. In Remote Console, open **Settings → General → Firmware → Online updates**.
 2. Set the update feed to **Official release**, not Beta.
 3. Select **Check for updates**.
-4. Confirm the offered version is the clean `v3.75` release. For Cerbo GX, the
-   final official image published by Victron is build `20260624163305`.
+4. Confirm the offered version is the clean `v3.79` release. For Cerbo GX, the
+   official image published by Victron is build `20260826152305`.
 5. Select the offered update and confirm installation. Do not remove power
    while the inactive root filesystem is being written.
 6. Wait for the Cerbo GX to reboot and reconnect to Remote Console and VRM.
 7. Confirm the running and stored versions:
 
-   - **Currently running firmware** should show `v3.75`.
-   - **Stored backup firmware** should show the previous firmware slot.
+   - **Currently running firmware** should show `v3.79`.
+   - **Stored backup firmware** should show `v3.75` before proceeding with live
+     validation. If it does not, ensure the official v3.75 image is available
+     for manual rollback.
 
 ## Upgrade Offline With USB Or microSD
 
 Use this method when the GX has no internet access or when a specific official
 image must be installed.
 
-1. Download the Cerbo GX `venus-swu-einstein-...-v3.75.swu` file from Victron's
+1. Download the Cerbo GX `venus-swu-einstein-...-v3.79.swu` file from Victron's
    official `einstein` release directory.
 2. Use a FAT32-formatted USB stick or microSD card and place the `.swu` file in
    its root directory, not inside a folder.
 3. Insert the storage device into the Cerbo GX.
 4. Open **Settings → General → Firmware → Install from SD/USB**.
-5. Select **Check for updates on SD/USB**, verify that `v3.75` was detected,
+5. Select **Check for updates on SD/USB**, verify that `v3.79` was detected,
    then select it to install.
 6. Wait for the reboot, remove the storage device, and confirm the running and
    stored versions.
@@ -107,12 +122,15 @@ image must be installed.
    cat /opt/victronenergy/version
    ```
 
-3. Confirm es-ESS persistence and restore its service link if necessary:
+3. Confirm es-ESS persistence and its intentional stopped state. Restore the
+   service link if necessary, but keep the persistent `down` marker in place:
 
    ```sh
    ls -l /data/es-ESS /data/rc.local /service/es-ESS
    grep -F '/data/es-ESS/install.sh' /data/rc.local
    /data/es-ESS/install.sh
+   test -e /data/es-ESS/service/down
+   svstat /service/es-ESS
    ```
 
 4. Check Python dependencies before restarting es-ESS. Venus OS firmware
@@ -134,21 +152,23 @@ image must be installed.
    python -m pip install websocket-client
    python -c "import websocket; print('websocket-client OK')"
    python -c "import paho.mqtt.client, websocket; print('Python dependencies OK')"
-   svc -u /service/es-ESS
    svstat /service/es-ESS
    ```
 
-5. Confirm es-ESS is running and inspect the log. `restart.sh` only signals an
-   existing process; it cannot bring a service back up after `svc -d`, which is
-   why the recovery block above uses `svc -u` first:
+5. With the vehicle disconnected or Wattpilot confirmed in Manual, remove only
+   the intentional validation marker, start es-ESS, and inspect the log.
+   `restart.sh` only signals an existing process; it cannot bring a service
+   back up after `svc -d`, which is why this procedure uses `svc -u` first:
 
    ```sh
-   /data/es-ESS/restart.sh
+   rm /data/es-ESS/service/down
+   svc -u /service/es-ESS
+   svstat /service/es-ESS
    tail -f -n 100 /data/log/es-ESS/current.log
    ```
 
 6. Confirm there is no compatibility error and that the log reports Venus OS
-   `v3.75`.
+   `v3.79`.
 7. Verify that enabled D-Bus services register once, both MQTT connections
    recover, all three grid phases are fresh, and SolarOverheadDistributor
    publishes safe values.
@@ -176,13 +196,16 @@ image must be installed.
 The `v3.75` migration has passed live upgrade, idle/no-vehicle, Manual
 charging, Manual current-change, Manual recovery, and supervised Auto/Eco
 PV-surplus daylight checks on a Cerbo GX running build `20260624163305`.
+Record the equivalent v3.79 evidence for build `20260826152305` before treating
+the v3.79 preparation as complete for unattended production use.
 
 ## Roll Back Using Stored Backup Firmware
 
 This is the preferred and quickest firmware rollback when the intended previous
 firmware is still present in the other root filesystem. This es-ESS checkout
-supports only `v3.75`; after booting older firmware, restore an es-ESS checkout
-whose `RuntimeCompatibility.py` explicitly supports that firmware before
+supports clean `v3.75` and clean `v3.79`; the same checkout can therefore start
+after the expected v3.79-to-v3.75 rollback. For any other firmware, restore an
+es-ESS checkout whose `RuntimeCompatibility.py` explicitly supports it before
 starting services.
 
 1. Open **Settings → General → Firmware → Stored backup firmware**.
@@ -190,18 +213,16 @@ starting services.
    proceed based only on an assumption about which version is stored.
 3. Select **Press to boot** and confirm.
 4. Wait for the Cerbo GX to restart. Venus OS swaps the active and stored
-   firmware, so the previous firmware becomes current and `v3.75` becomes the
-   stored option.
-5. Restore an app checkout compatible with the running firmware, rerun
-   `/data/es-ESS/install.sh`, check Python dependencies, inspect the es-ESS log,
-   and repeat D-Bus, MQTT, Manual-mode, and Auto/Eco checks.
+   firmware, so v3.75 becomes current and v3.79 becomes the stored option.
+5. Rerun `/data/es-ESS/install.sh`, check Python dependencies, inspect the
+   es-ESS log, and repeat D-Bus, MQTT, Manual-mode, and Auto/Eco checks.
 
 ## Roll Back Manually With USB Or microSD
 
 Use this method if the stored backup is unavailable, cannot boot, or is not the
-firmware you intend to run. This es-ESS checkout supports only clean `v3.75`;
-after installing older firmware, restore an app checkout compatible with that
-firmware before starting es-ESS.
+firmware you intend to run. This es-ESS checkout supports clean `v3.75` and
+clean `v3.79`. After installing any other firmware, restore an es-ESS checkout
+compatible with that firmware before starting es-ESS.
 
 1. Download the intended official Cerbo GX `.swu` file from Victron's
    `einstein` release directory.
@@ -234,6 +255,7 @@ firmware before starting es-ESS.
 ## Official References
 
 - [Venus OS v3.75 release announcement](https://professional.victronenergy.com/news/detail/370/)
+- [Venus OS v3.79 release announcement](https://professional.victronenergy.com/news/detail/377/)
 - [Cerbo GX firmware update and rollback manual](https://www.victronenergy.com/media/pg/Cerbo_GX/en/firmware-updates.html)
 - [Official Cerbo GX `einstein` firmware archive](https://updates.victronenergy.com/feeds/venus/release/images/einstein/)
 - [Victron guidance for persistent `/data` modifications](https://www.victronenergy.com/live/ccgx%3Aroot_access)

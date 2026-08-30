@@ -1080,6 +1080,18 @@ NoBatToEV=false
         self.assertIn('"$python_bin" -c', monitor)
         self.assertNotIn("\n        python -c", monitor)
 
+    def test_health_monitor_uses_explicit_venus_os_allowlist(self):
+        monitor = (
+            ROOT / "scripts" / "es-ess-health-monitor.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "EXPECTED_VENUS_OS_VERSIONS:-${EXPECTED_VENUS_OS:-v3.75 v3.79}",
+            monitor,
+        )
+        self.assertIn('if [ "$actual_version" = "$expected_version" ]', monitor)
+        self.assertNotIn("sort -V", monitor)
+
     def test_human_session_current_adjustments_are_compact(self):
         summary = AUDIT._summarize_current_adjustments(
             [13, 14] + [16] * 200 + [8, 6, 8, 6]
