@@ -812,7 +812,21 @@ class Wattpilot(object):
 
     def __on_message(self, wsapp, message):
         ## called whenever a message through websocket is received
-        msg=json.loads(message, object_hook=lambda di: SimpleNamespace(**di))
+        try:
+            msg=json.loads(message, object_hook=lambda di: SimpleNamespace(**di))
+        except (TypeError, json.JSONDecodeError) as ex:
+            message_length = len(message) if isinstance(message, (str, bytes)) else 0
+            w(
+                self,
+                "Malformed Wattpilot WebSocket JSON frame ({0} bytes, {1}); "
+                "closing connection for worker-loop reconnect.".format(
+                    message_length,
+                    ex.msg if isinstance(ex, json.JSONDecodeError) else "invalid type",
+                ),
+            )
+            self.__on_error(wsapp, "Malformed Wattpilot WebSocket JSON frame")
+            wsapp.close()
+            return
         self.__call_event_handler(Event.WS_MESSAGE, message)
         if (msg.type == 'hello'):  # Hello Message -> Received upon connection before auth
             self.__on_hello(msg)

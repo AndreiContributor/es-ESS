@@ -1325,6 +1325,8 @@ class EsEssDailyReport:
         self.manual_boundaries: list[LogRecord] = []
         self.grid_guard_actions: list[LogRecord] = []
         self.safety_override_records: list[LogRecord] = []
+        self.battery_assist_lockout_records: list[LogRecord] = []
+        self.battery_assist_lockout_clear_records: list[LogRecord] = []
         self.failure_records: list[LogRecord] = []
         self.firmware_unavailable_records: list[tuple[LogRecord, str]] = []
         self.firmware_confirmed_records: list[tuple[LogRecord, str]] = []
@@ -1551,6 +1553,15 @@ class EsEssDailyReport:
                 self.safety_override_records.append(record)
             if authority_blocked:
                 self.safety_override_records.append(record)
+
+            if (
+                "Battery assist time limit reached. Locking out further battery assist"
+                in message
+                or "Battery assist lockout prevents a new allowance grace" in message
+            ):
+                self.battery_assist_lockout_records.append(record)
+            if "Battery assist lockout cleared:" in message:
+                self.battery_assist_lockout_clear_records.append(record)
 
             if "Initialization completed." in message and "is up and running" in message:
                 self.restart_records.append(record)
@@ -2123,6 +2134,24 @@ class EsEssDailyReport:
     ) -> list[LogRecord]:
         return [record for record in records if start <= record.timestamp <= end]
 
+    def _battery_assist_lockout_active_until(self, end: datetime) -> list[LogRecord]:
+        lockouts = [
+            record
+            for record in self.battery_assist_lockout_records
+            if record.timestamp <= end
+        ]
+        if not lockouts:
+            return []
+
+        lockout = lockouts[-1]
+        cleared = any(
+            lockout.timestamp < record.timestamp <= end
+            for record in self.battery_assist_lockout_clear_records
+        )
+        if cleared:
+            return []
+        return [lockout]
+
     def check_allowance_grace(self) -> None:
         if not self.grace_starts:
             zero_three_phase = [
@@ -2147,10 +2176,14 @@ class EsEssDailyReport:
                     next_assignment.record.timestamp,
                     self.safety_override_records,
                 )
+                battery_assist_lockout = self._battery_assist_lockout_active_until(
+                    next_assignment.record.timestamp
+                )
                 if (
                     next_assignment.phase == 1
                     and elapsed < self.settings.allowance_drop_grace_seconds
                     and not safety_override
+                    and not battery_assist_lockout
                 ):
                     premature_state_changes.extend(
                         [zero_event.record, next_assignment.record]
@@ -2253,6 +2286,9 @@ class EsEssDailyReport:
                 start, response_record.timestamp if response_record else audit_end,
                 self.safety_override_records,
             )
+            battery_assist_lockout = self._battery_assist_lockout_active_until(
+                response_record.timestamp if response_record else audit_end,
+            )
 
             if recovery is not None and (
                 response_record is None or recovery.record.timestamp <= response_record.timestamp
@@ -2272,7 +2308,12 @@ class EsEssDailyReport:
                     ),
                     None,
                 )
-                if elapsed + 0.001 < grace_seconds and not safety_override and positive_assignment is None:
+                if (
+                    elapsed + 0.001 < grace_seconds
+                    and not safety_override
+                    and not battery_assist_lockout
+                    and positive_assignment is None
+                ):
                     premature.extend([start_record, response_record])
                 else:
                     passed += 1
@@ -2289,8 +2330,8 @@ class EsEssDailyReport:
                 "FAIL",
                 "allowance drop grace",
                 "A phase-down or stop occurred before the configured allowance grace without "
-                "a logged grid/telemetry/authority safety override or a positive replacement "
-                "allowance.",
+                "a logged grid/telemetry/authority or battery-assist-lockout override, "
+                "or a positive replacement allowance.",
                 premature,
             )
         if unresolved:
@@ -2306,7 +2347,8 @@ class EsEssDailyReport:
                 "PASS",
                 "allowance drop grace",
                 f"Validated {passed} grace event(s): recovery, expiry fallback, or an earlier "
-                "higher-priority safety/positive-allocation response was logged.",
+                "higher-priority safety, battery-assist-lockout, or positive-allocation "
+                "response was logged.",
                 details,
             )
 

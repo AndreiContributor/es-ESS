@@ -908,6 +908,33 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             self.fwp.WattpilotStartStop.Off
         )
 
+    def test_battery_assist_lockout_stops_without_logging_a_new_allowance_grace(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.batteryAssistLockedOut = True
+        controller.wattpilot.power = 1.38
+        controller.wattpilot.amp = 6
+        controller.wattpilot.amps1 = 6
+        messages = []
+        controller.publishServiceMessage = lambda *_args: messages.append(_args[-1])
+        self._set_allowance(controller, 0, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+        self.assertIn(
+            "Battery assist lockout prevents a new allowance grace. "
+            "Stopping Auto/Eco charging.",
+            messages,
+        )
+        self.assertFalse(
+            any("Waiting up to" in message for message in messages)
+        )
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+
     def test_battery_soc_requires_valid_soc_and_fresh_battery_activity(self):
         controller = self._controller()
 

@@ -196,6 +196,29 @@ class EsEssDailyReportTests(unittest.TestCase):
         self.assertIn("FAIL", self._statuses(result, "allowance drop grace"))
         self.assertEqual(result.overall, "ANOMALY")
 
+    def test_battery_assist_lockout_can_stop_before_a_logged_allowance_grace(self):
+        lines = [
+            self._line(
+                "09:00:00",
+                "ServiceMessage: EV allowance fell below the usable minimum. Waiting up to 30s for a refreshed distributor allowance before reducing phase or stopping.",
+            ),
+            self._line(
+                "09:00:05",
+                "ServiceMessage: Battery assist lockout prevents a new allowance grace. Stopping Auto/Eco charging.",
+            ),
+            self._line("09:00:05", "STOP send!", "INFO"),
+        ]
+        result = self._run(
+            lines,
+            AUDIT.AuditSettings(
+                log_level="APP_DEBUG",
+                allowance_drop_grace_seconds=30,
+            ),
+        )
+
+        self.assertIn("PASS", self._statuses(result, "allowance drop grace"))
+        self.assertNotIn("FAIL", self._statuses(result, "allowance drop grace"))
+
     def test_atomic_zero_followed_by_one_phase_without_grace_is_failure(self):
         lines = [
             self._line(

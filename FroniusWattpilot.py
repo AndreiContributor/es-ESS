@@ -2030,6 +2030,8 @@ class FroniusWattpilot (esESSService):
         if not self.batteryAssistLockedOut and self.allowanceStopGraceActive():
             return VrmEvChargerStatus.Charging
 
+        if self.batteryAssistLockedOut:
+            self.publishBatteryAssistLockoutNoGraceStop()
         i(self, "NO PV allowance available after debounce, stopping charging.")
         self.forceStopForNoAllowance()
         return VrmEvChargerStatus.StopCharging
@@ -2536,6 +2538,13 @@ class FroniusWattpilot (esESSService):
             ),
         )
 
+    def publishBatteryAssistLockoutNoGraceStop(self):
+        self.publishServiceMessage(
+            self,
+            "Battery assist lockout prevents a new allowance grace. "
+            "Stopping Auto/Eco charging.",
+        )
+
     def controlMinimumCurrentFallback(self, phaseMode):
         """Reduce from PV first, then bridge only the minimum-current deficit."""
         if phaseMode not in (1, 2) or self.currentPhaseMode != phaseMode:
@@ -2570,7 +2579,8 @@ class FroniusWattpilot (esESSService):
             self.batteryAssistDeficitSince = time.time()
             # Start the normal stop/phase-down debounce at the original PV dip,
             # not after current telemetry confirms the 6 A reduction.
-            self.allowanceStopGraceActive()
+            if not self.batteryAssistLockedOut:
+                self.allowanceStopGraceActive()
 
         if not self.ensureMinimumCurrentBeforeFallback(phaseMode):
             return VrmEvChargerStatus.Charging
@@ -3372,6 +3382,8 @@ class FroniusWattpilot (esESSService):
             if onePhasePvW >= self.minimumChargePower():
                 return self.switchToOnePhaseForPvDip()
 
+            if self.batteryAssistLockedOut:
+                self.publishBatteryAssistLockoutNoGraceStop()
             self.publishServiceMessage(
                 self,
                 "Three-phase PV deficit cannot be bridged safely and PV is "

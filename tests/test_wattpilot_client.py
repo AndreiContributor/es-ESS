@@ -69,10 +69,13 @@ class FakeWebSocketApp:
         return None
 
 
-def _install_wattpilot_client_stubs(info_messages=None, debug_messages=None):
+def _install_wattpilot_client_stubs(
+    info_messages=None, debug_messages=None, warning_messages=None
+):
     FakeWebSocketApp.reset()
     info_messages = info_messages if info_messages is not None else []
     debug_messages = debug_messages if debug_messages is not None else []
+    warning_messages = warning_messages if warning_messages is not None else []
 
     _module(
         "websocket",
@@ -84,7 +87,7 @@ def _install_wattpilot_client_stubs(info_messages=None, debug_messages=None):
         i=lambda _module, message, **_kwargs: info_messages.append(message),
         c=lambda *args, **kwargs: None,
         d=lambda _module, message, **_kwargs: debug_messages.append(message),
-        w=lambda *args, **kwargs: None,
+        w=lambda _module, message, **_kwargs: warning_messages.append(message),
         e=lambda *args, **kwargs: None,
         t=lambda *args, **kwargs: None,
     )
@@ -247,6 +250,39 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
 
         self.assertEqual(client.awattarCurrentPrice, 12.34)
         self.assertTrue(client.allPropsInitialized)
+
+    def test_malformed_json_is_sanitized_and_reconnects_through_the_worker(self):
+        warning_messages = []
+        _install_wattpilot_client_stubs(warning_messages=warning_messages)
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_malformed_json_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+        errors = []
+        messages = []
+        client.add_event_handler(
+            wattpilot_module.Event.WS_ERROR,
+            lambda _event, _wsapp, error: errors.append(error),
+        )
+        client.add_event_handler(
+            wattpilot_module.Event.WS_MESSAGE,
+            lambda _event, _message: messages.append(_message),
+        )
+
+        frame = '{"type":"fullStatus"}{"password":"secret"}'
+        client._Wattpilot__on_message(client._wsapp, frame)
+
+        self.assertTrue(client._wsapp.closed)
+        self.assertEqual(errors, ["Malformed Wattpilot WebSocket JSON frame"])
+        self.assertEqual(messages, [])
+        self.assertEqual(len(warning_messages), 1)
+        self.assertIn(
+            "Malformed Wattpilot WebSocket JSON frame ({0} bytes, Extra data)".format(
+                len(frame)
+            ),
+            warning_messages[0],
+        )
+        self.assertNotIn("secret", warning_messages[0])
 
     def test_awattar_current_price_updates_when_marketprice_is_present(self):
         _install_wattpilot_client_stubs()
