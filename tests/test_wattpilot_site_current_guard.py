@@ -307,6 +307,90 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         self.assertEqual(controller.siteCurrentL1UpdatedAt, 50.0)
         controller.readDbusSubscription.assert_not_called()
 
+    def test_disconnected_idle_refresh_publishes_latest_shelly_snapshot_only(self):
+        controller = self._controller()
+        controller.mode = self.fwp.VrmEvChargerControlMode.Auto
+        controller.currentPhaseMode = 1
+        controller.siteCurrentSource = Mock()
+        controller.siteCurrentRecoverySince = {1: 25.0, 2: 30.0}
+        controller.phaseSwitchCandidateMode = 2
+        controller.phaseSwitchCandidateSince = 40.0
+        retained = {}
+        controller.publishRetained = retained.__setitem__
+
+        controller.siteCurrentSource.read_sample.side_effect = (
+            SiteCurrentSnapshot(
+                source="Shelly3EMGen3",
+                values={"L1": 3.5, "L2": 6.0, "L3": 0.5},
+                valid={"L1": True, "L2": True, "L3": True},
+                updated_at={"L1": 100.0, "L2": 100.0, "L3": 100.0},
+                connected=True,
+                status="Healthy",
+                device_model="S3EM-003CXCEU63",
+                firmware="2.0.0",
+            ),
+            SiteCurrentSnapshot(
+                source="Shelly3EMGen3",
+                values={"L1": 3.3, "L2": 0.4, "L3": 0.5},
+                valid={"L1": True, "L2": True, "L3": True},
+                updated_at={"L1": 105.0, "L2": 105.0, "L3": 105.0},
+                connected=True,
+                status="Healthy",
+                device_model="S3EM-003CXCEU63",
+                firmware="2.0.0",
+            ),
+            SiteCurrentSnapshot(
+                source="Shelly3EMGen3",
+                values={"L1": 3.3, "L2": 0.4, "L3": 0.5},
+                valid={"L1": False, "L2": False, "L3": False},
+                updated_at={"L1": 105.0, "L2": 105.0, "L3": 105.0},
+                connected=False,
+                status="Unavailable",
+                error="Shelly RPC request failed: Timeout",
+                device_model="S3EM-003CXCEU63",
+                firmware="2.0.0",
+            ),
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=100.0):
+            controller.refreshIdleSiteCurrentDiagnostics()
+
+        self.assertEqual(retained["/SiteCurrentL1"], 3.5)
+        self.assertEqual(retained["/SiteCurrentL2"], 6.0)
+        self.assertEqual(retained["/SiteCurrentL3"], 0.5)
+        self.assertEqual(retained["/SiteCurrentSourceLastSampleAge"], 0.0)
+        self.assertEqual(retained["/SiteCurrentTelemetryHealthy"], 1)
+        self.assertEqual(retained["/SiteAllowedCurrent"], 16)
+        self.assertEqual(retained["/SiteLimitingPhase"], "L1")
+        self.assertEqual(retained["/SiteCurrentGuardBlocked"], 0)
+
+        with patch.object(self.fwp.time, "time", return_value=105.0):
+            controller.refreshIdleSiteCurrentDiagnostics()
+
+        self.assertEqual(retained["/SiteCurrentL1"], 3.3)
+        self.assertEqual(retained["/SiteCurrentL2"], 0.4)
+        self.assertEqual(retained["/SiteCurrentL3"], 0.5)
+        self.assertEqual(retained["/SiteCurrentSourceLastSampleAge"], 0.0)
+        self.assertEqual(retained["/SiteCurrentTelemetryHealthy"], 1)
+
+        with patch.object(self.fwp.time, "time", return_value=110.0):
+            controller.refreshIdleSiteCurrentDiagnostics()
+
+        self.assertEqual(retained["/SiteCurrentL2"], 0.4)
+        self.assertEqual(retained["/SiteCurrentSourceConnected"], 0)
+        self.assertEqual(retained["/SiteCurrentSourceStatus"], "Unavailable")
+        self.assertEqual(retained["/SiteCurrentSourceLastSampleAge"], 5.0)
+        self.assertEqual(retained["/SiteCurrentAgeL2"], 5.0)
+        self.assertEqual(retained["/SiteCurrentTelemetryHealthy"], 0)
+        self.assertEqual(retained["/SiteCurrentGuardBlocked"], 1)
+        self.assertIn("telemetry missing", retained["/SiteCurrentGuardReason"])
+        self.assertEqual(controller.siteCurrentRecoverySince, {1: 25.0, 2: 30.0})
+        self.assertEqual(controller.phaseSwitchCandidateMode, 2)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 40.0)
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+
     def test_shelly_selection_registers_no_consumption_or_grid_meter_source(self):
         controller = self._controller()
         controller.siteCurrentSourceName = "Shelly3EMGen3"

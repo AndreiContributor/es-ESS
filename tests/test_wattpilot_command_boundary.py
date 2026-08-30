@@ -383,6 +383,7 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         controller.lastVarDump = 100.0
         controller.reportStartStopValue = Mock()
         controller.publishSafetyTelemetry = Mock()
+        controller.refreshIdleSiteCurrentDiagnostics = Mock()
         controller.gridTelemetryIsFresh = Mock(return_value=True)
         controller.selectControlState = Mock(
             return_value=(
@@ -440,6 +441,7 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         controller.wattpilot.set_power.assert_not_called()
         controller.dispatchControlState.assert_not_called()
         controller.publish.assert_not_called()
+        controller.refreshIdleSiteCurrentDiagnostics.assert_called_once_with()
         self.assertEqual(controller.lastVarDump, 205.0)
 
     def test_disconnected_eco_transition_publishes_without_commands(self):
