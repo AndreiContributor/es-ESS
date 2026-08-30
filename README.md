@@ -1655,11 +1655,11 @@ that GX wall time and includes the UTC offset that applied at that instant, for
 example:
 
 ```text
-2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG ...
+2000-01-02 03:04:05,678 (UTC+0) APP_DEBUG ...
 ```
 
-The offset follows the device timezone and daylight-saving rules. In Romania,
-for example, the same format reports `(UTC+2)` during winter. This makes the
+The example is synthetic. The offset follows the configured device timezone
+and daylight-saving rules, so it may change seasonally. This makes the
 repeated autumn hour unambiguous without changing elapsed-time control logic.
 The setting is read with a bounded, read-only D-Bus query during logging
 startup and is updated by the existing settings subscription. If the setting

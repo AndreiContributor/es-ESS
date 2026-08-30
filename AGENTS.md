@@ -15,6 +15,30 @@ Repository guidance for AI coding agents working on es-ESS.
 - Preserve unrelated user work. Do not revert, delete, or overwrite changes
   outside the approved task.
 
+## Public Repository Privacy
+
+- Treat tracked files, tests and fixtures, comments, documentation, and
+  commit/PR text as public.
+- Do not copy private operational evidence into the repository. This includes
+  personal or account names; local filenames and paths; private hosts, IPs,
+  portal IDs, or serial numbers; site or vehicle identity; exact private event
+  dates or clock times; location or timezone; installation topology or load
+  inventory; screenshots or log excerpts; and correlated site telemetry.
+- Convert private evidence into a generic technical condition supported by
+  current code references. Use clearly synthetic, non-derived values in tests
+  and examples.
+- Public product release/build/version identifiers and repository change or
+  completion dates are allowed when they describe compatibility or project
+  history rather than a private operational event. Documented generic
+  deployment paths and clearly synthetic command examples are also allowed.
+- Keep exact evidence only in a user-approved private location outside the
+  repository. Public documentation may refer to it as `private diagnostic
+  evidence` without naming its path.
+- Before delivery, scan every changed public file and the final diff for
+  sensitive data. If sensitive content was committed or pushed, warn that an
+  ordinary deletion does not remove Git history and obtain separate approval
+  before any history rewrite.
+
 ## Application Scope
 
 es-ESS is a Python service bundle deployed on Victron Venus OS / Cerbo GX and

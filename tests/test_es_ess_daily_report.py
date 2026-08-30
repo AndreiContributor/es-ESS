@@ -23,12 +23,12 @@ SPEC.loader.exec_module(AUDIT)
 
 
 class EsEssDailyReportTests(unittest.TestCase):
-    target_date = "2026-07-15"
+    target_date = "2000-07-02"
 
     @staticmethod
     def _line(clock, message, level="APP_DEBUG", millis="000"):
         return (
-            f"2026-07-15 {clock},{millis} {level} "
+            f"2000-07-02 {clock},{millis} {level} "
             f"[TPt_0|test.audit] {message}\n"
         )
 
@@ -89,7 +89,7 @@ class EsEssDailyReportTests(unittest.TestCase):
                 records[-1].timestamp.isoformat() if records else None
             ),
             full_window_available_at=(
-                "2026-07-16T00:00:00" if partial else None
+                "2000-07-03T00:00:00" if partial else None
             ),
         )
         return AUDIT.EsEssDailyReport(
@@ -108,7 +108,7 @@ class EsEssDailyReportTests(unittest.TestCase):
             records,
             AUDIT.AuditSettings(log_level="APP_DEBUG"),
             AUDIT.AuditInput(
-                target_date="2026-07-15",
+                target_date="2000-07-02",
                 log_file="current.log",
                 config_file="config.ini",
             ),
@@ -116,7 +116,7 @@ class EsEssDailyReportTests(unittest.TestCase):
 
     def test_parser_filters_date_and_preserves_traceback_continuation(self):
         lines = [
-            "2026-07-14 23:59:59,999 INFO old day\n",
+            "2000-07-01 23:59:59,999 INFO old day\n",
             self._line("00:00:01", "Exception", "ERROR"),
             "Traceback (most recent call last):\n",
             "  File \"example.py\", line 1\n",
@@ -793,7 +793,7 @@ NoBatToEV=false
         self.assertTrue(payload["inputs"]["partial_window"])
         self.assertEqual(
             payload["inputs"]["full_window_available_at"],
-            "2026-07-16T00:00:00",
+            "2000-07-03T00:00:00",
         )
         self.assertIn("evidence_span_percent", payload["inputs"])
 
@@ -924,7 +924,7 @@ NoBatToEV=false
 
     def test_timezone_query_allowlist_accepts_only_exact_settings_path(self):
         completed = mock.Mock(
-            returncode=0, stdout="'Europe/Bucharest'\n", stderr=""
+            returncode=0, stdout="'Etc/UTC'\n", stderr=""
         )
         runner = mock.Mock(return_value=completed)
 
@@ -950,13 +950,13 @@ NoBatToEV=false
         )
 
         self.assertTrue(ok)
-        self.assertEqual(value, "Europe/Bucharest")
+        self.assertEqual(value, "Etc/UTC")
         self.assertFalse(rejected)
         self.assertIn("read-only allowlist", message)
 
     def test_report_timezone_uses_bounded_venus_setting_query(self):
         completed = mock.Mock(
-            returncode=0, stdout="'Europe/Bucharest'\n", stderr=""
+            returncode=0, stdout="'Etc/UTC'\n", stderr=""
         )
         runner = mock.Mock(return_value=completed)
         fixed_timezone = timezone(timedelta(hours=3))
@@ -968,10 +968,10 @@ NoBatToEV=false
             zone_factory=zone_factory,
         )
 
-        self.assertEqual(name, "Europe/Bucharest")
+        self.assertEqual(name, "Etc/UTC")
         self.assertIs(resolved_timezone, fixed_timezone)
         self.assertIsNone(warning)
-        zone_factory.assert_called_once_with("Europe/Bucharest")
+        zone_factory.assert_called_once_with("Etc/UTC")
         self.assertEqual(runner.call_args.kwargs["timeout"], 2)
 
     def test_progress_reporter_renders_stages_and_completion_to_its_stream(self):
@@ -1004,7 +1004,7 @@ NoBatToEV=false
             path = Path(directory) / "current.log"
             path.write_text(
                 "".join(
-                    f"2026-07-15 12:00:{index % 60:02d},000 APP_DEBUG line {index}\n"
+                    f"2000-07-02 12:00:{index % 60:02d},000 APP_DEBUG line {index}\n"
                     for index in range(AUDIT.LOG_PROGRESS_LINE_INTERVAL + 1)
                 ),
                 encoding="utf-8",
@@ -1012,8 +1012,8 @@ NoBatToEV=false
             updates = []
             AUDIT.load_log_window(
                 [path],
-                datetime(2026, 7, 15),
-                datetime(2026, 7, 16),
+                datetime(2000, 7, 2),
+                datetime(2000, 7, 3),
                 progress_callback=lambda current, total, name: updates.append(
                     (current, total, name)
                 ),
@@ -1050,7 +1050,7 @@ NoBatToEV=false
         records = self._records([self._line("12:00:00", "heartbeat")])
         report = self._audit(records)
         report.current_snapshot = AUDIT.CurrentSnapshot(
-            captured_at="2026-07-15T12:00:01",
+            captured_at="2000-07-02T12:00:01",
             service_state="/service/es-ESS: up (pid 123) 10 seconds",
             dependencies="missing: websocket",
             dbus_values={},
@@ -1105,15 +1105,15 @@ NoBatToEV=false
             root = Path(directory)
             for name in (
                 "current.log",
-                "current.log.2026-07-14",
-                "current.log.2026-07-15",
+                "current.log.2000-07-01",
+                "current.log.2000-07-02",
                 "current.log.backup",
             ):
                 (root / name).write_text("", encoding="utf-8")
             discovered = AUDIT.discover_log_files(root / "current.log")
         self.assertEqual(
             [path.name for path in discovered],
-            ["current.log", "current.log.2026-07-14", "current.log.2026-07-15"],
+            ["current.log", "current.log.2000-07-01", "current.log.2000-07-02"],
         )
 
     def test_selects_only_rotation_for_complete_historical_day(self):
@@ -1121,7 +1121,7 @@ NoBatToEV=false
             root = Path(directory)
             base_log = root / "current.log"
             paths = [base_log]
-            for suffix in ("2026-07-14", "2026-07-15", "2026-07-16"):
+            for suffix in ("2000-07-01", "2000-07-02", "2000-07-03"):
                 paths.append(root / f"current.log.{suffix}")
             for path in paths:
                 path.write_text("", encoding="utf-8")
@@ -1129,14 +1129,14 @@ NoBatToEV=false
             selected = AUDIT.select_log_files_for_window(
                 base_log,
                 AUDIT.discover_log_files(base_log),
-                datetime(2026, 7, 15),
-                datetime(2026, 7, 16),
-                datetime(2026, 7, 17).date(),
+                datetime(2000, 7, 2),
+                datetime(2000, 7, 3),
+                datetime(2000, 7, 4).date(),
             )
 
         self.assertEqual(
             [path.name for path in selected],
-            ["current.log.2026-07-15"],
+            ["current.log.2000-07-02"],
         )
 
     def test_selects_active_log_only_for_current_partial_day(self):
@@ -1145,8 +1145,8 @@ NoBatToEV=false
             base_log = root / "current.log"
             paths = [
                 base_log,
-                root / "current.log.2026-07-14",
-                root / "current.log.2026-07-15",
+                root / "current.log.2000-07-01",
+                root / "current.log.2000-07-02",
             ]
             for path in paths:
                 path.write_text("", encoding="utf-8")
@@ -1154,9 +1154,9 @@ NoBatToEV=false
             selected = AUDIT.select_log_files_for_window(
                 base_log,
                 AUDIT.discover_log_files(base_log),
-                datetime(2026, 7, 16),
-                datetime(2026, 7, 16, 12),
-                datetime(2026, 7, 16).date(),
+                datetime(2000, 7, 3),
+                datetime(2000, 7, 3, 12),
+                datetime(2000, 7, 3).date(),
             )
 
         self.assertEqual([path.name for path in selected], ["current.log"])
@@ -1167,8 +1167,8 @@ NoBatToEV=false
             base_log = root / "current.log"
             paths = [
                 base_log,
-                root / "current.log.2026-07-14",
-                root / "current.log.2026-07-15",
+                root / "current.log.2000-07-01",
+                root / "current.log.2000-07-02",
             ]
             for path in paths:
                 path.write_text("", encoding="utf-8")
@@ -1176,14 +1176,14 @@ NoBatToEV=false
             selected = AUDIT.select_log_files_for_window(
                 base_log,
                 AUDIT.discover_log_files(base_log),
-                datetime(2026, 7, 15, 12),
-                datetime(2026, 7, 16, 12),
-                datetime(2026, 7, 16).date(),
+                datetime(2000, 7, 2, 12),
+                datetime(2000, 7, 3, 12),
+                datetime(2000, 7, 3).date(),
             )
 
         self.assertEqual(
             [path.name for path in selected],
-            ["current.log", "current.log.2026-07-15"],
+            ["current.log", "current.log.2000-07-02"],
         )
 
     def test_active_log_is_rollover_fallback_for_missing_rotation(self):
@@ -1195,9 +1195,9 @@ NoBatToEV=false
             selected = AUDIT.select_log_files_for_window(
                 base_log,
                 AUDIT.discover_log_files(base_log),
-                datetime(2026, 7, 15),
-                datetime(2026, 7, 16),
-                datetime(2026, 7, 16).date(),
+                datetime(2000, 7, 2),
+                datetime(2000, 7, 3),
+                datetime(2000, 7, 3).date(),
             )
 
         self.assertEqual([path.name for path in selected], ["current.log"])
@@ -1205,19 +1205,19 @@ NoBatToEV=false
     def test_load_window_crosses_midnight_and_deduplicates_rotation_overlap(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            duplicate = "2026-07-15 00:00:00,000 INFO duplicate\n"
-            (root / "current.log.2026-07-14").write_text(
-                "2026-07-14 23:59:59,000 INFO before\n" + duplicate,
+            duplicate = "2000-07-02 00:00:00,000 INFO duplicate\n"
+            (root / "current.log.2000-07-01").write_text(
+                "2000-07-01 23:59:59,000 INFO before\n" + duplicate,
                 encoding="utf-8",
             )
             (root / "current.log").write_text(
-                duplicate + "2026-07-15 00:00:01,000 INFO after\n",
+                duplicate + "2000-07-02 00:00:01,000 INFO after\n",
                 encoding="utf-8",
             )
             records, total = AUDIT.load_log_window(
-                [root / "current.log.2026-07-14", root / "current.log"],
-                datetime(2026, 7, 14, 23, 59, 58),
-                datetime(2026, 7, 15, 0, 0, 2),
+                [root / "current.log.2000-07-01", root / "current.log"],
+                datetime(2000, 7, 1, 23, 59, 58),
+                datetime(2000, 7, 2, 0, 0, 2),
             )
         self.assertEqual(total, 4)
         self.assertEqual([record.message for record in records], ["before", "duplicate", "after"])
@@ -1257,7 +1257,7 @@ NoBatToEV=false
 
     def test_fast_log_parser_preserves_offset_and_millisecond_contract(self):
         line = (
-            "2026-07-15 18:42:10,123456 (UTC+5:30) APP_DEBUG "
+            "2000-07-02 18:42:10,123456 (UTC+5:30) APP_DEBUG "
             "[TPt_0|test] diagnostic"
         )
 
@@ -1268,9 +1268,9 @@ NoBatToEV=false
         self.assertEqual(
             timestamp,
             datetime(
-                2026,
+                2000,
                 7,
-                15,
+                2,
                 18,
                 42,
                 10,
@@ -1286,7 +1286,7 @@ NoBatToEV=false
             def __iter__(self):
                 raise AssertionError("charge records must not be scanned per grid sample")
 
-        timestamp = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+        timestamp = datetime(2000, 7, 2, 12, 0, tzinfo=timezone.utc)
         record = AUDIT.LogRecord(timestamp, "APP_DEBUG", "charging", "charging")
         audit = self._audit([record])
         audit.charge_records = IndexedOnly([record])
@@ -1300,7 +1300,7 @@ NoBatToEV=false
             def __iter__(self):
                 raise AssertionError("full log must not be rescanned per charge sample")
 
-        start = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+        start = datetime(2000, 7, 2, 12, 0, tzinfo=timezone.utc)
         first = AUDIT.LogRecord(start, "APP_DEBUG", "charging", "first charge")
         second = AUDIT.LogRecord(
             start + timedelta(seconds=5), "APP_DEBUG", "charging", "second charge"
@@ -1329,7 +1329,7 @@ NoBatToEV=false
             path = Path(directory) / "current.log"
             path.write_text(
                 "not a dated log line\n"
-                "2026-07-15 12:00:00,000 INFO valid record\n"
+                "2000-07-02 12:00:00,000 INFO valid record\n"
                 "truncated continuation without another timestamp\n",
                 encoding="utf-8",
             )
@@ -1340,25 +1340,25 @@ NoBatToEV=false
         self.assertIsNotNone(
             AUDIT.coverage_problem(
                 records,
-                datetime(2026, 7, 15),
-                datetime(2026, 7, 16),
-                datetime(2026, 7, 17),
+                datetime(2000, 7, 2),
+                datetime(2000, 7, 3),
+                datetime(2000, 7, 4),
             )
         )
 
     def test_window_resolution_defaults_to_yesterday_and_requires_24_hours(self):
-        now = datetime(2026, 7, 15, 12, 0, 0)
+        now = datetime(2000, 7, 2, 12, 0, 0)
         label, start, end, window_type = AUDIT.resolve_window(None, None, now)
-        self.assertEqual(label, "2026-07-14")
-        self.assertEqual(start, datetime(2026, 7, 14))
-        self.assertEqual(end, datetime(2026, 7, 15))
+        self.assertEqual(label, "2000-07-01")
+        self.assertEqual(start, datetime(2000, 7, 1))
+        self.assertEqual(end, datetime(2000, 7, 2))
         self.assertEqual(window_type, "calendar-day")
         with self.assertRaises(ValueError):
             AUDIT.resolve_window(None, 23.9, now)
 
     def test_today_window_uses_venus_timezone_when_os_clock_is_utc(self):
         venus_timezone = timezone(timedelta(hours=3))
-        os_now = datetime(2026, 7, 15, 18, 11, tzinfo=timezone.utc)
+        os_now = datetime(2000, 7, 2, 18, 11, tzinfo=timezone.utc)
 
         label, start, end, window_type = AUDIT.resolve_window(
             "today",
@@ -1367,13 +1367,13 @@ NoBatToEV=false
             local_timezone=venus_timezone,
         )
 
-        self.assertEqual(label, "2026-07-15")
-        self.assertEqual(start, datetime(2026, 7, 15, tzinfo=venus_timezone))
-        self.assertEqual(end, datetime(2026, 7, 16, tzinfo=venus_timezone))
+        self.assertEqual(label, "2000-07-02")
+        self.assertEqual(start, datetime(2000, 7, 2, tzinfo=venus_timezone))
+        self.assertEqual(end, datetime(2000, 7, 3, tzinfo=venus_timezone))
         self.assertEqual(window_type, "calendar-day")
 
     def test_large_irrelevant_record_set_bypasses_event_regexes(self):
-        start = datetime(2026, 7, 15, tzinfo=timezone.utc)
+        start = datetime(2000, 7, 2, tzinfo=timezone.utc)
         records = [
             AUDIT.LogRecord(
                 start + timedelta(milliseconds=index),
@@ -1411,16 +1411,16 @@ NoBatToEV=false
         self.assertTrue(all(spy.search.call_count == 0 for spy in spies.values()))
 
     def test_coverage_requires_both_full_day_boundaries(self):
-        start = datetime(2026, 7, 14)
+        start = datetime(2000, 7, 1)
         end = start + timedelta(days=1)
         record = AUDIT.LogRecord(start + timedelta(hours=1), "INFO", "late", "late")
         problem = AUDIT.coverage_problem(
-            [record], start, end, datetime(2026, 7, 15, 12)
+            [record], start, end, datetime(2000, 7, 2, 12)
         )
         self.assertIn("first record", problem)
 
     def test_coverage_metadata_reports_evidence_span_against_elapsed_day(self):
-        start = datetime(2026, 7, 15)
+        start = datetime(2000, 7, 2)
         records = [
             AUDIT.LogRecord(start + timedelta(hours=2), "APP_DEBUG", "a", "a"),
             AUDIT.LogRecord(start + timedelta(hours=8), "APP_DEBUG", "b", "b"),
@@ -1486,7 +1486,7 @@ NoBatToEV=false
             with mock.patch.object(
                 AUDIT,
                 "resolve_report_timezone",
-                return_value=("Europe/Bucharest", venus_timezone, None),
+                return_value=("Etc/UTC", venus_timezone, None),
             ), contextlib.redirect_stdout(output):
                 exit_code = AUDIT.main(
                     [
@@ -1502,7 +1502,7 @@ NoBatToEV=false
 
         report = output.getvalue()
         self.assertEqual(exit_code, AUDIT.EXIT_INCOMPLETE)
-        self.assertIn("Report timezone:  Europe/Bucharest", report)
+        self.assertIn("Report timezone:  Etc/UTC", report)
         self.assertIn(
             f"Requested period: {now:%Y-%m-%d}T00:00:00+03:00",
             report,
@@ -1538,8 +1538,8 @@ NoBatToEV=false
             config.write_text("[Common]\nLogLevel=APP_DEBUG\n", encoding="utf-8")
             log = root / "current.log"
             log.write_text(
-                "2026-07-14 00:00:01,000 INFO start\n"
-                "2026-07-14 23:59:59,000 INFO end\n",
+                "2000-07-01 00:00:01,000 INFO start\n"
+                "2000-07-01 23:59:59,000 INFO end\n",
                 encoding="utf-8",
             )
             output = io.StringIO()
@@ -1551,7 +1551,7 @@ NoBatToEV=false
                         "--log-file",
                         str(log),
                         "--date",
-                        "2026-07-14",
+                        "2000-07-01",
                         "--no-current-snapshot",
                     ]
                 )

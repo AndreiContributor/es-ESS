@@ -47,17 +47,17 @@ class GlobalsTests(unittest.TestCase):
         cls.globals = _load_module("globals_under_test", ROOT / "Globals.py")
 
     def test_get_user_time_uses_structured_subprocess_environment(self):
-        self.globals.userTimezone = "Europe/Bucharest"
+        self.globals.userTimezone = "Etc/UTC"
         self.globals.subprocess.run = Mock(
-            return_value=SimpleNamespace(stdout="2026-07-11 12:34:56\n")
+            return_value=SimpleNamespace(stdout="2000-01-02 03:04:05\n")
         )
 
-        self.assertEqual(self.globals.getUserTime(), "2026-07-11 12:34:56")
+        self.assertEqual(self.globals.getUserTime(), "2000-01-02 03:04:05")
 
         self.globals.subprocess.run.assert_called_once()
         args, kwargs = self.globals.subprocess.run.call_args
         self.assertEqual(args[0], ["date", "+%Y-%m-%d %H:%M:%S"])
-        self.assertEqual(kwargs["env"]["TZ"], ":Europe/Bucharest")
+        self.assertEqual(kwargs["env"]["TZ"], ":Etc/UTC")
         self.assertTrue(kwargs["capture_output"])
         self.assertTrue(kwargs["text"])
         self.assertEqual(kwargs["timeout"], 3)

@@ -50,7 +50,7 @@ The tool reads only:
 
 - `/data/es-ESS/config.ini`;
 - `/data/log/es-ESS/current.log` and standard dated rotations such as
-  `current.log.2026-07-15`; and
+  the synthetic example `current.log.2000-01-02`; and
 - the authoritative Venus timezone through one bounded, exact
   `com.victronenergy.settings /Settings/System/TimeZone GetValue` query; and
 - when available, current service state through `svstat` plus selected D-Bus
@@ -76,8 +76,8 @@ result. A configuration that exists but cannot be opened or parsed is an input
 error; the report stops instead of silently analyzing with all-default settings.
 
 New log records use the Venus `/Settings/System/TimeZone` wall time with the
-applicable offset, for example
-`2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG ...`. The analyzer uses that offset
+applicable offset, for example the synthetic record
+`2000-01-02 03:04:05,678 (UTC+0) APP_DEBUG ...`. The analyzer uses that offset
 to order records and calculate durations across daylight-saving changes. It
 continues to accept pre-upgrade records that do not contain an offset, so a
 rotation window spanning the upgrade remains readable. Grid-to-charge
@@ -101,7 +101,7 @@ are:
 
 ```sh
 python /data/es-ESS/scripts/es-ess-daily-report.py --date today
-python /data/es-ESS/scripts/es-ess-daily-report.py --date 2026-07-15
+python /data/es-ESS/scripts/es-ess-daily-report.py --date 2000-01-02
 python /data/es-ESS/scripts/es-ess-daily-report.py --hours 24
 python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday --json
 ```
