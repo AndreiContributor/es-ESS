@@ -1435,6 +1435,9 @@ class FroniusWattpilot (esESSService):
                 or not self.wattpilot.carStateReady
                 or modeTelemetryPending
             ):
+                # Keep the public site-current contract truthful while the
+                # disconnected Wattpilot control path remains throttled.
+                self.refreshIdleSiteCurrentDiagnostics()
                 return
 
             self.lastVarDump = time.time()
@@ -3132,6 +3135,33 @@ class FroniusWattpilot (esESSService):
             evaluated_at=now,
         )
 
+    def refreshIdleSiteCurrentDiagnostics(self):
+        """Publish live site-current diagnostics without running control state."""
+        self.refreshSiteCurrentTelemetryHeartbeat()
+        diagnosticPhase = (
+            self.currentPhaseMode if self.currentPhaseMode in (1, 2) else 1
+        )
+        decision = self.siteCurrentDecision(
+            diagnosticPhase, activeCharge=False
+        )
+        if self.mode != VrmEvChargerControlMode.Auto:
+            self.siteCurrentGuardBlocked = False
+            self.siteCurrentGuardReason = "Manual mode: observation only"
+        elif decision is None:
+            self.siteCurrentGuardBlocked = True
+            self.siteCurrentGuardReason = (
+                "Site-current telemetry missing, invalid, stale, or phase-uncertain"
+            )
+        elif decision.allowed_current < self.minCurrentPerPhase:
+            self.siteCurrentGuardBlocked = True
+            self.siteCurrentGuardReason = (
+                "No phase headroom for the 6 A charging minimum"
+            )
+        else:
+            self.siteCurrentGuardBlocked = False
+            self.siteCurrentGuardReason = "Site-current headroom available"
+        self.publishSiteCurrentTelemetry(requireChargerCurrent=False)
+
     def siteLimitedTargetCurrent(self, phaseMode, pvTarget, applyRecovery=True):
         """Cap a PV target by physical per-phase site headroom."""
         decision = self.siteCurrentDecision(phaseMode)
@@ -3513,8 +3543,14 @@ class FroniusWattpilot (esESSService):
         self.dbusService["/ChargeComplete/ResumeElapsed"] = int(
             round(self.getChargeCompleteResumeSeconds())
         )
+        self.publishSiteCurrentTelemetry()
+
+    def publishSiteCurrentTelemetry(self, requireChargerCurrent=None):
+        """Publish the command-free site-current runtime-status contract."""
         now = time.time()
-        siteTelemetryHealthy = self.siteCurrentTelemetryIsFresh()
+        siteTelemetryHealthy = self.siteCurrentTelemetryIsFresh(
+            requireChargerCurrent
+        )
         sitePaths = {
             "/SiteCurrentLimit": self.siteMaxCurrent,
             "/SiteCurrentSource": getattr(

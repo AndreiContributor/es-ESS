@@ -150,6 +150,10 @@ It owns:
   dispatch, so one cycle cannot act on two contradictory provider reads. The
   Shelly provider timestamps only a complete successful RPC sample. There is
   no automatic provider fallback.
+- Command-free site-current diagnostic refresh during the disconnected idle
+  throttle. The normal five-second service worker consumes the latest provider
+  snapshot and republishes current, age, health, and headroom paths without
+  dispatching control or advancing site-recovery timers.
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
@@ -466,6 +470,11 @@ Future Wattpilot changes must preserve these invariants:
   timestamp of its last complete HTTP poll. A failed selected-source read never
   refreshes cached age and fails Auto/Eco closed; the controller must not
   silently fall back to another provider.
+- The disconnected five-minute Wattpilot idle throttle must not freeze the
+  public site-current contract or advertise a stale sample with a frozen young
+  age. A command-free idle diagnostic refresh must remain on the normal
+  five-second service cadence and must not issue commands, dispatch controller
+  state, advance recovery timers, or mutate phase-switch candidates.
 - One-phase charging subtracts measured EV current only from
   `Charger1PhaseMapping`. Three-phase charging subtracts the smallest measured
   EV phase current from all physical phases and receives one equal current

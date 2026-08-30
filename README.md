@@ -873,6 +873,13 @@ when `SiteCurrentSource=Shelly3EMGen3`:
 | [Shelly3EMSiteCurrent] | PhaseB | Physical site phase measured by Shelly channel B. | L1/L2/L3 | L2 |
 | [Shelly3EMSiteCurrent] | PhaseC | Physical site phase measured by Shelly channel C. The A/B/C mapping must be a permutation of L1/L2/L3. | L1/L2/L3 | L3 |
 
+The selected provider continues to refresh the site-current D-Bus/MQTT
+diagnostics on the normal five-second service cadence while Wattpilot is
+disconnected and its control loop is using the longer idle cadence. This
+diagnostic refresh consumes the latest provider snapshot but does not dispatch
+control, advance site-recovery timers, or issue Wattpilot commands. The Shelly
+snapshot itself continues to poll at `PollFrequencyMs`.
+
 ### Eco/PV policy
 
 In `Auto` / Wattpilot `ECO` mode, es-ESS follows this PV-start policy with an
