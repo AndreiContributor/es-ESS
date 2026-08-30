@@ -80,6 +80,10 @@ class esESSService(ABC):
     def publishServiceMessage(self, service, message, type=Globals.ServiceMessageType.Operational):
         Globals.esESS.publishServiceMessage(service, message, type)
 
+    def readDbusSubscription(self, subscription, timeout=1.0):
+        """Read a subscribed D-Bus path directly and report transport success."""
+        return Globals.esESS.readDbusSubscription(subscription, timeout)
+
     def registerGridSetPointRequest(self, request:float):
         Globals.esESS.registerGridSetPointRequest(self, request)
 

@@ -145,19 +145,41 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.surplusDropGraceSeconds = 20
         controller.allowanceDropGraceSeconds = 15
         controller.noAllowanceForcedOff = False
+        controller.siteCurrentForcedOff = False
+
+        controller.siteMaxCurrent = 20
+        controller.charger1PhaseMapping = "L1"
+        controller.siteCurrentFreshSeconds = 15
+        controller.siteCurrentRecoverySeconds = 30
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+        controller.siteCurrentGuardBlocked = False
+        controller.siteCurrentGuardReason = "Site-current headroom available"
+        controller.siteCurrentAllowedCurrent = 16
+        controller.siteCurrentLimitingPhase = "L1"
+        controller.siteCurrentHeadrooms = (20, 20, 20)
+        for phase in ("L1", "L2", "L3"):
+            setattr(controller, "siteCurrent{0}Value".format(phase), 0)
+            setattr(controller, "siteCurrent{0}Valid".format(phase), True)
+            setattr(controller, "siteCurrent{0}UpdatedAt".format(phase), 100)
 
         controller.batteryAssistEnabled = True
         controller.batteryAssistSocMin = 60
         controller.batteryAssistMaxSeconds = 300
-        controller.batteryAssistMaxShortfallW = 3000
+        controller.batteryAssistMaxShortfallPerPhaseW = 1500
         controller.batterySocFreshSeconds = 15
         controller.batteryAssistRecoverySeconds = 60
         controller.batteryAssistSince = 0
+        controller.batteryAssistDeficitSince = 0
         controller.batteryAssistActive = False
         controller.batteryAssistShortfallW = 0
+        controller.batteryAssistShortfallPerPhaseW = 0
+        controller.batteryAssistActivePhases = 0
+        controller.batteryAssistEffectiveLimitW = 0
         controller.batteryAssistLockedOut = False
         controller.batteryAssistLockoutSince = 0
         controller.batteryAssistRecoverySince = 0
+        controller.minimumCurrentReductionAt = 0
+        controller.minimumCurrentReductionPhaseMode = 0
 
         controller.allowGridCharging = False
         controller.gridImportPositive = True
@@ -239,6 +261,10 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             power2=0,
             power3=0,
             amp=6,
+            amps1=6,
+            amps2=6,
+            amps3=6,
+            energyTelemetryUpdatedAt=100,
             carConnected=True,
             carStateReady=True,
             connected=True,
@@ -289,11 +315,19 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.gridL2UpdatedAt = timestamp
         controller.gridL3UpdatedAt = timestamp
 
+    @staticmethod
+    def _fresh_site(controller, timestamp):
+        for phase in ("L1", "L2", "L3"):
+            setattr(controller, "siteCurrent{0}Valid".format(phase), True)
+            setattr(controller, "siteCurrent{0}UpdatedAt".format(phase), timestamp)
+        controller.wattpilot.energyTelemetryUpdatedAt = timestamp
+
     def _set_allowance(self, controller, watts, timestamp):
         controller.allowance = watts
         controller.allowanceValid = True
         controller.allowanceUpdatedAt = timestamp
         self._fresh_grid(controller, timestamp)
+        self._fresh_site(controller, timestamp)
 
     def test_one_phase_start_waits_for_the_stable_pv_timer(self):
         controller = self._controller()
@@ -447,7 +481,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
         self.assertEqual(controller.currentPhaseMode, 1)
         controller.wattpilot.set_phases.assert_not_called()
-        controller.wattpilot.set_power.assert_called_once_with(16)
+        controller.wattpilot.set_power.assert_called_once_with(7)
 
     def test_one_to_three_phase_switch_requires_shared_stable_delay(self):
         controller = self._controller()
@@ -461,7 +495,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
         self.assertEqual(controller.currentPhaseMode, 1)
         controller.wattpilot.set_phases.assert_not_called()
-        controller.wattpilot.set_power.assert_called_once_with(16)
+        controller.wattpilot.set_power.assert_called_once_with(7)
 
         controller.wattpilot.set_power.reset_mock()
         self._set_allowance(controller, 5000, 220)
@@ -648,9 +682,9 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
         self.assertEqual(controller.currentPhaseMode, 1)
         controller.wattpilot.set_phases.assert_not_called()
-        controller.wattpilot.set_power.assert_called_once_with(16)
+        controller.wattpilot.set_power.assert_called_once_with(7)
 
-    def test_battery_assist_cannot_cause_a_one_to_three_phase_switch(self):
+    def test_pv_reduction_precedes_battery_assist_and_cannot_phase_up(self):
         controller = self._controller()
         controller.wattpilot.power = 3.68
         controller.wattpilot.amp = 16
@@ -660,11 +694,12 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             status = controller.controlAutomaticCharging()
 
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
-        self.assertTrue(controller.batteryAssistActive)
+        self.assertFalse(controller.batteryAssistActive)
         self.assertEqual(controller.currentPhaseMode, 1)
+        controller.wattpilot.set_power.assert_called_once_with(6)
         controller.wattpilot.set_phases.assert_not_called()
 
-    def test_battery_assist_preserves_existing_phase_up_candidate_until_full_pv_recovers(self):
+    def test_pv_current_reduction_resets_phase_up_candidate_until_full_pv_recovers(self):
         controller = self._controller()
         controller.minimumPhaseSwitchSeconds = 120
         controller.lastPhaseSwitchTime = -120
@@ -678,30 +713,41 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(controller.phaseSwitchCandidateMode, 2)
         self.assertEqual(controller.phaseSwitchCandidateSince, 100)
 
-        # A deep cloud dip is bridged by eligible battery assist. The assist
-        # path cannot issue phase-up, but intentionally leaves the already-
-        # existing candidate's wall-clock timer unchanged.
+        # PV still supports 8 A on one phase, so the controller reduces from
+        # 16 A to 8 A without using the battery or issuing a phase command.
         self._set_allowance(controller, 1856, 110)
         with patch.object(self.fwp.time, "time", return_value=110):
             status = controller.controlAutomaticCharging()
 
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
-        self.assertTrue(controller.batteryAssistActive)
-        self.assertEqual(controller.phaseSwitchCandidateMode, 2)
-        self.assertEqual(controller.phaseSwitchCandidateSince, 100)
+        self.assertFalse(controller.batteryAssistActive)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 0)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 0)
         self.assertEqual(controller.phaseSwitchBelowThresholdSince, 0)
+        controller.wattpilot.set_power.assert_called_with(8)
         controller.wattpilot.set_phases.assert_not_called()
 
-        # Once fresh assigned PV recovers to the full threshold, the mature
-        # candidate may switch without beginning a second complete interval.
+        # Once fresh assigned PV recovers, a new complete phase-up stability
+        # interval is required; the reduction path never preserves a candidate
+        # by pretending battery assistance was active.
         controller.wattpilot.set_power.reset_mock()
         self._set_allowance(controller, 4200, 220)
         with patch.object(self.fwp.time, "time", return_value=220):
             status = controller.controlAutomaticCharging()
 
-        self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo3Phase)
-        controller.wattpilot.set_phases.assert_called_once_with(2)
-        controller.wattpilot.set_power.assert_called_once_with(6)
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.phaseSwitchCandidateSince, 220)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_called_once_with(16)
+
+        controller.wattpilot.set_power.reset_mock()
+        controller.wattpilot.amp = 6
+        self._set_allowance(controller, 4200, 221)
+        with patch.object(self.fwp.time, "time", return_value=221):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        controller.wattpilot.set_phases.assert_not_called()
 
     def test_battery_assist_requires_active_charge_soc_and_power_limits(self):
         controller = self._controller()
@@ -713,12 +759,181 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         controller.batterySocDbus.value = 80
         with patch.object(self.fwp.time, "time", return_value=101):
-            self.assertFalse(controller.startOrContinueBatteryAssist(3001))
+            self.assertFalse(controller.startOrContinueBatteryAssist(1501))
 
         with patch.object(self.fwp.time, "time", return_value=102):
-            self.assertTrue(controller.startOrContinueBatteryAssist(3000))
+            self.assertTrue(controller.startOrContinueBatteryAssist(1500))
 
         self.assertTrue(controller.batteryAssistActive)
+
+    def test_battery_assist_shortfall_limit_scales_with_active_phases(self):
+        controller = self._controller()
+        controller.wattpilot.power = 4.2
+
+        controller.currentPhaseMode = 1
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertTrue(controller.startOrContinueBatteryAssist(1500))
+        controller.clearBatteryAssist()
+        with patch.object(self.fwp.time, "time", return_value=101):
+            self.assertFalse(controller.startOrContinueBatteryAssist(1501))
+
+        controller.currentPhaseMode = 2
+        with patch.object(self.fwp.time, "time", return_value=102):
+            self.assertTrue(controller.startOrContinueBatteryAssist(4500))
+        self.assertEqual(controller.batteryAssistActivePhases, 3)
+        self.assertEqual(controller.batteryAssistShortfallPerPhaseW, 1500)
+        self.assertEqual(controller.batteryAssistEffectiveLimitW, 4500)
+        controller.clearBatteryAssist()
+        with patch.object(self.fwp.time, "time", return_value=103):
+            self.assertFalse(controller.startOrContinueBatteryAssist(4501))
+
+    def test_three_phase_assist_starts_only_after_confirmed_six_amp_reduction(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.minimumPhaseSwitchSeconds = 600
+        controller.batteryAssistMaxSeconds = 600
+        controller.wattpilot.power = 5.5
+        controller.wattpilot.amp = 8
+        controller.wattpilot.amps1 = 8
+        controller.wattpilot.amps2 = 8
+        controller.wattpilot.amps3 = 8
+        controller.mqttRawOverheadW = 2400
+        controller.mqttRawOverheadUpdatedAt = 100
+        self._set_allowance(controller, 0, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertFalse(controller.batteryAssistActive)
+        self.assertEqual(controller.batteryAssistDeficitSince, 100)
+        controller.wattpilot.set_power.assert_called_once_with(6)
+        controller.wattpilot.set_phases.assert_not_called()
+
+        controller.wattpilot.amp = 6
+        controller.wattpilot.amps1 = 6
+        controller.wattpilot.amps2 = 6
+        controller.wattpilot.amps3 = 6
+        controller.mqttRawOverheadUpdatedAt = 101
+        self._set_allowance(controller, 0, 101)
+        with patch.object(self.fwp.time, "time", return_value=101):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertTrue(controller.batteryAssistActive)
+        self.assertEqual(controller.batteryAssistSince, 100)
+        self.assertEqual(controller.batteryAssistShortfallW, 1740)
+        self.assertEqual(controller.batteryAssistShortfallPerPhaseW, 580)
+        controller.publishSafetyTelemetry()
+        self.assertEqual(controller.dbusService["/BatteryAssist/Shortfall"], 1740)
+        self.assertEqual(
+            controller.dbusService["/BatteryAssist/ShortfallPerPhase"], 580
+        )
+        self.assertEqual(controller.dbusService["/BatteryAssist/ActivePhases"], 3)
+        self.assertEqual(
+            controller.dbusService["/BatteryAssist/EffectiveLimit"], 4500
+        )
+        controller.wattpilot.set_phases.assert_not_called()
+
+    def test_one_phase_assist_starts_only_after_confirmed_six_amp_reduction(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.wattpilot.power = 3.68
+        controller.wattpilot.amp = 16
+        controller.wattpilot.amps1 = 16
+        controller.mqttRawOverheadW = 1000
+        controller.mqttRawOverheadUpdatedAt = 100
+        self._set_allowance(controller, 0, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertFalse(controller.batteryAssistActive)
+        controller.wattpilot.set_power.assert_called_once_with(6)
+
+        controller.wattpilot.amp = 6
+        controller.wattpilot.amps1 = 6
+        controller.mqttRawOverheadUpdatedAt = 101
+        self._set_allowance(controller, 0, 101)
+        with patch.object(self.fwp.time, "time", return_value=101):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertTrue(controller.batteryAssistActive)
+        self.assertEqual(controller.batteryAssistShortfallW, 380)
+        self.assertEqual(controller.batteryAssistShortfallPerPhaseW, 380)
+
+    def test_grid_fallback_also_reduces_to_six_amps_first(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.allowGridCharging = True
+        controller.batteryAssistEnabled = False
+        controller.wattpilot.power = 3.68
+        controller.wattpilot.amp = 16
+        controller.wattpilot.amps1 = 16
+        self._set_allowance(controller, 0, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        controller.wattpilot.set_power.assert_called_once_with(6)
+        controller.wattpilot.set_start_stop.assert_not_called()
+
+    def test_battery_assist_timeout_does_not_receive_a_new_allowance_grace(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.batteryAssistMaxSeconds = 600
+        controller.wattpilot.power = 1.38
+        controller.wattpilot.amp = 6
+        controller.wattpilot.amps1 = 6
+        self._set_allowance(controller, 0, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertEqual(
+                controller.controlAutomaticCharging(),
+                self.fwp.VrmEvChargerStatus.Charging,
+            )
+        self.assertTrue(controller.batteryAssistActive)
+
+        self._set_allowance(controller, 0, 700)
+        with patch.object(self.fwp.time, "time", return_value=700):
+            controller.recordBatteryPowerTelemetry(0)
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+        self.assertTrue(controller.batteryAssistLockedOut)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
+
+    def test_battery_assist_lockout_stops_without_logging_a_new_allowance_grace(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.batteryAssistLockedOut = True
+        controller.wattpilot.power = 1.38
+        controller.wattpilot.amp = 6
+        controller.wattpilot.amps1 = 6
+        messages = []
+        controller.publishServiceMessage = lambda *_args: messages.append(_args[-1])
+        self._set_allowance(controller, 0, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+        self.assertIn(
+            "Battery assist lockout prevents a new allowance grace. "
+            "Stopping Auto/Eco charging.",
+            messages,
+        )
+        self.assertFalse(
+            any("Waiting up to" in message for message in messages)
+        )
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
 
     def test_battery_soc_requires_valid_soc_and_fresh_battery_activity(self):
         controller = self._controller()
@@ -834,7 +1049,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo1Phase)
         self.assertEqual(controller.currentPhaseMode, 1)
         controller.wattpilot.set_phases.assert_called_once_with(1)
-        controller.wattpilot.set_power.assert_called_once_with(8)
+        controller.wattpilot.set_power.assert_called_once_with(7)
 
     def test_phase_down_timer_resets_when_three_phase_pv_recovers(self):
         controller = self._controller()
@@ -880,10 +1095,20 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             self.assertTrue(controller.shouldPhaseDownForPvDip())
             status = controller._handleGridImportPhaseDown()
         self.assertTrue(status)
+        controller.wattpilot.set_power.assert_called_once_with(8)
+        controller.wattpilot.set_phases.assert_not_called()
+
+        controller.wattpilot.amp = 8
+        controller.wattpilot.amps1 = 8
+        controller.wattpilot.amps2 = 8
+        controller.wattpilot.amps3 = 8
+        controller.wattpilot.energyTelemetryUpdatedAt = 107
+        with patch.object(self.fwp.time, "time", return_value=107):
+            controller._handleGridImportPhaseDown()
         controller.wattpilot.set_phases.assert_called_once_with(1)
         controller.wattpilot.set_start_stop.assert_not_called()
 
-    def test_no_grid_phase_down_waits_for_grace_when_shortfall_is_too_large(self):
+    def test_three_phase_deficit_reduces_to_six_before_phase_down(self):
         controller = self._controller()
         controller.currentPhaseMode = 2
         controller.minimumPhaseSwitchSeconds = 600
@@ -891,7 +1116,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.amp = 16
         controller.wattpilot.modelStatus = SimpleNamespace(value=3)
         controller.batterySocDbus.value = 80
-        controller.batteryAssistMaxShortfallW = 1000
+        controller.batteryAssistMaxShortfallPerPhaseW = 500
         controller.mqttRawOverheadW = 2000
         controller.mqttRawOverheadUpdatedAt = 100
         self._set_allowance(controller, 0, 100)
@@ -902,6 +1127,19 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
         self.assertEqual(controller.currentPhaseMode, 2)
         self.assertFalse(controller.batteryAssistActive)
+        controller.wattpilot.set_power.assert_called_once_with(6)
+        controller.wattpilot.set_phases.assert_not_called()
+
+        controller.wattpilot.amp = 6
+        controller.wattpilot.amps1 = 6
+        controller.wattpilot.amps2 = 6
+        controller.wattpilot.amps3 = 6
+        controller.mqttRawOverheadUpdatedAt = 105
+        self._set_allowance(controller, 0, 105)
+        with patch.object(self.fwp.time, "time", return_value=105):
+            status = controller.controlAutomaticCharging()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
         controller.wattpilot.set_phases.assert_not_called()
 
         controller.mqttRawOverheadUpdatedAt = 115
@@ -920,7 +1158,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.amp = 16
         controller.wattpilot.modelStatus = SimpleNamespace(value=3)
         controller.batterySocDbus.value = 80
-        controller.batteryAssistMaxShortfallW = 1000
+        controller.batteryAssistMaxShortfallPerPhaseW = 1000
         controller.mqttRawOverheadW = 3912
         controller.mqttRawOverheadUpdatedAt = 100
         self._set_allowance(controller, 0, 100)
@@ -949,7 +1187,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.set_phases.assert_not_called()
         controller.wattpilot.set_start_stop.assert_not_called()
 
-    def test_stale_high_raw_overhead_cannot_desync_three_phase_controller_state(self):
+    def test_fresh_raw_overhead_can_only_maintain_three_phase_current(self):
         controller = self._controller()
         controller.currentPhaseMode = 2
         controller.batteryAssistEnabled = False
@@ -963,10 +1201,10 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         with patch.object(self.fwp.time, "time", return_value=100):
             status = controller.controlAutomaticCharging()
 
-        self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo1Phase)
-        self.assertEqual(controller.currentPhaseMode, 1)
-        controller.wattpilot.set_phases.assert_called_once_with(1)
-        controller.wattpilot.set_power.assert_called_once_with(8)
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 2)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
 
     def test_high_raw_overhead_does_not_start_spurious_battery_bridge(self):
         controller = self._controller()
@@ -982,11 +1220,11 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         with patch.object(self.fwp.time, "time", return_value=100):
             status = controller.controlAutomaticCharging()
 
-        self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo1Phase)
-        self.assertEqual(controller.currentPhaseMode, 1)
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 2)
         self.assertFalse(controller.batteryAssistActive)
-        controller.wattpilot.set_phases.assert_called_once_with(1)
-        controller.wattpilot.set_power.assert_called_once_with(8)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
 
     def test_phase_adjustment_cannot_change_mode_without_phase_command(self):
         controller = self._controller()
@@ -1023,7 +1261,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo1Phase)
         controller.wattpilot.set_phases.assert_called_once_with(1)
-        controller.wattpilot.set_power.assert_called_once_with(8)
+        controller.wattpilot.set_power.assert_called_once_with(7)
 
     def test_no_grid_stops_when_battery_bridge_and_one_phase_pv_are_unavailable(self):
         controller = self._controller()
@@ -1108,7 +1346,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.SwitchingTo1Phase)
         controller.wattpilot.set_phases.assert_called_once_with(1)
-        controller.wattpilot.set_power.assert_called_once_with(8)
+        controller.wattpilot.set_power.assert_called_once_with(7)
 
     def test_grid_allowed_keeps_running_one_phase_without_pv_but_does_not_start(self):
         controller = self._controller()
@@ -1139,12 +1377,12 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.power = 2.3
 
         with patch.object(self.fwp.time, "time", return_value=100):
-            self.assertTrue(controller.startOrContinueBatteryAssist(2000))
+            self.assertTrue(controller.startOrContinueBatteryAssist(1000))
         with patch.object(self.fwp.time, "time", return_value=399):
             controller.recordBatteryPowerTelemetry(0)
-            self.assertTrue(controller.startOrContinueBatteryAssist(2000))
+            self.assertTrue(controller.startOrContinueBatteryAssist(1000))
         with patch.object(self.fwp.time, "time", return_value=400):
-            self.assertFalse(controller.startOrContinueBatteryAssist(2000))
+            self.assertFalse(controller.startOrContinueBatteryAssist(1000))
 
         self.assertFalse(controller.batteryAssistActive)
         self.assertTrue(controller.batteryAssistLockedOut)
@@ -1353,7 +1591,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(controller.currentPhaseMode, 1)
         self.assertEqual(controller.pendingPhaseSwitchMode, 0)
         controller.wattpilot.set_phases.assert_called_once_with(1)
-        controller.wattpilot.set_power.assert_called_once_with(15)
+        controller.wattpilot.set_power.assert_called_once_with(7)
 
     def test_pending_one_phase_confirmation_stops_if_three_phase_power_remains(self):
         controller = self._controller()

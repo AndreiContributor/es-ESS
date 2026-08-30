@@ -215,6 +215,45 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         app.config = {"Common": {"ServiceMessageCount": "3"}}
         return app
 
+    def test_live_dbus_subscription_read_uses_busitem_getvalue(self):
+        app = self._app()
+        connection = SimpleNamespace(call_blocking=Mock(return_value=0.0))
+        app._dbusMonitor = SimpleNamespace(dbusConn=connection)
+        subscription = SimpleNamespace(
+            serviceName="com.victronenergy.system",
+            dbusPath="/Ac/Consumption/L1/Current",
+        )
+
+        success, value = app.readDbusSubscription(subscription, timeout=0.75)
+
+        self.assertTrue(success)
+        self.assertEqual(value, 0.0)
+        connection.call_blocking.assert_called_once_with(
+            "com.victronenergy.system",
+            "/Ac/Consumption/L1/Current",
+            "com.victronenergy.BusItem",
+            "GetValue",
+            "",
+            [],
+            timeout=0.75,
+        )
+
+    def test_live_dbus_subscription_read_reports_transport_failure(self):
+        app = self._app()
+        connection = SimpleNamespace(
+            call_blocking=Mock(side_effect=RuntimeError("D-Bus unavailable"))
+        )
+        app._dbusMonitor = SimpleNamespace(dbusConn=connection)
+        subscription = SimpleNamespace(
+            serviceName="com.victronenergy.system",
+            dbusPath="/Ac/Consumption/L3/Current",
+        )
+
+        success, value = app.readDbusSubscription(subscription)
+
+        self.assertFalse(success)
+        self.assertIsNone(value)
+
     def test_initial_mqtt_connection_is_async_with_bounded_backoff(self):
         app = self._app()
         client = FakeMqttClient(connected=False)

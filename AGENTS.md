@@ -48,8 +48,9 @@ Wattpilot behavior to preserve and understand before changing code:
 Key areas to inspect before changing behavior:
 
 - Runtime entry points: `es-ESS.py` and `esESSService.py`.
-- Wattpilot control and reporting: `FroniusWattpilot.py`, `Wattpilot.py`, and
-  `WattpilotRuntimeStatus.py`.
+- Wattpilot control and reporting: `FroniusWattpilot.py`, `Wattpilot.py`,
+  `WattpilotRuntimeStatus.py`, and the command-free
+  `WattpilotSessionStatistics.py` observer.
 - Wattpilot architecture boundaries and safety invariants:
   `docs/wattpilot-architecture.md`.
 - App-wide service inventory and integration boundaries:
@@ -76,6 +77,8 @@ safety-sensitive.
 - In Auto/Eco mode, do not intentionally use grid power.
 - Battery assist remains an optional, time-limited bridge for an
   already-running charge only.
+- Wattpilot session statistics remain observation-only: no command, dispatch,
+  D-Bus/MQTT control, configuration-default, or vehicle-identity ownership.
 - Add or update unit tests for every behavior change.
 - Run syntax checks and the full test suite before opening the PR.
 - Update README/config documentation when a new setting or behavior is

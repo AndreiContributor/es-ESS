@@ -416,8 +416,202 @@
 
     <section id="architecture">
       <p class="eyebrow">02 · Architecture</p>
-      <h2>Power flows and information flows are different</h2>
-      <p class="section-intro">A reliable controller needs more than the power seen by one meter. The solid lines below are electrical paths; dashed lines are measurement or command paths.</p>
+      <h2>Example power path and information flows</h2>
+      <p class="section-intro">This illustrative topology shows one possible arrangement with Victron in the normal AC path and an optional interlocked maintenance changeover. Actual installations vary. The Cerbo and batteries are supervisory/DC connections rather than additional AC series elements.</p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 1200 1220" role="img" aria-labelledby="clean-topology-title clean-topology-desc">
+          <title id="clean-topology-title">Example Victron bypass and Wattpilot power path</title>
+          <desc id="clean-topology-desc">An illustrative top-to-bottom electrical diagram. Grid power passes through utility and grid-exchange meters to an optional interlocked changeover. Its normal path passes through Victron and its bypass path goes directly to a shared load bus. AC-coupled PV connects from the left. A site protective device and dedicated site-current meter precede separately protected site and EV circuits. Batteries connect only to Victron DC. Cerbo communications are shown in a separate control strip.</desc>
+          <defs>
+            <marker id="cleanArrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#a94f4f"/></marker>
+            <marker id="cleanArrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#2877a8"/></marker>
+            <marker id="cleanArrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#d99418"/></marker>
+            <marker id="cleanArrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#39896d"/></marker>
+            <filter id="cleanShadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-opacity=".08"/></filter>
+            <symbol id="icon-grid" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M16 3L7 29M16 3l9 26M10 12h12M8 19h16M5 29h22M4 9h24M8 9l-4 5M24 9l4 5"/>
+              </g>
+            </symbol>
+            <symbol id="icon-meter" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="6" y="3" width="20" height="26" rx="3"/><rect x="10" y="7" width="12" height="6" rx="1"/>
+                <path d="M11 21a5 5 0 0 1 10 0M16 21l3-3M11 25h10"/>
+              </g>
+            </symbol>
+            <symbol id="icon-smart-meter" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="3" width="22" height="26" rx="3"/><rect x="9" y="7" width="14" height="8" rx="1"/>
+                <path d="M10 20h3l2-3 3 6 2-3h2M11 26h10"/>
+              </g>
+            </symbol>
+            <symbol id="icon-changeover" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="6" cy="16" r="2"/><circle cx="26" cy="8" r="2"/><circle cx="26" cy="24" r="2"/>
+                <path d="M8 16l14-7M22 23h-7M18 20l4 3-4 3"/>
+              </g>
+            </symbol>
+            <symbol id="icon-ess" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="4" width="24" height="24" rx="4"/><path d="M8 11h16M10 17c2-4 4-4 6 0s4 4 6 0M10 23h12"/>
+              </g>
+            </symbol>
+            <symbol id="icon-solar" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="24" cy="7" r="3"/><path d="M24 1v2M24 11v2M18 7h2M28 7h2M20 3l1.5 1.5M27 10l1.5 1.5"/>
+                <path d="M5 14h20l3 14H2l3-14zM4 21h22M10 14L8 28M17 14v14M23 14l2 14"/>
+              </g>
+            </symbol>
+            <symbol id="icon-inverter" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="4" y="3" width="24" height="26" rx="4"/><path d="M9 10h14M9 19c2-4 4-4 7 0s5 4 7 0M10 25h12"/>
+              </g>
+            </symbol>
+            <symbol id="icon-battery" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="8" width="25" height="17" rx="3"/><path d="M28 13h2v7h-2M10 13v7M6.5 16.5h7M20 13v7M16.5 16.5h7"/>
+              </g>
+            </symbol>
+            <symbol id="icon-bus" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 12h26M3 20h26M8 8v16M16 8v16M24 8v16"/>
+                <circle cx="8" cy="16" r="2" fill="currentColor" stroke="none"/><circle cx="16" cy="16" r="2" fill="currentColor" stroke="none"/><circle cx="24" cy="16" r="2" fill="currentColor" stroke="none"/>
+              </g>
+            </symbol>
+            <symbol id="icon-breaker" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="5" y="3" width="22" height="26" rx="3"/><circle cx="11" cy="10" r="2"/><circle cx="21" cy="22" r="2"/><path d="M12.5 11.5l7 8M10 26h12"/>
+              </g>
+            </symbol>
+            <symbol id="icon-house" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 15L16 4l13 11M6 13v15h20V13M13 28v-9h6v9M10 16h3M19 16h3"/>
+              </g>
+            </symbol>
+            <symbol id="icon-ev" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 19l3-8h13l3 8v7H4v-7zM7 19h16M9 26v2M19 26v2"/><circle cx="9" cy="22" r="1.5"/><circle cx="19" cy="22" r="1.5"/>
+                <path d="M25 5v8M22 8h6M28 13v4c0 2-1 3-3 3h-2"/>
+              </g>
+            </symbol>
+            <symbol id="icon-controller" viewBox="0 0 32 32">
+              <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="19" height="15" rx="2"/><path d="M7 8h11v7H7zM8 24h18M12 19v5M24 8h5v17h-5M26.5 12h.01M26.5 16h.01"/>
+              </g>
+            </symbol>
+          </defs>
+
+          <text x="600" y="30" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">AC POWER PATH</text>
+
+          <!-- One consistent top-to-bottom grid path. -->
+          <rect x="480" y="50" width="240" height="55" rx="14" fill="#f9eaea" stroke="#a94f4f" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-grid" x="496" y="62" width="31" height="31" color="#a94f4f" aria-hidden="true"/>
+          <text x="618" y="76" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">National grid</text>
+          <text x="618" y="96" text-anchor="middle" font-size="11" fill="#5b6975">Three phase</text>
+          <path d="M600 105V145" stroke="#a94f4f" stroke-width="5" marker-end="url(#cleanArrowRed)"/>
+
+          <rect x="480" y="145" width="240" height="55" rx="14" fill="#fff" stroke="#a94f4f" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-meter" x="496" y="157" width="31" height="31" color="#a94f4f" aria-hidden="true"/>
+          <text x="618" y="171" text-anchor="middle" font-size="16" font-weight="850" fill="#16212b">Utility meter</text>
+          <text x="618" y="191" text-anchor="middle" font-size="11" fill="#5b6975">National metering</text>
+          <path d="M600 200V240" stroke="#a94f4f" stroke-width="5" marker-end="url(#cleanArrowRed)"/>
+
+          <rect x="455" y="240" width="290" height="60" rx="14" fill="#fff" stroke="#a94f4f" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-smart-meter" x="472" y="254" width="32" height="32" color="#a94f4f" aria-hidden="true"/>
+          <text x="620" y="267" text-anchor="middle" font-size="16" font-weight="850" fill="#16212b">Fronius Smart Meter</text>
+          <text x="620" y="289" text-anchor="middle" font-size="11" fill="#5b6975">Grid-exchange boundary</text>
+          <path d="M600 300V340" stroke="#a94f4f" stroke-width="5" marker-end="url(#cleanArrowRed)"/>
+
+          <rect x="445" y="340" width="310" height="90" rx="16" fill="#fff7df" stroke="#c38b1e" stroke-width="2.5" filter="url(#cleanShadow)"/>
+          <use href="#icon-changeover" x="463" y="361" width="42" height="42" color="#c38b1e" aria-hidden="true"/>
+          <text x="628" y="372" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">Optional changeover example</text>
+          <text x="628" y="397" text-anchor="middle" font-size="11" fill="#5b6975">Normal · Off · Bypass</text>
+          <text x="628" y="416" text-anchor="middle" font-size="10" font-weight="750" fill="#a94f4f">Only one route can be connected</text>
+
+          <!-- The switch splits into two uncluttered lanes. -->
+          <path d="M560 430V460H430V500" fill="none" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
+          <text x="475" y="453" text-anchor="middle" font-size="11" font-weight="850" fill="#2877a8">NORMAL</text>
+          <path d="M640 430V460H980V650" fill="none" stroke="#a94f4f" stroke-width="4" stroke-dasharray="12 8" marker-end="url(#cleanArrowRed)"/>
+          <text x="820" y="453" text-anchor="middle" font-size="11" font-weight="850" fill="#a94f4f">BYPASS</text>
+
+          <rect x="300" y="500" width="260" height="115" rx="18" fill="#e6f4ed" stroke="#39896d" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-ess" x="304" y="543" width="30" height="30" color="#39896d" aria-hidden="true"/>
+          <text x="450" y="536" text-anchor="middle" font-size="18" font-weight="850" fill="#16212b">Victron ESS</text>
+          <text x="450" y="565" text-anchor="middle" font-size="11" fill="#5b6975">AC-in → 3 inverter/chargers → AC-out</text>
+          <text x="450" y="591" text-anchor="middle" font-size="11" fill="#39896d">Normal route only</text>
+          <path d="M430 615V650" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
+
+          <!-- PV and battery have separate, short side connections. -->
+          <rect x="45" y="348" width="190" height="75" rx="14" fill="#fff4d6" stroke="#d99418" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-solar" x="59" y="369" width="37" height="37" color="#d99418" aria-hidden="true"/>
+          <text x="164" y="379" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">PV panels</text>
+          <text x="164" y="403" text-anchor="middle" font-size="11" fill="#5b6975">Three-phase array</text>
+          <path d="M140 423V515" stroke="#d99418" stroke-width="5" marker-end="url(#cleanArrowOrange)"/>
+
+          <rect x="45" y="515" width="190" height="85" rx="14" fill="#fff" stroke="#d99418" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-inverter" x="52" y="538" width="39" height="39" color="#d99418" aria-hidden="true"/>
+          <text x="165" y="547" text-anchor="middle" font-size="14" font-weight="850" fill="#16212b">Fronius PV inverter</text>
+          <text x="165" y="573" text-anchor="middle" font-size="10" fill="#5b6975">AC-coupled on load side</text>
+          <path d="M140 600V682H260" fill="none" stroke="#d99418" stroke-width="5" marker-end="url(#cleanArrowOrange)"/>
+
+          <rect x="650" y="518" width="190" height="80" rx="14" fill="#fff" stroke="#39896d" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-battery" x="664" y="540" width="37" height="37" color="#39896d" aria-hidden="true"/>
+          <text x="765" y="551" text-anchor="middle" font-size="16" font-weight="850" fill="#16212b">Battery bank</text>
+          <text x="765" y="576" text-anchor="middle" font-size="11" fill="#5b6975">DC connection only</text>
+          <path d="M560 558H650" stroke="#39896d" stroke-width="5" marker-start="url(#cleanArrowGreen)" marker-end="url(#cleanArrowGreen)"/>
+
+          <!-- Both switch routes and PV meet at one clearly named bus. -->
+          <rect x="260" y="650" width="800" height="65" rx="16" fill="#eef2f3" stroke="#7c8a90" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-bus" x="282" y="665" width="36" height="36" color="#7c8a90" aria-hidden="true"/>
+          <text x="680" y="679" text-anchor="middle" font-size="18" font-weight="850" fill="#16212b">Load-side three-phase AC bus</text>
+          <text x="680" y="701" text-anchor="middle" font-size="11" fill="#5b6975">Example: Victron normal route · optional direct-grid bypass</text>
+          <path d="M660 715V750" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
+
+          <rect x="520" y="750" width="280" height="85" rx="16" fill="#fff" stroke="#2877a8" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-breaker" x="537" y="773" width="39" height="39" color="#2877a8" aria-hidden="true"/>
+          <text x="686" y="784" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">Site protective device</text>
+          <text x="686" y="809" text-anchor="middle" font-size="11" fill="#5b6975">Example: 20 A per phase</text>
+          <path d="M660 835V870" stroke="#2877a8" stroke-width="5"/>
+
+          <!-- Measurement point and downstream branch split. -->
+          <circle cx="660" cy="870" r="9" fill="#e6f4ed" stroke="#39896d" stroke-width="3"/>
+          <text x="680" y="865" font-size="10" font-weight="800" fill="#39896d">Dedicated site-current meter before split</text>
+          <path d="M660 879V900H460V945" fill="none" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
+          <path d="M660 900H860V945" fill="none" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
+
+          <rect x="330" y="945" width="260" height="90" rx="16" fill="#fff" stroke="#2877a8" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-house" x="340" y="970" width="40" height="40" color="#2877a8" aria-hidden="true"/>
+          <text x="485" y="981" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">Protected site circuits</text>
+          <text x="485" y="1009" text-anchor="middle" font-size="11" fill="#5b6975">Each circuit appropriately protected</text>
+
+          <rect x="735" y="945" width="250" height="90" rx="16" fill="#fff" stroke="#2877a8" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-breaker" x="759" y="971" width="38" height="38" color="#2877a8" aria-hidden="true"/>
+          <text x="885" y="981" text-anchor="middle" font-size="15" font-weight="850" fill="#16212b">EV circuit protection</text>
+          <text x="885" y="1009" text-anchor="middle" font-size="11" fill="#5b6975">Example: 16 A branch</text>
+          <path d="M860 1035V1070" stroke="#2877a8" stroke-width="5" marker-end="url(#cleanArrowBlue)"/>
+
+          <rect x="735" y="1070" width="250" height="70" rx="16" fill="#e7f2f8" stroke="#2877a8" stroke-width="2" filter="url(#cleanShadow)"/>
+          <use href="#icon-ev" x="765" y="1087" width="37" height="37" color="#2877a8" aria-hidden="true"/>
+          <text x="885" y="1099" text-anchor="middle" font-size="17" font-weight="850" fill="#16212b">Wattpilot → EV</text>
+          <text x="885" y="1123" text-anchor="middle" font-size="11" fill="#5b6975">Worked example: Position=0</text>
+
+          <!-- Communications are summarized separately so they do not cross power lines. -->
+          <rect x="45" y="1160" width="1110" height="45" rx="13" fill="#f0ecfa" stroke="#7765a8" stroke-width="2"/>
+          <use href="#icon-controller" x="62" y="1167" width="31" height="31" color="#7765a8" aria-hidden="true"/>
+          <text x="620" y="1179" text-anchor="middle" font-size="13" font-weight="850" fill="#4d3d78">CERBO GX / es-ESS — CONTROL AND DATA ONLY</text>
+          <text x="620" y="1197" text-anchor="middle" font-size="10" fill="#6b5a91">VE.Bus: Victron · LAN: Fronius inverter · WebSocket: Wattpilot · BMS-CAN: batteries · D-Bus/MQTT: system data</text>
+        </svg>
+
+        <figcaption>Illustrative hierarchy only; actual placement and ratings must follow the installation design. In this example, normal operation uses Victron AC-in to AC-out and an optional maintenance bypass can connect the grid directly to the site-side bus. The dedicated site-current meter measures all loads governed by the example 20 A-per-phase <code>SiteMaxCurrent</code> boundary before separately protected site and EV circuits split. The 16 A EV branch is an example, not a repository requirement.</figcaption>
+      </figure>
+
+      <div class="callout warning">
+        <p><strong>An optional bypass is not an es-ESS state:</strong> <code>Position</code> describes Wattpilot AC placement, not a changeover position. If a bypass removes Cerbo power, es-ESS cannot issue a final release command. Any fallback integration is optional and must use an explicit, validated switch indication and an operator-approved contract for the target installation.</p>
+      </div>
+
+      <details style="margin-top:22px">
+        <summary style="cursor:pointer; font-weight:800">Open the generic component and data-flow map</summary>
 
       <figure class="diagram">
         <div class="legend" aria-hidden="true">
@@ -429,7 +623,7 @@
         </div>
         <svg viewBox="0 0 1200 910" role="img" aria-labelledby="system-title system-desc">
           <title id="system-title">Generic Fronius, Victron and Wattpilot system architecture</title>
-          <desc id="system-desc">PV panels feed a three-phase Fronius inverter connected to a site AC bus. A Fronius Smart Meter measures the boundary between that bus and the utility grid. Three Victron inverter chargers connect a lithium battery to the same AC system. The EV charger and house loads are parallel branches. A Cerbo GX exchanges data with the Fronius inverter, Victron system, battery BMS, and Wattpilot.</desc>
+          <desc id="system-desc">Generic component and data-flow map. It is not a physical one-line drawing. The example above illustrates one optional changeover arrangement, a site protective boundary, and separately protected downstream circuits.</desc>
           <defs>
             <marker id="arrowSolar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#e5a122"/></marker>
             <marker id="arrowBattery" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#3b8c6e"/></marker>
@@ -482,7 +676,7 @@
           <text x="675" y="119" text-anchor="middle" font-size="16" font-weight="800" fill="#16212b">Smart Meter</text>
           <rect x="588" y="133" width="48" height="55" rx="4" fill="#e8ecec" stroke="#7f8b8d"/>
           <rect x="597" y="143" width="30" height="15" rx="2" fill="#92b8a7"/>
-          <text x="709" y="153" text-anchor="middle" font-size="11" fill="#5b6975">Whole-site boundary</text>
+          <text x="709" y="153" text-anchor="middle" font-size="11" fill="#5b6975">Grid-exchange boundary</text>
           <text x="709" y="177" text-anchor="middle" font-size="11" fill="#5b6975">Import / export meter</text>
 
           <rect x="1000" y="90" width="175" height="120" rx="18" fill="#f9eaea" stroke="#aa4f4f" stroke-width="2" filter="url(#softShadow)"/>
@@ -536,13 +730,14 @@
           <rect x="645" y="836" width="210" height="30" rx="9" fill="#7765a8"/>
           <text x="750" y="857" text-anchor="middle" font-size="14" font-weight="850" fill="#fff">es-ESS controller</text>
         </svg>
-        <figcaption>The Smart Meter measures the whole-site grid boundary and exchanges data with the Fronius inverter over Modbus RTU. Wattpilot and house loads are parallel branches, not a series path. The Cerbo/GX uses LAN for the Fronius inverter, VE.Bus for the inverter/chargers, BMS-CAN for the managed battery, and es-ESS uses the Wattpilot WebSocket interface. Exact AC-in/AC-out placement must still be verified on every site.</figcaption>
+        <figcaption>This generic map separates power-related components from data/control links; it is not an installation one-line drawing. The example above illustrates one possible protected site-current boundary and separately protected downstream circuits. The Cerbo/GX uses LAN for the Fronius inverter, VE.Bus for the inverter/chargers, BMS-CAN for the managed battery, and es-ESS uses the Wattpilot WebSocket interface.</figcaption>
       </figure>
+      </details>
 
       <div class="grid grid-2" style="margin-top:22px">
         <article class="card">
           <h3>Example placement: Wattpilot <code>Position=0</code></h3>
-          <p>es-ESS publishes <code>0</code> as AC-out and <code>1</code> as AC-in. This is a configured reporting value, not automatic proof of the physical wiring. Check the deployed <code>/data/es-ESS/config.ini</code>, the Cerbo device view and the electrical diagram.</p>
+          <p>es-ESS publishes <code>0</code> as AC-out and <code>1</code> as AC-in. This worked example uses <code>0</code>; the configured value must match the actual Wattpilot placement. It is not automatic proof of physical wiring or an optional bypass position. Check the deployed <code>/data/es-ESS/config.ini</code>, the Cerbo device view and the installation's electrical diagram.</p>
         </article>
         <article class="card">
           <h3>Grid failure is a separate design case</h3>
@@ -611,7 +806,7 @@
         <article class="card">
           <p class="card-kicker">1 · Observe</p>
           <h3>Require fresh inputs</h3>
-          <p>Read all three grid phases, battery power/SOC, current consumer demand and Wattpilot state. Missing critical inputs produce zero allowance or a fail-safe stop.</p>
+          <p>Read all three grid phases, physical L1/L2/L3 site currents, battery power/SOC, current consumer demand and Wattpilot state. Missing critical inputs produce zero allowance or a fail-safe stop.</p>
         </article>
         <article class="card">
           <p class="card-kicker">2 · Allocate</p>
@@ -632,11 +827,11 @@
       <figure class="diagram">
         <svg viewBox="0 0 1080 340" role="img" aria-labelledby="flow-title flow-desc">
           <title id="flow-title">es-ESS Wattpilot Auto Eco decision flow</title>
-          <desc id="flow-desc">Fresh telemetry leads to a real PV allowance. If it cannot support one phase, charging waits or stops. If one phase is supported, charging starts or adjusts. Sustained higher allowance may switch to three phases. Grid import or stale telemetry invokes a safety guard.</desc>
+          <desc id="flow-desc">Fresh telemetry and physical per-phase site headroom lead to a real PV allowance. If either cannot support one phase, charging waits or stops. If one phase is supported, charging starts or adjusts. Sustained higher allowance plus headroom may switch to three phases. Grid import or stale telemetry invokes a safety guard.</desc>
           <defs><marker id="fArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#60727a"/></marker></defs>
           <g font-family="Inter,Segoe UI,sans-serif" text-anchor="middle">
             <rect x="30" y="110" width="170" height="80" rx="16" fill="#f0ecfa" stroke="#7765a8" stroke-width="2"/>
-            <text x="115" y="143" font-weight="800" font-size="16">Fresh GX data?</text><text x="115" y="167" font-size="12" fill="#5b6975">Grid L1/L2/L3 + battery</text>
+            <text x="115" y="143" font-weight="800" font-size="16">Fresh GX data?</text><text x="115" y="167" font-size="12" fill="#5b6975">Grid + site current L1/L2/L3</text>
             <path d="M200 150H260" stroke="#60727a" stroke-width="3" marker-end="url(#fArrow)"/>
             <rect x="260" y="110" width="180" height="80" rx="16" fill="#fff4d6" stroke="#e5a122" stroke-width="2"/>
             <text x="350" y="143" font-weight="800" font-size="16">PV allowance</text><text x="350" y="167" font-size="12" fill="#5b6975">≥ one-phase minimum?</text>
@@ -704,11 +899,11 @@ AllowGridCharging=<span class="value">false</span></pre>
         <article class="card battery">
           <p class="card-kicker">Recommended example</p>
           <h3>Bounded battery assist</h3>
-          <p>A running charge may survive a short cloud when SOC is valid, selected-battery activity is recent, and shortfall and time remain within limits. Venus OS does not periodically republish an unchanged SOC value, so finite <code>/Dc/Battery/Power</code> updates provide the heartbeat used to trust the cached SOC. Missing or invalid SOC, or a missing, invalid or stale heartbeat, fails closed. The maintained 1 kW shortfall default smooths small dips while making current reduction, phase-down or stop happen earlier when the EV would otherwise lean hard on the home battery.</p>
+          <p>A running charge may survive a short cloud when SOC is valid, selected-battery activity is recent, and shortfall and time remain within limits. Auto/Eco first reduces the equal current on every active charger phase to the PV-supported value, then requires fresh charger telemetry confirming the configured 6 A minimum before assistance begins. Venus OS does not periodically republish an unchanged SOC value, so finite <code>/Dc/Battery/Power</code> updates provide the heartbeat used to trust the cached SOC. Missing or invalid SOC, or a missing, invalid or stale heartbeat, fails closed.</p>
           <pre>BatteryAssistEnabled=<span class="value">true</span>
 BatteryAssistSocMin=<span class="value">50</span>
 BatteryAssistMaxSeconds=<span class="value">600</span>
-BatteryAssistMaxShortfallW=<span class="value">1000</span>
+BatteryAssistMaxShortfallPerPhaseW=<span class="value">1500</span>
 BatterySocFreshSeconds=<span class="value">15</span>
 BatteryAssistRecoverySeconds=<span class="value">120</span>
 AllowGridCharging=<span class="value">false</span></pre>
@@ -719,15 +914,15 @@ AllowGridCharging=<span class="value">false</span></pre>
       <ul class="checklist">
         <li>Only an already-running Auto/Eco session can receive assistance.</li>
         <li>SOC must be finite and remain at or above 50%; selected-battery <code>/Dc/Battery/Power</code> activity must be no older than 15 seconds because it is the liveness heartbeat for cached SOC.</li>
-        <li>The calculated PV shortfall must not exceed 1 kW with the maintained daily-use default.</li>
+        <li>The calculated deficit at 6 A must not exceed 1.5 kW per active charger phase: 1.5 kW total in one-phase mode or 4.5 kW total in three-phase mode.</li>
         <li>One assist window lasts no more than 600 seconds.</li>
         <li>PV must fully recover for 120 seconds before another locked-out assist window becomes available.</li>
-        <li>Assistance cannot start an EV session and cannot justify switching from one phase to three.</li>
+        <li>Assistance cannot start an EV session, preserve a higher current, or justify switching from one phase to three.</li>
         <li>With <code>AllowGridCharging=false</code>, sustained grid import still invokes the stop guard.</li>
       </ul>
 
       <div class="callout success">
-        <p><strong>Energy scale:</strong> 1 kW for 600 seconds is at most about <strong>0.17 kWh</strong> before conversion losses—around 0.5% of a 32 kWh nominal battery bank. The actual amount is usually lower because assistance tracks only the shortfall. Raising this value makes the EV tolerate larger PV dips but also allows more home-battery discharge before the controller reduces current, phases down or stops.</p>
+        <p><strong>Energy scale:</strong> the 1.5 kW value is an eligibility ceiling per active phase, not forced battery consumption. At 230–240 V, a zero-PV three-phase 6 A charge needs about 4.14–4.32 kW and 0.69–0.72 kWh over 600 seconds before conversion losses; one phase needs about one third of those values. Actual assistance is lower whenever PV still contributes.</p>
       </div>
 
       <p><code>EvPriorityOverBatteryCharge=true</code> is not battery discharge assistance. Above <code>EvPriorityMinSoc</code>, it allows real PV that would otherwise charge the stationary battery to be redirected to the connected EV. This bypass and battery assist both require valid SOC plus a finite selected-battery <code>/Dc/Battery/Power</code> update within <code>BatterySocFreshSeconds</code>; missing or invalid SOC, or missing, invalid or stale battery activity, disables them for that cycle. The controller still requires an actual distributor allowance for a new start.</p>
@@ -822,6 +1017,11 @@ HibernateMode=<span class="value">false</span>                <span class="comme
 
 MinCurrentPerPhase=<span class="value">6</span>
 MaxCurrentPerPhase=<span class="value">16</span>               <span class="comment"># Example only; respect all electrical limits</span>
+SiteCurrentSource=<span class="value">VenusSystem</span>        <span class="comment"># Or Shelly3EMGen3 after commissioning</span>
+SiteMaxCurrent=<span class="value">20</span>                    <span class="comment"># Default example; A per phase, configure for the site</span>
+Charger1PhaseMapping=<span class="value">L1</span>              <span class="comment"># Physical phase after any plug rotation</span>
+SiteCurrentFreshSeconds=<span class="value">15</span>
+SiteCurrentRecoverySeconds=<span class="value">30</span>       <span class="comment"># Then increase 1 A per 5-second cycle</span>
 MinOnOffSeconds=<span class="value">60</span>
 MinPhaseSwitchSeconds=<span class="value">600</span>
 ThreePhasePvSurplusStartW=<span class="value">4500</span>
@@ -832,7 +1032,7 @@ EvPriorityMinSoc=<span class="value">50</span>
 BatteryAssistEnabled=<span class="value">true</span>
 BatteryAssistSocMin=<span class="value">50</span>
 BatteryAssistMaxSeconds=<span class="value">600</span>
-BatteryAssistMaxShortfallW=<span class="value">1000</span>
+BatteryAssistMaxShortfallPerPhaseW=<span class="value">1500</span>
 BatterySocFreshSeconds=<span class="value">15</span>
 BatteryAssistRecoverySeconds=<span class="value">120</span>
 
@@ -863,6 +1063,8 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
         <article class="card">
           <h3>Current and phase thresholds</h3>
           <p>The Wattpilot family commonly starts around 6 A: approximately 1.38 kW on one phase and 4.14 kW on three phases at nominal voltage. Use hysteresis, so the three-phase start threshold is higher than the stop threshold.</p>
+          <p><code>SiteCurrentSource=VenusSystem</code> preserves the calculated GX consumption-current source. After a dedicated Shelly 3EM Gen3 is installed and its A/B/C phase mapping is verified, select <code>Shelly3EMGen3</code> and configure its host, digest password, polling timeout and one-to-one phase mapping in <code>[Shelly3EMSiteCurrent]</code>. Place the selected meter at the boundary governed by <code>SiteMaxCurrent</code> so every load contributing to that boundary, including Wattpilot, is measured. The selected source never falls back automatically, and <code>Shelly3EMGrid</code> remains disabled.</p>
+          <p><code>SiteMaxCurrent</code> is expressed in amperes and applied independently to physical L1, L2 and L3. The 20 A value above is a configurable default example, not a universal installation limit; set it for the site's protective device and wiring. The mandatory site guard caps one-phase charging on <code>Charger1PhaseMapping</code> and caps three-phase charging to the smallest physical-phase headroom because Wattpilot receives one equal current setting for all phases. Every lower-rated downstream circuit needs its own protection; a 16 A EV branch is an example only. The software reacts on the normal five-second cycle, supplements rather than replaces physical overcurrent protection, and does not independently protect downstream circuits.</p>
           <p>Do not infer a safe 32 A setting from a 22 kW product label. The lowest limit among supply, protection, cabling, adapter, wallbox, vehicle and local rules wins.</p>
         </article>
       </div>
@@ -873,14 +1075,14 @@ ChargeCompleteResumeSeconds=<span class="value">30</span></pre>
         <p>This timeline uses the parameter values in the recommended adaptable starting point above. Wattage values are approximate because the electrical minimum follows live phase voltage. The fresh SolarOverheadDistributor allowance assigned to Wattpilot—not total PV generation or raw grid export—is authoritative.</p>
         <ol class="steps">
           <li><strong>Below the one-phase minimum: wait.</strong><br>At 6 A and about 230 V, one-phase charging needs approximately 1.38 kW of assigned PV. Below that level Auto/Eco remains stopped. Battery assist cannot create a new charging session.</li>
-          <li><strong>Hold enough PV for 60 seconds: start on one or three phases.</strong><br>When fresh assigned allowance meets the electrical minimum for <code>MinOnOffSeconds=60</code>, charging starts at a bounded current. It starts on one phase below <code>ThreePhasePvSurplusStartW=4500</code>, or directly on three phases when at least 4,500 W is already assigned. This direct start matches normal Wattpilot behavior and does not use the running-session 1-to-3 timer.</li>
-          <li><strong>If a cloud passes on one phase: bridge, reduce or stop.</strong><br>For an already-running charge, eligible battery assist may hold the existing one-phase current for up to <code>BatteryAssistMaxSeconds=600</code> when SOC is at least 50%, selected-battery power activity is no older than <code>BatterySocFreshSeconds=15</code>, shortfall is no greater than 1,000 W, grid import remains within the safety limit, and telemetry is fresh. Missing or invalid SOC, or a missing, invalid or stale battery heartbeat, clears/refuses assist. If PV recovers, assist clears and one-phase charging continues. If the deficit persists but assigned PV still supports approximately 1.38 kW, charging reduces to a PV-supported current; below that minimum it stops after <code>AllowanceDropGraceSeconds=30</code>. An assist timeout remains locked out until PV fully covers EV demand for 120 seconds or the car disconnects. A later restart again requires sufficient assigned PV for 60 seconds.</li>
-          <li><strong>While already charging on one phase, hold 4,500 W for 10 minutes: become eligible for three phases.</strong><br>Once assigned allowance reaches <code>ThreePhasePvSurplusStartW=4500</code>, the shared <code>MinPhaseSwitchSeconds=600</code> timer begins. On the normal adjustment path, a dip shorter than <code>SurplusDropGraceSeconds=30</code> preserves the candidate only above the effective three-phase floor; a deeper or longer normally evaluated dip resets it. If bounded battery assist is actively holding the existing one-phase charge, an already-started candidate timer is intentionally left running even through a deeper dip, potentially for up to <code>BatteryAssistMaxSeconds=600</code>. Assist cannot create the candidate or switch phases. Fresh assigned allowance must recover to the full 4,500 W before the controller can command and confirm three-phase mode. The 4,500 W default remains above the normal three-phase 6 A floor while making phase-up less conservative than a 5,000 W threshold.</li>
+          <li><strong>Hold enough PV for 60 seconds: start on one or three phases.</strong><br>When fresh assigned allowance meets the electrical minimum for <code>MinOnOffSeconds=60</code>, charging starts at a bounded current. It starts on one phase below <code>ThreePhasePvSurplusStartW=4500</code>, or directly on three phases when at least 4,500 W is already assigned. This direct start matches normal Wattpilot behavior and does not use the running-session 1-to-3 timer. A current value retained while stopped is only a configured setpoint and does not reset already-stable site headroom. If the guarded phase, current or Start command is rejected, es-ESS remains stopped, reports no transition power and rebuilds the stable-PV interval.</li>
+          <li><strong>If a cloud passes on one phase: reduce, then bridge or stop.</strong><br>For an already-running charge, Auto/Eco first lowers current to the value supported by available PV. Only when PV cannot sustain the configured 6 A minimum does it command 6 A and wait for fresh Wattpilot current telemetry. Battery assist may then cover the remaining deficit for up to <code>BatteryAssistMaxSeconds=600</code> when SOC is at least 50%, selected-battery activity is fresh, the deficit is no greater than 1,500 W on that active phase, and grid/telemetry guards remain healthy. Missing or invalid inputs fail closed. Timeout remains locked out until PV fully covers live EV demand for 120 seconds or the car disconnects.</li>
+          <li><strong>While already charging on one phase, hold 4,500 W for 10 minutes: become eligible for three phases.</strong><br>Once assigned allowance reaches <code>ThreePhasePvSurplusStartW=4500</code>, the shared <code>MinPhaseSwitchSeconds=600</code> timer begins. A short dip may preserve the candidate only above the effective three-phase floor; a deeper deficit that enters minimum-current fallback resets it. Battery assist cannot preserve or create a phase-up candidate. Fresh assigned allowance must complete the normal threshold and timing conditions before the controller can command and confirm three-phase mode.</li>
           <li><strong>With sufficient PV: stay on three phases.</strong><br>There is no maximum three-phase duration. Charging can remain in that mode indefinitely while assigned PV stays above the effective phase-down threshold.</li>
-          <li><strong>A cloud lowers PV: debounce a brief allowance drop, then bridge when safe.</strong><br>The configured stop threshold is <code>ThreePhasePvSurplusStopW=4100</code>, while the effective threshold also respects the live three-phase electrical minimum. If the distributor cannot satisfy that atomic request, it truthfully publishes <code>0 W</code>. An already-running charge retains its current command for up to <code>AllowanceDropGraceSeconds=30</code>; recovery clears the timer, while a sustained deficit proceeds to phase-down or stop. Stale grid telemetry and the grid-import guard are never delayed. Eligible battery assist may bridge a longer shortfall only within the configured SOC, battery-activity, power and duration bounds.</li>
+          <li><strong>A cloud lowers PV: reduce current before assistance.</strong><br>The configured stop threshold is <code>ThreePhasePvSurplusStopW=4100</code>, while the effective threshold also respects the live three-phase electrical minimum. The common phase current falls with available PV. If PV drops below the 6 A floor, all three measured currents must confirm at or below 6 A before battery assist can cover the residual deficit, up to 1,500 W per active phase. A truthful atomic <code>0 W</code> allowance remains visible; fresh raw overhead may help only with running-session reduction and can never increase current or authorize phase-up.</li>
           <li><strong>PV recovers during the bridge: remain on three phases.</strong><br>The phase-down candidate is cancelled when assigned PV again supports three phases. Full PV coverage for <code>BatteryAssistRecoverySeconds=120</code> satisfies the configured assist-recovery condition.</li>
-          <li><strong>The deficit persists: reduce phase or stop.</strong><br>After the shared phase timer, the controller switches to one phase when fresh allowance can support it; otherwise it stops. If SOC falls below 50%, the shortfall exceeds 1,000 W, assist times out, or other allowance conditions make the long bridge ineligible, phase reduction or stop may occur after the 30-second allowance-drop grace and before the normal 10-minute wait completes. Stale grid telemetry and sustained grid import retain their earlier safety response.</li>
-          <li><strong>Later phase-up normally requires stability again.</strong><br>After a completed phase-down, a new 1-to-3 candidate again uses the shared 600-second stability/cooldown setting. During an eligible one-phase battery bridge, however, an existing candidate may mature while PV is low; if fresh allowance then recovers to at least 4,500 W, the controller may switch without starting another complete 600-second interval. The full threshold at the command boundary prevents a battery-only phase-up.</li>
+          <li><strong>The deficit persists: reduce phase or stop.</strong><br>Valid battery assist holds the confirmed 6 A three-phase floor for its bounded window. When it expires, no new allowance grace is added: the controller switches to one phase when continuation PV supports it or stops. Ineligible assist follows only the original allowance debounce. Stale grid telemetry, site-current limits and sustained grid import retain their earlier safety response.</li>
+          <li><strong>Later phase-up requires stability again.</strong><br>After a completed phase-down or deep minimum-current deficit, a new 1-to-3 candidate uses the shared 600-second stability/cooldown setting. Battery assistance and raw overhead cannot preserve or authorize phase-up; fresh assigned allowance must satisfy the normal conditions.</li>
         </ol>
         <div class="callout success">
           <p><strong>Energy-source boundary:</strong> with <code>AllowGridCharging=false</code>, es-ESS does not intentionally use grid power as fallback. During an eligible bridge, Victron ESS determines the physical battery/grid power flow; Wattpilot control only decides whether the already-running EV session may continue.</p>
@@ -962,7 +1164,7 @@ INTERVAL_SECONDS=10 MAX_SAMPLES=120 /data/es-ESS/scripts/es-ess-health-monitor.s
       <p>The monitor reports <code>/</code> and <code>/data</code> separately. es-ESS files and logs live on <code>/data</code>; high utilization of the Venus OS root filesystem must be investigated independently. Do not remove unknown operating-system files merely to reduce the root percentage. See the <a href="es-ess-health-monitor.md">health-monitor guide</a> for interpretation.</p>
 
       <h3 style="margin-top:32px">Read-only es-ESS daily report</h3>
-      <p>Use the daily report for historical/end-of-day validation; the health monitor above remains the live snapshot tool. The analyzer always requires <code>[Common] LogLevel=APP_DEBUG</code> (or more verbose). Yesterday and older dates require a complete requested window. <code>--date today</code> analyzes diagnostic records available from Venus-local midnight through execution and remains <code>INCOMPLETE</code> unless it already proves an <code>ANOMALY</code>. A bounded, exact, read-only query to <code>com.victronenergy.settings /Settings/System/TimeZone</code> makes the report calendar agree with logging even when the shell runs in UTC. It prints the report timezone, requested period, analysis cutoff, first/last evidence, evidence duration, elapsed-period span coverage, and the next local midnight when the full calendar day becomes available. It automatically reads <code>current.log</code> and standard dated rotations. Log lines include their UTC offset, for example <code>2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG ...</code>, while the analyzer remains compatible with older lines that have no offset. Timestamp indexes, marker-routed event parsing, and fast ISO timestamp conversion keep large APP_DEBUG reports practical.</p>
+      <p>Use the daily report for historical/end-of-day validation; the health monitor above remains the live snapshot tool. The analyzer always requires <code>[Common] LogLevel=APP_DEBUG</code> (or more verbose). Yesterday and older dates require a complete requested window. <code>--date today</code> analyzes diagnostic records available from Venus-local midnight through execution and remains <code>INCOMPLETE</code> unless it already proves an <code>ANOMALY</code>. A bounded, exact, read-only query to <code>com.victronenergy.settings /Settings/System/TimeZone</code> makes the report calendar agree with logging even when the shell runs in UTC. It prints the report timezone, requested period, analysis cutoff, first/last evidence, evidence duration, elapsed-period span coverage, and the next local midnight when the full calendar day becomes available. It discovers <code>current.log</code> and standard dated rotations, then reads only files whose Venus-local calendar dates can contain the requested window; <code>current.log</code> remains a safe fallback for a missing rotation, and parsed timestamps still determine evidence completeness. Log lines include their UTC offset, for example <code>2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG ...</code>, while the analyzer remains compatible with older lines that have no offset. Timestamp indexes, marker-routed event parsing, and fast ISO timestamp conversion keep large APP_DEBUG reports practical. Report JSON schema 4 distinguishes confirmed connection sessions from measured charging intervals, reports monotonic Wattpilot counter kWh only when continuity is proven, and labels one-/three-phase sampled-power splits as estimates with coverage and reconciliation fields. One-phase energy uses the configured physical-phase mapping; three-phase conductor order remains explicitly unverified and is reported as incomplete physical-phase mapping.</p>
       <pre><span class="comment"># After copying scripts/es-ess-daily-report.py to production</span>
 chmod +x /data/es-ESS/scripts/es-ess-daily-report.py
 python -m py_compile /data/es-ESS/scripts/es-ess-daily-report.py
@@ -985,7 +1187,7 @@ chmod 700 /data/es-ESS-validation
 umask 077
 python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday --json \
   &gt; /data/es-ESS-validation/es-ess-daily-report-$(date +%Y%m%d).json</pre>
-      <p>The report is read-only: it never writes D-Bus, MQTT, Wattpilot, configuration, files or service state. Optional current snapshots use only <code>svstat</code> and selected D-Bus <code>GetValue</code> calls. Interpret <code>GOOD</code>, <code>ATTENTION</code>, <code>ANOMALY</code> and <code>INCOMPLETE</code> using the complete <a href="es-ess-daily-report.md">es-ESS daily-report guide</a>. The report covers runtime health, sanitized configuration, approximate charging sessions, phase/allowance/grace behavior, safety interventions and rare statuses 8–11 and 13–14. A rare status marked <code>NOT OBSERVED</code> is informational. Do not force grid import, telemetry failure, phase switching or battery assist merely to exercise a check.</p>
+      <p>The report is read-only: it never writes D-Bus, MQTT, Wattpilot, configuration, files or service state. Optional current snapshots use only <code>svstat</code> and selected D-Bus <code>GetValue</code> calls. The controller's separate session observer is also command-free: it emits transition-only INFO evidence and at most one APP_DEBUG checkpoint per connected minute, with process-local correlation IDs rather than a vehicle identity. Interpret <code>GOOD</code>, <code>ATTENTION</code>, <code>ANOMALY</code> and <code>INCOMPLETE</code> using the complete <a href="es-ess-daily-report.md">es-ESS daily-report guide</a>. The report covers runtime health, sanitized configuration, connection and charging-interval counts, energy and onboarding evidence, phase/allowance/grace behavior, safety interventions and rare statuses 8–11 and 13–14. A pre-authentication Wattpilot firmware value of <code>&lt;unavailable&gt;</code> is informational only when ordered logs prove initialization, authentication, matching firmware confirmation and no intervening charger command, reconnect or second initialization; wrong or unresolved compatibility remains an anomaly. Counter resets, restarts, stale/long sampling gaps and partial report boundaries remain explicit and cannot be presented as complete energy evidence. A rare status marked <code>NOT OBSERVED</code> is informational. Do not force grid import, telemetry failure, phase switching or battery assist merely to exercise a check.</p>
       <p>Interactive execution shows progress for configuration, byte-level log loading, evidence checks, each read-only snapshot path, analysis and rendering. The progress bar is written to stderr, so JSON stdout remains valid. Use <code>--no-progress</code> for automation or <code>--no-current-snapshot</code> to skip the optional current snapshot; the required read-only Venus timezone query still runs. Snapshot calls time out after two seconds; after three consecutive D-Bus timeouts, remaining paths are marked unavailable and log analysis continues.</p>
 
       <div class="callout danger">
@@ -1113,6 +1315,7 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
           <tr><td>No-surplus start</td><td>Connect the car when PV allowance is below about one-phase minimum.</td><td>Auto/Eco waits; battery assist does not create a start.</td></tr>
           <tr><td>One-phase start</td><td>During supervised operation, observe genuine PV naturally remain above minimum for <code>MinOnOffSeconds</code>.</td><td>Charge starts on one phase at a bounded current.</td></tr>
           <tr><td>Phase-up</td><td>Observe a natural interval with assigned allowance above <code>ThreePhasePvSurplusStartW</code>.</td><td>Three-phase command occurs only after <code>MinPhaseSwitchSeconds</code> and is confirmed from telemetry.</td></tr>
+          <tr><td>Site-current guard</td><td>Compare the read-only physical L1/L2/L3 currents and calculated headrooms during a naturally changing household load; use hardware-free tests for stale and overload injection.</td><td>One-phase uses the configured physical mapping. Three-phase uses one equal current capped by the smallest headroom. Reductions/stops precede assist or grace; recovery waits 30 seconds and rises 1 A per normal cycle.</td></tr>
           <tr><td>Transient three-phase allowance drop</td><td>Review a naturally observed event, retained production evidence, or hardware-free test where one fresh atomic <code>0 W</code> allowance recovers inside <code>AllowanceDropGraceSeconds</code>.</td><td><code>/PvAllowance</code> truthfully shows 0 W, but no phase or stop command occurs; recovery clears the grace timer. A sustained drop reduces phase or stops at expiry. Grid safety remains immediate.</td></tr>
           <tr><td>Cloud bridge</td><td>Observe a natural shortfall under 1 kW while SOC is above 50%, or use hardware-free tests.</td><td>Existing charge is held temporarily; runtime status shows assist active. Larger shortfalls should reduce current, phase down or stop earlier.</td></tr>
           <tr><td>Assist timeout</td><td>Use hardware-free tests or a naturally sustained supervised shortfall; do not prolong a production deficit solely for validation.</td><td>Assist locks out at the configured limit; the controller reduces to one phase or stops according to fresh allowance.</td></tr>
@@ -1125,7 +1328,7 @@ tail -f -n 100 /data/log/es-ESS/current.log</pre>
 
       <details>
         <summary>Where to observe detailed controller state</summary>
-        <div><p>Use the Wattpilot D-Bus service paths <code>/ControlState</code>, <code>/PhaseMode</code>, <code>/BatteryAssistActive</code>, <code>/GridImportGuardActive</code>, <code>/TelemetryHealthy</code>, <code>/CommandAuthorityOk</code>, <code>/CommandAuthorityLiteral</code>, <code>/NativePvSurplusEnabled</code> and <code>/FlexibleTariffEnabled</code>, or the retained MQTT equivalents below <code>es-ESS/FroniusWattpilot/RuntimeStatus/...</code>. The standard EVCS overview tile intentionally remains compatible with normal Victron status values and does not show every safety detail.</p></div>
+        <div><p>Use the Wattpilot D-Bus service paths <code>/ControlState</code>, <code>/PhaseMode</code>, <code>/BatteryAssistActive</code>, <code>/GridImportGuardActive</code>, <code>/TelemetryHealthy</code>, <code>/SiteCurrentSource</code>, <code>/SiteCurrentSourceConnected</code>, <code>/SiteCurrentSourceStatus</code>, <code>/SiteCurrentSourceError</code>, <code>/SiteCurrentSourceLastSampleAge</code>, <code>/SiteCurrentL1..L3</code>, <code>/SiteHeadroomL1..L3</code>, <code>/SiteAllowedCurrent</code>, <code>/SiteLimitingPhase</code>, <code>/SiteCurrentTelemetryHealthy</code>, <code>/SiteCurrentGuardReason</code>, <code>/CommandAuthorityOk</code>, <code>/CommandAuthorityLiteral</code>, <code>/NativePvSurplusEnabled</code> and <code>/FlexibleTariffEnabled</code>. Runtime status is retained below <code>es-ESS/FroniusWattpilot/RuntimeStatus/...</code>; site-current diagnostics are retained below <code>es-ESS/FroniusWattpilot/...</code>. The standard EVCS overview tile intentionally remains compatible with normal Victron status values and does not show every safety detail.</p></div>
       </details>
       <details>
         <summary>What to check after a Venus OS update</summary>

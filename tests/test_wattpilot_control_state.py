@@ -11,6 +11,8 @@ class WattpilotControlStateTests(unittest.TestCase):
             "transport_unavailable": False,
             "auto_mode": True,
             "command_authority_ok": True,
+            "site_current_telemetry_fresh": True,
+            "site_current_limit_exceeded": False,
             "allow_grid_charging": False,
             "grid_telemetry_fresh": True,
             "grid_import_limit_exceeded": False,
@@ -54,6 +56,33 @@ class WattpilotControlStateTests(unittest.TestCase):
 
         self.assertEqual(selected, states.WattpilotControlState.GRID_TELEMETRY_UNSAFE)
 
+    def test_site_current_telemetry_precedes_grid_safety(self):
+        selected = states.select_control_state(
+            self._inputs(
+                site_current_telemetry_fresh=False,
+                grid_telemetry_fresh=False,
+                grid_import_limit_exceeded=True,
+            )
+        )
+
+        self.assertEqual(
+            selected,
+            states.WattpilotControlState.SITE_CURRENT_TELEMETRY_UNSAFE,
+        )
+
+    def test_site_current_limit_stop_precedes_grid_safety(self):
+        selected = states.select_control_state(
+            self._inputs(
+                site_current_limit_exceeded=True,
+                grid_import_limit_exceeded=True,
+            )
+        )
+
+        self.assertEqual(
+            selected,
+            states.WattpilotControlState.SITE_CURRENT_LIMIT_STOP,
+        )
+
     def test_invalid_command_authority_wins_before_grid_and_charge_states(self):
         selected = states.select_control_state(
             self._inputs(
@@ -85,6 +114,8 @@ class WattpilotControlStateTests(unittest.TestCase):
             self._inputs(
                 auto_mode=False,
                 grid_telemetry_fresh=False,
+                site_current_telemetry_fresh=False,
+                site_current_limit_exceeded=True,
                 grid_import_limit_exceeded=True,
                 current_phase_mode=2,
                 phase_down_for_pv_dip=True,

@@ -224,7 +224,7 @@ configuration value as `%%`.
 | [Common]                 | LogRetentionDays     | Number of local calendar days retained, including the active `current.log`. Must be greater than `0`. | Integer       | 10                           |
 | [Common]                 | NumberOfThreads      | Number of Threads to use. 3-XX depending on enabled service count.                                     | Integer       | 5                            |
 | [Common]                 | ServiceMessageCount  | Number of ServiceMessages to publish on Mqtt. See [Service Messages](#service-messages)                | Integer       | 20                           |
-| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 12                           |
+| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 15                           |
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
 | [Common]                 | BatteryMaxChargeInWh | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
@@ -609,6 +609,10 @@ Victron EV charger and lets es-ESS manage Auto/Eco charging from fresh PV
 surplus:
 
 - Wattpilot status is exposed on D-Bus, VRM, and MQTT.
+- Command-free session statistics retain connection and charging-interval
+  transitions, authoritative available counter deltas, bounded sampled-power
+  estimates, onboarding latency, and one APP_DEBUG checkpoint per connected
+  minute for the daily report. They do not identify the vehicle.
 - Auto/Eco charging uses [SolarOverheadDistributor](#solaroverheaddistributor)
   allowances, fresh grid telemetry, configured current limits, and no-grid
   guards.
@@ -637,6 +641,50 @@ surplus:
 |<img src="img/SolarOverheadConsumers%202.png" />|
 | VRM and the Wattpilot app both show useful status. Auto/Eco PV control is owned by es-ESS; Manual mode remains owned by the Wattpilot user. |
 </div>
+
+### Example installation topology
+
+The following topology is an illustrative example, not a required wiring
+layout. Installations may place the Victron ESS, AC-coupled PV, protective
+devices, and an optional maintenance changeover differently. The selected
+site-current meter must measure current on every physical phase and include
+every load governed by the configured per-phase `SiteMaxCurrent` limit.
+
+```text
+Grid -> utility meter -> grid-exchange meter -> optional changeover
+                                                     | normal: Victron AC-in
+                                                     |         -> AC-out
+                                                     | bypass: direct grid
+                                                     v
+                                              site-side AC bus
+                                                |          |
+                                       AC-coupled PV       site protective device
+                                       inverter            (example: 20 A/phase)
+                                                               |
+                                                     site-current meter
+                                                               |
+                                                    +----------+----------+
+                                                    |                     |
+                                          protected site circuits   EV circuit protection
+                                                                     (example: 16 A)
+                                                                          |
+                                                                      Wattpilot
+```
+
+In this example, `Position=0` describes the Wattpilot's normal AC-out/load-side
+placement. The setting must match the actual installation; it does not prove
+the wiring or indicate whether an optional maintenance bypass is selected.
+The site-current source must include both non-EV and Wattpilot current at the
+boundary governed by `SiteMaxCurrent`, before those loads split into downstream
+circuits. Every lower-rated downstream circuit still requires its own physical
+protection; a 16 A EV branch is only an example.
+
+Where an installation has a maintenance bypass, the current runtime has no
+bypass input or validated automatic fallback contract. If bypass also removes
+Cerbo GX power, es-ESS cannot send a command at transfer time. Do not assume
+that Wattpilot will release prior Auto/Eco constraints after an abrupt GX loss.
+Any fallback or pre-bypass procedure must be defined and validated for that
+installation before use.
 
 ### Installation
 Despite the installation of es-ESS, an additional python module *websocket-client* is required to communicate with Wattpilot. 
@@ -779,6 +827,11 @@ or force-state commands.
 | [FroniusWattpilot]  | HibernateMode | When `false`, idle polling keeps the Wattpilot connection available. When `true`, es-ESS intentionally disconnects while no EV is connected and reconnects about every five minutes for a status probe, which can delay car detection. Remote mode changes through VRM are unsupported while disconnected; Scheduled is only a best-effort probe, not a supported keep-awake/control path. | Boolean  | false |
 | [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. Must be within `6..32 A`. | Integer (A) | 6 |
 | [FroniusWattpilot] | MaxCurrentPerPhase | Maximum configured EV current per active phase. Must be within `6..32 A` and at least `MinCurrentPerPhase`; the controller also respects the Wattpilot-reported effective limit. | Integer (A) | 16 |
+| [FroniusWattpilot] | SiteCurrentSource | Mandatory site-current provider. `VenusSystem` preserves the calculated Victron consumption-current source; `Shelly3EMGen3` selects the explicitly configured dedicated meter. The selected source never falls back automatically. | String | VenusSystem |
+| [FroniusWattpilot] | SiteMaxCurrent | Mandatory Auto/Eco whole-site limit in amperes, applied independently to physical L1, L2, and L3. Must be within `6..100 A`; the `20 A` default is not universal and must be configured for the site's protective device and wiring. This protects the site supply calculation, not a lower-rated downstream branch. | Integer (A per phase) | 20 |
+| [FroniusWattpilot] | Charger1PhaseMapping | Physical site phase used by Wattpilot one-phase charging after any electrician-installed phase rotation. Allowed values are `L1`, `L2`, or `L3`. | String | L1 |
+| [FroniusWattpilot] | SiteCurrentFreshSeconds | Positive maximum age of whole-site L1/L2/L3 current and, during an active charge, Wattpilot phase-current telemetry. Each eligible controller cycle live-reads the site-current paths once and reuses that timestamped safety result through command dispatch, so valid unchanged values remain fresh while failed, missing, invalid, stale, or dispatch-expired data fails Auto/Eco closed. | Integer (seconds) | 15 |
+| [FroniusWattpilot] | SiteCurrentRecoverySeconds | Non-negative continuous safe-headroom time before a stopped charge may restart or current may increase; increases then rise by 1 A per normal controller cycle. | Integer (seconds) | 30 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. Must be greater than `ThreePhasePvSurplusStopW`. The maintained 4500 W default is above the typical 3-phase 6 A electrical floor while matching observed Wattpilot-app-style behavior more closely than a very conservative 5000 W threshold. | Integer (W) | 4500 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStopW | PV threshold below which Auto/Eco falls back from 3 phases to 1 phase when one-phase charging is still supportable. Must be lower than `ThreePhasePvSurplusStartW`. | Integer (W) | 4100 |
 | [FroniusWattpilot] | EvPriorityOverBatteryCharge | Lets Wattpilot use real PV that would otherwise charge the battery while the car is connected in Auto mode. This does not allow battery-to-EV charging from a stopped state. | Boolean | true |
@@ -786,7 +839,7 @@ or force-state commands.
 | [FroniusWattpilot] | BatteryAssistEnabled | Enables the optional short battery bridge for an already-running Auto/Eco charge. | Boolean | true |
 | [FroniusWattpilot] | BatteryAssistSocMin | Minimum battery SOC required before battery assist can be used. Must be within `0..100`. | Number (%) | 50 |
 | [FroniusWattpilot] | BatteryAssistMaxSeconds | Maximum duration for one battery-assist window. Use at least `MinPhaseSwitchSeconds` when battery should be able to bridge the full phase-down waiting interval. Must be greater than `0` when enabled. | Integer (seconds) | 600 |
-| [FroniusWattpilot] | BatteryAssistMaxShortfallW | Maximum non-negative PV shortfall that battery assist may bridge for an already-running charge. The maintained 1000 W default bridges small clouds but makes larger deficits reduce current, phase down, or stop earlier instead of leaning heavily on the home battery. | Number (W) | 1000 |
+| [FroniusWattpilot] | BatteryAssistMaxShortfallPerPhaseW | Maximum non-negative PV shortfall per active charger phase that battery assist may bridge at the configured minimum current. The effective total limit is this value in one-phase mode and three times this value in three-phase mode. | Number (W/active phase) | 1500 |
 | [FroniusWattpilot] | BatterySocFreshSeconds | Maximum age of selected-battery activity used to trust the cached SOC for battery assist or the EV-priority battery-reservation bypass. Valid finite SOC and a recent finite `/Dc/Battery/Power` update are both required; otherwise both features are ineligible. Must be greater than `0`. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | BatteryAssistRecoverySeconds | Non-negative sustained PV-recovery time required before battery assist can be used again after lockout. | Integer (seconds) | 120 |
 | [FroniusWattpilot] | AllowGridCharging | Allows an already-running Auto/Eco charge to continue despite grid import when PV/battery assistance is insufficient. It never permits a new grid-only start. Victron ESS determines the actual battery/grid energy source. Recommended no-grid mode is `false`. | Boolean | false |
@@ -797,7 +850,7 @@ or force-state commands.
 | [FroniusWattpilot] | GridTelemetryFreshSeconds | Positive maximum age of each required grid-power value (L1, L2, and L3) while no-grid Auto/Eco control is enabled. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | AllowanceDropGraceSeconds | Non-negative grace period before an already-running Auto/Eco session is phase-reduced or stopped for an insufficient or stale allowance. A fresh truthful `0 W` allowance remains published as `0 W`; this setting only debounces the controller response. Stale grid telemetry and the grid-import guard are not delayed. The maintained 30-second profile tolerates short cloud dips without extending allowance freshness. | Integer (seconds) | 30 |
 | [FroniusWattpilot] | CarDisconnectConfirmSeconds | Non-negative time a disconnected car-state reading must remain stable before es-ESS accepts it as a disconnect. | Integer (seconds) | 15 |
-| [FroniusWattpilot] | SurplusDropGraceSeconds | Non-negative grace period before continuous low surplus resets the Auto/Eco start timer. On the normal current-adjustment path it also preserves an active 1-to-3 candidate through a shorter-than-grace dip only while allowance remains above the effective three-phase floor. Eligible battery assist may leave an already-existing candidate timer running through its bounded bridge, including a deeper dip; it cannot create the candidate or issue a phase command. Full phase-up allowance is always required at the command boundary. | Integer (seconds) | 30 |
+| [FroniusWattpilot] | SurplusDropGraceSeconds | Non-negative grace period before continuous low surplus resets the Auto/Eco start timer. On the normal current-adjustment path it also preserves an active 1-to-3 candidate through a shorter-than-grace dip only while allowance remains above the effective three-phase floor. A deeper minimum-current deficit resets the candidate; battery assist cannot preserve or create it. Full phase-up allowance is always required at the command boundary. | Integer (seconds) | 30 |
 | [FroniusWattpilot] | StartupGraceSeconds | Non-negative time after a start or phase switch where commanded EV demand may be reported while Wattpilot telemetry catches up. | Integer (seconds) | 60 |
 | [FroniusWattpilot] | StartupTelemetryRatio | Fraction of commanded demand that Wattpilot telemetry must reach before startup grace is considered satisfied. Must be greater than `0` and at most `1`. | Number | 0.80 |
 | [FroniusWattpilot] | RawOverheadFreshSeconds | Maximum age of raw distributor overhead used only for safe 3-to-1 fallback decisions. Must be at least `5`. | Integer (seconds) | 15 |
@@ -806,18 +859,35 @@ or force-state commands.
 | [FroniusWattpilot] | ChargeCompleteResumePowerW | EV power above this value starts the confirmation for leaving charge-complete hold. | Number (W) | 300 |
 | [FroniusWattpilot] | ChargeCompleteResumeSeconds | Time EV power must remain above `ChargeCompleteResumePowerW` before charge-complete hold clears. | Integer (seconds) | 30 |
 
+The optional dedicated Shelly provider has its own section and is used only
+when `SiteCurrentSource=Shelly3EMGen3`:
+
+| Section | Value name | Description | Type | Example Value |
+| ------- | ---------- | ----------- | ---- | ------------- |
+| [Shelly3EMSiteCurrent] | Host | Local IP address or hostname without a scheme, path, or credentials. Required only when selected. | String | 192.0.2.40 |
+| [Shelly3EMSiteCurrent] | Username | Shelly digest-authentication user; Shelly requires `admin`. | String | admin |
+| [Shelly3EMSiteCurrent] | Password | Local device password. May be empty only when device authentication is disabled. | String | `<device password>` |
+| [Shelly3EMSiteCurrent] | PollFrequencyMs | Asynchronous RPC polling interval; must be at least 500 ms. | Integer (ms) | 1000 |
+| [Shelly3EMSiteCurrent] | RequestTimeoutSeconds | Bounded HTTP request timeout, greater than 0 and at most 10 seconds. | Number (seconds) | 2 |
+| [Shelly3EMSiteCurrent] | PhaseA | Physical site phase measured by Shelly channel A. | L1/L2/L3 | L1 |
+| [Shelly3EMSiteCurrent] | PhaseB | Physical site phase measured by Shelly channel B. | L1/L2/L3 | L2 |
+| [Shelly3EMSiteCurrent] | PhaseC | Physical site phase measured by Shelly channel C. The A/B/C mapping must be a permutation of L1/L2/L3. | L1/L2/L3 | L3 |
+
 ### Eco/PV policy
 
 In `Auto` / Wattpilot `ECO` mode, es-ESS follows this PV-start policy with an
 optional running-session grid fallback:
 
 - A new charge starts only after a fresh, distributor-assigned **real PV allowance** has continuously met the electrical minimum for `MinOnOffSeconds`. It starts on one phase when allowance is below the phase-up threshold, or directly on three phases when allowance already meets the full phase-up threshold. Battery assist cannot create either start.
-- Both one-to-three and three-to-one phase changes use `MinPhaseSwitchSeconds` as their normal stability timer and minimum interval between phase commands. On the normal current-adjustment path, an active one-to-three candidate survives a shorter-than-`SurplusDropGraceSeconds` dip below the phase-up threshold only while fresh allowance remains above the effective three-phase floor; a deeper or longer normally evaluated dip resets it. During eligible battery assist, the controller holds the running one-phase charge and intentionally leaves an already-existing phase-up candidate timer unchanged, potentially for up to `BatteryAssistMaxSeconds`. Assist cannot create a candidate or command phase-up, and fresh allowance must recover to the full phase-up threshold before any three-phase command is sent.
+- Auto/Eco also requires fresh whole-site current on physical L1/L2/L3. One-phase charging uses `Charger1PhaseMapping`; three-phase charging receives one equal current command capped by the smallest available phase headroom. Site-current reductions and stops take priority over allowance grace, battery assist, and grid fallback. There is no overload grace above `SiteMaxCurrent`.
+- After headroom recovers, it must remain safe for `SiteCurrentRecoverySeconds`; current then rises by 1 A on each normal five-second controller cycle. A stopped session still obeys `MinOnOffSeconds`, and a running one-phase session still needs `MinPhaseSwitchSeconds` before phase-up. A new stopped session can start directly on three phases once the normal start and site-recovery conditions are both satisfied.
+- Wattpilot may retain the previous configured current while stopped. es-ESS does not treat a lower pre-start setpoint as active EV-current reduction or reset already-stable site headroom. Phase, current, and Start commands are still individually guarded; if any is rejected, the session remains publicly stopped, no transition power is reported, and the stable-PV interval is rebuilt before retrying.
+- Both one-to-three and three-to-one phase changes use `MinPhaseSwitchSeconds` as their normal stability timer and minimum interval between phase commands. On the normal current-adjustment path, an active one-to-three candidate survives a shorter-than-`SurplusDropGraceSeconds` dip below the phase-up threshold only while fresh allowance remains above the effective three-phase floor; a deeper dip that requires minimum-current fallback resets it. Battery assist cannot create or preserve a phase-up candidate, and fresh assigned allowance must complete the normal phase-up conditions before any three-phase command is sent.
 - A confirmed vehicle disconnect clears any pending phase-switch candidate, so reconnecting requires a new complete `MinPhaseSwitchSeconds` interval from fresh assigned PV. A transient false connection reading inside `CarDisconnectConfirmSeconds` does not reset the timer, and disconnect does not erase the cooldown from the last confirmed phase command.
-- During the three-to-one waiting interval, bounded battery assist may hold the existing phase/current. When `AllowGridCharging=true`, an already-running charge may instead continue despite grid import. Neither fallback can start a session or authorize a phase-up.
-- With `AllowGridCharging=false`, loss of an eligible battery bridge normally reduces to one phase when fresh assigned PV supports the one-phase minimum; otherwise Auto/Eco stops. A running charge first receives `AllowanceDropGraceSeconds` when the assigned allowance itself is below the usable minimum, including a transient atomic `0 W` assignment. An explicit one-phase-capable assignment can reduce phase immediately, while stale grid telemetry and the grid-import guard can still act sooner.
-- After a sustained phase-down interval, es-ESS changes to one phase when fresh PV supports it. If PV is below the one-phase minimum, bounded battery assist or allowed grid fallback may keep the running charge active; without either source, charging stops.
-- Battery assist is optional and may only bridge a short cloud for an **already-running** charge. It is limited by valid SOC, recent selected-battery activity, shortfall-power, duration, and PV-recovery settings; it cannot create a new charging session. Missing or invalid SOC, or a missing, invalid, or older-than-`BatterySocFreshSeconds` `/Dc/Battery/Power` update, clears/refuses assist and also disables the `EvPriorityOverBatteryCharge` reservation bypass for that cycle. The maintained `BatteryAssistMaxShortfallW=1000` default favors daily battery protection: small dips are bridged, while larger deficits reduce current, phase down, or stop earlier. To cover the full phase waiting interval, `BatteryAssistMaxSeconds` must be at least `MinPhaseSwitchSeconds`.
+- During a PV deficit, Auto/Eco first reduces the common Wattpilot current according to available PV. If PV cannot sustain the configured minimum, the controller commands the minimum and requires fresh current telemetry before battery or grid continuation. A valid battery bridge holds that minimum-current phase mode for its bounded window; it never holds a previous higher setpoint.
+- With `AllowGridCharging=false`, loss or expiry of an eligible battery bridge reduces three-phase charging to one phase when fresh continuation PV supports it; otherwise Auto/Eco stops. `AllowanceDropGraceSeconds` starts at the original below-minimum event and is not restarted after a full battery-assist window. Stale grid telemetry and the grid-import guard can still act sooner.
+- `AllowGridCharging=true` follows the same current-reduction order and may cover only the residual demand at minimum current for an already-running charge. It cannot preserve a higher current, start a session, or authorize phase-up.
+- Battery assist is optional and may only bridge a short cloud for an **already-running** charge. Auto/Eco first lowers the equal Wattpilot current on every active charger phase to the PV-supported value. Assistance begins only after fresh Wattpilot telemetry confirms the configured minimum current (6 A by default), and covers only the remaining deficit. It is limited by valid SOC, recent selected-battery activity, duration, recovery, and `BatteryAssistMaxShortfallPerPhaseW`; the effective total limit is the configured value for one phase or three times it for three phases. It cannot start charging, increase current, or cause phase-up. Missing or invalid SOC, or a missing, invalid, or older-than-`BatterySocFreshSeconds` `/Dc/Battery/Power` update, clears/refuses assist and also disables the `EvPriorityOverBatteryCharge` reservation bypass for that cycle.
 - Auto/Eco stops when sustained grid import exceeds `GridImportStopW` for `GridImportStopSeconds`. With `AllowGridCharging=false`, Auto/Eco therefore does not intentionally use grid power. Very short transients can still appear before the guard threshold and timer are reached.
 - Wattpilot protocol model-status values `8`-`11` and `13`-`14` are explicit active-charging reasons. In Auto/Eco they follow the same PV/no-grid control path as other active charging states, after command-authority, telemetry, grid-import, phase, and disconnect safety gates. In Manual mode they are reporting-only and never authorize es-ESS charger commands.
 - `MinOnOffSeconds` applies to normal starts and stops. `MinPhaseSwitchSeconds` is the single shared stability and cooldown setting for both phase directions; no-grid safety may still reduce phase or stop earlier when a running deficit cannot be bridged.
@@ -837,9 +907,45 @@ authority result. Exit records include the next status and observed duration.
 
 ### Auto/Eco telemetry fail-safe
 
+The mandatory site-current guard reads the explicitly selected provider.
+`VenusSystem` live-reads `/Ac/Consumption/L1/Current` through
+`/Ac/Consumption/L3/Current` from `com.victronenergy.system`.
+`Shelly3EMGen3` asynchronously reads a validated Gen3 `triphase` meter and maps
+its A/B/C channels to physical L1/L2/L3. During an active charge the guard also
+requires recent Wattpilot `nrg` phase-current telemetry so the EV contribution
+can be removed from whole-site current. One-phase removal is applied to
+`Charger1PhaseMapping`. For three phases, the smallest measured Wattpilot phase
+current is removed from every physical phase; unequal readings therefore make
+the result conservative. Invalid, negative, missing, stale, error-marked, or
+phase-uncertain data blocks starts and stops active Auto/Eco charging without a
+phase command. `AllowGridCharging`, battery assist, and PV/transition grace do
+not bypass this guard. Manual mode only reports these values.
+
+Venus D-Bus change notifications are not a liveness heartbeat: a valid current
+may remain exactly `0 A` or at another unchanged value for minutes without a
+new signal. The Venus provider therefore performs a live `GetValue` read for
+all three paths once at the start of each eligible controller cycle. The same
+timestamped safety result is used for state selection and active-charge command
+dispatch, preventing contradictory reads within one cycle. If that result
+expires before dispatch, Auto/Eco fails closed without another provider read.
+The Shelly provider timestamps only a complete successful HTTP sample. A failed
+read invalidates the selected source while preserving the age of the last
+successful value, so Auto/Eco fails closed. There is no automatic fallback
+between providers.
+
+`SiteMaxCurrent` is expressed in amperes and applied independently to each
+physical phase. The `20 A` default is not a fixed product limit: configure it
+for the site's protective device and wiring. It has no hidden margin and does
+not replace physical overcurrent protection. The controller normally reacts
+every five seconds, so short inrush or a sudden overload may still trip first.
+If house load alone exceeds the configured limit, stopping the EV cannot
+correct that condition. Because the guard sees only current at its configured
+measurement boundary, lower-rated downstream circuits remain dependent on
+their own protection and installation.
+
 When `AllowGridCharging=false` (the recommended no-grid configuration), Auto/Eco charging requires valid, fresh grid-power telemetry for all three grid phases. If any L1, L2, or L3 value is missing, invalid, or older than `GridTelemetryFreshSeconds`, es-ESS will not start a new Auto/Eco session and will stop an active Auto/Eco session immediately. This means a grid-meter or D-Bus telemetry outage can stop charging until fresh values recover.
 
-Auto/Eco also requires a valid Wattpilot allowance received within `AllowanceFreshSeconds`. Missing, malformed, or stale allowance is never replaced with raw-overhead data. The distributor may truthfully assign `0 W` when the active three-phase request is atomic and its full minimum is temporarily unavailable. For a running session, `/PvAllowance` remains `0 W`, while `AllowanceDropGraceSeconds` debounces phase reduction or stop so one short worker-ordering or cloud sample does not reset three-phase operation. Recovery during the grace clears the timer; a sustained deficit follows the normal phase-down/stop policy at expiry. This allowance-only grace never delays stale-grid or grid-import safety handling. SOC-dependent battery assist and battery-reservation bypass require valid finite system SOC plus a finite selected-battery `/Dc/Battery/Power` update received within `BatterySocFreshSeconds`. This power path is the liveness heartbeat because unchanged SOC is not periodically republished by Venus OS. Missing or invalid SOC, or missing, invalid, or stale battery activity, fails closed without changing Manual charging. Manual Wattpilot mode remains under the Wattpilot user's control and is not changed by these Auto/Eco freshness guards.
+Auto/Eco also requires a valid Wattpilot allowance received within `AllowanceFreshSeconds`. Missing, malformed, or stale allowance is never replaced with raw-overhead data. The distributor may truthfully assign `0 W` when an active request cannot receive its atomic minimum. For an already-running session only, fresh raw overhead may estimate PV available for a current reduction or minimum-current continuation; it cannot start charging, increase current, or authorize phase-up, and `/PvAllowance` remains the truthful assigned value. `AllowanceDropGraceSeconds` starts at the original deficit and debounces phase reduction or stop, but it is not granted again after battery-assist timeout. This allowance-only grace never delays stale-grid or grid-import safety handling. SOC-dependent battery assist and battery-reservation bypass require valid finite system SOC plus a finite selected-battery `/Dc/Battery/Power` update received within `BatterySocFreshSeconds`. This power path is the liveness heartbeat because unchanged SOC is not periodically republished by Venus OS. Missing or invalid SOC, or missing, invalid, or stale battery activity, fails closed without changing Manual charging. Manual Wattpilot mode remains under the Wattpilot user's control and is not changed by these Auto/Eco freshness guards.
 
 ### Runtime status
 
@@ -866,7 +972,11 @@ state is published on the Wattpilot runtime-status contract:
 - D-Bus paths on `com.victronenergy.evcharger.*_FroniusWattpilot`:
   `/ControlState`, `/ControlStateLiteral`, `/PhaseMode`,
   `/PhaseModeLiteral`, `/BatteryAssistActive`, `/GridImportGuardActive`, and
-  `/TelemetryHealthy`, plus `/CompatibilityOk`, `/CompatibilityLiteral`,
+  `/TelemetryHealthy`, plus the `/SiteCurrent*`, `/SiteHeadroom*`,
+  `/SiteAllowedCurrent`, `/SiteLimitingPhase`, and site-guard diagnostic paths,
+  plus `/BatteryAssist/Shortfall`, `/BatteryAssist/ShortfallPerPhase`,
+  `/BatteryAssist/ActivePhases`, and `/BatteryAssist/EffectiveLimit`,
+  plus `/CompatibilityOk`, `/CompatibilityLiteral`,
   `/ExpectedVenusOsVersion`, `/ActualVenusOsVersion`,
   `/ExpectedWattpilotFirmware`, `/ActualWattpilotFirmware`, and
   `/ValidatedWattpilotAppVersion`.
@@ -895,16 +1005,17 @@ PV charging with a 600-second cloud bridge for an already-running session:
 BatteryAssistEnabled=true
 BatteryAssistSocMin=60
 BatteryAssistMaxSeconds=600
-BatteryAssistMaxShortfallW=1000
+BatteryAssistMaxShortfallPerPhaseW=1500
 BatterySocFreshSeconds=15
 BatteryAssistRecoverySeconds=120
 AllowGridCharging=false
 ```
 
-The `1000W` shortfall default is a daily-use compromise. It smooths short PV
-dips without letting a three-phase EV session draw heavily from the home
-battery; if the deficit is larger, Auto/Eco should reduce current, phase down,
-or stop according to fresh allowance and no-grid safety.
+The `1500W` value is a per-active-phase eligibility ceiling applied only after
+the charger reaches its configured minimum current. At typical voltage this
+can bridge the complete 6 A floor during a zero-PV dip: approximately 1.4 kW in
+one-phase mode or 4.1-4.3 kW in three-phase mode. Actual battery power is only
+the remaining deficit after PV contribution.
 
 Conservative five-minute start and phase confirmation timers:
 
@@ -941,6 +1052,11 @@ sequence continues with `Authentication successful`, actual firmware `42.5`,
 `0`, and `CommandAuthorityOk=1` before an Auto/Eco vehicle connection. A
 missing later confirmation is not a harmless startup warning: commands remain
 blocked and the actionable runtime-status literal must be investigated.
+The daily report classifies the initial `<unavailable>` record as an
+informational resolved startup interval only when the log proves
+initialization, authentication, matching firmware confirmation, and no charger
+command, reconnect, or second initialization during that interval. Wrong,
+unresolved, or incomplete compatibility evidence remains an anomaly.
 
 ### Production health monitor
 
@@ -992,7 +1108,12 @@ python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday --json \
   > /data/es-ESS-validation/es-ess-daily-report-$(date +%Y%m%d).json
 ```
 
-The read-only analyzer automatically includes `current.log` and dated rotations.
+The read-only analyzer discovers `current.log` and dated rotations, then reads
+only the active or completed local-calendar files that can contain the
+requested window. It uses `current.log` as a safe fallback when an expected
+rotation is missing, and verifies completeness from record timestamps rather
+than filenames alone. This keeps a one-day report independent of the total log
+retention size.
 It makes one bounded, allowlisted `GetValue` query for the authoritative Venus
 `/Settings/System/TimeZone`, then optionally reads current service/D-Bus
 snapshots. It never writes D-Bus, MQTT, Wattpilot, configuration, or service
@@ -1006,16 +1127,40 @@ an `ANOMALY`; it prints the report timezone, requested period, cutoff, evidence
 period/duration, span coverage, and full-day availability time. The report uses
 `GOOD`, `ATTENTION`, `ANOMALY`, and `INCOMPLETE`
 and includes runtime health, sanitized configuration, current state,
-approximate sessions, allowance/grace and phase behavior, safety interventions,
-and rare statuses 8–11 and 13–14. `NOT_OBSERVED` rare statuses are
+connection-session and charging-interval counts, authoritative available
+Wattpilot counter kWh, explicitly estimated one-/three-phase and physical-phase
+energy, onboarding latency, interruptions, allowance/grace and phase behavior,
+safety interventions, and rare statuses 8–11 and 13–14. Report JSON schema 4
+keeps total counter energy separate from sampled-power estimates and exposes
+counter resets, restarts, gaps, reconciliation error, and evidence
+completeness. Older logs without structured session records remain analyzable,
+but their energy and connection counts are explicitly unavailable.
+`NOT_OBSERVED` rare statuses are
 informational. Interactive runs show byte-level log and D-Bus snapshot progress
 on stderr; use `--no-progress` for automation or `--no-current-snapshot` to skip
-the optional live snapshot. The required timezone query still runs with that
-flag. Three consecutive snapshot timeouts skip remaining paths without blocking
-historical analysis. Full commissioning, options,
+the optional live snapshot. Pressing `Ctrl+C` stops cleanly with exit code
+`130`. The required timezone query still runs with that flag. Three consecutive
+snapshot timeouts skip remaining paths without blocking historical analysis.
+Full commissioning, options,
 limitations, exit codes, and JSON
 output are documented in
 [docs/es-ess-daily-report.md](docs/es-ess-daily-report.md).
+
+The controller emits INFO records only for connection, first start attempt,
+measured charge start/stop, phase-segment completion, and final connection
+summary. While connected, one structured APP_DEBUG checkpoint is emitted per
+minute. Power is never integrated across stale telemetry or a gap longer than
+the accepted sampling bound; uncovered time lowers completeness instead of
+being extrapolated. Correlation IDs identify only one observed connection or
+charging interval and are not a car identity, VIN, account, or persistent
+device identifier.
+
+For one-phase energy, `Charger1PhaseMapping` identifies the physical phase. A
+three-phase interval proves that all three conductors were used, but individual
+L1/L2/L3 labels follow Wattpilot-reported conductor order until that ordering
+is independently verified on the installation. Schema 4 exposes this as an
+incomplete physical-phase mapping instead of implying electrician-verified
+labels.
 
 Native Solar.wattpilot PV/tariff/phase setting discovery uses the separate
 command-free `scripts/wattpilot-setting-capture.py` utility with the vehicle
@@ -1543,7 +1688,7 @@ Additionally there are the following configuration options available:
 | ---------- | ---------|---- | ------------- |--|
 | [Common]    | NumberOfThreads |  Number of threads, es-ESS should use. | int | 5 |
 | [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 20 |
-| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 12 |
+| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 15 |
 | [Common]    | HttpRequestTimeout | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers. | double | 5 |
 
 ### Service Messages
@@ -1612,6 +1757,24 @@ The following D-Bus values are published on the existing
 | `/BatteryAssistActive` | Integer | `1` only during the optional, time-limited battery bridge; otherwise `0`. |
 | `/GridImportGuardActive` | Integer | `1` while the Auto/Eco grid-import guard is active; otherwise `0`. |
 | `/TelemetryHealthy` | Integer | `1` when the telemetry needed for the current control mode is healthy; otherwise `0`. |
+| `/SiteCurrentLimit` | Integer | Configured physical per-phase site limit in amperes. |
+| `/SiteCurrentSource` | String | Selected provider: `VenusSystem` or `Shelly3EMGen3`. |
+| `/SiteCurrentSourceConnected` | Integer | `1` when the selected provider's latest read completed successfully. |
+| `/SiteCurrentSourceStatus` | String | Provider state such as `Initializing`, `Healthy`, `Unavailable`, or `Invalid`. |
+| `/SiteCurrentSourceError` | String | Sanitized current provider error, or an empty string while healthy. |
+| `/SiteCurrentSourceDeviceModel` | String | Validated external meter model when supplied by the provider. |
+| `/SiteCurrentSourceFirmware` | String | External meter firmware when supplied by the provider. |
+| `/SiteCurrentSourceLastSampleAge` | Number | Age of the oldest phase in the last successful provider sample, or `-1` before any success. |
+| `/Charger1PhaseMapping` | String | Physical site phase used for one-phase Wattpilot charging. |
+| `/SiteCurrentL1`, `/SiteCurrentL2`, `/SiteCurrentL3` | Number | Latest whole-site physical phase currents in amperes. |
+| `/SiteCurrentAgeL1`, `/SiteCurrentAgeL2`, `/SiteCurrentAgeL3` | Number | Age in seconds of each site-current sample or successful live-read heartbeat, or `-1` before the first sample. A failed live read preserves the prior sample age and marks telemetry unhealthy. |
+| `/SiteHeadroomL1`, `/SiteHeadroomL2`, `/SiteHeadroomL3` | Number | Calculated EV-current headroom after conservatively removing measured EV contribution. |
+| `/SiteAllowedCurrent` | Integer | Current site-headroom cap for the evaluated one- or three-phase mode. |
+| `/SiteLimitingPhase` | String | Physical phase that currently sets the cap. |
+| `/SiteCurrentTelemetryHealthy` | Integer | `1` when required site and active-charge phase-current inputs are fresh and valid. |
+| `/SiteCurrentGuardBlocked` | Integer | `1` when mandatory Auto/Eco site-current protection blocks control. |
+| `/SiteCurrentGuardReason` | String | Current operator-facing guard reason. |
+| `/SiteCurrentRecoveryElapsed` | Integer | Continuous safe-headroom recovery time in seconds for the current phase mode, or one-phase mode while stopped. |
 | `/CommandAuthorityOk` | Integer | `1` only when firmware is validated, raw mode is ECO, and native PV/tariff command competitors are both disabled. |
 | `/CommandAuthorityLiteral` | String | Actionable authority state, including which Solar.wattpilot setting must be changed. |
 | `/NativePvSurplusEnabled` | Integer | Strict `fup` observation: `1` enabled, `0` disabled, `-1` unavailable or malformed. |
@@ -1633,6 +1796,12 @@ The following D-Bus values are published on the existing
 | 9 | `Stopped for stale telemetry` |
 | 10 | `Fault` |
 | 11 | `Stopped: command authority blocked` |
+| 12 | `Stopped for site current limit` |
+
+The site-current diagnostic D-Bus values are also mirrored as retained topics
+under `es-ESS/FroniusWattpilot/...` using the same path names. The eighteen
+dedicated runtime-status values below remain under the separate
+`RuntimeStatus` prefix.
 
 All eighteen runtime-status values are mirrored to retained main-MQTT topics:
 

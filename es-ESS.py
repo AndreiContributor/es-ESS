@@ -620,6 +620,114 @@ class esESS:
                     max_current,
                 )
 
+            site_max_current = integer(section, "SiteMaxCurrent", 20)
+            if (
+                site_max_current is not None
+                and not 6 <= site_max_current <= 100
+            ):
+                invalid(
+                    section,
+                    "SiteMaxCurrent",
+                    "must be between 6 and 100 A",
+                    site_max_current,
+                )
+
+            site_current_source = self.config[section].get(
+                "SiteCurrentSource", "VenusSystem"
+            ).strip()
+            if site_current_source not in ("VenusSystem", "Shelly3EMGen3"):
+                invalid(
+                    section,
+                    "SiteCurrentSource",
+                    "must be VenusSystem or Shelly3EMGen3",
+                    site_current_source,
+                )
+            elif site_current_source == "Shelly3EMGen3":
+                source_section = "Shelly3EMSiteCurrent"
+                if not self.config.has_section(source_section):
+                    invalid(
+                        source_section,
+                        "Host",
+                        "section is required when SiteCurrentSource=Shelly3EMGen3",
+                        "missing",
+                    )
+                else:
+                    host = self.config[source_section].get("Host", "").strip()
+                    if (
+                        not host
+                        or "://" in host
+                        or "@" in host
+                        or "/" in host
+                    ):
+                        invalid(
+                            source_section,
+                            "Host",
+                            "must be an IP address or hostname without scheme, path, or credentials",
+                            "<redacted invalid host>",
+                        )
+
+                    username = self.config[source_section].get(
+                        "Username", "admin"
+                    ).strip()
+                    if username != "admin":
+                        invalid(
+                            source_section,
+                            "Username",
+                            "must be admin for Shelly digest authentication",
+                            username,
+                        )
+
+                    poll_frequency = integer(
+                        source_section, "PollFrequencyMs", 1000
+                    )
+                    if poll_frequency is not None and poll_frequency < 500:
+                        invalid(
+                            source_section,
+                            "PollFrequencyMs",
+                            "must be greater than or equal to 500",
+                            poll_frequency,
+                        )
+
+                    request_timeout = number(
+                        source_section, "RequestTimeoutSeconds", 2
+                    )
+                    if request_timeout is not None and not 0 < request_timeout <= 10:
+                        invalid(
+                            source_section,
+                            "RequestTimeoutSeconds",
+                            "must be greater than 0 and less than or equal to 10",
+                            request_timeout,
+                        )
+
+                    source_mapping = [
+                        self.config[source_section].get(
+                            "Phase{0}".format(channel), default
+                        ).upper()
+                        for channel, default in (
+                            ("A", "L1"),
+                            ("B", "L2"),
+                            ("C", "L3"),
+                        )
+                    ]
+                    if sorted(source_mapping) != ["L1", "L2", "L3"]:
+                        invalid(
+                            source_section,
+                            "PhaseA/PhaseB/PhaseC",
+                            "must be a one-to-one permutation of L1, L2, and L3",
+                            ",".join(source_mapping),
+                        )
+
+            one_phase_mapping = self.config[section].get(
+                "Charger1PhaseMapping", "L1"
+            ).upper()
+            if one_phase_mapping not in ("L1", "L2", "L3"):
+                invalid(
+                    section,
+                    "Charger1PhaseMapping",
+                    "must be L1, L2, or L3",
+                    one_phase_mapping,
+                )
+
             phase_start = integer(section, "ThreePhasePvSurplusStartW", 4200)
             phase_stop = integer(section, "ThreePhasePvSurplusStopW", 4140)
             if (
@@ -670,7 +778,7 @@ class esESS:
 
             for key, default in (
                 ("GridImportStopW", 150),
-                ("BatteryAssistMaxShortfallW", 3000),
+                ("BatteryAssistMaxShortfallPerPhaseW", 1500),
             ):
                 value = number(section, key, default)
                 if (value is not None and value < 0):
@@ -679,6 +787,7 @@ class esESS:
             for key, default in (
                 ("GridImportStopSeconds", 5),
                 ("BatteryAssistRecoverySeconds", 60),
+                ("SiteCurrentRecoverySeconds", 30),
             ):
                 value = integer(section, key, default)
                 if (value is not None and value < 0):
@@ -688,6 +797,7 @@ class esESS:
                 ("GridTelemetryFreshSeconds", 15, 1),
                 ("AllowanceFreshSeconds", 15, 1),
                 ("RawOverheadFreshSeconds", 15, 5),
+                ("SiteCurrentFreshSeconds", 15, 1),
             ):
                 value = integer(section, key, default)
                 if (value is not None and value < minimum):
@@ -1180,6 +1290,58 @@ class esESS:
                 "Common", "LogRetentionDays", str(DEFAULT_LOG_RETENTION_DAYS)
             )
 
+        version = 13
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+            self._setConfigDefault("FroniusWattpilot", "SiteMaxCurrent", "20")
+            self._setConfigDefault(
+                "FroniusWattpilot", "Charger1PhaseMapping", "L1"
+            )
+            self._setConfigDefault(
+                "FroniusWattpilot", "SiteCurrentFreshSeconds", "15"
+            )
+            self._setConfigDefault(
+                "FroniusWattpilot", "SiteCurrentRecoverySeconds", "30"
+            )
+
+        version = 14
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+            if (self.config.has_section("FroniusWattpilot")):
+                self.config.remove_option(
+                    "FroniusWattpilot", "BatteryAssistMaxShortfallW"
+                )
+            self._setConfigDefault(
+                "FroniusWattpilot",
+                "BatteryAssistMaxShortfallPerPhaseW",
+                "1500",
+            )
+
+        version = 15
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+            self._setConfigDefault(
+                "FroniusWattpilot", "SiteCurrentSource", "VenusSystem"
+            )
+            self._setConfigDefault("Shelly3EMSiteCurrent", "Host", "")
+            self._setConfigDefault("Shelly3EMSiteCurrent", "Username", "admin")
+            self._setConfigDefault("Shelly3EMSiteCurrent", "Password", "")
+            self._setConfigDefault(
+                "Shelly3EMSiteCurrent", "PollFrequencyMs", "1000"
+            )
+            self._setConfigDefault(
+                "Shelly3EMSiteCurrent", "RequestTimeoutSeconds", "2"
+            )
+            self._setConfigDefault("Shelly3EMSiteCurrent", "PhaseA", "L1")
+            self._setConfigDefault("Shelly3EMSiteCurrent", "PhaseB", "L2")
+            self._setConfigDefault("Shelly3EMSiteCurrent", "PhaseC", "L3")
+
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 
         if (loadedVersion < int(self.config["Common"]["ConfigVersion"])):
             config_path = "{0}/config.ini".format(os.path.dirname(os.path.realpath(__file__)))
@@ -1394,6 +1556,26 @@ class esESS:
     def publishDbusValue(self, sub:DbusSubscription, value):
         d(self, "Exporting dbus value: {0}{1} => {2}".format(sub.serviceName, sub.dbusPath, value))
         self._dbusMonitor.set_value(sub.serviceName, sub.dbusPath, value)
+
+    def readDbusSubscription(self, sub:DbusSubscription, timeout=1.0):
+        """Perform a live BusItem read instead of returning the monitor cache."""
+        monitor = getattr(self, "_dbusMonitor", None)
+        if monitor is None:
+            return False, None
+
+        try:
+            value = monitor.dbusConn.call_blocking(
+                sub.serviceName,
+                sub.dbusPath,
+                "com.victronenergy.BusItem",
+                "GetValue",
+                "",
+                [],
+                timeout=timeout,
+            )
+            return True, value
+        except Exception:
+            return False, None
     
     def _runThread(self, workerThread: WorkerThread):
         try:

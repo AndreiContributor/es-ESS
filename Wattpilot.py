@@ -244,6 +244,10 @@ class Wattpilot(object):
         return self._amps3
 
     @property
+    def energyTelemetryUpdatedAt(self):
+        return self._energyTelemetryUpdatedAt
+
+    @property
     def power1(self):
         return self._power1
 
@@ -435,6 +439,7 @@ class Wattpilot(object):
 
             self._carStateReady = False
             self._reset_command_authority_telemetry()
+            self._energyTelemetryUpdatedAt = 0
             self._stop_reconnect.clear()
             self._wst = threading.Thread(target=self.__connection_worker)
             self._wst.daemon = True
@@ -452,6 +457,7 @@ class Wattpilot(object):
         self._wsapp.close()
         self._connected=False
         self._reset_command_authority_telemetry()
+        self._energyTelemetryUpdatedAt = 0
         self.__call_event_handler(Event.WP_DISCONNECT)
         i(self, "Wattpilot disconnected")
 
@@ -506,17 +512,17 @@ class Wattpilot(object):
 
 
     def set_power(self,power):
-        self.send_update("amp",power)
+        return self.send_update("amp",power)
 
     def set_start_stop(self, v:WattpilotStartStop):
         d(self, "Start/Stop to send: frc={0}:{1}".format(v, v.value))
-        self.send_update("frc", v.value)
+        return self.send_update("frc", v.value)
 
     def set_phases(self, v):
         if (v==3):
             v=2
 
-        self.send_update("psm", v)
+        return self.send_update("psm", v)
 
     def set_mode(self, mode:WattpilotControlMode):
         d(self, "Sending Conrol Mode {0}:{1} to Wattpilot.".format(mode, mode.value))
@@ -536,8 +542,8 @@ class Wattpilot(object):
             if not allowed:
                 w(
                     self,
-                    "Blocked Wattpilot setValue {0}={1}: runtime firmware "
-                    "compatibility is not confirmed.".format(name, value),
+                    "Blocked Wattpilot setValue {0}={1}: command guard "
+                    "rejected the request.".format(name, value),
                 )
                 return False
 
@@ -671,6 +677,7 @@ class Wattpilot(object):
         elif name=="alw":
             self._AllowCharging = Wattpilot.alwValues[value]
         elif name=="nrg":
+            self._energyTelemetryUpdatedAt=time.time()
             self._voltage1=value[0]
             self._voltage2=value[1]
             self._voltage3=value[2]
@@ -800,11 +807,26 @@ class Wattpilot(object):
     def __on_close(self,wsapp,code,msg):
         self._connected=False
         self._reset_command_authority_telemetry()
+        self._energyTelemetryUpdatedAt = 0
         self.__call_event_handler(Event.WS_CLOSE, wsapp, code, msg)
 
     def __on_message(self, wsapp, message):
         ## called whenever a message through websocket is received
-        msg=json.loads(message, object_hook=lambda di: SimpleNamespace(**di))
+        try:
+            msg=json.loads(message, object_hook=lambda di: SimpleNamespace(**di))
+        except (TypeError, json.JSONDecodeError) as ex:
+            message_length = len(message) if isinstance(message, (str, bytes)) else 0
+            w(
+                self,
+                "Malformed Wattpilot WebSocket JSON frame ({0} bytes, {1}); "
+                "closing connection for worker-loop reconnect.".format(
+                    message_length,
+                    ex.msg if isinstance(ex, json.JSONDecodeError) else "invalid type",
+                ),
+            )
+            self.__on_error(wsapp, "Malformed Wattpilot WebSocket JSON frame")
+            wsapp.close()
+            return
         self.__call_event_handler(Event.WS_MESSAGE, message)
         if (msg.type == 'hello'):  # Hello Message -> Received upon connection before auth
             self.__on_hello(msg)
@@ -859,6 +881,7 @@ class Wattpilot(object):
         self._amps1=None
         self._amps2=None
         self._amps3=None
+        self._energyTelemetryUpdatedAt=0
         self._ampLimit=None
         self._startingPower=None
         self._nativePvSurplusEnabled=None

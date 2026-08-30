@@ -40,6 +40,40 @@ class EsEssDailyReportTests(unittest.TestCase):
         self.assertEqual(total, len(lines))
         return records
 
+    def _session_line(self, clock, payload, level="INFO"):
+        return self._line(
+            clock,
+            "Wattpilot session statistics: "
+            + json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            level,
+        )
+
+    @staticmethod
+    def _session_event(event, **changes):
+        payload = {
+            "event_version": 1,
+            "event": event,
+            "connection_id": "connection-1",
+            "partial_start": False,
+            "partial_end": False,
+            "counter_energy_wh": 0,
+            "counter_complete": False,
+            "counter_reset_count": 0,
+            "counter_missing_samples": 0,
+            "estimated_energy_by_mode_wh": {
+                "one_phase": 0,
+                "three_phase": 0,
+            },
+            "estimated_energy_by_phase_wh": {"L1": 0, "L2": 0, "L3": 0},
+            "integration_coverage_seconds": 0,
+            "integration_gap_seconds": 0,
+            "charging_interval_count": 0,
+            "interruption_count": 0,
+            "phase_modes_used": [],
+        }
+        payload.update(changes)
+        return payload
+
     def _run(self, lines, settings=None, partial=False):
         records = self._records(lines)
         audit_input = AUDIT.AuditInput(
@@ -162,6 +196,29 @@ class EsEssDailyReportTests(unittest.TestCase):
         self.assertIn("FAIL", self._statuses(result, "allowance drop grace"))
         self.assertEqual(result.overall, "ANOMALY")
 
+    def test_battery_assist_lockout_can_stop_before_a_logged_allowance_grace(self):
+        lines = [
+            self._line(
+                "09:00:00",
+                "ServiceMessage: EV allowance fell below the usable minimum. Waiting up to 30s for a refreshed distributor allowance before reducing phase or stopping.",
+            ),
+            self._line(
+                "09:00:05",
+                "ServiceMessage: Battery assist lockout prevents a new allowance grace. Stopping Auto/Eco charging.",
+            ),
+            self._line("09:00:05", "STOP send!", "INFO"),
+        ]
+        result = self._run(
+            lines,
+            AUDIT.AuditSettings(
+                log_level="APP_DEBUG",
+                allowance_drop_grace_seconds=30,
+            ),
+        )
+
+        self.assertIn("PASS", self._statuses(result, "allowance drop grace"))
+        self.assertNotIn("FAIL", self._statuses(result, "allowance drop grace"))
+
     def test_atomic_zero_followed_by_one_phase_without_grace_is_failure(self):
         lines = [
             self._line(
@@ -253,7 +310,10 @@ class EsEssDailyReportTests(unittest.TestCase):
             ),
             self._line("12:00:01", "Adjusting charge current to 17A on 1-phase.", "INFO"),
             self._line(
-                "12:00:02", "ServiceMessage: Battery assist active: 1200W shortfall for 10s."
+                "12:00:02",
+                "ServiceMessage: Battery assist active at 6A: 3600W total "
+                "shortfall, 1200W/phase across 3 phase(s), 3000W effective "
+                "limit, for 10s.",
             ),
         ]
         result = self._run(
@@ -261,13 +321,38 @@ class EsEssDailyReportTests(unittest.TestCase):
             AUDIT.AuditSettings(
                 log_level="APP_DEBUG",
                 max_current_per_phase=16,
-                battery_assist_max_shortfall_w=1000,
+                battery_assist_max_shortfall_per_phase_w=1000,
             ),
         )
 
         self.assertIn("FAIL", self._statuses(result, "current limits"))
         self.assertIn("FAIL", self._statuses(result, "battery assist"))
         self.assertEqual(result.overall, "ANOMALY")
+
+    def test_minimum_and_continuation_pv_reductions_are_collected(self):
+        records = self._records(
+            [
+                self._line(
+                    "12:10:00",
+                    "ServiceMessage: PV no longer supports the current EV "
+                    "setpoint. Reducing to 6A on 3 phase(s) before any battery "
+                    "or grid assistance.",
+                ),
+                self._line(
+                    "12:10:05",
+                    "Reducing charge current from continuation PV to 7A on "
+                    "1 phase(s).",
+                    "INFO",
+                ),
+            ]
+        )
+        audit = self._audit(records)
+        audit.collect()
+
+        self.assertEqual(
+            [(amps, phases) for _record, amps, phases in audit.current_adjustments],
+            [(6, 3), (7, 1)],
+        )
 
     def test_early_phase_up_and_low_allowance_fail(self):
         lines = [
@@ -351,6 +436,200 @@ class EsEssDailyReportTests(unittest.TestCase):
 
         self.assertIn("FAIL", self._statuses(result, "runtime errors"))
 
+    def test_resolved_pre_auth_firmware_unavailability_is_informational(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:29:59",
+                    "Start/Stop to send: frc=WattpilotStartStop.Off:1",
+                ),
+                self._line(
+                    "15:29:59", "Wattpilot disconnected", "INFO", "100"
+                ),
+                self._line(
+                    "15:30:00",
+                    "ServiceMessage: Wattpilot firmware compatibility not confirmed. "
+                    "Expected 42.5, received <unavailable>. All es-ESS Wattpilot "
+                    "commands are blocked.",
+                    millis="100",
+                ),
+                self._line(
+                    "15:30:00",
+                    "Wattpilot firmware compatibility not confirmed. Expected 42.5, "
+                    "received <unavailable>. All es-ESS Wattpilot commands are blocked.",
+                    "WARNING",
+                    "200",
+                ),
+                self._line(
+                    "15:30:00",
+                    "Initialization completed. es-ESS is up and running.",
+                    "INFO",
+                    "300",
+                ),
+                self._line(
+                    "15:30:05", "Authentication successful", "INFO"
+                ),
+                self._line(
+                    "15:30:08",
+                    "ServiceMessage: Wattpilot firmware compatibility confirmed: 42.5.",
+                    millis="100",
+                ),
+                self._line(
+                    "15:30:08",
+                    "Wattpilot firmware compatibility confirmed: 42.5.",
+                    "INFO",
+                    "200",
+                ),
+            ]
+        )
+
+        self.assertIn("PASS", self._statuses(result, "runtime errors"))
+        self.assertIn("INFO", self._statuses(result, "startup compatibility"))
+        self.assertEqual(result.overall, "GOOD")
+        finding = next(
+            finding
+            for finding in result.findings
+            if finding.check == "startup compatibility"
+        )
+        self.assertIn("Resolved 1", finding.message)
+
+    def test_unresolved_pre_auth_firmware_unavailability_is_a_failure(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:30:00",
+                    "Wattpilot firmware compatibility not confirmed. Expected 42.5, "
+                    "received <unavailable>. All es-ESS Wattpilot commands are blocked.",
+                    "WARNING",
+                ),
+                self._line(
+                    "15:30:01",
+                    "Initialization completed. es-ESS is up and running.",
+                    "INFO",
+                ),
+            ]
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+        self.assertNotIn("INFO", self._statuses(result, "startup compatibility"))
+
+    def test_confirmation_without_complete_startup_sequence_remains_a_failure(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:30:00",
+                    "Wattpilot firmware compatibility not confirmed. Expected 42.5, "
+                    "received <unavailable>. All es-ESS Wattpilot commands are blocked.",
+                    "WARNING",
+                ),
+                self._line(
+                    "15:30:08",
+                    "Wattpilot firmware compatibility confirmed: 42.5.",
+                    "INFO",
+                ),
+            ]
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+
+    def test_command_during_startup_compatibility_gap_remains_a_failure(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:30:00",
+                    "Wattpilot firmware compatibility not confirmed. Expected 42.5, "
+                    "received <unavailable>. All es-ESS Wattpilot commands are blocked.",
+                    "WARNING",
+                ),
+                self._line(
+                    "15:30:01",
+                    "Initialization completed. es-ESS is up and running.",
+                    "INFO",
+                ),
+                self._line(
+                    "15:30:05", "Authentication successful", "INFO"
+                ),
+                self._line(
+                    "15:30:06",
+                    "Start/Stop to send: frc=WattpilotStartStop.On:2",
+                ),
+                self._line(
+                    "15:30:08",
+                    "Wattpilot firmware compatibility confirmed: 42.5.",
+                    "INFO",
+                ),
+            ]
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+        self.assertNotIn("INFO", self._statuses(result, "startup compatibility"))
+
+    def test_lifecycle_break_during_startup_compatibility_gap_remains_a_failure(self):
+        lifecycle_breaks = (
+            ("Wattpilot disconnected", "INFO"),
+            ("Initialization completed. es-ESS is up and running.", "INFO"),
+        )
+        for message, level in lifecycle_breaks:
+            with self.subTest(message=message):
+                result = self._run(
+                    [
+                        self._line(
+                            "15:30:00",
+                            "Wattpilot firmware compatibility not confirmed. "
+                            "Expected 42.5, received <unavailable>. All es-ESS "
+                            "Wattpilot commands are blocked.",
+                            "WARNING",
+                        ),
+                        self._line(
+                            "15:30:01",
+                            "Initialization completed. es-ESS is up and running.",
+                            "INFO",
+                        ),
+                        self._line(
+                            "15:30:05", "Authentication successful", "INFO"
+                        ),
+                        self._line("15:30:06", message, level),
+                        self._line(
+                            "15:30:08",
+                            "Wattpilot firmware compatibility confirmed: 42.5.",
+                            "INFO",
+                        ),
+                    ]
+                )
+
+                self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+                self.assertNotIn(
+                    "INFO", self._statuses(result, "startup compatibility")
+                )
+
+    def test_different_confirmed_firmware_does_not_resolve_startup_warning(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:30:00",
+                    "Wattpilot firmware compatibility not confirmed. Expected 42.5, "
+                    "received <unavailable>. All es-ESS Wattpilot commands are blocked.",
+                    "WARNING",
+                ),
+                self._line(
+                    "15:30:01",
+                    "Initialization completed. es-ESS is up and running.",
+                    "INFO",
+                ),
+                self._line(
+                    "15:30:05", "Authentication successful", "INFO"
+                ),
+                self._line(
+                    "15:30:08",
+                    "Wattpilot firmware compatibility confirmed: 42.5.1.",
+                    "INFO",
+                ),
+            ]
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+        self.assertNotIn("INFO", self._statuses(result, "startup compatibility"))
+
     def test_blocked_authority_does_not_fail_for_passive_charge_status(self):
         result = self._run(
             [
@@ -404,6 +683,11 @@ NoBatToEV=false
 [FroniusWattpilot]
 MinCurrentPerPhase=6
 MaxCurrentPerPhase=16
+SiteCurrentSource=Shelly3EMGen3
+SiteMaxCurrent=20
+Charger1PhaseMapping=L1
+SiteCurrentFreshSeconds=15
+SiteCurrentRecoverySeconds=30
 ThreePhasePvSurplusStartW=4500
 ThreePhasePvSurplusStopW=4100
 MinOnOffSeconds=60
@@ -412,7 +696,7 @@ AllowanceFreshSeconds=15
 AllowanceDropGraceSeconds=30
 BatteryAssistEnabled=true
 BatteryAssistMaxSeconds=600
-BatteryAssistMaxShortfallW=1000
+BatteryAssistMaxShortfallPerPhaseW=1500
 AllowGridCharging=false
 GridImportPositive=true
 GridImportStopW=300
@@ -426,6 +710,7 @@ StartupGraceSeconds=60
 
         self.assertEqual(warnings, [])
         self.assertEqual(settings.allowance_drop_grace_seconds, 30)
+        self.assertEqual(settings.site_current_source, "Shelly3EMGen3")
         self.assertNotIn("secret-value", json.dumps(AUDIT.asdict(settings)))
 
     def test_default_documentation_values_are_not_treated_as_service_flags(self):
@@ -497,7 +782,7 @@ NoBatToEV=false
             ]
         )
         payload = json.loads(json.dumps(result.to_dict()))
-        self.assertEqual(payload["schema"], 3)
+        self.assertEqual(payload["schema"], 4)
         self.assertEqual(payload["inputs"]["target_date"], self.target_date)
 
     def test_partial_json_contains_coverage_contract(self):
@@ -819,6 +1104,92 @@ NoBatToEV=false
             ["current.log", "current.log.2026-07-14", "current.log.2026-07-15"],
         )
 
+    def test_selects_only_rotation_for_complete_historical_day(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_log = root / "current.log"
+            paths = [base_log]
+            for suffix in ("2026-07-14", "2026-07-15", "2026-07-16"):
+                paths.append(root / f"current.log.{suffix}")
+            for path in paths:
+                path.write_text("", encoding="utf-8")
+
+            selected = AUDIT.select_log_files_for_window(
+                base_log,
+                AUDIT.discover_log_files(base_log),
+                datetime(2026, 7, 15),
+                datetime(2026, 7, 16),
+                datetime(2026, 7, 17).date(),
+            )
+
+        self.assertEqual(
+            [path.name for path in selected],
+            ["current.log.2026-07-15"],
+        )
+
+    def test_selects_active_log_only_for_current_partial_day(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_log = root / "current.log"
+            paths = [
+                base_log,
+                root / "current.log.2026-07-14",
+                root / "current.log.2026-07-15",
+            ]
+            for path in paths:
+                path.write_text("", encoding="utf-8")
+
+            selected = AUDIT.select_log_files_for_window(
+                base_log,
+                AUDIT.discover_log_files(base_log),
+                datetime(2026, 7, 16),
+                datetime(2026, 7, 16, 12),
+                datetime(2026, 7, 16).date(),
+            )
+
+        self.assertEqual([path.name for path in selected], ["current.log"])
+
+    def test_selects_rotation_and_active_log_for_cross_midnight_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_log = root / "current.log"
+            paths = [
+                base_log,
+                root / "current.log.2026-07-14",
+                root / "current.log.2026-07-15",
+            ]
+            for path in paths:
+                path.write_text("", encoding="utf-8")
+
+            selected = AUDIT.select_log_files_for_window(
+                base_log,
+                AUDIT.discover_log_files(base_log),
+                datetime(2026, 7, 15, 12),
+                datetime(2026, 7, 16, 12),
+                datetime(2026, 7, 16).date(),
+            )
+
+        self.assertEqual(
+            [path.name for path in selected],
+            ["current.log", "current.log.2026-07-15"],
+        )
+
+    def test_active_log_is_rollover_fallback_for_missing_rotation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            base_log = root / "current.log"
+            base_log.write_text("", encoding="utf-8")
+
+            selected = AUDIT.select_log_files_for_window(
+                base_log,
+                AUDIT.discover_log_files(base_log),
+                datetime(2026, 7, 15),
+                datetime(2026, 7, 16),
+                datetime(2026, 7, 16).date(),
+            )
+
+        self.assertEqual([path.name for path in selected], ["current.log"])
+
     def test_load_window_crosses_midnight_and_deduplicates_rotation_overlap(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -838,6 +1209,16 @@ NoBatToEV=false
             )
         self.assertEqual(total, 4)
         self.assertEqual([record.message for record in records], ["before", "duplicate", "after"])
+
+    def test_cli_handles_keyboard_interrupt_without_traceback(self):
+        stderr = io.StringIO()
+        with mock.patch.object(
+            AUDIT, "main", side_effect=KeyboardInterrupt
+        ), contextlib.redirect_stderr(stderr):
+            exit_code = AUDIT.cli([])
+
+        self.assertEqual(exit_code, 130)
+        self.assertIn("Daily report interrupted.", stderr.getvalue())
 
     def test_offset_timestamp_orders_repeated_dst_hour_by_actual_instant(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -995,6 +1376,8 @@ NoBatToEV=false
             "ALLOWANCE_RE",
             "GRID_RE",
             "CURRENT_RE",
+            "CONTINUATION_CURRENT_RE",
+            "MINIMUM_CURRENT_RE",
             "ASSIST_RE",
             "GRACE_RE",
             "PHASE_UP_WAIT_RE",
@@ -1232,6 +1615,333 @@ NoBatToEV=false
         self.assertEqual(result.sessions[0].current_adjustments_a, [7])
         self.assertEqual(result.sessions[0].stop_reason, "controller stop")
 
+    def test_structured_sessions_count_connections_intervals_and_energy(self):
+        lines = [
+            self._session_line(
+                "20:00:00",
+                self._session_event(
+                    "connection_start", mode="Auto", connection_started_at_epoch=1
+                ),
+            ),
+            self._session_line(
+                "20:00:10",
+                self._session_event(
+                    "start_attempt", source="auto_pv", connection_elapsed_seconds=10
+                ),
+            ),
+            self._session_line(
+                "20:00:20",
+                self._session_event(
+                    "charge_start",
+                    interval_id="charge-1",
+                    phase_mode=1,
+                    onboarding_latency_seconds=20,
+                ),
+            ),
+            self._session_line(
+                "20:01:00",
+                self._session_event(
+                    "charge_stop",
+                    interval_id="charge-1",
+                    duration_seconds=40,
+                    reason="measured_power_zero",
+                ),
+            ),
+            self._session_line(
+                "20:01:10",
+                self._session_event(
+                    "charge_start",
+                    interval_id="charge-2",
+                    phase_mode=3,
+                    onboarding_latency_seconds=20,
+                ),
+            ),
+            self._session_line(
+                "20:02:00",
+                self._session_event(
+                    "charge_stop",
+                    interval_id="charge-2",
+                    duration_seconds=50,
+                    reason="vehicle_disconnected",
+                ),
+            ),
+            self._session_line(
+                "20:02:05",
+                self._session_event(
+                    "connection_summary",
+                    ended_at_epoch=125,
+                    end_reason="vehicle_disconnected",
+                    counter_energy_wh=250,
+                    counter_complete=True,
+                    estimated_energy_by_mode_wh={
+                        "one_phase": 90,
+                        "three_phase": 150,
+                    },
+                    estimated_energy_by_phase_wh={
+                        "L1": 140,
+                        "L2": 50,
+                        "L3": 50,
+                    },
+                    integration_coverage_seconds=90,
+                    integration_gap_seconds=0,
+                    charging_interval_count=2,
+                    interruption_count=1,
+                    phase_modes_used=[1, 3],
+                    onboarding_latency_seconds=20,
+                    first_start_attempt_at_epoch=10,
+                    first_start_attempt_source="auto_pv",
+                    first_start_accepted=True,
+                    power_min_w=1200,
+                    peak_power_w=7000,
+                ),
+            ),
+        ]
+        result = self._run(lines)
+        session = result.sessions[0]
+
+        self.assertEqual(result.schema, 4)
+        self.assertEqual(result.metrics["connection_sessions"], 1)
+        self.assertEqual(result.metrics["charging_intervals"], 2)
+        self.assertEqual(result.metrics["authoritative_total_kwh"], 0.25)
+        self.assertEqual(session.source, "structured_v1")
+        self.assertEqual(session.charging_interval_count, 2)
+        self.assertEqual(len(session.charging_intervals), 2)
+        self.assertEqual(session.authoritative_energy_kwh, 0.25)
+        self.assertEqual(session.estimated_energy_by_mode_kwh["one_phase"], 0.09)
+        self.assertEqual(session.estimated_energy_by_phase_kwh["L1"], 0.14)
+        self.assertEqual(session.onboarding_latency_seconds, 20)
+        self.assertEqual((session.power_min_w, session.power_max_w), (1200, 7000))
+        self.assertTrue(session.evidence_complete)
+        self.assertEqual(result.overall, "GOOD")
+
+    def test_structured_counter_reset_and_gap_are_explicitly_incomplete(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "20:10:00",
+                    self._session_event("connection_start", mode="Manual"),
+                ),
+                self._session_line(
+                    "20:11:00",
+                    self._session_event(
+                        "connection_summary",
+                        end_reason="vehicle_disconnected",
+                        counter_energy_wh=50,
+                        counter_complete=False,
+                        counter_reset_count=1,
+                        estimated_energy_by_mode_wh={
+                            "one_phase": 40,
+                            "three_phase": 0,
+                        },
+                        estimated_energy_by_phase_wh={
+                            "L1": 40,
+                            "L2": 0,
+                            "L3": 0,
+                        },
+                        integration_coverage_seconds=30,
+                        integration_gap_seconds=30,
+                        charging_interval_count=1,
+                    ),
+                ),
+            ]
+        )
+        session = result.sessions[0]
+
+        self.assertIsNone(session.authoritative_energy_kwh)
+        self.assertEqual(session.observed_counter_energy_kwh, 0.05)
+        self.assertEqual(session.counter_reset_count, 1)
+        self.assertEqual(session.integration_coverage_percent, 50)
+        self.assertFalse(session.evidence_complete)
+        self.assertEqual(result.overall, "INCOMPLETE")
+        self.assertIn(
+            "WARN", self._statuses(result, "session statistics completeness")
+        )
+
+    def test_structured_missing_counter_samples_are_explicitly_incomplete(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "20:10:00",
+                    self._session_event("connection_start", mode="Auto"),
+                ),
+                self._session_line(
+                    "20:11:00",
+                    self._session_event(
+                        "connection_summary",
+                        end_reason="vehicle_disconnected",
+                        counter_energy_wh=50,
+                        counter_complete=False,
+                        counter_missing_samples=2,
+                    ),
+                ),
+            ]
+        )
+        session = result.sessions[0]
+
+        self.assertEqual(session.counter_missing_samples, 2)
+        self.assertIsNone(session.authoritative_energy_kwh)
+        self.assertIn("ATTENTION", self._statuses(result, "session counter gaps"))
+
+    def test_structured_checkpoint_without_start_marks_window_boundary_partial(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "00:00:30",
+                    self._session_event(
+                        "checkpoint",
+                        partial_start=True,
+                        partial_end=True,
+                        counter_energy_wh=100,
+                        estimated_energy_by_mode_wh={
+                            "one_phase": 100,
+                            "three_phase": 0,
+                        },
+                    ),
+                    "APP_DEBUG",
+                ),
+                self._session_line(
+                    "00:01:30",
+                    self._session_event(
+                        "checkpoint",
+                        partial_start=True,
+                        partial_end=True,
+                        counter_energy_wh=160,
+                        estimated_energy_by_mode_wh={
+                            "one_phase": 160,
+                            "three_phase": 0,
+                        },
+                        integration_coverage_seconds=60,
+                    ),
+                    "APP_DEBUG",
+                ),
+            ]
+        )
+        session = result.sessions[0]
+
+        self.assertTrue(session.partial_start)
+        self.assertTrue(session.partial_end)
+        self.assertEqual(session.observed_counter_energy_kwh, 0.06)
+        self.assertIsNone(session.authoritative_energy_kwh)
+
+    def test_malformed_structured_session_record_is_an_evidence_gap(self):
+        result = self._run(
+            [
+                self._line(
+                    "20:20:00",
+                    "Wattpilot session statistics: {not-json}",
+                    "INFO",
+                )
+            ]
+        )
+
+        self.assertIn("WARN", self._statuses(result, "session statistics"))
+        self.assertEqual(result.overall, "INCOMPLETE")
+
+    def test_structured_human_render_includes_accuracy_and_onboarding(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "20:30:00",
+                    self._session_event("connection_start", mode="Auto"),
+                ),
+                self._session_line(
+                    "20:31:00",
+                    self._session_event(
+                        "connection_summary",
+                        end_reason="vehicle_disconnected",
+                        counter_energy_wh=100,
+                        counter_complete=True,
+                        estimated_energy_by_mode_wh={
+                            "one_phase": 95,
+                            "three_phase": 0,
+                        },
+                        estimated_energy_by_phase_wh={
+                            "L1": 95,
+                            "L2": 0,
+                            "L3": 0,
+                        },
+                        integration_coverage_seconds=60,
+                        onboarding_latency_seconds=5,
+                    ),
+                ),
+            ]
+        )
+        report = AUDIT.render_human(result)
+
+        self.assertIn("authoritative", report)
+        self.assertIn("estimated energy", report)
+        self.assertIn("onboarding latency", report)
+        self.assertIn("physical phase", report)
+
+    def test_structured_unknown_fields_and_secrets_are_not_copied_to_json(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "20:40:00",
+                    self._session_event(
+                        "connection_start",
+                        mode="Manual",
+                        Password="do-not-copy",
+                        Host="private.example",
+                    ),
+                ),
+                self._session_line(
+                    "20:41:00",
+                    self._session_event(
+                        "connection_summary",
+                        end_reason="vehicle_disconnected",
+                        Password="do-not-copy",
+                        counter_complete=True,
+                    ),
+                ),
+            ]
+        )
+        serialized = json.dumps(result.to_dict())
+
+        self.assertNotIn("do-not-copy", serialized)
+        self.assertNotIn("private.example", serialized)
+
+    def test_full_day_minute_checkpoints_remain_one_compact_session(self):
+        lines = [
+            self._session_line(
+                "00:00:00",
+                self._session_event("connection_start", mode="Auto"),
+            )
+        ]
+        for minute in range(1, 24 * 60):
+            hour, minute_in_hour = divmod(minute, 60)
+            lines.append(
+                self._session_line(
+                    f"{hour:02d}:{minute_in_hour:02d}:00",
+                    self._session_event(
+                        "checkpoint",
+                        partial_end=True,
+                        counter_energy_wh=minute,
+                        integration_coverage_seconds=minute * 60,
+                    ),
+                    "APP_DEBUG",
+                )
+            )
+        lines.append(
+            self._session_line(
+                "23:59:59",
+                self._session_event(
+                    "connection_summary",
+                    end_reason="vehicle_disconnected",
+                    counter_energy_wh=1440,
+                    counter_complete=True,
+                    integration_coverage_seconds=24 * 60 * 60,
+                ),
+            )
+        )
+
+        result = self._run(lines)
+
+        self.assertEqual(result.metrics["records"], 1441)
+        self.assertEqual(result.metrics["connection_sessions"], 1)
+        self.assertEqual(len(result.sessions), 1)
+        self.assertEqual(result.sessions[0].authoritative_energy_kwh, 1.44)
+
     def test_session_reconstruction_distinguishes_auto_and_manual_boundaries(self):
         result = self._run(
             [
@@ -1305,6 +2015,27 @@ NoBatToEV=false
                 self._line("21:45:05", "Battery assist time limit reached", "WARNING"),
             ]
         )
+        self.assertEqual(result.overall, "ATTENTION")
+        self.assertIn("ATTENTION", self._statuses(result, "safety interventions"))
+
+    def test_site_current_stop_reasons_are_reported_as_safety_attention(self):
+        result = self._run(
+            [
+                self._line(
+                    "21:46:00",
+                    "Site-current telemetry is missing, invalid, stale, or phase-uncertain. "
+                    "Stopping Auto/Eco charging for safety.",
+                    "WARNING",
+                ),
+                self._line(
+                    "21:46:05",
+                    "Whole-site phase headroom is below the 6 A EV minimum. "
+                    "Stopping Auto/Eco charging immediately.",
+                    "WARNING",
+                ),
+            ]
+        )
+
         self.assertEqual(result.overall, "ATTENTION")
         self.assertIn("ATTENTION", self._statuses(result, "safety interventions"))
 

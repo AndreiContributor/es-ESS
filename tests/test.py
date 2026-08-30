@@ -155,6 +155,17 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.autostart = 1
         controller.noChargeSince = 0
         controller.noAllowanceForcedOff = False
+        controller.siteCurrentForcedOff = False
+        controller.siteMaxCurrent = 20
+        controller.charger1PhaseMapping = "L1"
+        controller.siteCurrentFreshSeconds = 15
+        controller.siteCurrentRecoverySeconds = 30
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+        controller.siteCurrentGuardBlocked = False
+        controller.siteCurrentGuardReason = "Site-current headroom available"
+        controller.siteCurrentAllowedCurrent = 16
+        controller.siteCurrentLimitingPhase = "L1"
+        controller.siteCurrentHeadrooms = (20, 20, 20)
         controller.chargeCompleteHold = False
         controller.chargeCompleteConfirmSeconds = 120
         controller.chargeCompletePowerThresholdW = 100
@@ -165,15 +176,21 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.batteryAssistEnabled = True
         controller.batteryAssistSocMin = 60
         controller.batteryAssistMaxSeconds = 300
-        controller.batteryAssistMaxShortfallW = 3000
+        controller.batteryAssistMaxShortfallPerPhaseW = 1500
         controller.batterySocFreshSeconds = 15
         controller.batteryAssistRecoverySeconds = 60
         controller.batteryAssistSince = 0
+        controller.batteryAssistDeficitSince = 0
         controller.batteryAssistActive = False
         controller.batteryAssistShortfallW = 0
+        controller.batteryAssistShortfallPerPhaseW = 0
+        controller.batteryAssistActivePhases = 0
+        controller.batteryAssistEffectiveLimitW = 0
         controller.batteryAssistLockedOut = False
         controller.batteryAssistLockoutSince = 0
         controller.batteryAssistRecoverySince = 0
+        controller.minimumCurrentReductionAt = 0
+        controller.minimumCurrentReductionPhaseMode = 0
         controller.allowGridCharging = False
         controller.gridImportPositive = True
         controller.gridImportStopW = 150
@@ -213,6 +230,10 @@ class WattpilotControlRegressionTests(unittest.TestCase):
             power2=0,
             power3=0,
             amp=0,
+            amps1=0,
+            amps2=0,
+            amps3=0,
+            energyTelemetryUpdatedAt=self.fwp.time.time(),
             carConnected=True,
             carStateReady=True,
             connected=True,
@@ -241,6 +262,14 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.gridL1UpdatedAt = freshGridTime
         controller.gridL2UpdatedAt = freshGridTime
         controller.gridL3UpdatedAt = freshGridTime
+        for phase in ("L1", "L2", "L3"):
+            setattr(controller, "siteCurrent{0}Value".format(phase), 0)
+            setattr(controller, "siteCurrent{0}Valid".format(phase), True)
+            setattr(
+                controller,
+                "siteCurrent{0}UpdatedAt".format(phase),
+                freshGridTime,
+            )
         controller.overheadAvailableDbus = SimpleNamespace(value=0)
         controller.dbusService = {"/StartStop": 0, "/StartStopLiteral": "Stop"}
         controller.publishServiceMessage = lambda *args, **kwargs: None

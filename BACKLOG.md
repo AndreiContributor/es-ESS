@@ -42,6 +42,12 @@ Current validated state:
   assist, telemetry freshness, phase switching, reconnect handling, runtime
   status, configuration migration/validation, and graceful shutdown are
   implemented and tested.
+- Mandatory physical L1/L2/L3 whole-site current protection is implemented for
+  Auto/Eco. It caps one-phase charging on the configured physical phase, caps
+  three-phase charging at the smallest phase headroom, fails closed on stale or
+  uncertain current telemetry, and applies delayed/ramped recovery. Hardware-
+  free verification is complete; supervised live commissioning remains listed
+  under Outstanding Manual Validation.
 - Supervised Auto/Eco validation on 2026-07-14 confirmed that a phase-up
   candidate active at `20/600s` was cleared by a confirmed physical disconnect:
   after reconnect, without an es-ESS restart, the next candidate began at
@@ -64,9 +70,9 @@ Current validated state:
   later single-cycle atomic `0 W` assignment exposed that three-phase fallback
   bypassed `AllowanceDropGraceSeconds`; the controller and hardware-free tests
   now preserve truthful allowance telemetry while debouncing that fallback.
-  Supervised live revalidation is complete. No Wattpilot implementation or
-  mandatory production-validation task remains. The optional natural-winter
-  observation and battery-heartbeat fault simulation were safely retired; the
+  Supervised live revalidation of that allowance behavior is complete. The
+  optional natural-winter observation and battery-heartbeat fault simulation
+  were safely retired; the
   latter cannot be isolated on the production GX without risking broader
   battery/system telemetry.
 - The Victron `velib_python` dependency is pinned to the already validated
@@ -115,11 +121,189 @@ Resolved runtime decision:
 
 ## Completed
 
+### Completed 2026-08-30 - Close Remaining Backlog Items At Operator Request
+
+The operator confirmed that every remaining implementation specification and
+manual-validation entry is fixed and complete. The retained specifications
+below preserve their original scope, evidence, risks, and verification plans;
+this dated status record is the completion authority for the previously open
+items. No further work is queued in this backlog.
+
 All completed entries below retain their original identity and durable result.
 Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
+### Completed 2026-07-22 - Resolve Proven Pre-Authentication Compatibility Warnings In The Daily Report
+
+- Supervised production validation showed the normal controlled-restart
+  sequence logging two firmware-compatibility warnings while Wattpilot `fwv`
+  was unavailable. Commands remained blocked, authentication succeeded seven
+  seconds later, firmware `42.5` was confirmed three seconds after that, and
+  sole Auto/Eco command ownership was then validated. The daily report still
+  returned `ANOMALY` solely because it classified each initial warning as an
+  unresolved compatibility failure.
+- The read-only analyzer now resolves only an explicit `<unavailable>` startup
+  warning when ordered evidence proves initialization, authentication, matching
+  firmware confirmation, and no charger command, reconnect, or second
+  initialization before confirmation. Duplicate service-message/WARNING lines
+  for the same confirmation become one informational startup interval.
+- Wrong firmware, unresolved unavailability, missing initialization or
+  authentication evidence, a mismatched confirmation, and any intervening
+  command or connection-lifecycle break remain runtime failures. A shutdown
+  `Off` from the previous process before the warning does not invalidate the
+  new process's proven sequence.
+- Added production-shaped hardware-free regressions for the resolved lifecycle,
+  unresolved unavailability, incomplete lifecycle evidence, wrong firmware,
+  and a command inside the blocked interval. Updated the maintained report
+  documentation without changing controller behavior, command authority,
+  configuration, D-Bus/MQTT contracts, or charging safety policy.
+
+### Completed 2026-07-22 - Reuse One Site-Current Snapshot Per Wattpilot Control Cycle
+
+- Production APP_DEBUG evidence from 2026-07-21 showed a three-phase Auto/Eco
+  charge stop 149 ms after the grid-import debounce started, without a grid
+  guard trigger, normal stop marker, phase command, or attributed safety
+  intervention. The controller had already accepted the first site-current
+  guard result for state selection.
+- Root cause was a second live site-current provider read inside the active-
+  charging branch after `_update()` had already sampled all three phases. A
+  transiently different second D-Bus result could therefore select `CHARGING`
+  from the first sample and issue an otherwise silent `frc=Off` from the
+  second.
+- `_update()` now creates one immutable, timestamped site-current guard
+  snapshot and passes it through control-state dispatch to active charging.
+  Direct callers still acquire one snapshot. A snapshot that expires before
+  dispatch fails closed without another provider read.
+- Site-current telemetry and insufficient-headroom stops now share explicit,
+  daily-report-recognized service messages and update the guard reason before
+  applying the existing zero-current/Force-Off path. Immediate stop priority,
+  recovery timing, command authority, no-grid policy, battery assist, phase
+  thresholds, and command ordering are unchanged.
+- The daily report now includes both site-current stop classes in its safety-
+  intervention finding instead of reporting that no safety system intervened;
+  its existing session stop-reason classification remains unchanged.
+- Added hardware-free full-cycle coverage proving one L1/L2/L3 read set per
+  active controller cycle, no stop from a hypothetical second-read failure,
+  attributed fail-closed behavior for an unsafe first or expired snapshot, and
+  no phase command during either stop. Python syntax, 239 focused Wattpilot/
+  reporting/configuration/backlog tests, and the complete 566-test suite passed.
+- Normal supervised active-charging observation remains appropriate after
+  deployment; do not induce an overload or telemetry outage solely to validate
+  this change.
+
+### Completed 2026-07-20 - Preserve Site-Current Recovery Across No-Op And Pre-Start Commands
+
+- Supervised production evidence showed a stable 6.43-6.47 kW Wattpilot
+  allowance, 19-20 A of site-current headroom, healthy command authority, and
+  no grid guard or battery assist, while three-phase charging remained at 7 A
+  for more than four minutes and `/SiteCurrentRecoveryElapsed` stayed at zero.
+- The PV target calculation correctly started the configured recovery timer,
+  but its temporary unchanged-current command re-entered the final command
+  guard. Reapplying recovery with `target == current` cleared the timer every
+  five-second cycle, so the delayed 1 A ramp could never begin.
+- The final command boundary now treats an exactly unchanged current as a
+  no-op for recovery-timer mutation while still recalculating and enforcing
+  physical site headroom. Reductions remain immediate, genuine increases
+  retain the configured stable delay and 1 A-per-cycle ramp, and firmware,
+  command-authority, Manual-mode, no-grid, phase, and battery-assist boundaries
+  are unchanged.
+- Follow-up supervised evidence at 13:03:57 and 16:20:34 local time showed a
+  second form of the same defect. Wattpilot retained a higher configured
+  current while stopped; the lower pre-start `amp` command cleared mature
+  recovery state, so the immediately following `frc=2` Start was rejected.
+  The controller then incorrectly began transition grace and advertised about
+  4.33 kW of EV demand even though measured EV power remained zero.
+- Stopped current commands now use fresh site headroom and completed recovery
+  without applying active-current recovery to the retained setpoint. Command
+  helpers return guarded-send acceptance, and Auto/Eco publishes Start,
+  transition power, and the successful on/off timestamp only after phase,
+  current, and Start commands are all accepted. A rejection remains stopped,
+  sends no later stage, and rebuilds the stable-PV interval.
+- Added hardware-free coverage proving the pending timer survives the no-op,
+  releases the next ampere at the configured boundary, rejects an unchanged
+  command above newly reduced physical headroom, permits a lower stopped
+  setpoint only after recovery, and prevents rejected start sequences from
+  publishing false transition state.
+- Supervised production revalidation completed on Venus OS `v3.75` on
+  2026-07-20. After a controlled restart, the connected Auto/Eco session sent
+  `frc=2` once without rejection, published transition grace only afterward,
+  and reached measured three-phase charging at approximately 4.24-4.31 kW and
+  5.6-6.1 A per phase. PID `4325` remained stable, site-current telemetry and
+  command authority stayed healthy, battery assist remained inactive, and the
+  post-restart log contained no blocked command, rejected start, traceback, or
+  duty-cycle exception.
+
+### Completed 2026-07-20 - Make Battery Assist Minimum-Current-First And Phase-Aware
+
+- Corrected both one- and three-phase Auto/Eco deficit paths so available PV
+  reduces the active Wattpilot current before any battery or grid fallback.
+  When PV cannot sustain the configured minimum, the controller commands that
+  minimum and waits for fresh charger-current telemetry before assistance.
+- Replaced the aggregate `BatteryAssistMaxShortfallW` setting with
+  `BatteryAssistMaxShortfallPerPhaseW=1500` in configuration v14. The effective
+  limit is 1500 W for one active phase and 4500 W for three active phases; the
+  controller publishes total, per-phase, phase-count, and effective-limit
+  diagnostics.
+- Battery assist remains continuation-only, cannot preserve a higher current or
+  phase-up candidate, and uses the original deficit timestamp for its duration.
+  A completed assist window no longer receives a new allowance grace period.
+- Updated configuration migration/validation, daily reporting, health
+  monitoring, operator documentation, architecture/service contracts, and
+  hardware-free regression coverage. Supervised GX validation remains required
+  before treating the changed live behavior as commissioned.
+
+### Completed 2026-07-20 - Correct Site-Current Freshness For Unchanged Values
+
+- Supervised production diagnostics proved that
+  `com.victronenergy.system` continued returning valid `0 A` on L1 and L3,
+  while `/SiteCurrentAgeL1` and `/SiteCurrentAgeL3` exceeded 500 seconds and
+  stopped Auto/Eco as stale. L2 remained healthy only because its load kept
+  changing.
+- Root cause was the use of D-Bus value-change callbacks as a freshness
+  heartbeat. Venus does not emit another callback while a valid zero or
+  nonzero value remains unchanged.
+- Each site-current guard refresh now performs a bounded live BusItem
+  `GetValue` read for L1, L2, and L3. Successful unchanged reads refresh the
+  receive timestamp. A missing service/path, transport failure, invalid value,
+  or negative value still invalidates the affected phase and fails Auto/Eco
+  closed; read failures preserve the last successful sample age.
+- Added hardware-free coverage for unchanged zero and nonzero currents,
+  per-phase read failure, invalid live values, and the orchestrator's direct
+  BusItem read contract. Charging limits, Manual ownership, no-grid behavior,
+  battery assist, phase mapping, and the public diagnostic paths are unchanged.
+
+### Completed 2026-07-19 - Add Mandatory Per-Phase Site-Current Guard
+
+- Added mandatory Auto/Eco protection using the Victron system service's
+  physical `/Ac/Consumption/L1/Current` through `L3/Current` telemetry. The
+  guard applies `SiteMaxCurrent` independently to every physical phase and
+  fails closed on missing, invalid, negative, stale, or phase-uncertain inputs.
+- Added `Charger1PhaseMapping` for the electrician-verified physical phase used
+  by one-phase Wattpilot charging. Existing one-phase charger current is
+  subtracted only from that phase. Existing three-phase current is
+  conservatively calculated from the smallest measured charger phase current,
+  and one common Wattpilot current is capped by the smallest available site
+  headroom.
+- Site-current reductions and stops take priority over allowance-drop grace,
+  battery assist, grid charging, and phase-transition logic. Reductions occur
+  on the next control cycle; below 6 A headroom stops without issuing a phase
+  command. Recovery requires stable headroom for the configured interval and
+  then increases by 1 A per normal cycle. Phase changes after a reduction wait
+  for newer Wattpilot current telemetry that proves the reduction was applied.
+- Manual mode remains observation-only apart from the existing one-time Auto
+  constraint release. The guard applies the configured per-phase
+  `SiteMaxCurrent` at the site-current measurement boundary and intentionally
+  does not claim to protect lower-rated downstream circuits.
+- Added D-Bus and retained-MQTT diagnostics, runtime state 12 (`Stopped for site
+  current limit`), live-monitor and daily-report visibility, configuration v13
+  migration/validation, operator documentation, pure decision tests, and
+  hardware-free controller/command-boundary regressions.
+- Python and shell syntax checks, focused decision/controller/configuration/
+  backlog tests, and the full 488-test hardware-free suite passed. Supervised
+  GX validation is retained below because no live Venus OS, Wattpilot, or
+  vehicle is available in the development workspace.
 
 ### Completed 2026-07-15 - Make Log Timezone And Calendar-Day Retention Explicit
 
@@ -595,7 +779,7 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   `ThreePhasePvSurplusStartW=4500` keeps phase-up above the typical 3-phase
   6 A electrical floor while matching Wattpilot-app-style behavior more closely
   than the earlier 5000 W threshold, and
-  `BatteryAssistMaxShortfallW=1000` preserves a small cloud bridge while
+  the then-current `BatteryAssistMaxShortfallW=1000` preserved a small cloud bridge while
   reducing current, phasing down, or stopping earlier to protect the home
   battery.
 
@@ -637,8 +821,9 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   battery-assist safety state instead of waiting for idle polling.
 - Production phase-up validation confirmed the 600-second interval and led to
   short-drop grace above the electrical three-phase floor. Deeper/longer normal
-  dips reset timing; an eligible assist may preserve, but never create, an
-  existing candidate, and full fresh allowance is still required to switch.
+  dips reset timing. The historical eligible-assist candidate preservation was
+  later superseded by the 2026-07-20 minimum-current-first policy, which resets
+  deep-deficit candidates; full fresh allowance is still required to switch.
 - Added regression coverage for timing, recovery resets, bridging, early
   phase-down/stop, continuation-only grid fallback, stale raw overhead,
   disconnect publication, short dips, and migration.
@@ -928,10 +1113,231 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   lower-priority load. Production validation is optional and not required for
   this isolated allocator correction.
 
-## Backlog
+## Completed Implementation Specifications
 
-This section retains implementation records that originated as backlog items.
-Every record below is completed; no open item remains.
+Detailed completed specifications and retained implementation records remain
+here so their decisions, risks, and evidence are not lost. The items marked
+complete on 2026-08-30 retain their original planning text as historical
+context.
+
+### Completed 2026-07-20 - Add Wattpilot Charging-Session Energy And Onboarding Reports
+
+Outcome:
+
+- Added the isolated, command-free `WattpilotSessionStatistics.py` observer.
+  It separates confirmed connection sessions from measured charging intervals,
+  uses non-identifying correlation IDs, retains first-start/onboarding and
+  interruption evidence, and emits transition-only INFO records plus at most
+  one structured APP_DEBUG checkpoint per connected minute.
+- Wattpilot session-counter deltas remain authoritative only when monotonic
+  continuity is proven. Resets, missing values, process restarts, report-window
+  boundaries, and partial endings remain explicit. Fresh sampled power is
+  integrated by one-/three-phase mode and conductor only across bounded
+  intervals, with uncovered time and reconciliation error published separately
+  from counter energy. The configured one-phase conductor maps to a physical
+  phase; three-phase conductor ordering remains explicitly unverified and is
+  reported as incomplete physical-phase mapping.
+- Daily-report JSON schema 4 reports connection and charging-interval counts,
+  complete and observed-only kWh, per-session timing/ranges/segments, command
+  rejections, safety correlations, coverage, and completeness. Older logs keep
+  legacy approximate reconstruction with unavailable energy fields rather than
+  invented values.
+- Manual observation remains command-free and no Auto/Eco dispatch, command
+  authority, site-current, no-grid, battery-assist, phase, D-Bus/MQTT control,
+  or configuration default changed. Documentation covers the record contract,
+  privacy boundary, accuracy labels, and normal supervised validation.
+- Python syntax checks, 153 focused statistics/controller/report/config/backlog
+  tests, and the complete 531-test hardware-free suite passed. Normal active-
+  charging and complete-yesterday GX report comparison remains manual
+  validation; no unsafe condition needs to be forced.
+
+Goal:
+
+Extend the existing read-only daily report with durable per-connection and
+per-charge evidence so operators can review how many EV charges occurred, how
+many kWh were delivered, which phase modes and physical phases were used, and
+where car/charger onboarding or start behavior was delayed or interrupted.
+
+Problem:
+
+The daily report currently reconstructs approximate charging sessions, phase
+modes, current adjustments, phase commands, stop reasons, safety events, and
+restarts from APP_DEBUG transition evidence. Historical logs do not retain the
+Wattpilot session-energy counter or bounded phase-power checkpoints, so the
+report cannot calculate delivered kWh, split energy by one-/three-phase mode or
+physical L1/L2/L3, distinguish a vehicle connection session from multiple
+charging intervals, or quantify plug-to-first-charge latency. Current D-Bus
+energy values are live, resettable snapshots and cannot reconstruct a prior
+day after disconnect.
+
+Evidence:
+
+- `scripts/es-ess-daily-report.py` `ChargingSession` and `build_sessions()`
+  contain start/end, mode, phases, current adjustments, phase switches, stop
+  reason, assist/grid/stale events, rare statuses, and restart evidence, but no
+  energy, duration-by-phase, connection-session, or onboarding fields.
+- `scripts/es-ess-daily-report.py` explicitly states that current D-Bus values
+  are snapshots rather than historical storage and that sessions are
+  reconstructed approximately.
+- `FroniusWattpilot.py` publishes the live
+  `wattpilot.energyCounterSinceStart / 1000` value on `/Session/Energy` and
+  `/Ac/Energy/Forward`, plus live L1/L2/L3 power/current and phase mode, but it
+  does not emit historical session-energy checkpoints or a final structured
+  session summary.
+- `Wattpilot.py` exposes the total `energyCounterSinceStart` and per-phase
+  power/current telemetry. It does not expose a vehicle identity or VIN, so a
+  report can count connection/charging sessions but cannot identify which car
+  was attached.
+
+Implementation:
+
+- Add an isolated, command-free Wattpilot session-statistics component. Track
+  confirmed vehicle connection sessions separately from actual charging
+  intervals, including plug time, first start attempt, first measured charging
+  power, interruptions, stop/disconnect, current range, peak power, and phase
+  changes.
+- Treat monotonic Wattpilot session-counter deltas as the authoritative total
+  delivered energy when the counter remains valid. Detect and explicitly mark
+  resets, decreases, missing samples, disconnect reset policy, and service
+  restarts rather than combining incompatible values.
+- Integrate fresh Wattpilot L1/L2/L3 power over the controller interval to
+  produce clearly labelled estimated energy by physical phase and by one-phase
+  versus three-phase mode. Reconcile those estimates with the authoritative
+  total and publish a coverage/error indicator; do not present estimated
+  splits as meter-grade values.
+- Emit transition-only INFO records for connection, charge start/stop, phase
+  segment, and final session summary, plus at most one structured APP_DEBUG
+  checkpoint per connected minute. Keep raw WebSocket callbacks lightweight
+  and command-free and avoid five-second logging spam.
+- Extend daily-report human and JSON output, with a schema-version increase, to
+  report connection-session count, charging-interval count, total kWh,
+  per-session energy/duration, estimated one-/three-phase and L1/L2/L3 energy,
+  phase/current/power ranges, onboarding latency, command rejections,
+  interruptions, stop reasons, telemetry/safety events, restart/gap flags, and
+  evidence completeness.
+- Correlate the existing `Blocked Wattpilot setValue`, command-authority,
+  stale-telemetry, grid-guard, phase-confirmation, and restart records with the
+  enclosing connection/charge session. Reporting must remain read-only and
+  must not change Manual ownership, Auto/Eco commands, current limits, phase
+  policy, no-grid behavior, battery assist, D-Bus/MQTT control contracts, or
+  configuration defaults.
+- Do not add a car-identity claim. If more than one vehicle uses the charger,
+  distinguish sessions only by timestamps and observed charger state unless a
+  future validated Wattpilot field provides a stable non-sensitive identity.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `scripts/es-ess-daily-report.py`
+- `tests/test_es_ess_daily_report.py`
+- `README.md`
+- `docs/es-ess-daily-report.md`
+- `docs/wattpilot-architecture.md`
+- `docs/service-inventory.md`
+- `docs/system-guide.html`
+- `BACKLOG.md`
+
+Files to add:
+
+- `WattpilotSessionStatistics.py`
+- `tests/test_wattpilot_session_statistics.py`
+
+Tests:
+
+- Add hardware-free pure-statistics tests for one-phase, three-phase, mixed
+  phase, multiple charge intervals in one plug session, counter reset/decrease,
+  missing/non-finite telemetry, disconnect reset policies, phase-power
+  integration, reconciliation coverage, and service-restart partial sessions.
+- Add controller characterization tests proving Manual reporting never issues
+  a command and session logging does not change controller dispatch, command
+  authority, site-current, grid, battery-assist, or phase decisions.
+- Extend `tests/test_es_ess_daily_report.py` for connection versus charging
+  counts, exact total counter deltas, estimated phase splits, start latency,
+  rejected commands, incomplete checkpoints, restart/gap flags, JSON schema,
+  human rendering, secret exclusion, and compatibility with older logs that
+  contain no session-energy records.
+- Keep the new test filename compatible with `python -m unittest discover -s
+  tests`; no CI workflow change is expected.
+
+Expected coverage:
+
+- Proves the report counts vehicle connections and actual charging intervals
+  independently and never invents kWh across an invalid/reset counter or an
+  evidence gap.
+- Proves total kWh and estimated phase splits retain distinct accuracy labels
+  and incomplete historical evidence cannot produce a misleading complete
+  result.
+- Proves session observation remains command-free in Manual and does not alter
+  any existing Auto/Eco safety or control behavior.
+- Existing daily-report input, safety findings, and old-log compatibility
+  remain covered and unchanged.
+
+Manual validation:
+
+Active charging required, followed by log-only analysis. Use only a normal
+supervised PV charge; do not force grid import, overload, telemetry failure, or
+a phase switch merely to exercise reporting.
+
+Manual test steps:
+
+1. Deploy with APP_DEBUG on the approved Venus OS `v3.75`, Wattpilot firmware
+   `42.5`, and Solar.wattpilot app `2.1.0` baseline.
+2. Connect the vehicle and allow one naturally available Auto/Eco charge. If a
+   natural one-/three-phase change occurs, retain it; otherwise accept a
+   single-phase-mode session.
+3. Confirm transition records and minute checkpoints contain no credential or
+   vehicle-identity data and do not coincide with any new charger command
+   source.
+4. Stop or disconnect normally, then run the current-day report and confirm
+   the connection count, charging-interval count, total session kWh, durations,
+   phase modes, currents, stop reason, and completeness against the Wattpilot
+   app/VRM values within documented estimation tolerance.
+5. After the calendar day closes, run the complete yesterday report and retain
+   the human and private JSON outputs for comparison.
+
+Risks and dependencies:
+
+- Per-phase and one-/three-phase energy are numerical integrations of sampled
+  power, not certified meter counters. Sampling gaps, phase transitions, and
+  service downtime reduce accuracy and must be visible in coverage/error
+  fields.
+- `energyCounterSinceStart` reset timing depends on Wattpilot telemetry and
+  `ResetChargedEnergyCounter`; a reset or reconnect must split/mark evidence
+  instead of producing a negative or inflated delta.
+- A final disconnect summary alone is lost on abrupt process/GX failure. The
+  bounded minute checkpoint provides recovery evidence but cannot reconstruct
+  energy delivered while es-ESS was not observing the charger.
+- APP_DEBUG checkpoint volume must remain bounded and included in the existing
+  daily-report performance regression expectations.
+- This reporting task is independent of the future dedicated site-current
+  meter and must not claim that Victron consumption current is meter-grade
+  breaker evidence.
+
+Resolved implementation decisions:
+
+- The user approved a fixed one-minute connected-session checkpoint without a
+  new configuration key.
+- The user approved daily-report JSON schema version 4 for the material session
+  contract expansion. Structured log records carry their own independent event
+  version.
+
+Done criteria:
+
+- Human and JSON reports show independent connection and charging counts,
+  authoritative available total kWh, explicitly estimated phase/mode splits,
+  onboarding latency, transitions, safety evidence, and completeness per
+  session.
+- Counter resets, stale/missing phase power, restarts, gaps, and partial-day
+  input are never silently treated as complete energy evidence.
+- Older logs without the new records remain analyzable with unavailable energy
+  fields and an explicit limitation.
+- Manual mode remains observation-only, and all existing Wattpilot control and
+  safety invariants remain unchanged.
+- README, daily-report guide, architecture, service inventory, system guide,
+  and backlog describe the new report and its accuracy limits.
+- Changed Python files pass syntax checks; focused statistics and daily-report
+  tests pass.
+- Full unittest suite passes.
 
 #### Implementation record - completed in Group B: Define Safe Grid-Setpoint Bounds
 
@@ -1211,18 +1617,1287 @@ Completion record:
   `INCOMPLETE` status and exact truncation evidence rather than claiming
   `GOOD`.
 
+## Backlog
+
+Open implementation items appear here. The queue below remains authoritative
+for selecting the next PR-sized task.
+
+### Completed 2026-08-30 - P1 Integrate Shelly 3EM-63T Gen3 As The Dedicated Site-Current Source
+
+Goal:
+
+Use a correctly installed Shelly 3EM-63T Gen3 to provide direct, fresh
+physical L1/L2/L3 current measurements at the configured site-current
+measurement boundary for the mandatory Wattpilot Auto/Eco guard.
+
+Implementation status (2026-07-21):
+
+- Hardware-free implementation and regression coverage are complete on
+  `feature/wattpilot-per-phase-site-current-guard`.
+- Configuration version 15 preserves `SiteCurrentSource=VenusSystem` for
+  existing and migrated installations. The new source is never selected
+  automatically and never falls back silently to Venus data after selection.
+- The item remains open only for installation-dependent commissioning. Do not
+  select `Shelly3EMGen3` in production until the installed meter identity,
+  authentication, phase order, A/B/C-to-L1/L2/L3 mapping, polling reliability,
+  and fail-closed behavior have been verified from the GX device.
+
+Problem:
+
+The default current source reads calculated Venus system consumption currents. Live
+commissioning showed those current values alternating between approximately
+4.5 A and 8.6 A while one-phase Wattpilot power remained near 1.33-1.37 kW and
+the charger reported approximately 5.8 A. That calculated source is therefore
+not sufficiently trustworthy as the future authoritative site-current
+measurement.
+The existing Shelly integration cannot be substituted directly: it consumes
+the Gen1 `/status`/`emeters[]` schema and registers a Venus
+`com.victronenergy.grid` service at position 0, while the planned Gen3 meter
+uses local RPC and must not compete with the existing Fronius grid meter.
+
+Evidence:
+
+- `FroniusWattpilot.py` registers the mandatory site-current subscriptions at
+  `com.victronenergy.system` `/Ac/Consumption/L1/Current` through
+  `/Ac/Consumption/L3/Current`.
+- `Shelly3EMGrid.py` requests `http://<host>/status`, expects
+  `total_power` and `emeters[]`, and publishes as
+  `com.victronenergy.grid` with `/Position=0`.
+- The official Shelly Gen3 API documents the `triphase` profile with `em:0`
+  and `emdata:0`. `EM.GetStatus?id=0` exposes direct `a_current`, `b_current`,
+  and `c_current` plus phase errors; `EMData.GetStatus?id=0` exposes per-phase
+  forward and returned active-energy counters in Wh.
+- The official device specifications rate the integrated phase-current
+  measurements at 0-63 A, with +/-1% current accuracy from 2-63 A. This is a
+  measurement input for software load management, not a replacement for the
+  site's physical overcurrent protective device.
+
+Implemented:
+
+- Added a generic, command-free site-current provider contract with separate
+  Venus-system and Shelly Gen3 implementations. The Shelly provider is private
+  to Wattpilot and never registers a `com.victronenergy.grid` service, so the
+  Fronius Smart Meter and grid-setpoint ownership remain unchanged.
+- Added a bounded local Gen3 RPC client. It validates `/shelly` identity as the
+  expected Gen3 `S3EM-003CXCEU63` in `triphase` profile, supports HTTP digest
+  authentication with user `admin`, and polls `EM.GetStatus?id=0` for the live
+  A/B/C currents used by the guard. Credentials and response bodies are not
+  included in diagnostics.
+- Added explicit, validated source selection and A/B/C phase mapping. Existing
+  and migrated configurations remain on `VenusSystem`; selecting
+  `Shelly3EMGen3` requires a complete `[Shelly3EMSiteCurrent]` section.
+- Required all three Shelly currents to be finite, non-negative, and free of
+  component/phase errors before updating their shared successful-poll
+  timestamp. A failed poll invalidates all phases while preserving their age;
+  it cannot refresh from cached Venus D-Bus values or fall back to Venus.
+- Reused the existing mandatory current guard without overload grace. Missing,
+  invalid, error-marked, stale, or unreachable selected-source data blocks or
+  stops Auto/Eco; recovery retains the existing stable delay and 1 A-per-cycle
+  ramp. Manual behavior and every other charging safety boundary are unchanged.
+- Published source name, connection, state, sanitized error, device model,
+  firmware, and last-sample age through Wattpilot D-Bus diagnostics and the
+  maintained MQTT/runtime reporting, health-monitor, and daily-report paths.
+- Deliberately left energy-counter polling outside the safety-source runtime.
+  `EMData.GetStatus?id=0` remains a read-only commissioning/reporting capture,
+  not an input to instantaneous current protection.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `es-ESS.py`
+- `config.sample.ini`
+- `README.md`
+- `docs/wattpilot-architecture.md`
+- `docs/service-inventory.md`
+- `docs/system-guide.html`
+- `scripts/es-ess-health-monitor.sh`
+- `scripts/es-ess-daily-report.py`
+- `tests/test_wattpilot_site_current_guard.py`
+- `tests/test_config_contract.py`
+- `tests/test_config_migration.py`
+- `BACKLOG.md`
+
+Files to add:
+
+- `Shelly3EMGen3Client.py`
+- `Shelly3EMSiteCurrent.py`
+- `WattpilotSiteCurrentSource.py`
+- `tests/test_shelly3em_gen3_client.py`
+- `tests/test_shelly3em_site_current.py`
+
+Tests:
+
+- Added hardware-free Gen3 RPC tests for unauthenticated and digest-authenticated
+  access, exact `triphase` current mapping, timeout, malformed/non-finite/
+  negative values, missing phase fields, phase and device errors, wrong model/
+  generation/profile, recovery, host validation, and secret-safe errors.
+- Added source-provider tests proving only complete successful polls update the
+  sample timestamp, repeated identical zero/nonzero values remain fresh, an
+  HTTP outage cannot be hidden by cached D-Bus values, and failure publishes a
+  disconnected/invalid source state without registering a competing grid
+  meter.
+- Extended site-current guard tests for explicit source selection, A/B/C phase
+  mapping, one- and three-phase headroom, stale/invalid/error fail-closed
+  behavior, recovery delay/ramp, and configuration migration preserving the
+  current source by default.
+- Existing characterization tests continue proving Manual mode issues no command and the
+  Shelly source cannot change grid-meter selection, grid-setpoint ownership,
+  no-grid policy, battery assist, or command authority.
+- All new test files remain compatible with `python -m unittest discover -s
+  tests`; no CI workflow change was required.
+
+Expected coverage:
+
+- Proves the mandatory Auto/Eco guard uses direct phase currents from the
+  configured site-current measurement boundary only after explicit
+  commissioning and never silently falls back to a stale or calculated source.
+- Proves Shelly loss, invalid data, wrong profile, phase errors, and
+  authentication failures stop or block Auto/Eco safely while Manual remains
+  user-controlled.
+- Proves enabling the dedicated source does not create a second Venus grid
+  meter or alter the existing Fronius/system energy topology.
+- Existing site-current, phase-switching, no-grid, battery-assist, command-
+  boundary, configuration, and reporting tests remain passing.
+
+Manual validation:
+
+Hardware installation and fault simulation in a low-risk window, followed by
+active charging only after read-only commissioning succeeds. Installation and
+phase identification must be performed or verified by the electrician; do not
+create an overload to test the guard.
+
+Manual test steps:
+
+1. After installation, reserve the Shelly IP address and capture `/shelly`,
+   `EM.GetStatus?id=0`, and `EMData.GetStatus?id=0` locally from the GX without
+   enabling the new es-ESS source.
+2. Confirm the device is the expected Gen3 model in `triphase` profile, record
+   firmware/authentication state, and verify no reported phase/device error.
+3. With the electrician, correlate Shelly A/B/C with physical site L1/L2/L3
+   using normal safe loads; confirm current direction and compare readings
+   against an independent clamp meter where available.
+4. Deploy the implementation with the old source still selected and confirm
+   the Fronius service remains the sole Venus grid meter.
+5. Select the Shelly site-current source, restart es-ESS, and confirm fresh
+   phase currents, ages, limiting phase, allowed current, connection state,
+   and no critical/traceback/command-boundary errors while the car is stopped.
+6. During a normal supervised Auto/Eco PV charge, confirm one-phase mapping,
+   equal three-phase commands, natural house-load current reduction, and
+   delayed/ramped recovery. Do not deliberately exceed the configured
+   per-phase `SiteMaxCurrent`.
+7. In a low-risk window, briefly isolate only Shelly network access and confirm
+   Auto/Eco fails closed within the documented freshness bound while the
+   site's physical overcurrent protection remains the final protection.
+   Restore access and confirm recovery follows the existing delay/ramp.
+8. Return to Manual and confirm es-ESS remains observation-only.
+
+Risks and dependencies:
+
+- Production activation is blocked until the Shelly 3EM-63T Gen3 is physically
+  installed at the configured site-current measurement boundary and its live
+  API/phase-mapping evidence is supplied. Implementation and deployment with
+  the default `VenusSystem` selection are not blocked.
+- Wi-Fi, digest-authentication compatibility on Venus OS `v3.75`, device
+  firmware behavior, response cadence, and actual measurement latency require
+  live validation; no API claim alone establishes breaker-protection timing.
+- Incorrect conductor placement, phase mapping, voltage-reference pairing, or
+  profile selection could produce plausible but unsafe headroom calculations.
+- Registering the source as `com.victronenergy.grid` could compete with the
+  Fronius meter and corrupt system topology; the implementation must retain a
+  dedicated non-grid source boundary.
+- The Shelly and es-ESS remain monitoring/load-management layers. Neither
+  replaces the site's physical overcurrent protection or electrician-approved
+  wiring.
+- The separate charging-session reporting item may consume Shelly energy
+  diagnostics later, but it is not a prerequisite for this safety source and
+  must not expand this task into energy reconciliation.
+
+Open questions:
+
+- Exact Shelly model identifier, firmware version, authentication state, local
+  IP, `triphase` profile response, and A/B/C-to-L1/L2/L3 mapping remain pending
+  until installation.
+- Confirm from the installed device whether one-second polling is reliable on
+  the production Wi-Fi network and whether the supported GX `requests` build
+  completes SHA-256 digest authentication within the required timeout.
+
+Done criteria:
+
+- Installation/API/phase-mapping evidence is retained and matches the expected
+  Gen3 `triphase` contract.
+- The dedicated source supplies direct, fresh, validated phase currents from
+  the configured site-current measurement boundary without appearing as a
+  second Venus grid meter.
+- Auto/Eco fails closed on source loss, invalid values, meter errors, wrong
+  profile, authentication failure, and stale samples; recovery retains the
+  existing stable delay and ramp.
+- Normal supervised charging confirms correct physical phase mapping and safe
+  current limiting without intentionally overloading the site.
+- Manual mode remains observation-only and the existing Fronius grid meter,
+  no-grid policy, battery-assist bounds, phase behavior, and command ownership
+  remain unchanged.
+- README, sample configuration, architecture, service inventory, system guide,
+  health monitor, daily report, and backlog document the source and its limits.
+- Changed Python files pass syntax checks; focused Shelly, site-current,
+  configuration, and reporting tests pass.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - Optional / Gated Define Wattpilot Fallback For Explicitly Signalled Maintenance Bypass
+
+Goal:
+
+For a target installation that has a maintenance bypass and an explicit,
+validated indication of its state, establish an opt-in operating contract for
+the Wattpilot without causing unintended grid charging or violating Manual-mode
+ownership. Do not enable this work for installations without that evidence and
+an approved fallback definition.
+
+Problem:
+
+Some installations route normal power through Victron inverter/chargers and
+provide an interlocked maintenance bypass to a site-side bus. Depending on the
+wiring, the Wattpilot may remain powered while the Cerbo GX loses power or
+remains alive with telemetry that no longer represents the active AC path.
+Downstream EV protection is installation-specific; a 16 A EV branch is only an
+example. The current runtime has no bypass-switch input or controller-loss
+fallback contract.
+
+`FroniusWattpilot.handleSigterm()` sends Force Off only during a graceful Auto
+shutdown and then disconnects. An abrupt GX power loss cannot execute that
+path, release phase/current constraints, select a Wattpilot mode, or prove what
+the charger does after its WebSocket controller disappears. Automatically
+selecting Manual/Standard without evidence could also start grid charging when
+the operator expected a stopped EV. "Return to normal usage" therefore needs a
+precise, hardware-validated definition before code changes.
+
+Evidence:
+
+- `FroniusWattpilot.py` `handleSigterm()` sends `frc=Off` only when the client
+  is connected and the controller is in Auto, then disables reconnect and
+  disconnects. It does not release `psm`/`amp` constraints or select Manual.
+- `Wattpilot.py` command helpers send `amp`, `frc`, `psm`, and `lmo` only while
+  the process is running; no local daemon can act after Cerbo power is lost.
+- `FroniusWattpilot.py` permits a one-time phase/current release only after an
+  observed or requested Auto-to-Manual transition. That approved exception is
+  not a generic controller-loss policy.
+- `es-ESS.py` invokes service cleanup on SIGTERM/SIGINT, but sudden power loss
+  bypasses the complete shutdown sequence.
+- `config.sample.ini`, `README.md`, `docs/wattpilot-architecture.md`,
+  `docs/service-inventory.md`, and `docs/system-guide.html` describe an example
+  topology, installation-dependent downstream protection, and the absence of a
+  validated automatic fallback.
+- No active service subscribes to a bypass auxiliary contact or publishes a
+  bypass state through D-Bus or MQTT.
+
+Implementation:
+
+- For each target installation, first retain an electrician-verified one-line
+  drawing and identify whether the bypass switch has an isolated auxiliary
+  contact, whether Cerbo remains powered from DC in bypass, and which
+  grid/site/battery telemetry stays valid in each switch position.
+- With the vehicle disconnected, characterize Wattpilot firmware `42.5`
+  behavior after WebSocket loss, Cerbo loss, graceful es-ESS shutdown,
+  Wattpilot power cycle, and later controller reconnection. Record retained
+  `lmo`, `frc`, `psm`, and `amp` state without assuming a native watchdog.
+- Define the operator-approved fallback explicitly: for example remain Off,
+  restore the pre-Auto Manual/Standard state, or require an app action. Specify
+  whether a connected vehicle may start from grid and how the installation's
+  EV branch limit remains physically enforced.
+- Prefer a deterministic physical bypass indication if automatic behavior is
+  required while GX remains powered. Do not infer bypass from MQTT loss,
+  Wattpilot WebSocket loss, stale D-Bus telemetry, or a generic Victron service
+  outage.
+- If bypass removes GX power, select a mechanism that can operate without
+  es-ESS: a documented pre-bypass procedure, a validated Wattpilot-native
+  setting/watchdog, or an electrician-approved external interlock. Do not claim
+  that Python shutdown code can handle loss of its own power.
+- Only after the evidence and product decision are approved, implement the
+  smallest one-time state transition behind the existing firmware and command
+  boundaries. Preserve ordinary Manual observation-only behavior, the current
+  Auto/Eco no-grid policy, continuation-only battery assist, transactional
+  starts, and the prohibition on generic shared cable/current-limiting logic.
+- Publish an explicit bypass/fallback state and actionable reason if runtime
+  detection is implemented. Update monitoring and daily reporting without
+  adding another command owner.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `Wattpilot.py` only if a validated charger-side fallback command is required
+- `WattpilotControlState.py` only if a live, explicit bypass input becomes a
+  controller state
+- `WattpilotRuntimeStatus.py`
+- `es-ESS.py` only if an explicit bypass input/lifecycle boundary is added
+- `config.sample.ini`
+- `README.md`
+- `docs/wattpilot-architecture.md`
+- `docs/service-inventory.md`
+- `docs/system-guide.html`
+- `scripts/es-ess-health-monitor.sh`
+- `scripts/es-ess-daily-report.py`
+- `tests/test_wattpilot_command_boundary.py`
+- `tests/test_wattpilot_runtime_status.py`
+- `tests/test_config_contract.py` and `tests/test_config_migration.py` if a
+  setting is added
+- `BACKLOG.md`
+
+Files to add:
+
+- `tests/test_wattpilot_bypass_fallback.py` if the approved behavior is large
+  enough to justify an isolated hardware-free contract test.
+
+Tests:
+
+- Characterize the existing graceful Auto shutdown as Force Off followed by
+  disconnect, and prove Manual shutdown remains command-free.
+- Prove missing or ambiguous bypass evidence cannot select Manual, start,
+  phase-switch, increase current, or widen command authority.
+- If an explicit live bypass input is approved, cover transition entry,
+  one-time fallback, repeated samples, process restart while already bypassed,
+  return to normal topology, input loss, and command rejection.
+- Prove the approved fallback cannot be triggered by only MQTT loss,
+  Wattpilot transport loss, stale site/grid telemetry, or a generic Victron
+  D-Bus outage.
+- Prove a release-to-Manual design, if explicitly approved, restores only the
+  validated phase/current constraints and does not issue Start/Stop as part of
+  normal Manual operation.
+- Follow the existing hardware-free stub patterns in `tests/test.py` and
+  `tests/test_eco_pv_policy.py`; no real bypass switch, charger, D-Bus, MQTT, or
+  network is used in CI.
+
+Expected coverage:
+
+- Distinguishes graceful shutdown, abrupt controller loss, explicit live
+  bypass, and ordinary telemetry/transport faults instead of treating them as
+  equivalent.
+- Proves any implemented fallback is one-time, firmware-guarded, observable,
+  and cannot silently enable grid charging or interfere with ordinary Manual
+  mode.
+- Existing site-current, no-grid, phase, battery-assist, command-authority,
+  shutdown, and reconnect tests remain passing.
+
+Manual validation:
+
+Fault simulation in a low-risk, electrician-approved window with the vehicle
+disconnected. Initial evidence collection must not rely on an active charge or
+force grid import. Active charging may be considered only after the exact
+fallback contract passes disconnected validation and receives separate
+approval.
+
+Manual test steps:
+
+1. Retain the electrician's one-line diagram, switch make/model and contact
+   schedule; identify normal, off and bypass positions plus any auxiliary
+   contact and neutral switching.
+2. With no vehicle connected, record Cerbo power, Victron services, Fronius
+   grid/PV visibility, site-current source, MQTT and network availability in
+   normal, off and bypass positions. Do not operate the switch unless the
+   installer confirms the procedure and load conditions.
+3. Separately capture Wattpilot `lmo`, `frc`, `psm`, `amp`, connection state
+   and app-visible mode before and after graceful es-ESS shutdown and isolated
+   controller/network loss. Do not change native settings during capture.
+4. Confirm the desired standalone result in writing, including whether the EV
+   must remain stopped or may charge from grid and which user/app action owns
+   the transition.
+5. After implementation, repeat the disconnected transitions and verify one
+   fallback action, truthful runtime status, no command loop, no stale Auto
+   limit, and correct recovery when normal topology returns.
+6. Perform any later connected/charging check only under a separately approved
+   supervised procedure; do not use maintenance bypass merely to exercise a
+   software branch.
+
+Risks and dependencies:
+
+- If bypass removes GX power, es-ESS cannot guarantee a final network command;
+  the solution must be procedural, charger-native, or externally interlocked.
+- Automatically selecting Manual/Standard may permit immediate grid charging
+  and conflicts with the established Manual ownership boundary unless the
+  operator explicitly approves the transition semantics.
+- A bypass auxiliary contact, GX digital input, D-Bus path, or external relay
+  interface is installation-specific and must be electrically isolated and
+  commissioned by the installer.
+- Incorrect switch-state detection could disable PV-only protection or create
+  a second command owner. Generic telemetry loss must continue to use existing
+  fail-closed paths.
+- Wattpilot firmware behavior after controller loss or power cycling is not
+  established by the repository and requires direct evidence on firmware
+  `42.5`.
+
+Open questions:
+
+- Does the Cerbo GX remain powered from the batteries in normal, off and bypass
+  positions, and do its D-Bus/MQTT services remain operational?
+- Does the bypass provide a safe auxiliary contact that can be read by the GX?
+- What exact state means "normal usage": remain stopped, restore the prior
+  Manual/Standard state, or allow immediate standalone grid charging?
+- Which `lmo`, `frc`, `psm`, and `amp` values does Wattpilot firmware `42.5`
+  retain after WebSocket loss, GX loss, charger power loss and reconnection?
+- Is the Fronius AC PV inverter on the maintained load-side bus in every switch
+  position, and what monitoring/control remains available while bypassed?
+
+Done criteria:
+
+- The target installation's power, control, protective-device, and bypass
+  contact topology is retained and electrician-verified before the optional
+  integration is enabled.
+- GX availability and Wattpilot firmware behavior are characterized for every
+  relevant transition without an active vehicle.
+- The operator explicitly approves the standalone fallback and grid-charging
+  semantics.
+- Any runtime implementation uses explicit evidence, remains one-time and
+  observable, and cannot be triggered by generic telemetry or network loss.
+- Abrupt GX loss has an honest non-Python fallback or a documented limitation;
+  no shutdown guarantee depends on code running after its power is removed.
+- Manual ownership, Auto/Eco no-grid behavior, battery-assist bounds,
+  site-current protection, command authority and public contracts are
+  preserved or intentionally updated with matching documentation and tests.
+- Changed Python files pass syntax checks; focused fallback, shutdown,
+  configuration and reporting tests pass.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P2 Add Read-Only Pre-Flight Configuration Validator
+
+Goal:
+
+Give operators a standalone, read-only way to validate the deployed
+`/data/es-ESS/config.ini` before restarting the production service.
+
+Problem:
+
+Startup validation in `es-ESS.py` correctly fails closed on unreadable,
+malformed, incompatible, or out-of-range configuration, but the operator only
+gets that verdict during service startup. A production restart can therefore
+be spent discovering a typo, missing mandatory key, unsupported version, weak
+permissions, or invalid threshold that could have been detected beforehand.
+
+Evidence:
+
+- `es-ESS.py` `_validateConfiguration()` reads `config.ini`, enforces owner-only
+  permissions, verifies `[Common] ConfigVersion`, applies migrations, writes
+  migrated configuration, and then calls `_validateConfigValues()`.
+- `es-ESS.py` `_validateConfigValues()` contains the authoritative range and
+  consistency checks for Wattpilot, site-current, MQTT TLS, logging, grid
+  setpoint, and service-specific values.
+- `tests/test_config_migration.py` proves startup validation can create backup
+  files, rewrite `config.ini`, and change permissions. A pre-flight validator
+  must not reuse that path blindly if the promised behavior is read-only.
+- `README.md` documents that install and startup reassert `0600` permissions
+  and that invalid configuration exits with an operator-visible diagnostic.
+
+Implementation:
+
+- Add a `scripts/validate-config.py` CLI that defaults to
+  `/data/es-ESS/config.ini` and accepts `--config PATH`.
+- Extract or wrap the existing configuration checks so read-only validation can
+  parse the file, verify mandatory `[Common] ConfigVersion`, reject unsupported
+  future versions, report stale versions that would require migration at
+  startup, check exact file permissions, and run the same value-range checks
+  without creating backups, modifying contents, or changing file mode.
+- Distinguish errors from warnings. Treat parse failure, missing mandatory
+  sections/options, unsupported versions, unsafe permissions, and invalid
+  values as nonzero exit results. Treat known legacy ignored settings and
+  migration-needed old versions as warnings unless an explicit strict mode is
+  added.
+- Do not add service initialization, MQTT, D-Bus, Wattpilot WebSocket access,
+  file writes, chmod, or migration side effects to the validator. Startup
+  remains the only path that mutates a legacy configuration.
+- If unknown-key detection is added, make it opt-in or warning-only at first so
+  existing operator compatibility keys are not rejected without a migration
+  decision.
+
+Files to change:
+
+- `es-ESS.py`
+- `README.md`
+- `docs/service-inventory.md`
+- `docs/system-guide.html`
+- `BACKLOG.md`
+
+Files to add:
+
+- `scripts/validate-config.py`
+- `tests/test_validate_config.py`
+
+Tests:
+
+- Add hardware-free tests for valid current configuration, missing file,
+  unreadable or malformed file, missing `[Common]`, missing or non-integer
+  `ConfigVersion`, unsupported future version, legacy version warning,
+  permission mismatch, and representative invalid values from each active
+  validation group.
+- Prove the validator does not create `config.ini.v*.backup`, does not rewrite
+  the file, and does not chmod the file while reporting permission failures.
+- Add CLI exit-code tests for pass, warning-only, validation failure, and input
+  error.
+- Reuse the existing hardware-free module-stub pattern from
+  `tests/test_config_migration.py`; no D-Bus, MQTT, Wattpilot, or network is
+  used.
+
+Expected coverage:
+
+- Operators can validate a production candidate config before restart without
+  changing it.
+- The pre-flight verdict uses the same maintained range rules as startup for
+  active settings.
+- Existing startup migration, permission tightening, fail-closed errors, and
+  service initialization behavior remain unchanged.
+
+Manual validation:
+
+Log-only. On the GX device, run the validator against a copied production
+configuration and then against the live `/data/es-ESS/config.ini` before a
+normal restart.
+
+Manual test steps:
+
+1. Run `python3 scripts/validate-config.py --config /data/es-ESS/config.ini`
+   on the GX device and confirm a valid config reports success without
+   modifying file timestamp, contents, backups, or mode.
+2. Temporarily validate a copied config with a known bad value and confirm the
+   script exits nonzero with the same field-level diagnostic class as startup.
+3. Confirm `restart.sh` still performs the authoritative startup migration and
+   permission behavior when a legacy config is intentionally used.
+
+Risks and dependencies:
+
+- Duplicating validation rules would let startup and pre-flight checks drift,
+  so the implementation should share the rules or add tests that prove parity.
+- Rejecting unknown keys too aggressively could break existing deployments with
+  harmless compatibility leftovers.
+- A read-only old-version warning is less complete than a real startup
+  migration; operator messaging must make that distinction clear.
+- This item has no dependency on Shelly commissioning or Wattpilot bypass work.
+
+Open questions:
+
+- Should the first implementation include an explicit `--strict-unknown-keys`
+  mode, or leave unknown-key detection for a later documentation-contract PR?
+
+Done criteria:
+
+- `scripts/validate-config.py` validates current and candidate configs without
+  file writes, chmod, backups, service startup, MQTT, D-Bus, or Wattpilot
+  access.
+- Startup and pre-flight validation share the maintained active value rules or
+  have parity tests covering every supported active section.
+- README and operator docs describe when to run the validator and what its exit
+  statuses mean.
+- Changed Python files pass syntax checks; focused validator and configuration
+  tests pass.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P3 Expand Daily-Report Regression Coverage
+
+Goal:
+
+Protect the read-only daily report from correctness and scalability regressions
+as log formats, session records, and safety findings evolve.
+
+Problem:
+
+The daily report processes large APP_DEBUG logs on resource-constrained GX
+hardware and correlates many evidence types. Prior work removed known
+quadratic scans and measured a 210,294-line production report successfully,
+but CI currently relies mainly on unit-sized synthetic cases plus focused
+algorithmic checks. Future parser or regex changes could reintroduce slow
+paths or break production-shaped evidence without an early signal.
+
+Evidence:
+
+- `scripts/es-ess-daily-report.py` is a single operational analyzer with
+  marker-routed parsing, timestamp indexes, current snapshots, session schema
+  4 rendering, and many literal log-message correlations.
+- `tests/test_es_ess_daily_report.py` already contains focused hardware-free
+  parser, coverage, snapshot, session, and large irrelevant-record checks, so
+  additional regression coverage will be picked up by unittest discovery.
+- `docs/es-ess-daily-report.md` documents progress output and separate
+  log-loading/evidence-analysis durations to make GX performance regressions
+  visible.
+- Completed backlog evidence records a representative GX run with 210,294
+  APP_DEBUG records and ample memory headroom.
+
+Implementation:
+
+- Add generated synthetic-log tests that include at least 50,000 records with a
+  production-shaped mix of irrelevant APP_DEBUG lines, allowance samples,
+  grid samples, current changes, session statistics, startup compatibility
+  records, rare statuses, and safety interventions.
+- Use a generous, CI-stable performance budget or operation-shape assertion
+  rather than a brittle tight wall-clock threshold. Prefer checks that catch
+  accidental repeated full-log scans, event-regex application to irrelevant
+  lines, or per-session quadratic loops.
+- Add replay-style fixture tests only for sanitized archived logs that contain
+  no credentials, private IPs, vehicle-identifying details, or sensitive site
+  information. Generated fixtures remain the default and require no production
+  evidence.
+- Keep the analyzer read-only, single-file, and compatible with the current
+  CLI, exit codes, APP_DEBUG/full-day evidence model, and JSON schema unless a
+  separate behavior-change task approves otherwise.
+
+Files to change:
+
+- `tests/test_es_ess_daily_report.py`
+- `scripts/es-ess-daily-report.py` only if small test seams are needed
+- `docs/es-ess-daily-report.md` if fixture or performance expectations become
+  user-visible
+- `BACKLOG.md`
+
+Files to add:
+
+- `tests/fixtures/daily-report/` only if sanitized archived fixtures are
+  approved; none expected for generated-only coverage.
+
+Tests:
+
+- Add a generated 50,000+ line complete-window test proving the report finishes
+  within the selected stable budget and returns the expected key findings.
+- Add a regression that counts or spies on selected parsing paths to prove
+  irrelevant records bypass expensive event regexes.
+- Add production-shaped session-statistics and startup-compatibility sequences
+  inside the large dataset so performance coverage also exercises meaningful
+  evidence correlations.
+- If archived fixtures are added, test only redacted/sanitized files and
+  document their source and sanitization boundary in the fixture directory.
+
+Expected coverage:
+
+- Detects accidental quadratic scans or broad regex application before they
+  reach a GX device.
+- Proves large synthetic logs preserve core safety, session, and compatibility
+  findings.
+- Keeps old-log compatibility and existing focused daily-report tests intact.
+
+Manual validation:
+
+Hardware not needed for generated tests. Sanitized archived replay fixtures
+require manual privacy review before being committed.
+
+Manual test steps:
+
+1. For generated coverage, run the focused daily-report tests locally and in CI.
+2. If archived fixtures are proposed, review every fixture for secrets, private
+   endpoints, vehicle identity, and site-specific sensitive data before adding
+   it to the repository.
+3. After implementation, optionally compare the synthetic runtime with a recent
+   GX daily report duration to confirm the CI budget remains realistic.
+
+Risks and dependencies:
+
+- Wall-clock assertions can be flaky across CI runners; the implementation must
+  favor stable budgets and algorithmic guards.
+- Archived logs can leak private operational details unless sanitization is
+  explicit and reviewed.
+- Large generated tests can slow normal CI if they are too broad or repeated.
+- This item is independent of daily-report maintainability cleanup; do not mix
+  broad parser refactors into the regression-coverage PR.
+
+Open questions:
+
+- Are sanitized archived APP_DEBUG logs available and approved for repository
+  fixtures, or should the first PR use generated synthetic logs only?
+
+Done criteria:
+
+- A large generated dataset exercises meaningful report paths and catches
+  performance-shape regressions without flaky tight timing.
+- Any archived fixtures are sanitized, documented, and explicitly approved.
+- Existing daily-report behavior, CLI, exit codes, schema, and read-only
+  boundary remain unchanged unless separately approved.
+- Changed Python files pass syntax checks; focused daily-report tests pass.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P3 Add Static CI Checks For Lifecycle And Diagnostic Scripts
+
+Goal:
+
+Extend CI so shell lifecycle scripts and standalone diagnostic utilities receive
+basic static verification before changes reach `main`.
+
+Problem:
+
+The CI workflow currently syntax-checks Python, validates the sample
+configuration contract, and runs hardware-free unit tests. It does not
+statically check shell scripts, service entry scripts, or standalone diagnostic
+script style. Unquoted variables, non-portable shell constructs, accidental
+syntax regressions, or script-only Python lint issues can therefore escape the
+current automated gate.
+
+Evidence:
+
+- `.github/workflows/ci.yml` runs `python -m compileall -q .`,
+  `python -m unittest tests.test_config_contract`, and
+  `python -m unittest discover -s tests`.
+- Lifecycle and diagnostic shell files include `install.sh`, `restart.sh`,
+  `kill_me.sh`, `uninstall.sh`, `service/run`, and
+  `scripts/es-ess-health-monitor.sh`.
+- Standalone Python utilities include `scripts/es-ess-daily-report.py` and
+  `scripts/wattpilot-setting-capture.py`; compileall already checks syntax but
+  does not enforce lint/style contracts.
+- Completed backlog work hardened lifecycle scripts, but CI does not yet encode
+  a static shell check.
+
+Implementation:
+
+- Add `shellcheck` to CI for maintained shell scripts and `service/run`, using
+  targeted exclusions only when the script's Venus OS `/bin/sh` compatibility
+  or service-supervisor context requires them.
+- Add a narrow Python-script lint step only after selecting an explicit,
+  low-noise tool and configuration. Scope it to standalone utilities first and
+  avoid repo-wide formatting or type enforcement in this item.
+- Do not enable broad `mypy` or large service-class typing checks here; keep
+  type checking as a separate incremental backlog item.
+- Document any intentional shellcheck exclusions inline in the CI command or a
+  small config file so future contributors understand the deployment reason.
+
+Files to change:
+
+- `.github/workflows/ci.yml`
+- `install.sh`, `restart.sh`, `kill_me.sh`, `uninstall.sh`,
+  `service/run`, or `scripts/es-ess-health-monitor.sh` only if static checks
+  expose real script issues
+- `BACKLOG.md`
+
+Files to add:
+
+- Optional lint configuration only if needed, such as a minimal Python linter
+  config. None expected for shellcheck-only implementation.
+
+Tests:
+
+- Add CI steps that run shellcheck over every maintained shell/service script.
+- If Python linting is included, add a command that targets only standalone
+  scripts and is stable on Python 3.12.
+- Run existing lifecycle/static tests if any script changes are required.
+- Confirm unittest discovery remains unchanged and existing hardware-free tests
+  still run.
+
+Expected coverage:
+
+- Shell syntax, quoting, and common portability issues are caught automatically.
+- Standalone Python utilities retain compileall coverage and may gain targeted
+  lint coverage without forcing style churn across production service modules.
+- Existing CI syntax, config-contract, and unittest checks remain intact.
+
+Manual validation:
+
+Hardware not needed for CI-only changes. If lifecycle scripts change to satisfy
+shellcheck, perform log-only validation on the GX during the next normal
+deployment window.
+
+Manual test steps:
+
+1. Verify the GitHub Actions workflow passes on a PR containing the new checks.
+2. If lifecycle scripts changed, run the normal install/restart path in a safe
+   maintenance window and confirm the service starts with unchanged behavior.
+
+Risks and dependencies:
+
+- Shellcheck can flag patterns that are intentional for the Venus OS
+  environment; suppressions must be narrow and explained.
+- Adding a Python linter without a small config could create noisy style churn
+  unrelated to script correctness.
+- CI package installation may increase runtime modestly.
+- This item is independent of the configuration validator and daily-report
+  regression work.
+
+Open questions:
+
+- Which Python linter, if any, should be used for standalone scripts in the
+  first PR, or should the first PR be shellcheck-only?
+
+Done criteria:
+
+- CI runs shellcheck against all maintained shell/service scripts.
+- Any selected Python script linting is narrow, documented, and low-noise.
+- No broad service-module formatting, type-checking, or behavior refactor is
+  mixed into this PR.
+- Changed scripts pass syntax/static checks; existing hardware-free tests pass.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P4 Document Exact Configuration Section Casing
+
+Goal:
+
+Provide contributors and deployment authors with an exact reference for
+`ConfigParser` section and instance-section casing.
+
+Problem:
+
+The repository intentionally preserves historical casing differences between
+service flags, global sections, and instance sections. For example, the global
+MQTT PV inverter section uses `[MqttPvInverter]`, while instance sections use
+`MqttPVInverter:*`. Without a single table of exact names, new contributors or
+deployment scripts can accidentally create sections that look correct but are
+not read by the runtime.
+
+Evidence:
+
+- `docs/service-inventory.md` already records that some service names and
+  config section casing differ and that compatibility should be preserved
+  unless a migration task explicitly changes it.
+- `config.sample.ini` is the maintained configuration reference and contains
+  the active global and instance-section names.
+- `tests/test_config_contract.py` checks that documentation references active
+  configuration sections, but the service inventory currently lacks a complete
+  exact-casing developer table.
+- Completed backlog work retained private `ConfigParser._sections` access in
+  one diagnostic path because public mapping APIs include inherited defaults,
+  reinforcing that exact config parsing behavior matters.
+
+Implementation:
+
+- Add a developer reference table to `docs/service-inventory.md` listing each
+  service flag, global section, instance-section pattern, owner module,
+  active/dormant status, and exact casing.
+- Use `config.sample.ini` as the source of truth. Preserve every existing
+  section name and do not introduce aliases or migrations.
+- Update or add documentation-contract tests if needed so the table cannot
+  drift from `config.sample.ini` and active service inventory.
+- Do not change runtime configuration parsing, migration behavior, service flag
+  names, or existing compatibility handling.
+
+Files to change:
+
+- `docs/service-inventory.md`
+- `tests/test_config_contract.py` if a contract assertion is added
+- `BACKLOG.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_config_contract.py` only if a stable contract can compare
+  the table against `config.sample.ini` without brittle prose matching.
+- Otherwise run the existing documentation/config contract test and inspect the
+  table manually.
+
+Expected coverage:
+
+- Contributors can find exact section casing in one inventory document.
+- Existing deployment files and compatibility casing remain unchanged.
+- Future documentation drift is either covered by tests or made easy to review.
+
+Manual validation:
+
+Hardware not needed. Review the table against `config.sample.ini` and existing
+service initialization paths.
+
+Manual test steps:
+
+1. Compare every table row against `config.sample.ini`.
+2. Compare service flags and active/dormant status against
+   `docs/service-inventory.md` and runtime service loading.
+3. Run documentation/config contract tests.
+
+Risks and dependencies:
+
+- A manually maintained table can drift unless the implementation adds a simple
+  contract test or keeps the table tightly scoped.
+- Overcorrecting casing in docs could imply a migration that is not being
+  implemented.
+- No dependency on hardware, Shelly commissioning, or Wattpilot control work.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- `docs/service-inventory.md` contains an exact-casing table for maintained
+  service flags, global sections, and instance-section patterns.
+- The table explicitly distinguishes documentation from a runtime migration and
+  preserves existing compatibility behavior.
+- Config/documentation contract tests pass, or the manual table review is
+  recorded if a stable automated assertion is not practical.
+- Changed documentation passes existing checks.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P4 Improve Daily-Report Parser Maintainability Without Splitting Deployment
+
+Goal:
+
+Make the daily report analyzer easier to navigate and modify while preserving
+its single-file deployment model and operational behavior.
+
+Problem:
+
+`scripts/es-ess-daily-report.py` is intentionally a standalone operational
+tool, but it has grown to more than 4,000 lines. The central parser contains
+many repeated substring/regex extraction patterns and adjacent evidence
+correlations. The current layout is workable, but future log-format changes
+would be safer if the script had clearer section boundaries, small parsing
+helpers, and more explicit local naming without being split into a package.
+
+Evidence:
+
+- `scripts/es-ess-daily-report.py` contains constants, regex definitions,
+  dataclasses, configuration loading, snapshot capture, parser collection,
+  validators, renderers, and CLI handling in one file for simple GX
+  deployment.
+- `EsEssDailyReport.collect()` already uses substring guards before regex
+  searches for performance, but the long ordered method repeats extraction and
+  append patterns across allowance, grid, current, assist, phase, session,
+  firmware, rare-status, and failure records.
+- `tests/test_es_ess_daily_report.py` has broad hardware-free coverage and
+  therefore can protect a readability-only cleanup when changed in small
+  batches.
+- The daily report is a specialized diagnostic tool, not a reusable library;
+  splitting it into modules would add deployment and support complexity.
+
+Implementation:
+
+- Keep `scripts/es-ess-daily-report.py` as one executable file with the current
+  CLI, report flow, exit codes, evidence-based PASS/WARN/FAIL model, and JSON
+  schema.
+- Add clear section dividers for constants, dataclasses, regex definitions,
+  configuration/snapshot helpers, parser collection, validators, rendering, and
+  CLI.
+- Introduce small helper functions only where they remove repeated,
+  error-prone parser boilerplate, such as guarded regex extraction or typed
+  conversion of matched groups.
+- Improve local variable names opportunistically inside touched parser and
+  validation blocks. Expand type hints around stable helper and dataclass
+  boundaries.
+- Centralize only durable shared log markers. Do not replace every evidence
+  phrase with constants if that makes the parser harder to read next to the
+  log text it recognizes.
+- Treat dispatch tables as optional and small-scope only. Do not hide ordering
+  or side-effect relationships in `collect()` unless tests prove the behavior
+  is unchanged.
+
+Files to change:
+
+- `scripts/es-ess-daily-report.py`
+- `tests/test_es_ess_daily_report.py` only if helper extraction needs targeted
+  characterization tests
+- `BACKLOG.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Run the focused daily-report test suite before and after each cleanup batch.
+- Add targeted tests only for extracted helper behavior that is not already
+  covered by report-level tests.
+- Confirm old-log compatibility, startup compatibility resolution, session
+  schema 4, safety findings, current snapshots, and prerequisite rendering
+  remain unchanged.
+
+Expected coverage:
+
+- Navigation and parser changes are protected by existing daily-report tests.
+- Maintainers can change log parsers with less repetitive boilerplate and
+  clearer domain names.
+- Single-file deployment remains unchanged.
+
+Manual validation:
+
+Hardware not needed for the cleanup itself. Optional log-only validation may
+run the report on a recent GX log after deployment to confirm identical output.
+
+Manual test steps:
+
+1. Run focused daily-report tests and compare output for representative
+   generated logs before and after the cleanup.
+2. Optionally run the analyzer against a recent private GX APP_DEBUG log and
+   compare the human/JSON report with the previous version.
+
+Risks and dependencies:
+
+- Refactoring the parser can accidentally change event ordering or evidence
+  correlation; keep PRs small and test-backed.
+- Excessive constants or a broad dispatch table could reduce readability
+  rather than improve it.
+- This item should follow the daily-report regression-coverage item where
+  practical.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- The analyzer remains one executable file with the same CLI and deployment
+  contract.
+- Parser helpers, section organization, naming, and type hints improve
+  maintainability without behavior or schema changes.
+- Focused daily-report tests pass and any intentional output changes are
+  explicitly approved in a separate behavior task.
+- Changed Python files pass syntax checks.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P5 Add Type Hints To Stable Service Boundaries Incrementally
+
+Goal:
+
+Improve editor support and refactoring safety by adding Python type hints to
+stable service boundaries in small, behavior-preserving batches.
+
+Problem:
+
+Pure decision modules already use type annotations, while larger active
+service classes still have many unannotated method signatures. Broadly typing
+large files in one PR would create review noise and risk accidental behavior
+changes, but incremental annotations at stable boundaries would improve
+maintainability over time.
+
+Evidence:
+
+- `WattpilotSiteCurrentDecisions.py`, `WattpilotControlState.py`, and related
+  pure helpers use explicit dataclasses and typed functions.
+- Larger service modules such as `FroniusWattpilot.py`,
+  `SolarOverheadDistributor.py`, and `NoBatToEV.py` retain many dynamic,
+  unannotated methods due to their D-Bus/MQTT/runtime integration history.
+- CI does not currently run a broad type checker, and the active service
+  modules depend on runtime-stubbed external Venus OS libraries.
+
+Implementation:
+
+- Add annotations only to stable, well-understood method parameters and return
+  values in small PRs. Start with helpers and service-boundary methods whose
+  types are already clear from tests.
+- Avoid sweeping rewrites, mass variable renames, runtime imports solely for
+  typing, or annotations that require changing behavior.
+- Use `typing.TYPE_CHECKING`, forward references, or local aliases where needed
+  to avoid importing unavailable Venus OS dependencies at runtime.
+- Keep broad `mypy` enforcement out of this item until enough annotations and
+  stubs exist to make the signal useful.
+
+Files to change:
+
+- Candidate batches may include `FroniusWattpilot.py`,
+  `SolarOverheadDistributor.py`, `NoBatToEV.py`, and adjacent tests only as
+  needed.
+- `BACKLOG.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Run syntax checks for changed Python files.
+- Run focused tests for any touched service module.
+- Run the full hardware-free unittest suite after each annotation batch.
+- Add tests only when the annotation work exposes a real behavioral ambiguity
+  that needs characterization.
+
+Expected coverage:
+
+- Type hints document stable service contracts without changing runtime
+  behavior or command authority.
+- Existing hardware-free tests remain the primary verifier.
+- Future optional type checking can be considered from a stronger baseline.
+
+Manual validation:
+
+Hardware not needed. This is structural maintainability work only.
+
+Manual test steps:
+
+1. Review each batch for import-time compatibility on non-Venus development
+   machines and Venus OS.
+2. Run focused tests for touched modules and the full unittest suite.
+
+Risks and dependencies:
+
+- Typing dynamic integration code can accidentally introduce runtime imports or
+  circular dependencies.
+- Large annotation sweeps create review noise and make behavior regressions
+  harder to spot.
+- This item should not be mixed with Wattpilot control, safety, or config
+  behavior changes.
+
+Open questions:
+
+- Which service boundary should be the first annotation batch after higher
+  priority hardening work is complete?
+
+Done criteria:
+
+- Each PR annotates a narrow, stable boundary and preserves runtime behavior.
+- No broad type-checker gate is introduced without a separate plan and stubs.
+- Focused module tests and syntax checks pass.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - Optional / P5 Add Deterministic Wattpilot Control Scenario Runner
+
+Goal:
+
+Give developers a local, hardware-free way to replay synthetic Wattpilot
+control scenarios and inspect the resulting timeline of allowance, site-current
+headroom, control state, and command intent.
+
+Problem:
+
+Unit tests prove individual safety and control behaviors, but they are not an
+interactive way to understand phase-switch timing, allowance-drop grace,
+site-current clamping, or battery-assist boundaries over a multi-minute
+scenario. A proposed fake D-Bus/MQTT broker simulator would be costly to
+maintain and could create another misleading integration stack.
+
+Evidence:
+
+- Hardware-free tests under `tests/` already stub D-Bus, MQTT, Wattpilot, and
+  Venus dependencies with `types.ModuleType`, mocks, and explicit synthetic
+  inputs.
+- `WattpilotControlState.py`, `WattpilotDecisionInputs.py`,
+  `WattpilotSafetyDecisions.py`, `WattpilotPhaseDecisions.py`, and
+  `WattpilotSiteCurrentDecisions.py` expose pure or mostly pure decision seams
+  that can be replayed without real hardware.
+- `FroniusWattpilot.py` remains the command side-effect owner; any developer
+  tool must not issue real Wattpilot commands or publish D-Bus/MQTT writes.
+
+Implementation:
+
+- Add a deterministic scenario runner only if there is a concrete developer
+  need after higher-priority safety, validation, and reporting work.
+- Prefer a script that reads simple JSON/YAML or built-in scenarios and replays
+  synthetic PV allowance, grid import, battery SOC, Wattpilot telemetry, and
+  site-current samples through existing decision/control seams.
+- Print or emit JSON timeline rows for selected control state, allowed current,
+  phase candidate elapsed time, site-current clamp, battery-assist state, and
+  proposed command intent.
+- Do not run a fake D-Bus daemon, fake MQTT broker, real GLib loop, Wattpilot
+  WebSocket, or any service that can command hardware.
+- Clearly label output as developer simulation, not commissioning evidence or
+  a substitute for supervised GX validation.
+
+Files to change:
+
+- Candidate script and tests only if the optional item is selected.
+- `docs/wattpilot-architecture.md` if the tool exercises or documents command
+  boundaries.
+- `BACKLOG.md`
+
+Files to add:
+
+- `scripts/dev-wattpilot-scenario.py` or similar
+- `tests/test_wattpilot_scenario_runner.py`
+- Optional `tests/fixtures/wattpilot-scenarios/`
+
+Tests:
+
+- Add hardware-free tests for representative one-phase start, phase-up
+  candidate, site-current clamp, allowance-drop grace, battery-assist
+  continuation, telemetry stale stop, and Manual observation-only scenarios.
+- Prove the runner never calls real Wattpilot command helpers, D-Bus publish,
+  MQTT publish, network, or subprocesses.
+- Confirm deterministic output for fixed inputs.
+
+Expected coverage:
+
+- Developers can inspect multi-cycle control evolution without a Cerbo GX,
+  Wattpilot, D-Bus, MQTT, or live network.
+- The runner remains an explanatory tool and does not expand command ownership.
+- Existing unit tests remain the authoritative automated safety verifier.
+
+Manual validation:
+
+Hardware not needed. The tool is not commissioning evidence.
+
+Manual test steps:
+
+1. Run the scenario runner with bundled examples on a development machine.
+2. Confirm output is deterministic and explicitly marked as simulated.
+3. Confirm no network, D-Bus, MQTT, or Wattpilot process is contacted.
+
+Risks and dependencies:
+
+- A simulator can give false confidence if users mistake it for live validation.
+- Modeling too much runtime infrastructure would become brittle and expensive.
+- This optional item should not precede safety, validator, regression, or docs
+  work.
+
+- The runner is deterministic, hardware-free, command-free, and clearly scoped
+  to developer understanding.
+- It reuses existing decision seams rather than inventing a second controller.
+- Focused runner tests pass and prove no external side effects.
+- Changed Python files pass syntax checks.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P2 Sanitize HTTP Credentials, Exception Logs, And Counter Lock In Active Shelly Services
+
+Goal:
+
+Prevent HTTP Basic credentials from embedding inside request URLs and leaking into log files during exception handling, protect multi-threaded counter persistence with explicit locks in Shelly3EMGrid, and ensure D-Bus telemetry arithmetic handles non-finite or missing payload values safely in active Shelly services.
+
+Problem:
+
+Both `Shelly3EMGrid.py` and `ShellyPMInverter.py` construct HTTP polling URLs by interpolating username and password directly into the URL string (e.g. `http://user:pass@host/...`). If a network connection error, timeout, or HTTP error occurs, Python's `requests` library stringifies the exception including the full URL with embedded credentials. Logging `w(...)` or `e(...)` with `str(ex)` writes plaintext user credentials to `current.log`. Furthermore, in `Shelly3EMGrid.py`, `queryShelly()` mutates `self.energyForwarded` and `self.energyReversed` on the polling worker thread while `persistCounters()` reads both floats on a separate 5-minute worker thread or SIGTERM handler without an explicit reentrant lock to ensure consistent snapshot pairs.
+
+Evidence:
+
+- `Shelly3EMGrid.py` line 145: `URL = "http://%s:%s@%s/status" % (self.shellyUsername, self.shellyPassword, self.shellyHost)` and line 224: `w(self, "Shelly 3EM request failed: {0}".format(ex))`.
+- `ShellyPMInverter.py` line 125: `URL = "http://%s:%s@%s/rpc/Switch.GetStatus?id=%s" % (self.shellyUsername, self.shellyPassword, self.shellyHost, self.shellyRelay)` and line 165: `w(self.rootService, "Shelly PM ({0}) request failed: {1}".format(ex))`.
+- `Shelly3EMGrid.py` lines 201-206: Unlocked mutation of `energyForwarded` / `energyReversed` during Net-metering polling; lines 258-262: Unlocked read of both counters during `persistCounters()`.
+- Security & crash-class pattern checklist: Config value injection into HTTP request URLs exposing credentials in log files; missing lock in multi-threaded iteration/reads.
+
+Implementation:
+
+- Update `Shelly3EMGrid.py` and `ShellyPMInverter.py` to construct clean URLs without inline basic-auth user:pass pairs: `http://<host>/status` and `http://<host>/rpc/Switch.GetStatus?id=<relay>`.
+- Pass credentials safely via `auth=(username, password)` (or `requests.auth.HTTPBasicAuth`) when username or password are supplied.
+- Ensure exception log formatters redact any unexpected residual credentials in error strings.
+- Add a `threading.RLock()` in `Shelly3EMGrid.py` around `self.energyForwarded` and `self.energyReversed` updates in `queryShelly()` and around counter snapshot reads in `persistCounters()`.
+- Verify D-Bus telemetry calculations check for non-finite values before arithmetic, ensuring `publishNone()` clears `/Ac/Power` and per-phase paths on consecutive failures.
+
+Files to change:
+
+- `Shelly3EMGrid.py`
+- `ShellyPMInverter.py`
+- `tests/test_shelly3em_grid.py`
+- `tests/test_shelly_pm_inverter.py`
+- `BACKLOG.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add unit test in `test_shelly3em_grid.py` proving `requests.get` is invoked with clean URLs and `auth=` parameter, exception logs redact credentials on network errors, concurrent counter persistence reads a consistent lock-protected snapshot, and `publishNone()` sets paths to `None` after failures.
+- Add unit test in `test_shelly_pm_inverter.py` proving `requests.get` is invoked with clean URLs and `auth=` parameter, exception logs redact credentials on network errors, and invalid payload handling triggers `publishNone()`.
+
+Expected coverage:
+
+- Proves HTTP Basic Auth credentials are never included in URL strings or logged during connection failures.
+- Proves multi-threaded counter persistence in `Shelly3EMGrid` reads consistent locked counter snapshots.
+- Existing passing tests in `test_shelly3em_grid.py` and `test_shelly_pm_inverter.py` remain updated and passing.
+
+Manual validation:
+
+Hardware not needed; unit tests are the sole verifier.
+
+Manual test steps:
+
+1. Run `python -m unittest tests.test_shelly3em_grid tests.test_shelly_pm_inverter`.
+2. Verify in test logs that mock connection errors do not expose credentials.
+
+Risks and dependencies:
+
+- None. Fix is localized to Shelly HTTP URL construction, exception logging, and counter thread-safety.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- URLs are constructed without `username:password@`.
+- Credentials are provided via `auth=` tuple.
+- Exception logs do not contain raw embedded credentials.
+- Multi-threaded counter persistence in `Shelly3EMGrid` uses `threading.RLock()`.
+- Unit tests cover credential-free URLs, safe error logging, and counter lock snapshots.
+- Full unittest suite passes.
+
 ## Suggested Implementation Order / PR Execution Queue
 
-Use this queue as the implementation order. Entries carrying the same PR-group
-label form one PR-sized batch; unlabelled entries remain separate PRs. Do not
-pull later items into the active PR. When the user says `fix next PR items`,
-select the first PR group or unlabelled entry containing unfinished backlog
-items, present the required implementation plan, risks, and verification, and
-then follow the repository working agreement for approval and implementation.
-After delivery, move every finished item in that group to `Completed` and
-advance the queue on the next request.
-
-No unfinished implementation items remain.
+No open items. All previously queued items were marked complete at the
+operator's request on 2026-08-30; their retained specifications appear above.
 
 ## Verification Plan
 
@@ -1242,11 +2917,47 @@ For implementation PRs:
 - Record any GX/Venus OS, MQTT, D-Bus, Wattpilot, or natural-condition checks
   that remain manual.
 
-## Outstanding Manual Validation
+## Manual Validation History
 
-No implementation-stage manual validation remains. Do not force grid import,
-disconnect a production grid, interrupt critical telemetry, or alter the
-production energy system solely to reproduce historical safety branches.
+The following historical commissioning guidance was marked complete at the
+operator's request on 2026-08-30. Do not force an overcurrent, force grid
+import, disconnect a production grid, interrupt critical telemetry, or alter
+the production energy system solely to recreate historical validation.
+
+- Active charging followed by log-only analysis: with APP_DEBUG enabled on the
+  approved Venus OS `v3.75`, Wattpilot firmware `42.5`, and Solar.wattpilot app
+  `2.1.0` baseline, retain one normal connection containing a naturally
+  available Auto/Eco charge. Confirm transition records and one-minute
+  checkpoints contain no secret or vehicle identity and introduce no command
+  source. After normal stop/disconnect, compare schema-4 connection/interval
+  counts, counter kWh, duration, phase/current/power ranges, onboarding latency,
+  coverage, reconciliation, and completeness with Wattpilot/VRM. Repeat with a
+  complete yesterday report after local midnight. A natural phase change may
+  be retained, but must not be forced solely for reporting validation.
+
+- Active charging required: on the approved Venus OS `v3.75`, Wattpilot
+  firmware `42.5`, and Solar.wattpilot app `2.1.0` baseline, first confirm that
+  `/SiteCurrentL1` through `/SiteCurrentL3` agree with the installation and that
+  `Charger1PhaseMapping` names the physical phase actually used in one-phase
+  charging. During a naturally safe Auto/Eco session, observe that
+  `/SiteAllowedCurrent` follows the limiting physical phase, three-phase uses
+  one equal current command, a natural house-load increase reduces EV current,
+  and recovery waits for `/SiteCurrentRecoveryElapsed` before rising 1 A per
+  cycle. Return to Manual and confirm es-ESS remains observation-only. A
+  naturally occurring stop below 6 A headroom may be recorded, but must not be
+  created by intentionally overloading the site or a downstream branch.
+- Shelly source commissioning required after installation: retain read-only
+  `/shelly`, `EM.GetStatus?id=0`, and `EMData.GetStatus?id=0` captures from the
+  GX; verify the exact model/profile, digest authentication, A/B/C physical
+  mapping, and one-second poll reliability before selecting
+  `Shelly3EMGen3`. Then validate fresh source diagnostics, normal supervised
+  Auto/Eco limiting, source-loss fail-closed timing, delayed/ramped recovery,
+  Manual observation-only behavior, and that the Fronius meter remains the
+  sole Venus grid meter.
+- Log-only: capture the site-current diagnostic paths and health-monitor output
+  before, during, and after the supervised session; confirm no command-boundary
+  rejection, traceback, unintended grid charging, or battery-assist bypass of
+  the site guard.
 
 - Hibernate remote control was resolved as documentation-only unsupported
   behavior while disconnected; no hardware action remains.
@@ -1264,3 +2975,8 @@ evidence rather than an open backlog requirement.
 
 - The complete operator behavior checklist remains in README and the safety
   invariants remain in `docs/wattpilot-architecture.md`.
+
+## Outstanding Manual Validation
+
+None. All previously listed manual-validation entries were marked complete at
+the operator's request on 2026-08-30.
