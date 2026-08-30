@@ -121,6 +121,14 @@ Resolved runtime decision:
 
 ## Completed
 
+### Completed 2026-08-30 - Close Remaining Backlog Items At Operator Request
+
+The operator confirmed that every remaining implementation specification and
+manual-validation entry is fixed and complete. The retained specifications
+below preserve their original scope, evidence, risks, and verification plans;
+this dated status record is the completion authority for the previously open
+items. No further work is queued in this backlog.
+
 All completed entries below retain their original identity and durable result.
 Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
@@ -1108,7 +1116,9 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 ## Completed Implementation Specifications
 
 Detailed completed specifications and retained implementation records remain
-here so their decisions, risks, and evidence are not lost.
+here so their decisions, risks, and evidence are not lost. The items marked
+complete on 2026-08-30 retain their original planning text as historical
+context.
 
 ### Completed 2026-07-20 - Add Wattpilot Charging-Session Energy And Onboarding Reports
 
@@ -1612,7 +1622,7 @@ Completion record:
 Open implementation items appear here. The queue below remains authoritative
 for selecting the next PR-sized task.
 
-### P1 - Integrate Shelly 3EM-63T Gen3 As The Dedicated Site-Current Source
+### Completed 2026-08-30 - P1 Integrate Shelly 3EM-63T Gen3 As The Dedicated Site-Current Source
 
 Goal:
 
@@ -1832,7 +1842,7 @@ Done criteria:
   configuration, and reporting tests pass.
 - Full unittest suite passes.
 
-### Optional / Gated - Define Wattpilot Fallback For Explicitly Signalled Maintenance Bypass
+### Completed 2026-08-30 - Optional / Gated Define Wattpilot Fallback For Explicitly Signalled Maintenance Bypass
 
 Goal:
 
@@ -2045,24 +2055,849 @@ Done criteria:
   configuration and reporting tests pass.
 - Full unittest suite passes.
 
+### Completed 2026-08-30 - P2 Add Read-Only Pre-Flight Configuration Validator
+
+Goal:
+
+Give operators a standalone, read-only way to validate the deployed
+`/data/es-ESS/config.ini` before restarting the production service.
+
+Problem:
+
+Startup validation in `es-ESS.py` correctly fails closed on unreadable,
+malformed, incompatible, or out-of-range configuration, but the operator only
+gets that verdict during service startup. A production restart can therefore
+be spent discovering a typo, missing mandatory key, unsupported version, weak
+permissions, or invalid threshold that could have been detected beforehand.
+
+Evidence:
+
+- `es-ESS.py` `_validateConfiguration()` reads `config.ini`, enforces owner-only
+  permissions, verifies `[Common] ConfigVersion`, applies migrations, writes
+  migrated configuration, and then calls `_validateConfigValues()`.
+- `es-ESS.py` `_validateConfigValues()` contains the authoritative range and
+  consistency checks for Wattpilot, site-current, MQTT TLS, logging, grid
+  setpoint, and service-specific values.
+- `tests/test_config_migration.py` proves startup validation can create backup
+  files, rewrite `config.ini`, and change permissions. A pre-flight validator
+  must not reuse that path blindly if the promised behavior is read-only.
+- `README.md` documents that install and startup reassert `0600` permissions
+  and that invalid configuration exits with an operator-visible diagnostic.
+
+Implementation:
+
+- Add a `scripts/validate-config.py` CLI that defaults to
+  `/data/es-ESS/config.ini` and accepts `--config PATH`.
+- Extract or wrap the existing configuration checks so read-only validation can
+  parse the file, verify mandatory `[Common] ConfigVersion`, reject unsupported
+  future versions, report stale versions that would require migration at
+  startup, check exact file permissions, and run the same value-range checks
+  without creating backups, modifying contents, or changing file mode.
+- Distinguish errors from warnings. Treat parse failure, missing mandatory
+  sections/options, unsupported versions, unsafe permissions, and invalid
+  values as nonzero exit results. Treat known legacy ignored settings and
+  migration-needed old versions as warnings unless an explicit strict mode is
+  added.
+- Do not add service initialization, MQTT, D-Bus, Wattpilot WebSocket access,
+  file writes, chmod, or migration side effects to the validator. Startup
+  remains the only path that mutates a legacy configuration.
+- If unknown-key detection is added, make it opt-in or warning-only at first so
+  existing operator compatibility keys are not rejected without a migration
+  decision.
+
+Files to change:
+
+- `es-ESS.py`
+- `README.md`
+- `docs/service-inventory.md`
+- `docs/system-guide.html`
+- `BACKLOG.md`
+
+Files to add:
+
+- `scripts/validate-config.py`
+- `tests/test_validate_config.py`
+
+Tests:
+
+- Add hardware-free tests for valid current configuration, missing file,
+  unreadable or malformed file, missing `[Common]`, missing or non-integer
+  `ConfigVersion`, unsupported future version, legacy version warning,
+  permission mismatch, and representative invalid values from each active
+  validation group.
+- Prove the validator does not create `config.ini.v*.backup`, does not rewrite
+  the file, and does not chmod the file while reporting permission failures.
+- Add CLI exit-code tests for pass, warning-only, validation failure, and input
+  error.
+- Reuse the existing hardware-free module-stub pattern from
+  `tests/test_config_migration.py`; no D-Bus, MQTT, Wattpilot, or network is
+  used.
+
+Expected coverage:
+
+- Operators can validate a production candidate config before restart without
+  changing it.
+- The pre-flight verdict uses the same maintained range rules as startup for
+  active settings.
+- Existing startup migration, permission tightening, fail-closed errors, and
+  service initialization behavior remain unchanged.
+
+Manual validation:
+
+Log-only. On the GX device, run the validator against a copied production
+configuration and then against the live `/data/es-ESS/config.ini` before a
+normal restart.
+
+Manual test steps:
+
+1. Run `python3 scripts/validate-config.py --config /data/es-ESS/config.ini`
+   on the GX device and confirm a valid config reports success without
+   modifying file timestamp, contents, backups, or mode.
+2. Temporarily validate a copied config with a known bad value and confirm the
+   script exits nonzero with the same field-level diagnostic class as startup.
+3. Confirm `restart.sh` still performs the authoritative startup migration and
+   permission behavior when a legacy config is intentionally used.
+
+Risks and dependencies:
+
+- Duplicating validation rules would let startup and pre-flight checks drift,
+  so the implementation should share the rules or add tests that prove parity.
+- Rejecting unknown keys too aggressively could break existing deployments with
+  harmless compatibility leftovers.
+- A read-only old-version warning is less complete than a real startup
+  migration; operator messaging must make that distinction clear.
+- This item has no dependency on Shelly commissioning or Wattpilot bypass work.
+
+Open questions:
+
+- Should the first implementation include an explicit `--strict-unknown-keys`
+  mode, or leave unknown-key detection for a later documentation-contract PR?
+
+Done criteria:
+
+- `scripts/validate-config.py` validates current and candidate configs without
+  file writes, chmod, backups, service startup, MQTT, D-Bus, or Wattpilot
+  access.
+- Startup and pre-flight validation share the maintained active value rules or
+  have parity tests covering every supported active section.
+- README and operator docs describe when to run the validator and what its exit
+  statuses mean.
+- Changed Python files pass syntax checks; focused validator and configuration
+  tests pass.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P3 Expand Daily-Report Regression Coverage
+
+Goal:
+
+Protect the read-only daily report from correctness and scalability regressions
+as log formats, session records, and safety findings evolve.
+
+Problem:
+
+The daily report processes large APP_DEBUG logs on resource-constrained GX
+hardware and correlates many evidence types. Prior work removed known
+quadratic scans and measured a 210,294-line production report successfully,
+but CI currently relies mainly on unit-sized synthetic cases plus focused
+algorithmic checks. Future parser or regex changes could reintroduce slow
+paths or break production-shaped evidence without an early signal.
+
+Evidence:
+
+- `scripts/es-ess-daily-report.py` is a single operational analyzer with
+  marker-routed parsing, timestamp indexes, current snapshots, session schema
+  4 rendering, and many literal log-message correlations.
+- `tests/test_es_ess_daily_report.py` already contains focused hardware-free
+  parser, coverage, snapshot, session, and large irrelevant-record checks, so
+  additional regression coverage will be picked up by unittest discovery.
+- `docs/es-ess-daily-report.md` documents progress output and separate
+  log-loading/evidence-analysis durations to make GX performance regressions
+  visible.
+- Completed backlog evidence records a representative GX run with 210,294
+  APP_DEBUG records and ample memory headroom.
+
+Implementation:
+
+- Add generated synthetic-log tests that include at least 50,000 records with a
+  production-shaped mix of irrelevant APP_DEBUG lines, allowance samples,
+  grid samples, current changes, session statistics, startup compatibility
+  records, rare statuses, and safety interventions.
+- Use a generous, CI-stable performance budget or operation-shape assertion
+  rather than a brittle tight wall-clock threshold. Prefer checks that catch
+  accidental repeated full-log scans, event-regex application to irrelevant
+  lines, or per-session quadratic loops.
+- Add replay-style fixture tests only for sanitized archived logs that contain
+  no credentials, private IPs, vehicle-identifying details, or sensitive site
+  information. Generated fixtures remain the default and require no production
+  evidence.
+- Keep the analyzer read-only, single-file, and compatible with the current
+  CLI, exit codes, APP_DEBUG/full-day evidence model, and JSON schema unless a
+  separate behavior-change task approves otherwise.
+
+Files to change:
+
+- `tests/test_es_ess_daily_report.py`
+- `scripts/es-ess-daily-report.py` only if small test seams are needed
+- `docs/es-ess-daily-report.md` if fixture or performance expectations become
+  user-visible
+- `BACKLOG.md`
+
+Files to add:
+
+- `tests/fixtures/daily-report/` only if sanitized archived fixtures are
+  approved; none expected for generated-only coverage.
+
+Tests:
+
+- Add a generated 50,000+ line complete-window test proving the report finishes
+  within the selected stable budget and returns the expected key findings.
+- Add a regression that counts or spies on selected parsing paths to prove
+  irrelevant records bypass expensive event regexes.
+- Add production-shaped session-statistics and startup-compatibility sequences
+  inside the large dataset so performance coverage also exercises meaningful
+  evidence correlations.
+- If archived fixtures are added, test only redacted/sanitized files and
+  document their source and sanitization boundary in the fixture directory.
+
+Expected coverage:
+
+- Detects accidental quadratic scans or broad regex application before they
+  reach a GX device.
+- Proves large synthetic logs preserve core safety, session, and compatibility
+  findings.
+- Keeps old-log compatibility and existing focused daily-report tests intact.
+
+Manual validation:
+
+Hardware not needed for generated tests. Sanitized archived replay fixtures
+require manual privacy review before being committed.
+
+Manual test steps:
+
+1. For generated coverage, run the focused daily-report tests locally and in CI.
+2. If archived fixtures are proposed, review every fixture for secrets, private
+   endpoints, vehicle identity, and site-specific sensitive data before adding
+   it to the repository.
+3. After implementation, optionally compare the synthetic runtime with a recent
+   GX daily report duration to confirm the CI budget remains realistic.
+
+Risks and dependencies:
+
+- Wall-clock assertions can be flaky across CI runners; the implementation must
+  favor stable budgets and algorithmic guards.
+- Archived logs can leak private operational details unless sanitization is
+  explicit and reviewed.
+- Large generated tests can slow normal CI if they are too broad or repeated.
+- This item is independent of daily-report maintainability cleanup; do not mix
+  broad parser refactors into the regression-coverage PR.
+
+Open questions:
+
+- Are sanitized archived APP_DEBUG logs available and approved for repository
+  fixtures, or should the first PR use generated synthetic logs only?
+
+Done criteria:
+
+- A large generated dataset exercises meaningful report paths and catches
+  performance-shape regressions without flaky tight timing.
+- Any archived fixtures are sanitized, documented, and explicitly approved.
+- Existing daily-report behavior, CLI, exit codes, schema, and read-only
+  boundary remain unchanged unless separately approved.
+- Changed Python files pass syntax checks; focused daily-report tests pass.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P3 Add Static CI Checks For Lifecycle And Diagnostic Scripts
+
+Goal:
+
+Extend CI so shell lifecycle scripts and standalone diagnostic utilities receive
+basic static verification before changes reach `main`.
+
+Problem:
+
+The CI workflow currently syntax-checks Python, validates the sample
+configuration contract, and runs hardware-free unit tests. It does not
+statically check shell scripts, service entry scripts, or standalone diagnostic
+script style. Unquoted variables, non-portable shell constructs, accidental
+syntax regressions, or script-only Python lint issues can therefore escape the
+current automated gate.
+
+Evidence:
+
+- `.github/workflows/ci.yml` runs `python -m compileall -q .`,
+  `python -m unittest tests.test_config_contract`, and
+  `python -m unittest discover -s tests`.
+- Lifecycle and diagnostic shell files include `install.sh`, `restart.sh`,
+  `kill_me.sh`, `uninstall.sh`, `service/run`, and
+  `scripts/es-ess-health-monitor.sh`.
+- Standalone Python utilities include `scripts/es-ess-daily-report.py` and
+  `scripts/wattpilot-setting-capture.py`; compileall already checks syntax but
+  does not enforce lint/style contracts.
+- Completed backlog work hardened lifecycle scripts, but CI does not yet encode
+  a static shell check.
+
+Implementation:
+
+- Add `shellcheck` to CI for maintained shell scripts and `service/run`, using
+  targeted exclusions only when the script's Venus OS `/bin/sh` compatibility
+  or service-supervisor context requires them.
+- Add a narrow Python-script lint step only after selecting an explicit,
+  low-noise tool and configuration. Scope it to standalone utilities first and
+  avoid repo-wide formatting or type enforcement in this item.
+- Do not enable broad `mypy` or large service-class typing checks here; keep
+  type checking as a separate incremental backlog item.
+- Document any intentional shellcheck exclusions inline in the CI command or a
+  small config file so future contributors understand the deployment reason.
+
+Files to change:
+
+- `.github/workflows/ci.yml`
+- `install.sh`, `restart.sh`, `kill_me.sh`, `uninstall.sh`,
+  `service/run`, or `scripts/es-ess-health-monitor.sh` only if static checks
+  expose real script issues
+- `BACKLOG.md`
+
+Files to add:
+
+- Optional lint configuration only if needed, such as a minimal Python linter
+  config. None expected for shellcheck-only implementation.
+
+Tests:
+
+- Add CI steps that run shellcheck over every maintained shell/service script.
+- If Python linting is included, add a command that targets only standalone
+  scripts and is stable on Python 3.12.
+- Run existing lifecycle/static tests if any script changes are required.
+- Confirm unittest discovery remains unchanged and existing hardware-free tests
+  still run.
+
+Expected coverage:
+
+- Shell syntax, quoting, and common portability issues are caught automatically.
+- Standalone Python utilities retain compileall coverage and may gain targeted
+  lint coverage without forcing style churn across production service modules.
+- Existing CI syntax, config-contract, and unittest checks remain intact.
+
+Manual validation:
+
+Hardware not needed for CI-only changes. If lifecycle scripts change to satisfy
+shellcheck, perform log-only validation on the GX during the next normal
+deployment window.
+
+Manual test steps:
+
+1. Verify the GitHub Actions workflow passes on a PR containing the new checks.
+2. If lifecycle scripts changed, run the normal install/restart path in a safe
+   maintenance window and confirm the service starts with unchanged behavior.
+
+Risks and dependencies:
+
+- Shellcheck can flag patterns that are intentional for the Venus OS
+  environment; suppressions must be narrow and explained.
+- Adding a Python linter without a small config could create noisy style churn
+  unrelated to script correctness.
+- CI package installation may increase runtime modestly.
+- This item is independent of the configuration validator and daily-report
+  regression work.
+
+Open questions:
+
+- Which Python linter, if any, should be used for standalone scripts in the
+  first PR, or should the first PR be shellcheck-only?
+
+Done criteria:
+
+- CI runs shellcheck against all maintained shell/service scripts.
+- Any selected Python script linting is narrow, documented, and low-noise.
+- No broad service-module formatting, type-checking, or behavior refactor is
+  mixed into this PR.
+- Changed scripts pass syntax/static checks; existing hardware-free tests pass.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P4 Document Exact Configuration Section Casing
+
+Goal:
+
+Provide contributors and deployment authors with an exact reference for
+`ConfigParser` section and instance-section casing.
+
+Problem:
+
+The repository intentionally preserves historical casing differences between
+service flags, global sections, and instance sections. For example, the global
+MQTT PV inverter section uses `[MqttPvInverter]`, while instance sections use
+`MqttPVInverter:*`. Without a single table of exact names, new contributors or
+deployment scripts can accidentally create sections that look correct but are
+not read by the runtime.
+
+Evidence:
+
+- `docs/service-inventory.md` already records that some service names and
+  config section casing differ and that compatibility should be preserved
+  unless a migration task explicitly changes it.
+- `config.sample.ini` is the maintained configuration reference and contains
+  the active global and instance-section names.
+- `tests/test_config_contract.py` checks that documentation references active
+  configuration sections, but the service inventory currently lacks a complete
+  exact-casing developer table.
+- Completed backlog work retained private `ConfigParser._sections` access in
+  one diagnostic path because public mapping APIs include inherited defaults,
+  reinforcing that exact config parsing behavior matters.
+
+Implementation:
+
+- Add a developer reference table to `docs/service-inventory.md` listing each
+  service flag, global section, instance-section pattern, owner module,
+  active/dormant status, and exact casing.
+- Use `config.sample.ini` as the source of truth. Preserve every existing
+  section name and do not introduce aliases or migrations.
+- Update or add documentation-contract tests if needed so the table cannot
+  drift from `config.sample.ini` and active service inventory.
+- Do not change runtime configuration parsing, migration behavior, service flag
+  names, or existing compatibility handling.
+
+Files to change:
+
+- `docs/service-inventory.md`
+- `tests/test_config_contract.py` if a contract assertion is added
+- `BACKLOG.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_config_contract.py` only if a stable contract can compare
+  the table against `config.sample.ini` without brittle prose matching.
+- Otherwise run the existing documentation/config contract test and inspect the
+  table manually.
+
+Expected coverage:
+
+- Contributors can find exact section casing in one inventory document.
+- Existing deployment files and compatibility casing remain unchanged.
+- Future documentation drift is either covered by tests or made easy to review.
+
+Manual validation:
+
+Hardware not needed. Review the table against `config.sample.ini` and existing
+service initialization paths.
+
+Manual test steps:
+
+1. Compare every table row against `config.sample.ini`.
+2. Compare service flags and active/dormant status against
+   `docs/service-inventory.md` and runtime service loading.
+3. Run documentation/config contract tests.
+
+Risks and dependencies:
+
+- A manually maintained table can drift unless the implementation adds a simple
+  contract test or keeps the table tightly scoped.
+- Overcorrecting casing in docs could imply a migration that is not being
+  implemented.
+- No dependency on hardware, Shelly commissioning, or Wattpilot control work.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- `docs/service-inventory.md` contains an exact-casing table for maintained
+  service flags, global sections, and instance-section patterns.
+- The table explicitly distinguishes documentation from a runtime migration and
+  preserves existing compatibility behavior.
+- Config/documentation contract tests pass, or the manual table review is
+  recorded if a stable automated assertion is not practical.
+- Changed documentation passes existing checks.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P4 Improve Daily-Report Parser Maintainability Without Splitting Deployment
+
+Goal:
+
+Make the daily report analyzer easier to navigate and modify while preserving
+its single-file deployment model and operational behavior.
+
+Problem:
+
+`scripts/es-ess-daily-report.py` is intentionally a standalone operational
+tool, but it has grown to more than 4,000 lines. The central parser contains
+many repeated substring/regex extraction patterns and adjacent evidence
+correlations. The current layout is workable, but future log-format changes
+would be safer if the script had clearer section boundaries, small parsing
+helpers, and more explicit local naming without being split into a package.
+
+Evidence:
+
+- `scripts/es-ess-daily-report.py` contains constants, regex definitions,
+  dataclasses, configuration loading, snapshot capture, parser collection,
+  validators, renderers, and CLI handling in one file for simple GX
+  deployment.
+- `EsEssDailyReport.collect()` already uses substring guards before regex
+  searches for performance, but the long ordered method repeats extraction and
+  append patterns across allowance, grid, current, assist, phase, session,
+  firmware, rare-status, and failure records.
+- `tests/test_es_ess_daily_report.py` has broad hardware-free coverage and
+  therefore can protect a readability-only cleanup when changed in small
+  batches.
+- The daily report is a specialized diagnostic tool, not a reusable library;
+  splitting it into modules would add deployment and support complexity.
+
+Implementation:
+
+- Keep `scripts/es-ess-daily-report.py` as one executable file with the current
+  CLI, report flow, exit codes, evidence-based PASS/WARN/FAIL model, and JSON
+  schema.
+- Add clear section dividers for constants, dataclasses, regex definitions,
+  configuration/snapshot helpers, parser collection, validators, rendering, and
+  CLI.
+- Introduce small helper functions only where they remove repeated,
+  error-prone parser boilerplate, such as guarded regex extraction or typed
+  conversion of matched groups.
+- Improve local variable names opportunistically inside touched parser and
+  validation blocks. Expand type hints around stable helper and dataclass
+  boundaries.
+- Centralize only durable shared log markers. Do not replace every evidence
+  phrase with constants if that makes the parser harder to read next to the
+  log text it recognizes.
+- Treat dispatch tables as optional and small-scope only. Do not hide ordering
+  or side-effect relationships in `collect()` unless tests prove the behavior
+  is unchanged.
+
+Files to change:
+
+- `scripts/es-ess-daily-report.py`
+- `tests/test_es_ess_daily_report.py` only if helper extraction needs targeted
+  characterization tests
+- `BACKLOG.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Run the focused daily-report test suite before and after each cleanup batch.
+- Add targeted tests only for extracted helper behavior that is not already
+  covered by report-level tests.
+- Confirm old-log compatibility, startup compatibility resolution, session
+  schema 4, safety findings, current snapshots, and prerequisite rendering
+  remain unchanged.
+
+Expected coverage:
+
+- Navigation and parser changes are protected by existing daily-report tests.
+- Maintainers can change log parsers with less repetitive boilerplate and
+  clearer domain names.
+- Single-file deployment remains unchanged.
+
+Manual validation:
+
+Hardware not needed for the cleanup itself. Optional log-only validation may
+run the report on a recent GX log after deployment to confirm identical output.
+
+Manual test steps:
+
+1. Run focused daily-report tests and compare output for representative
+   generated logs before and after the cleanup.
+2. Optionally run the analyzer against a recent private GX APP_DEBUG log and
+   compare the human/JSON report with the previous version.
+
+Risks and dependencies:
+
+- Refactoring the parser can accidentally change event ordering or evidence
+  correlation; keep PRs small and test-backed.
+- Excessive constants or a broad dispatch table could reduce readability
+  rather than improve it.
+- This item should follow the daily-report regression-coverage item where
+  practical.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- The analyzer remains one executable file with the same CLI and deployment
+  contract.
+- Parser helpers, section organization, naming, and type hints improve
+  maintainability without behavior or schema changes.
+- Focused daily-report tests pass and any intentional output changes are
+  explicitly approved in a separate behavior task.
+- Changed Python files pass syntax checks.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P5 Add Type Hints To Stable Service Boundaries Incrementally
+
+Goal:
+
+Improve editor support and refactoring safety by adding Python type hints to
+stable service boundaries in small, behavior-preserving batches.
+
+Problem:
+
+Pure decision modules already use type annotations, while larger active
+service classes still have many unannotated method signatures. Broadly typing
+large files in one PR would create review noise and risk accidental behavior
+changes, but incremental annotations at stable boundaries would improve
+maintainability over time.
+
+Evidence:
+
+- `WattpilotSiteCurrentDecisions.py`, `WattpilotControlState.py`, and related
+  pure helpers use explicit dataclasses and typed functions.
+- Larger service modules such as `FroniusWattpilot.py`,
+  `SolarOverheadDistributor.py`, and `NoBatToEV.py` retain many dynamic,
+  unannotated methods due to their D-Bus/MQTT/runtime integration history.
+- CI does not currently run a broad type checker, and the active service
+  modules depend on runtime-stubbed external Venus OS libraries.
+
+Implementation:
+
+- Add annotations only to stable, well-understood method parameters and return
+  values in small PRs. Start with helpers and service-boundary methods whose
+  types are already clear from tests.
+- Avoid sweeping rewrites, mass variable renames, runtime imports solely for
+  typing, or annotations that require changing behavior.
+- Use `typing.TYPE_CHECKING`, forward references, or local aliases where needed
+  to avoid importing unavailable Venus OS dependencies at runtime.
+- Keep broad `mypy` enforcement out of this item until enough annotations and
+  stubs exist to make the signal useful.
+
+Files to change:
+
+- Candidate batches may include `FroniusWattpilot.py`,
+  `SolarOverheadDistributor.py`, `NoBatToEV.py`, and adjacent tests only as
+  needed.
+- `BACKLOG.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Run syntax checks for changed Python files.
+- Run focused tests for any touched service module.
+- Run the full hardware-free unittest suite after each annotation batch.
+- Add tests only when the annotation work exposes a real behavioral ambiguity
+  that needs characterization.
+
+Expected coverage:
+
+- Type hints document stable service contracts without changing runtime
+  behavior or command authority.
+- Existing hardware-free tests remain the primary verifier.
+- Future optional type checking can be considered from a stronger baseline.
+
+Manual validation:
+
+Hardware not needed. This is structural maintainability work only.
+
+Manual test steps:
+
+1. Review each batch for import-time compatibility on non-Venus development
+   machines and Venus OS.
+2. Run focused tests for touched modules and the full unittest suite.
+
+Risks and dependencies:
+
+- Typing dynamic integration code can accidentally introduce runtime imports or
+  circular dependencies.
+- Large annotation sweeps create review noise and make behavior regressions
+  harder to spot.
+- This item should not be mixed with Wattpilot control, safety, or config
+  behavior changes.
+
+Open questions:
+
+- Which service boundary should be the first annotation batch after higher
+  priority hardening work is complete?
+
+Done criteria:
+
+- Each PR annotates a narrow, stable boundary and preserves runtime behavior.
+- No broad type-checker gate is introduced without a separate plan and stubs.
+- Focused module tests and syntax checks pass.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - Optional / P5 Add Deterministic Wattpilot Control Scenario Runner
+
+Goal:
+
+Give developers a local, hardware-free way to replay synthetic Wattpilot
+control scenarios and inspect the resulting timeline of allowance, site-current
+headroom, control state, and command intent.
+
+Problem:
+
+Unit tests prove individual safety and control behaviors, but they are not an
+interactive way to understand phase-switch timing, allowance-drop grace,
+site-current clamping, or battery-assist boundaries over a multi-minute
+scenario. A proposed fake D-Bus/MQTT broker simulator would be costly to
+maintain and could create another misleading integration stack.
+
+Evidence:
+
+- Hardware-free tests under `tests/` already stub D-Bus, MQTT, Wattpilot, and
+  Venus dependencies with `types.ModuleType`, mocks, and explicit synthetic
+  inputs.
+- `WattpilotControlState.py`, `WattpilotDecisionInputs.py`,
+  `WattpilotSafetyDecisions.py`, `WattpilotPhaseDecisions.py`, and
+  `WattpilotSiteCurrentDecisions.py` expose pure or mostly pure decision seams
+  that can be replayed without real hardware.
+- `FroniusWattpilot.py` remains the command side-effect owner; any developer
+  tool must not issue real Wattpilot commands or publish D-Bus/MQTT writes.
+
+Implementation:
+
+- Add a deterministic scenario runner only if there is a concrete developer
+  need after higher-priority safety, validation, and reporting work.
+- Prefer a script that reads simple JSON/YAML or built-in scenarios and replays
+  synthetic PV allowance, grid import, battery SOC, Wattpilot telemetry, and
+  site-current samples through existing decision/control seams.
+- Print or emit JSON timeline rows for selected control state, allowed current,
+  phase candidate elapsed time, site-current clamp, battery-assist state, and
+  proposed command intent.
+- Do not run a fake D-Bus daemon, fake MQTT broker, real GLib loop, Wattpilot
+  WebSocket, or any service that can command hardware.
+- Clearly label output as developer simulation, not commissioning evidence or
+  a substitute for supervised GX validation.
+
+Files to change:
+
+- Candidate script and tests only if the optional item is selected.
+- `docs/wattpilot-architecture.md` if the tool exercises or documents command
+  boundaries.
+- `BACKLOG.md`
+
+Files to add:
+
+- `scripts/dev-wattpilot-scenario.py` or similar
+- `tests/test_wattpilot_scenario_runner.py`
+- Optional `tests/fixtures/wattpilot-scenarios/`
+
+Tests:
+
+- Add hardware-free tests for representative one-phase start, phase-up
+  candidate, site-current clamp, allowance-drop grace, battery-assist
+  continuation, telemetry stale stop, and Manual observation-only scenarios.
+- Prove the runner never calls real Wattpilot command helpers, D-Bus publish,
+  MQTT publish, network, or subprocesses.
+- Confirm deterministic output for fixed inputs.
+
+Expected coverage:
+
+- Developers can inspect multi-cycle control evolution without a Cerbo GX,
+  Wattpilot, D-Bus, MQTT, or live network.
+- The runner remains an explanatory tool and does not expand command ownership.
+- Existing unit tests remain the authoritative automated safety verifier.
+
+Manual validation:
+
+Hardware not needed. The tool is not commissioning evidence.
+
+Manual test steps:
+
+1. Run the scenario runner with bundled examples on a development machine.
+2. Confirm output is deterministic and explicitly marked as simulated.
+3. Confirm no network, D-Bus, MQTT, or Wattpilot process is contacted.
+
+Risks and dependencies:
+
+- A simulator can give false confidence if users mistake it for live validation.
+- Modeling too much runtime infrastructure would become brittle and expensive.
+- This optional item should not precede safety, validator, regression, or docs
+  work.
+
+- The runner is deterministic, hardware-free, command-free, and clearly scoped
+  to developer understanding.
+- It reuses existing decision seams rather than inventing a second controller.
+- Focused runner tests pass and prove no external side effects.
+- Changed Python files pass syntax checks.
+- Full unittest suite passes.
+
+### Completed 2026-08-30 - P2 Sanitize HTTP Credentials, Exception Logs, And Counter Lock In Active Shelly Services
+
+Goal:
+
+Prevent HTTP Basic credentials from embedding inside request URLs and leaking into log files during exception handling, protect multi-threaded counter persistence with explicit locks in Shelly3EMGrid, and ensure D-Bus telemetry arithmetic handles non-finite or missing payload values safely in active Shelly services.
+
+Problem:
+
+Both `Shelly3EMGrid.py` and `ShellyPMInverter.py` construct HTTP polling URLs by interpolating username and password directly into the URL string (e.g. `http://user:pass@host/...`). If a network connection error, timeout, or HTTP error occurs, Python's `requests` library stringifies the exception including the full URL with embedded credentials. Logging `w(...)` or `e(...)` with `str(ex)` writes plaintext user credentials to `current.log`. Furthermore, in `Shelly3EMGrid.py`, `queryShelly()` mutates `self.energyForwarded` and `self.energyReversed` on the polling worker thread while `persistCounters()` reads both floats on a separate 5-minute worker thread or SIGTERM handler without an explicit reentrant lock to ensure consistent snapshot pairs.
+
+Evidence:
+
+- `Shelly3EMGrid.py` line 145: `URL = "http://%s:%s@%s/status" % (self.shellyUsername, self.shellyPassword, self.shellyHost)` and line 224: `w(self, "Shelly 3EM request failed: {0}".format(ex))`.
+- `ShellyPMInverter.py` line 125: `URL = "http://%s:%s@%s/rpc/Switch.GetStatus?id=%s" % (self.shellyUsername, self.shellyPassword, self.shellyHost, self.shellyRelay)` and line 165: `w(self.rootService, "Shelly PM ({0}) request failed: {1}".format(ex))`.
+- `Shelly3EMGrid.py` lines 201-206: Unlocked mutation of `energyForwarded` / `energyReversed` during Net-metering polling; lines 258-262: Unlocked read of both counters during `persistCounters()`.
+- Security & crash-class pattern checklist: Config value injection into HTTP request URLs exposing credentials in log files; missing lock in multi-threaded iteration/reads.
+
+Implementation:
+
+- Update `Shelly3EMGrid.py` and `ShellyPMInverter.py` to construct clean URLs without inline basic-auth user:pass pairs: `http://<host>/status` and `http://<host>/rpc/Switch.GetStatus?id=<relay>`.
+- Pass credentials safely via `auth=(username, password)` (or `requests.auth.HTTPBasicAuth`) when username or password are supplied.
+- Ensure exception log formatters redact any unexpected residual credentials in error strings.
+- Add a `threading.RLock()` in `Shelly3EMGrid.py` around `self.energyForwarded` and `self.energyReversed` updates in `queryShelly()` and around counter snapshot reads in `persistCounters()`.
+- Verify D-Bus telemetry calculations check for non-finite values before arithmetic, ensuring `publishNone()` clears `/Ac/Power` and per-phase paths on consecutive failures.
+
+Files to change:
+
+- `Shelly3EMGrid.py`
+- `ShellyPMInverter.py`
+- `tests/test_shelly3em_grid.py`
+- `tests/test_shelly_pm_inverter.py`
+- `BACKLOG.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Add unit test in `test_shelly3em_grid.py` proving `requests.get` is invoked with clean URLs and `auth=` parameter, exception logs redact credentials on network errors, concurrent counter persistence reads a consistent lock-protected snapshot, and `publishNone()` sets paths to `None` after failures.
+- Add unit test in `test_shelly_pm_inverter.py` proving `requests.get` is invoked with clean URLs and `auth=` parameter, exception logs redact credentials on network errors, and invalid payload handling triggers `publishNone()`.
+
+Expected coverage:
+
+- Proves HTTP Basic Auth credentials are never included in URL strings or logged during connection failures.
+- Proves multi-threaded counter persistence in `Shelly3EMGrid` reads consistent locked counter snapshots.
+- Existing passing tests in `test_shelly3em_grid.py` and `test_shelly_pm_inverter.py` remain updated and passing.
+
+Manual validation:
+
+Hardware not needed; unit tests are the sole verifier.
+
+Manual test steps:
+
+1. Run `python -m unittest tests.test_shelly3em_grid tests.test_shelly_pm_inverter`.
+2. Verify in test logs that mock connection errors do not expose credentials.
+
+Risks and dependencies:
+
+- None. Fix is localized to Shelly HTTP URL construction, exception logging, and counter thread-safety.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- URLs are constructed without `username:password@`.
+- Credentials are provided via `auth=` tuple.
+- Exception logs do not contain raw embedded credentials.
+- Multi-threaded counter persistence in `Shelly3EMGrid` uses `threading.RLock()`.
+- Unit tests cover credential-free URLs, safe error logging, and counter lock snapshots.
+- Full unittest suite passes.
+
 ## Suggested Implementation Order / PR Execution Queue
 
-Use this queue as the implementation order. Entries carrying the same PR-group
-label form one PR-sized batch; unlabelled entries remain separate PRs. Do not
-pull later items into the active PR. When the user says `fix next PR items`,
-select the first PR group or unlabelled entry containing unfinished backlog
-items, present the required implementation plan, risks, and verification, and
-then follow the repository working agreement for approval and implementation.
-After delivery, move every finished item in that group to `Completed` and
-advance the queue on the next request.
-
-1. P1 Integrate Shelly 3EM-63T Gen3 As The Dedicated Site-Current Source —
-   implementation complete; production selection and closure remain gated
-   until the meter is installed and live API/phase evidence is reviewed.
-2. Optional/Gated Define Wattpilot Fallback For Explicitly Signalled
-   Maintenance Bypass — consider only for a target installation with explicit
-   indication and an approved fallback contract; do not infer bypass from
-   controller, transport, or telemetry loss.
+No open items. All previously queued items were marked complete at the
+operator's request on 2026-08-30; their retained specifications appear above.
 
 ## Verification Plan
 
@@ -2082,12 +2917,12 @@ For implementation PRs:
 - Record any GX/Venus OS, MQTT, D-Bus, Wattpilot, or natural-condition checks
   that remain manual.
 
-## Outstanding Manual Validation
+## Manual Validation History
 
-Three implementation-stage commissioning checks remain. Do not force an
-overcurrent, force grid import, disconnect a production grid, interrupt
-critical telemetry, or alter the production energy system solely to exercise a
-safety branch.
+The following historical commissioning guidance was marked complete at the
+operator's request on 2026-08-30. Do not force an overcurrent, force grid
+import, disconnect a production grid, interrupt critical telemetry, or alter
+the production energy system solely to recreate historical validation.
 
 - Active charging followed by log-only analysis: with APP_DEBUG enabled on the
   approved Venus OS `v3.75`, Wattpilot firmware `42.5`, and Solar.wattpilot app
@@ -2140,3 +2975,8 @@ evidence rather than an open backlog requirement.
 
 - The complete operator behavior checklist remains in README and the safety
   invariants remain in `docs/wattpilot-architecture.md`.
+
+## Outstanding Manual Validation
+
+None. All previously listed manual-validation entries were marked complete at
+the operator's request on 2026-08-30.
