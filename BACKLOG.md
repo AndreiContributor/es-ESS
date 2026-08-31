@@ -55,6 +55,13 @@ Current validated state:
   item preserves that safe command behavior while preventing fault-time
   Wattpilot allocation from remaining actionable or misleading and making the
   sanitized Shelly failure reason visible in `current.log`.
+- Supervised active-charging evidence exposed a separate whole-amp conversion
+  boundary: the distributor can allocate an exact number of rounded
+  watts-per-amp steps while the controller divides that allowance by a newer
+  unrounded voltage sample and floors it to one ampere less. The existing
+  recovery delay then amplifies small voltage-boundary movement into avoidable
+  current oscillation and export. A new open P2 item makes the allocation step
+  conservative and consistent across publication and command calculation.
 - Supervised Auto/Eco validation confirmed that a partially elapsed phase-up
   candidate was cleared by a confirmed physical disconnect: after reconnect,
   without an es-ESS restart, the next candidate began from zero. The same
@@ -3137,9 +3144,417 @@ Done criteria:
 - Focused syntax and unittest commands pass.
 - Full unittest suite passes.
 
+### P2 - Stabilize Wattpilot Allocation-Step Conversion Across Voltage Updates
+
+Goal:
+
+Prevent an allowance representing a complete number of Wattpilot amperes from
+being interpreted as one ampere less after a small voltage update, while
+preserving integer-ampere control, strict no-grid behavior, and the existing
+site-current recovery guard.
+
+Problem:
+
+The Wattpilot controller publishes the SolarOverheadDistributor `StepSize` as
+the rounded integer watts required for one ampere in the active phase mode.
+The distributor constructs the allowance from exact multiples of that value.
+When the allowance returns asynchronously, the controller converts watts back
+to amperes by dividing by a newly sampled, unrounded voltage value and applying
+`floor()`. A small voltage or rounding difference can therefore convert an
+allowance for `N` complete steps into `N-1` amperes.
+
+The lower target is applied immediately. Returning to `N` amperes then waits
+for `SiteCurrentRecoverySeconds` and rises only one ampere per controller cycle.
+If voltage movement repeatedly crosses the conversion boundary, the recovery
+timer restarts and the charge can oscillate one ampere below the fully funded
+target even when site-current headroom is ample. This produces avoidable export
+in addition to the unavoidable residual below one whole three-phase ampere.
+
+This is a control-quality defect, not a site-current overload or evidence of a
+cloud/load event. A residual smaller than one complete Wattpilot step remains
+normal because firmware `42.5` accepts whole-ampere current targets; this item
+must not round up into intentional grid use merely to consume that residual.
+
+Evidence:
+
+- `FroniusWattpilot.py:2142-2148` samples the current one- or three-phase
+  voltage and publishes `StepSize` using `int(round(stepSize))`.
+- `FroniusWattpilot.py:2279-2291` returns live floating-point voltage values;
+  three-phase voltage is the current sum of all three Wattpilot phase samples.
+- `FroniusWattpilot.py:2356-2371` converts an assigned allowance through
+  `targetCurrentForPhase()` and then applies site-current recovery.
+- `WattpilotPhaseDecisions.py:65-83` independently divides the allowance by
+  the supplied live voltage and applies `floor()`. It does not know which
+  rounded step produced that allowance.
+- `WattpilotSiteCurrentDecisions.py:93-119` immediately accepts a lower target,
+  resets recovery when `target <= current`, and delays a later increase. That
+  behavior is correct for a genuine reduction but amplifies a false one-step
+  conversion caused by the mismatched voltage basis.
+- Private supervised evidence showed allowances alternating by exactly one
+  active three-phase step, a current target remaining one ampere below a fully
+  allocated step count, continuously ample site-current headroom, and repeated
+  recovery restarts. Exact operational timestamps, values, and topology remain
+  outside the public repository.
+- `tests/test_wattpilot_phase_decisions.py` covers basic current bounds but has
+  no changing-voltage or allocation-round-trip case. Existing controller tests
+  do not exercise an asynchronous `StepSize` publication followed by an
+  allowance conversion with a slightly different voltage sample.
+
+Implementation:
+
+1. Add a controller-owned, per-phase-mode canonical allocation-step state. On
+   first usable telemetry for a phase mode, initialize it conservatively from
+   the ceiling of the relevant live voltage. While an Auto/Eco charge remains
+   in that phase mode, permit the canonical step to increase when a later live
+   voltage exceeds it, but do not decrease it on ordinary voltage movement.
+   Reset/reinitialize it only at an explicitly tested phase-mode boundary,
+   confirmed disconnect, or controller restart.
+2. Use that same canonical integer watts-per-ampere value for the Wattpilot
+   `Minimum`, `StepSize`, maximum distributor request, and allowance-to-current
+   conversion. Do not publish a rounded value and then divide by a separately
+   sampled floating-point value.
+3. When live voltage raises the canonical step, apply the larger conservative
+   divisor before issuing any current increase and publish the new step for the
+   next distributor cycle. A stale allowance based on the smaller prior step
+   may cause one safe reduction, but it must not authorize an extra ampere.
+   The step must not move downward during the active phase interval and create
+   repeated boundary chatter.
+4. Keep the assigned allowance in watts truthful and retain whole-ampere
+   Wattpilot commands. Do not add a tolerance that rounds a partially funded
+   ampere upward, do not infer extra PV from grid-export screenshots, and do
+   not weaken `AllowGridCharging=false`, grid-import stops, battery-assist
+   limits, or physical site-current protection.
+5. Preserve the existing recovery behavior for genuine target or headroom
+   reductions. With a consistent allocation step, an unchanged fully funded
+   target must no longer reset recovery merely because the live voltage moved
+   across the old rounded conversion boundary.
+6. Add transition-only APP_DEBUG diagnostics for canonical step initialization
+   and upward adjustment, including phase count and old/new non-identifying
+   watt values. Do not log every five-second cycle and do not include private
+   endpoint, vehicle, site, or correlated telemetry details.
+7. Document that strict PV-only whole-ampere charging can normally export less
+   than one active-phase step, while a persistent additional full-step deficit
+   indicates a control or telemetry issue. Do not introduce a new user setting
+   for the internal conversion contract.
+8. Preserve Manual mode as observation-only, command side effects in
+   `FroniusWattpilot.py`, pure helper boundaries, phase-switch timing,
+   transactional phase-current-Start ordering, public D-Bus/MQTT paths,
+   compatibility allowlists, and every existing safety invariant.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `WattpilotPhaseDecisions.py`
+- `tests/test_wattpilot_phase_decisions.py`
+- `tests/test_eco_pv_policy.py`
+- `tests/test_solar_overhead_distributor.py`
+- `README.md`
+- `docs/wattpilot-architecture.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_wattpilot_phase_decisions.py` with clearly synthetic
+  one- and three-phase allocation round trips. Prove that an allowance built
+  from exactly `N` canonical steps returns `N` amperes and that an allowance
+  even slightly below the next complete step never rounds upward.
+- Prove canonical step initialization uses a conservative ceiling, ordinary
+  lower voltage samples do not reduce an active phase-mode step, and a higher
+  voltage raises the step before any current-increase decision.
+- Extend `tests/test_eco_pv_policy.py` with asynchronous cycles where the live
+  voltage moves slightly around an integer boundary between StepSize
+  publication and allowance receipt. Prove the fully funded current does not
+  alternate between `N` and `N-1`, the recovery timer is not falsely reset,
+  and only a genuine lower allowance or reduced site headroom causes an
+  immediate reduction.
+- Prove an upward canonical-step adjustment treats an allowance calculated
+  with the prior smaller step conservatively, sends no increase, and recovers
+  only after the distributor returns an allowance based on the new step.
+- Extend `tests/test_solar_overhead_distributor.py` to prove scripted-consumer
+  minimum-first and whole-step allocation remain unchanged when StepSize is a
+  canonical integer, and that less than one remaining step stays unassigned
+  rather than being rounded into a command.
+- Prove phase changes and confirmed disconnects reinitialize the correct
+  one-/three-phase step without issuing any additional command; Manual mode
+  remains command-free.
+- Use the existing hardware-free `unittest`, `Mock`, `SimpleNamespace`, and
+  stub-module patterns. No real Wattpilot, vehicle, D-Bus, MQTT, or network is
+  permitted in automated tests.
+- Run `python -m py_compile FroniusWattpilot.py WattpilotPhaseDecisions.py`.
+- Run `python -m unittest tests.test_wattpilot_phase_decisions
+  tests.test_eco_pv_policy tests.test_solar_overhead_distributor
+  tests.test_wattpilot_site_current_guard`.
+- Run `python -m unittest tests.test_config_contract` because README behavior
+  documentation changes, even though no configuration key is added.
+
+Expected coverage:
+
+- Proves distributor step publication and controller current conversion share
+  one conservative watts-per-ampere contract across asynchronous cycles.
+- Proves small voltage movement cannot turn a fully funded `N`-ampere allowance
+  into an `N-1`-ampere command or repeatedly restart site-current recovery.
+- Proves a genuine allowance/headroom reduction remains immediate and every
+  later increase retains the configured delay and one-ampere-per-cycle ramp.
+- Proves strict no-grid behavior leaves a sub-step residual unassigned rather
+  than intentionally drawing the next ampere from grid or battery.
+- Existing Manual-mode, phase-switching, battery-assist, command-authority,
+  site-current, runtime-status, distributor, and firmware-compatibility tests
+  remain unchanged and passing.
+
+Manual validation:
+
+Active charging required. Observe a normal, supervised Auto/Eco PV charge
+during naturally stable production. Do not create grid import, switch loads,
+alter protective limits, or operate a breaker solely to validate this item.
+
+Manual test steps:
+
+1. Deploy on an approved runtime and confirm healthy Wattpilot command
+   authority, grid telemetry, and site-current telemetry before connecting the
+   vehicle.
+2. During a naturally stable three-phase charge, observe allowance, canonical
+   step diagnostics, per-phase measured current, aggregate setpoint,
+   site-allowed current, recovery elapsed time, and grid exchange for several
+   minutes.
+3. Confirm an allowance containing `N` complete canonical steps reaches `N`
+   amperes after any legitimate recovery delay and does not alternate to
+   `N-1` solely because phase voltage changes slightly.
+4. Confirm canonical step changes are transition-only and upward during the
+   active phase interval. A higher step must not cause a current increase from
+   an allowance produced with the previous lower step.
+5. Confirm remaining export is smaller than one complete active-phase step
+   when no other consumer or battery reservation can use it. Do not require
+   the controller to round up when doing so would intentionally import grid
+   power.
+6. Allow only natural PV/load movement to exercise a genuine lower target.
+   Confirm reduction remains immediate and recovery retains the configured
+   continuous-safe delay and one-ampere-per-cycle ramp.
+7. Return to Manual and disconnect normally; confirm no new Manual command path
+   and correct one-/three-phase step reinitialization on a later Auto session.
+
+Risks and dependencies:
+
+- A canonical step that can decrease during an active phase interval may
+  recreate the oscillation. Keep it monotonic until an explicit reset boundary.
+- A canonical step that does not rise before dispatch when voltage rises can
+  overstate funded current. Apply upward adjustments conservatively before
+  current increases and let the next distributor cycle provide new allowance.
+- Changing generic distributor arithmetic or allowance topics would affect
+  every consumer. Keep this item inside the Wattpilot step contract and retain
+  existing SolarOverheadDistributor allocation semantics.
+- Do not solve the residual below one whole ampere by weakening no-grid policy,
+  using battery assist outside its continuation bounds, or adding fractional
+  current commands unsupported by the validated Wattpilot contract.
+- The P3 duplicate-command suppression item is complementary but not a
+  prerequisite. This allocation fix should land first so deduplication tests
+  observe the corrected stable target.
+
+Open questions:
+
+- None. The implementation must remain conservative if live voltage rises;
+  supervised validation determines whether transition diagnostics need further
+  tuning without changing the no-grid contract.
+
+Done criteria:
+
+- One canonical conservative watts-per-ampere value governs Wattpilot minimum,
+  step, maximum request, and target-current conversion for each active phase
+  interval.
+- A complete `N`-step allowance cannot become `N-1` solely from rounding or a
+  later voltage sample.
+- A later higher voltage raises the canonical step before any increase and
+  cannot authorize current from a stale lower-step allowance.
+- Genuine reductions remain immediate; increases retain the configured delay
+  and one-ampere-per-cycle ramp.
+- Residual export below one complete step remains truthful and no partial step
+  is rounded into intentional grid use.
+- Manual mode and every existing Wattpilot safety invariant remain intact.
+- README and Wattpilot architecture document the canonical-step and residual-
+  export behavior.
+- Focused syntax, configuration-contract, and unittest commands pass.
+- Full unittest suite passes.
+
+### P3 - Suppress Duplicate Wattpilot Current-Setpoint Commands
+
+Goal:
+
+Avoid retransmitting an unchanged positive Wattpilot current setpoint on every
+five-second controller cycle while preserving every existing command guard,
+safety reduction, and transactional start invariant.
+
+Problem:
+
+The normal Auto/Eco current-adjustment branch logs an adjustment and calls
+`set_power(targetAmps)` on every eligible controller cycle, even when fresh
+Wattpilot telemetry already reports the same `amp` setpoint. The transport then
+sends another `setValue amp=<target>` request because it has no unchanged-value
+suppression. During a stable charge this can produce one redundant WebSocket
+write and one misleading INFO adjustment record approximately every five
+seconds.
+
+This is a transport-efficiency and diagnostic-quality issue, not evidence that
+the EV draws a new current step on every cycle. The Wattpilot treats `amp` as
+its requested current limit; the vehicle chooses its actual draw up to the
+advertised limit. Repeating the same limit is not known to have caused a
+charging or protective-device fault.
+
+Evidence:
+
+- `FroniusWattpilot.py:666-671` registers `_update()` at a 5000 ms interval.
+- `FroniusWattpilot.py:4229-4242` calculates the target, emits `Adjusting charge
+  current`, and unconditionally calls `self.wattpilot.set_power(targetAmps)` on
+  the no-phase-change path.
+- `Wattpilot.py:514-515` maps every `set_power()` call directly to
+  `send_update("amp", power)`.
+- `Wattpilot.py:531-560` runs the common guard and then constructs and sends a
+  new `setValue` request without comparing the requested value with the latest
+  reported `amp` value.
+- `FroniusWattpilot.py:1391-1409` recognizes an unchanged current only to avoid
+  resetting site-current recovery state. It still authorizes and transmits the
+  repeated command.
+- Existing current-policy and command-boundary tests assert individual command
+  calls, but no two-cycle regression proves that an unchanged confirmed
+  positive setpoint is accepted without another transport write.
+
+Implementation:
+
+1. Introduce one controller-owned current-command helper used by every
+   Auto/Eco positive-current call site. It must distinguish `accepted` from
+   `dispatched`: a safely accepted unchanged setpoint is a no-op, while a
+   changed setpoint is sent through the existing `Wattpilot.set_power()` common
+   command boundary.
+2. Before suppressing a repeated positive target, require finite current
+   telemetry confirming that Wattpilot currently reports exactly that `amp`
+   value. Missing, malformed, or different telemetry must send the command.
+   Do not suppress zero-current commands, Force Off, phase commands, mode
+   commands, or any changed current value.
+3. Run the same firmware, command-authority, mode, and fresh site-current
+   command guard even for a proposed no-op. If the guard rejects the target,
+   return rejection rather than treating equality as authorization. Do not let
+   deduplication become a bypass around newly reduced physical headroom.
+4. Return accepted success for a guarded no-op so the existing phase-current-
+   Start transaction can proceed when the inactive Wattpilot already holds the
+   requested current. A rejected target must still prevent every later stage.
+5. Emit the existing INFO adjustment record only when a current command is
+   actually dispatched. Keep any unchanged-target diagnostic at APP_DEBUG or
+   lower and rate-limit or transition-scope it so stable charging does not
+   replace WebSocket spam with log spam.
+6. Preserve the five-second safety evaluation cadence, immediate reductions,
+   one-amp-per-cycle site-current recovery, Manual observation-only behavior,
+   no-grid policy, battery-assist bounds, phase-switch timing, public D-Bus/MQTT
+   contracts, configuration defaults, and firmware allowlists.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `tests/test_eco_pv_policy.py`
+- `tests/test_wattpilot_command_boundary.py`
+- `README.md`
+- `docs/wattpilot-architecture.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_eco_pv_policy.py` with two consecutive stable three-phase
+  cycles whose calculated target and confirmed Wattpilot `amp` are equal.
+  Prove the first required change is sent once and the next unchanged target
+  produces no second transport call or repeated INFO adjustment record.
+- Prove a changed target, an immediate reduction, and zero-current stop are
+  never suppressed.
+- Extend `tests/test_wattpilot_command_boundary.py` to prove an unchanged
+  positive target still executes the final command guard and is rejected when
+  current site headroom no longer permits it.
+- Prove an accepted no-op in a stopped phase-current-Start sequence permits the
+  following Start command, while a rejected no-op prevents Start.
+- Prove missing, malformed, or stale `amp` telemetry does not suppress the
+  command, and Manual mode gains no new command path.
+- Use the existing hardware-free `unittest`, `Mock`, `SimpleNamespace`, and
+  stub-module patterns. No real Wattpilot, vehicle, D-Bus, MQTT, or network is
+  permitted in automated tests.
+- Run `python -m py_compile FroniusWattpilot.py Wattpilot.py` if the transport
+  file is touched; otherwise syntax-check `FroniusWattpilot.py`.
+- Run `python -m unittest tests.test_eco_pv_policy
+  tests.test_wattpilot_command_boundary tests.test_wattpilot_site_current_guard`.
+- No configuration-contract or migration change is expected because this item
+  adds no setting.
+
+Expected coverage:
+
+- Proves stable Auto/Eco charging does not retransmit the same confirmed
+  positive current setpoint every five seconds.
+- Proves all controller safety checks continue to run at the existing cadence
+  and an unchanged value cannot bypass reduced site headroom.
+- Proves current reductions, stops, phase transitions, and transactional starts
+  retain their existing command ordering and acceptance semantics.
+- Existing Manual-mode, no-grid, battery-assist, phase-switching, site-current,
+  command-authority, runtime-status, and firmware-compatibility tests remain
+  unchanged and passing.
+
+Manual validation:
+
+Active charging required. Observe only a normal, supervised Auto/Eco PV charge;
+do not induce overload, grid import, telemetry loss, or a protective-device
+trip solely to validate command deduplication.
+
+Manual test steps:
+
+1. Start a normal Auto/Eco charge on an approved runtime with healthy command
+   authority and site-current telemetry.
+2. Allow PV and the calculated current target to remain stable for several
+   five-second cycles. Confirm one actual target change produces one adjustment
+   INFO record and stable later cycles do not repeat that record or the
+   corresponding outbound `amp` command.
+3. Let a natural PV change produce a different target and confirm the changed
+   current command is dispatched promptly and the Wattpilot reports the new
+   `amp` value.
+4. Stop or disconnect normally and confirm zero-current/Force-Off behavior and
+   Manual-mode ownership are unchanged.
+
+Risks and dependencies:
+
+- Some controller branches use command acceptance to decide whether a later
+  phase or Start stage may run. An unchanged safe target must therefore return
+  accepted success even though no WebSocket request was dispatched.
+- Suppression based on desired controller state rather than confirmed
+  Wattpilot telemetry could hide a lost, rejected, or externally changed
+  setpoint. Compare only against finite live `amp` telemetry.
+- Moving suppression ahead of the final command guard could bypass newly
+  reduced site headroom. The guard must execute before accepting every no-op.
+- Verify against the validated Wattpilot firmware that repeatedly writing an
+  unchanged `amp` value is not a required keepalive. No other open backlog item
+  is a prerequisite.
+
+Open questions:
+
+- None. Firmware-side no-keepalive behavior remains a manual validation gate,
+  not an implementation assumption that widens command authority.
+
+Done criteria:
+
+- A confirmed unchanged positive `amp` target is safely accepted without a
+  second WebSocket `setValue` request or repeated INFO adjustment message.
+- Missing or different current telemetry sends the requested value normally.
+- The final command guard evaluates every proposed no-op and can reject it.
+- Reductions, zero-current/Force-Off, phase commands, and changed current
+  targets are never suppressed.
+- Transactional Auto/Eco starts retain phase-current-Start ordering and do not
+  fail merely because the current stage is already satisfied.
+- Manual mode and every existing Wattpilot safety invariant remain intact.
+- README and Wattpilot architecture describe the deduplication boundary.
+- Focused syntax and unittest commands pass.
+- Full unittest suite passes.
+
 ## Suggested Implementation Order / PR Execution Queue
 
 1. P2 Suppress Fault-Time Wattpilot Allocation And Log Shelly Poll Failure Reasons — preserve the proven fail-closed command path while preventing misleading positive allocation from persisting and retaining actionable sanitized diagnostics.
+2. P2 Stabilize Wattpilot Allocation-Step Conversion Across Voltage Updates — remove avoidable one-ampere under-allocation without weakening strict no-grid or site-current recovery behavior.
+3. P3 Suppress Duplicate Wattpilot Current-Setpoint Commands — reduce stable-charge WebSocket and INFO-log noise after the corrected allocation target is stable.
 
 ## Verification Plan
 
