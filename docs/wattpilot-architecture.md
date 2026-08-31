@@ -64,7 +64,7 @@ collection only and does not widen Auto/Eco command authority.
 
 It owns:
 
-- Exact Venus OS compatibility (`v3.75`) before the application
+- Exact Venus OS compatibility (`v3.75` or `v3.79`) before the application
   constructs services, connects MQTT, or writes the Victron grid setpoint.
 - Exact Wattpilot firmware compatibility (`42.5`) from `fwv` telemetry.
 - The operator-verified Solar.wattpilot mobile app baseline (`2.1.0`), which
@@ -438,7 +438,8 @@ and sufficient for a charge action.
 
 Future Wattpilot changes must preserve these invariants:
 
-- Venus OS must match the explicitly supported clean release (`v3.75`) before
+- Venus OS must match an explicitly supported clean release (`v3.75` or
+  `v3.79`) before
   es-ESS starts any service or grid-setpoint side effect.
 - Invalid grid-import, telemetry-freshness, battery-assist, or startup-ratio
   configuration must fail before MQTT, D-Bus, or service initialization. Zero

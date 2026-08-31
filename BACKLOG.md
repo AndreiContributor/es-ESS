@@ -34,8 +34,8 @@ Current validated state:
 - Venus OS `v3.75`, Wattpilot firmware `42.5`, and operator-verified
   Solar.wattpilot app `2.1.0` are the approved runtime baseline. The v3.75
   upgrade, idle/no-vehicle, Manual charging, Manual current-change, and Manual
-  recovery checks passed on the production Cerbo GX. Supervised Auto/Eco
-  daylight validation on 2026-07-13 confirmed one-phase PV charging,
+  recovery checks passed during supervised GX validation. Supervised Auto/Eco
+  daylight validation confirmed one-phase PV charging,
   three-phase phase-up, no-grid/grid-import guard behavior, bounded battery
   assist timeout, dynamic current reduction, and phase-down/fallback behavior.
 - Auto/Eco PV-only control, no-grid protection, bounded running-session battery
@@ -48,18 +48,31 @@ Current validated state:
   uncertain current telemetry, and applies delayed/ramped recovery. Hardware-
   free verification is complete; supervised live commissioning remains listed
   under Outstanding Manual Validation.
-- Supervised Auto/Eco validation on 2026-07-14 confirmed that a phase-up
-  candidate active at `20/600s` was cleared by a confirmed physical disconnect:
-  after reconnect, without an es-ESS restart, the next candidate began at
-  `0/600s`. The same session exposed a separate commissioning/control-ownership
-  gap: native Solar.wattpilot `2.1.0` PV regulation held the EV near its 6 A,
-  1.4 kW minimum while es-ESS owned more than 5.5 kW of assigned allowance and
-  requested 16 A, with the remaining PV charging the stationary battery.
+- Private diagnostic evidence showed that a selected site-current source can
+  fail before the distributor publishes a misleading positive raw-overhead
+  result. This value is not a charger command: the Wattpilot controller checks
+  the failed source first and sends zero current plus Force Off. A new open P2
+  item preserves that safe command behavior while preventing fault-time
+  Wattpilot allocation from remaining actionable or misleading and making the
+  sanitized Shelly failure reason visible in `current.log`.
+- Supervised active-charging evidence exposed a separate whole-amp conversion
+  boundary: the distributor can allocate an exact number of rounded
+  watts-per-amp steps while the controller divides that allowance by a newer
+  unrounded voltage sample and floors it to one ampere less. The existing
+  recovery delay then amplifies small voltage-boundary movement into avoidable
+  current oscillation and export. A new open P2 item makes the allocation step
+  conservative and consistent across publication and command calculation.
+- Supervised Auto/Eco validation confirmed that a partially elapsed phase-up
+  candidate was cleared by a confirmed physical disconnect: after reconnect,
+  without an es-ESS restart, the next candidate began from zero. The same
+  session exposed a separate commissioning/control-ownership gap: native
+  Solar.wattpilot regulation held the EV near its minimum while es-ESS requested
+  a higher current and the remaining PV charged the stationary battery.
 - Manual charging remains user-controlled. Direct current/start/stop writes
   fail closed unless Wattpilot telemetry confirms ECO mode; a one-time release
   of stale Auto/Eco limits on entry to Manual is the sole approved exception.
 - The native Eco/es-ESS command-ownership guard is implemented, merged on
-  `main`, and live-validated on 2026-07-15. With native PV surplus and flexible
+  `main`, and live-validated. With native PV surplus and flexible
   tariff disabled, VRM web and Android home-screen-widget Auto selection
   established sole-owner authority; supervised one-phase current control,
   phase-up, Manual release, and final disconnected restoration all passed
@@ -78,10 +91,10 @@ Current validated state:
 - The Victron `velib_python` dependency is pinned to the already validated
   bundled composite with per-file official provenance and canonical hashes.
   All runtime import sites select that bundle deterministically and reject
-  mixed sources. Log-only GX validation on 2026-07-15 passed integrity, import
+  mixed sources. Log-only GX validation passed integrity, import
   ownership, D-Bus registration, MQTT recovery, and command-free new-process
   startup checks on Venus OS `v3.75`.
-- The 2026-07-12 review confirmed additional crash, device-control, stale-data,
+- The repository review confirmed additional crash, device-control, stale-data,
   persistence, configuration, security, and test-coverage work. Items with
   site-specific limits or uncertain Wattpilot protocol meaning retain explicit
   questions and must not be implemented by assumption.
@@ -127,7 +140,8 @@ The operator confirmed that every remaining implementation specification and
 manual-validation entry is fixed and complete. The retained specifications
 below preserve their original scope, evidence, risks, and verification plans;
 this dated status record is the completion authority for the previously open
-items. No further work is queued in this backlog.
+items at that point. A later privacy-sanitized diagnostic review added the open
+P2 item in the implementation queue below.
 
 All completed entries below retain their original identity and durable result.
 Unless an entry explicitly says otherwise, the work preserved Manual-mode
@@ -137,11 +151,11 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ### Completed 2026-07-22 - Resolve Proven Pre-Authentication Compatibility Warnings In The Daily Report
 
-- Supervised production validation showed the normal controlled-restart
+- Supervised validation showed the normal controlled-restart
   sequence logging two firmware-compatibility warnings while Wattpilot `fwv`
-  was unavailable. Commands remained blocked, authentication succeeded seven
-  seconds later, firmware `42.5` was confirmed three seconds after that, and
-  sole Auto/Eco command ownership was then validated. The daily report still
+  was unavailable. Commands remained blocked, authentication then succeeded,
+  firmware `42.5` was confirmed, and sole Auto/Eco command ownership was
+  validated. The daily report still
   returned `ANOMALY` solely because it classified each initial warning as an
   unresolved compatibility failure.
 - The read-only analyzer now resolves only an explicit `<unavailable>` startup
@@ -162,8 +176,8 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ### Completed 2026-07-22 - Reuse One Site-Current Snapshot Per Wattpilot Control Cycle
 
-- Production APP_DEBUG evidence from 2026-07-21 showed a three-phase Auto/Eco
-  charge stop 149 ms after the grid-import debounce started, without a grid
+- Private APP_DEBUG evidence showed a three-phase Auto/Eco charge stop shortly
+  after the grid-import debounce started, without a grid
   guard trigger, normal stop marker, phase command, or attributed safety
   intervention. The controller had already accepted the first site-current
   guard result for state selection.
@@ -195,10 +209,10 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ### Completed 2026-07-20 - Preserve Site-Current Recovery Across No-Op And Pre-Start Commands
 
-- Supervised production evidence showed a stable 6.43-6.47 kW Wattpilot
-  allowance, 19-20 A of site-current headroom, healthy command authority, and
-  no grid guard or battery assist, while three-phase charging remained at 7 A
-  for more than four minutes and `/SiteCurrentRecoveryElapsed` stayed at zero.
+- Private supervised evidence showed a stable positive Wattpilot allowance,
+  available site-current headroom, healthy command authority, and no grid guard
+  or battery assist while three-phase charging remained at its prior current
+  and `/SiteCurrentRecoveryElapsed` stayed at zero.
 - The PV target calculation correctly started the configured recovery timer,
   but its temporary unchanged-current command re-entered the final command
   guard. Reapplying recovery with `target == current` cleared the timer every
@@ -209,16 +223,16 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   retain the configured stable delay and 1 A-per-cycle ramp, and firmware,
   command-authority, Manual-mode, no-grid, phase, and battery-assist boundaries
   are unchanged.
-- Follow-up supervised evidence at 13:03:57 and 16:20:34 local time showed a
-  second form of the same defect. Wattpilot retained a higher configured
+- Follow-up supervised evidence showed a second form of the same defect.
+  Wattpilot retained a higher configured
   current while stopped; the lower pre-start `amp` command cleared mature
   recovery state, so the immediately following `frc=2` Start was rejected.
-  The controller then incorrectly began transition grace and advertised about
-  4.33 kW of EV demand even though measured EV power remained zero.
+  The controller then incorrectly began transition grace and advertised
+  positive EV demand even though measured EV power remained zero.
 - Stopped current commands now use fresh site headroom and completed recovery
   without applying active-current recovery to the retained setpoint. Command
   helpers return guarded-send acceptance, and Auto/Eco publishes Start,
-  transition power, and the successful on/off timestamp only after phase,
+  transition power, and the successful on/off state only after phase,
   current, and Start commands are all accepted. A rejection remains stopped,
   sends no later stage, and rebuilds the stable-PV interval.
 - Added hardware-free coverage proving the pending timer survives the no-op,
@@ -226,14 +240,13 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   command above newly reduced physical headroom, permits a lower stopped
   setpoint only after recovery, and prevents rejected start sequences from
   publishing false transition state.
-- Supervised production revalidation completed on Venus OS `v3.75` on
-  2026-07-20. After a controlled restart, the connected Auto/Eco session sent
+- Supervised revalidation completed on Venus OS `v3.75`. After a controlled
+  restart, the connected Auto/Eco session sent
   `frc=2` once without rejection, published transition grace only afterward,
-  and reached measured three-phase charging at approximately 4.24-4.31 kW and
-  5.6-6.1 A per phase. PID `4325` remained stable, site-current telemetry and
-  command authority stayed healthy, battery assist remained inactive, and the
-  post-restart log contained no blocked command, rejected start, traceback, or
-  duty-cycle exception.
+  and reached measured three-phase charging. The process remained stable,
+  site-current telemetry and command authority stayed healthy, battery assist
+  remained inactive, and the post-restart log contained no blocked command,
+  rejected start, traceback, or duty-cycle exception.
 
 ### Completed 2026-07-20 - Make Battery Assist Minimum-Current-First And Phase-Aware
 
@@ -312,7 +325,7 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   diagnostic evidence.
 - Added timestamps based on the authoritative Venus
   `/Settings/System/TimeZone` setting with the offset that applied to each
-  record, such as `(UTC+3)` in Romanian summer and `(UTC+2)` in winter. Both
+  record. Both
   file and console handlers use the same format. The read-only startup query is
   bounded, the existing settings subscription updates the timezone at runtime,
   and failures warn and fall back to OS-local time. Process-wide clocks and
@@ -324,22 +337,21 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 - Kept the historical daily report compatible with old offset-free records and
   taught it to use new offsets when ordering and measuring the repeated
   daylight-saving hour. Replaced per-grid-sample and per-charge-sample full-log
-  scans with timestamp indexes after a large live APP_DEBUG report exposed the
-  quadratic paths. A subsequent 189,007-record GX run completed but took five
-  minutes and selected the UTC calendar window, exposing remaining collection
+  scans with timestamp indexes after a large private APP_DEBUG report exposed
+  the quadratic paths. A subsequent GX run exposed remaining collection
   overhead and OS-timezone coupling. The report now performs the same bounded
   Venus timezone query as logging, routes regex parsing by message markers,
   uses a fixed-format fast parser and ISO timestamp conversion, avoids
   single-file de-duplication/sorting, records loader/analysis stage durations,
-  and indexes allowance and Manual-boundary lookups. The first follow-up GX run
-  confirmed correct `Europe/Bucharest` boundaries and improved to 2m17s before
-  the dedicated loader fast path was added. Final production validation
-  processed 195,892 records in 1m16s (48.63s loading and 23.90s analysis) while
-  es-ESS remained up with the same PID. Corrected the maintained log path,
-  local-midnight, retention, and diagnostic-report documentation.
+  and indexes allowance and Manual-boundary lookups. Follow-up GX runs
+  confirmed correct configured-timezone boundaries and substantial performance
+  improvement before the dedicated loader fast path was added. Final
+  supervised validation processed a large diagnostic day while es-ESS remained
+  healthy. Corrected the maintained log path, local-midnight, retention, and
+  diagnostic-report documentation.
 - Live validation confirmed configuration version 12 and ten-day cleanup. It
-  also showed the shell in UTC while Venus reported `Europe/Bucharest`, which
-  led to making the Venus setting explicitly authoritative.
+  also showed that the shell and Venus timezones can differ, which led to
+  making the Venus setting explicitly authoritative.
 - Verification passed with 40 focused configuration/logging tests, 60 focused
   daily-report tests, 4 configuration-contract tests, 6 backlog-structure
   tests, changed-file syntax checks, the full 447-test hardware-free suite, and
@@ -354,7 +366,7 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   grid-meter/D-Bus telemetry. Waiting indefinitely for weather or an accidental
   outage does not represent unfinished implementation, and the original done
   criteria explicitly allowed an inconclusive natural window.
-- The production Venus OS `v3.75` validation on 2026-07-13 already confirmed
+- Supervised Venus OS `v3.75` validation already confirmed
   grid-import guard behavior with `AllowGridCharging=false` after the selector
   and dispatch implementation had landed: the controller stopped or waited
   rather than intentionally using grid power during insufficient PV.
@@ -394,25 +406,20 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ### Completed 2026-07-15 - Correlate Local And Remote Wattpilot Mode Boundaries
 
-- Completed a vehicle-disconnected production observation on Venus OS `v3.75`,
+- Completed a vehicle-disconnected supervised observation on Venus OS `v3.75`,
   Wattpilot firmware `42.5`, and Solar.wattpilot app `2.1.0`. The capture is
-  preserved on the GX as
-  `/data/es-ess-mode-boundary-20260715-155537.log`.
-- A local Solar.wattpilot Standard selection recorded an operator action around
-  15:56:31 UTC, raw `lmo=3` at 15:56:33.785, and
-  `/ModeLiteral=Manual` at 15:56:38.865. The physical Eco indication turned
-  off. Raw-to-public propagation took 5.080 seconds, matching the normal
-  controller cadence; the app/physical timestamp remains operator-recorded and
-  is not treated as a tighter transport measurement.
+  retained as private diagnostic evidence outside the repository.
+- A local Solar.wattpilot Standard selection produced raw `lmo=3`, then
+  `/ModeLiteral=Manual`, and the physical Eco indication turned off. Raw-to-
+  public propagation matched the normal controller cadence; operator-recorded
+  physical timing is not treated as a tighter transport measurement.
 - The first Android home-screen VRM EV Charging Station widget attempt remained
   pending for about one minute and reported that its MQTT action could not be
   sent because the installation might not be real-time. No `/Mode` handler,
   raw `lmo`, or public mode event reached es-ESS during that failed delivery.
-- On the successful retry, es-ESS received VRM `/Mode=1` at 16:01:15.593 UTC,
-  Wattpilot reported raw `lmo=4` at 16:01:15.706, and
-  `/ModeLiteral=Auto` published at 16:01:15.723. The complete server-observed
-  path took 130 ms, including 17 ms from raw receipt to public state. The app
-  showed Eco and the physical white/orange status-114 indication returned.
+- On the successful retry, es-ESS received VRM `/Mode=1`, Wattpilot reported
+  raw `lmo=4`, and `/ModeLiteral=Auto` published promptly. The app showed Eco
+  and the physical white/orange status-114 indication returned.
 - The final snapshot remained disconnected at 0 W/0 A with healthy telemetry,
   validated compatibility, `fup=false`, `ful=false`, and
   `/CommandAuthorityOk=1`. Manual produced the approved one-time release
@@ -439,15 +446,14 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   system-copy comparison output plus seven hardware-free provenance, drift,
   registration, path, callback, and monitor tests. Changed-file syntax, shell
   syntax, backlog/whitespace checks, and the full 429-test suite passed.
-- Pre-change production evidence was captured at 14:21 UTC. The post-change
-  restart at 15:00 UTC changed PID `32228` to stable PID `3914`; both MQTT
+- Pre- and post-change evidence confirmed a clean restart; both MQTT
   clients recovered, the four expected es-ESS D-Bus services registered once,
   pinned integrity and bundled origins passed, compatibility/telemetry/command
   authority remained healthy, and Wattpilot stayed disconnected, stopped, at
   `0 W` and `0 A` with no critical or import error.
-- The old Auto-mode process issued its documented safe `Off` during SIGTERM at
-  15:00:01 before shutdown. The replacement process began recovery around
-  15:00:24 and issued no start, stop, current, or phase command. The Venus OS
+- The old Auto-mode process issued its documented safe `Off` during SIGTERM
+  before shutdown. The replacement process recovered without issuing a start,
+  stop, current, or phase command. The Venus OS
   copy differed for `vedbus.py` and `dbusmonitor.py` and matched for
   `settingsdevice.py` and `ve_utils.py`; it remained read-only and unselected.
 
@@ -500,12 +506,12 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   completed charging session was definitely perfect.
 - Verification passed with 51 focused daily-report tests, the maintained
   configuration contract, syntax checks, and all 422 hardware-free repository
-  tests. A copied production excerpt was correctly rejected as incomplete
+  tests. A sanitized private excerpt was correctly rejected as incomplete
   rather than being treated as a full-day report.
 
 ### Completed 2026-07-15 - Live-Validate Implemented Auto/Eco Command Ownership
 
-- Completed Gate 2 on production Venus OS `v3.75`, Wattpilot firmware `42.5`,
+- Completed Gate 2 on Venus OS `v3.75`, Wattpilot firmware `42.5`,
   and Solar.wattpilot app `2.1.0` with `AllowGridCharging=false`.
 - With the vehicle disconnected and native `Use PV surplus` enabled, the
   runtime reported `/CommandAuthorityOk=0`, identified the conflicting native
@@ -513,8 +519,8 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   PV and flexible tariff were disabled, selecting Auto from the VRM web EVCS
   tile produced stable raw `lmo=4`, both native observations at `0`, and
   `/CommandAuthorityOk=1`.
-- Supervised active charging followed es-ESS one-phase requests from 13 A
-  through 16 A without a native current rewrite. The es-ESS 600-second
+- Supervised active charging followed multiple distinct es-ESS one-phase
+  requests without a native current rewrite. The configured es-ESS
   candidate alone authorized the transition to three phases, live telemetry
   confirmed three-phase charging, and a later single-cycle atomic `0 W`
   assigned allowance produced a confirmed phase-down. That fallback was safe
@@ -535,7 +541,8 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   validated compatibility, sole-owner authority, and no recent errors. Unsafe
   authority-loss simulation during an active charge was deliberately not
   forced; the disconnected conflicting-authority preflight plus automated
-  command-boundary tests provide the fail-closed evidence.
+  command-boundary tests provide the fail-closed evidence. Exact correlated
+  measurements are retained only as private diagnostic evidence.
 
 ### Completed 2026-07-14 - Define Safe Control For Protocol Charging Model Statuses
 
@@ -595,13 +602,13 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 - Verification passed: changed-production-file syntax, repository compileall,
   84 focused tests, the 4-test configuration contract, the full 334-test
   hardware-free suite, shell syntax, backlog audit, and whitespace checks.
-- Production GX validation passed on 2026-07-14: all three changed runtime
+- Supervised GX validation passed: all three changed runtime
   modules matched the reviewed content after line-ending normalization; every
   deployed top-level Python file and lifecycle shell script passed syntax
   validation; configuration v11 passed the exact bootstrap and value
   validators with `0600 root:root` permissions; and the controlled Venus OS
   v3.75 restart recovered both MQTT clients, the Wattpilot D-Bus service,
-  healthy telemetry, firmware compatibility, and the fail-closed `-50 W` grid
+  healthy telemetry, firmware compatibility, and the configured fail-closed grid
   setpoint without serious runtime errors. Services disabled in production
   were not enabled solely for fault injection; their stale, persistence, TLS,
   and clamp branches retain hardware-free regression coverage.
@@ -650,20 +657,18 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   architecture and README.
 - Verification passed: affected-file syntax compilation, 128 focused
   safety/controller/backlog tests, and the full 273-test hardware-free suite.
-- Active-charging GX validation passed on 2026-07-14 with Venus OS `v3.75`,
-  Wattpilot firmware `42.5`, and Solar.wattpilot app `2.1.0`. A candidate reached
-  `20/600s` at 07:39:32 UTC, physical disconnect was confirmed at 07:39:57,
-  reconnect occurred without an es-ESS restart at 07:42:37, and the next
-  candidate began at `0/600s` at 07:43:47. This proves disconnected wall-clock
-  time was not reused.
+- Active-charging GX validation passed with Venus OS `v3.75`, Wattpilot
+  firmware `42.5`, and Solar.wattpilot app `2.1.0`. A partially elapsed
+  candidate was cleared by confirmed physical disconnect; reconnect occurred
+  without an es-ESS restart, and the next candidate began from zero. This
+  proves disconnected wall-clock time was not reused.
 
 ### Completed 2026-07-13 - Add Freshness Guard For Battery-Assist SOC
 
-- Production GX validation found that unchanged SOC is not periodically
-  republished by either `com.victronenergy.system` or the selected Pylontech
-  service, contradicting the original SOC-callback freshness model. The system
-  service did publish selected-battery power activity 26 times in 30 seconds;
-  the Pylontech service published power activity 23 times in 30 seconds.
+- Supervised GX validation found that unchanged SOC is not periodically
+  republished by either `com.victronenergy.system` or the selected battery
+  service, contradicting the original SOC-callback freshness model. Both
+  services continued publishing selected-battery power activity.
 - Corrected the guard to require finite system SOC plus a finite selected-
   battery `/Dc/Battery/Power` update within the dedicated, positive
   `BatterySocFreshSeconds=15` window. Existing configurations retain the same
@@ -681,13 +686,11 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
   active-assist clearing, reservation-bypass, compatible-default, and invalid-
   config regressions. All 284 tests, application/test Python syntax, shell
   syntax, and whitespace checks passed.
-- Live GX validation on 2026-07-14 observed 36 selected-battery power updates
-  in 45 seconds with a maximum 2.979-second gap, well inside the configured
-  15-second window. With SOC unchanged at 74%, an already-running one-phase
-  Auto/Eco charge sustained battery assist for at least 75 seconds across
-  34-321 W shortfalls while the grid remained at net export. This confirms the
-  corrected heartbeat prevents false SOC expiry without changing the bounded,
-  continuation-only assist contract.
+- Live GX validation observed frequent selected-battery power updates well
+  inside the configured freshness window. With SOC unchanged, an already-
+  running one-phase Auto/Eco charge sustained bounded battery assist while the
+  grid remained at net export. This confirms the corrected heartbeat prevents
+  false SOC expiry without changing the continuation-only assist contract.
 - The later closure review safely retired supervised battery-heartbeat
   interruption as a production requirement: the system path cannot be isolated
   without risking broader battery/system telemetry, while the fail-closed path
@@ -698,9 +701,9 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 - Added observer-only raw `lmo` receive/change timestamps and correlated
   `/ModeLiteral` publication diagnostics, including the same evidence in the
   read-only GX health monitor.
-- Production evidence located the delay in the controller's disconnected
-  five-minute idle early return: raw mode telemetry arrived promptly, but the
-  public mode could remain stale for 276.9 seconds. The raw command boundary
+- Private diagnostic evidence located the delay in the controller's
+  disconnected idle early return: raw mode telemetry arrived promptly, but the
+  public mode could remain stale until the next controller cycle. The raw command boundary
   itself was already current and did not authorize commands from stale public
   state.
 - A pending raw mode transition now bypasses idle throttling once and runs
@@ -710,11 +713,11 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 - Hardware-free timestamp, command-boundary, disconnected-idle, once-only
   release, no-command, and unchanged-idle coverage passed with the full
   277-test suite, Python syntax checks, shell syntax, and whitespace checks.
-- Fixed-code production validation passed on Venus OS `v3.75`, Wattpilot
+- Fixed-code supervised validation passed on Venus OS `v3.75`, Wattpilot
   firmware `42.5`, and Solar.wattpilot app `2.1.0` with the vehicle disconnected.
-  Startup ECO published in 3.744 seconds; local same-Wi-Fi Eco-to-Standard
-  published Manual in 4.687 seconds with one constraint release; and
-  Standard-to-Eco published Auto in 3.793 seconds without a Wattpilot command.
+  Startup ECO, local same-network Eco-to-Standard, and Standard-to-Eco
+  transitions all published within the expected controller cadence, with one
+  constraint release and no unintended Wattpilot command.
   Both transitions remained stopped at 0 W, and the read-only health monitor
   reported a healthy service and compatibility baseline. Remote/cloud
   end-to-end app latency is not claimed because its earlier operator timestamps
@@ -735,11 +738,11 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 - Verification passed: startup syntax compilation, 7 focused startup tests,
   102 wider Wattpilot policy/command-boundary tests, and the full 271-test
   hardware-free suite.
-- Production validation passed on 2026-07-13 with Venus OS `v3.75`, Wattpilot
+- Supervised validation passed with Venus OS `v3.75`, Wattpilot
   firmware `42.5`, Solar.wattpilot app `2.1.0`, and the vehicle disconnected.
-  After a 13:59:45 UTC restart, startup reported Manual at 14:00:17.676 and the
-  passive Manual/default branch at 14:00:17.687 without any `psm`, `amp`, or
-  `frc` command; the service remained healthy and firmware telemetry recovered.
+  After restart, startup reported Manual and entered the passive Manual/default
+  branch without any `psm`, `amp`, or `frc` command; the service remained
+  healthy and firmware telemetry recovered.
 
 ### Completed 2026-07-13 - Structural Configuration Fail-Closed Startup
 
@@ -760,8 +763,8 @@ compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
 
 ### Completed 2026-07-13 - Live-Validate Venus OS v3.75 Auto/Eco PV-Surplus Operation
 
-- Completed the attended daylight Auto/Eco validation on the production Cerbo
-  GX running Venus OS `v3.75` build `20260624163305`.
+- Completed the attended daylight Auto/Eco validation on a GX running Venus OS
+  `v3.75` build `20260624163305`.
 - Confirmed one-phase Auto/Eco start after stable PV allowance, no-grid
   operation with grid near zero, and command-free Manual-mode behavior from the
   earlier v3.75 validation sequence.
@@ -1408,17 +1411,17 @@ Outcome:
 
 #### Implementation record - completed 2026-07-15: Live-Validate Implemented Auto/Eco Command Ownership
 
-Outcome and retained production evidence:
+Outcome and retained sanitized evidence:
 
 - The fail-closed authority implementation merged through PR #70
   (`c01a783`) after command-boundary, policy, runtime-status,
   configuration-contract, and full-suite verification.
-- Initial production evidence on 2026-07-14 disproved the former native
-  start-threshold workaround: with 6.89 kW PV, the EV drew about 1.41 kW and the
-  battery absorbed 4.487 kW while es-ESS had assigned 5.016-5.725 kW and
-  repeatedly requested 16 A. The Solar.wattpilot `2.1.0` slider stopped at
-  10 kW, and neither 10 kW nor the former 99 kW example established command
-  ownership after an external start. The Fronius manual documents native
+- Private diagnostic evidence disproved the former native start-threshold
+  workaround: the EV remained near the native minimum while es-ESS assigned
+  and requested materially more power and the battery absorbed the remainder.
+  Neither the app's available startup-power limit nor a deliberately extreme
+  synthetic example established command ownership after an external start.
+  The Fronius manual documents native
   regulation steps but does not define a high startup value as disabling that
   regulation after an external forced start:
   <https://manuals.fronius.com/html/4204260400/en.html>.
@@ -1430,7 +1433,7 @@ Outcome and retained production evidence:
   `frm` to the control response. `cdci`/`dci` remain unclassified.
 - Turning native PV surplus off changed `lmo` from ECO (4) to Standard (3);
   turning it back on did not restore ECO. Zero feed-in was not altered, and the
-  Opel Corsa-e profile hid phase control.
+  selected vehicle profile hid phase control.
 - The selected runtime guard is read-only and fail-closed: firmware `42.5`,
   raw ECO, `fup=false`, and `ful=false` are all required. Missing,
   malformed, or conflicting authority telemetry blocks starts, positive
@@ -1441,9 +1444,9 @@ Outcome and retained production evidence:
   observations, a stopped-for-authority state, health-monitor output, operator
   documentation, and focused regression tests were added without writing the
   undocumented native settings.
-- Supervised Gate 2 on 2026-07-15 validated the disconnected invalid-authority
-  block, sole-owner Auto commissioning, es-ESS ownership across 13-16 A, the
-  full 600-second phase-up candidate and telemetry-confirmed three-phase
+- Supervised Gate 2 validated the disconnected invalid-authority block,
+  sole-owner Auto commissioning, es-ESS ownership across multiple distinct
+  current requests, the full configured phase-up candidate and telemetry-confirmed three-phase
   transition, safe phase-down, bounded continuation-only battery assist,
   Manual one-time release, and final disconnected restoration. No native
   current/phase rewrite or intentional grid charging was observed.
@@ -1467,23 +1470,23 @@ Completion record:
 - Hardware-free orchestration, TLS/plain parity, failure diagnostics, recovery,
   subscription restoration, shutdown-before-first-connect, and full-suite
   verification pass.
-- Production fault/recovery validation completed on Venus OS `v3.75` on
-  2026-07-15 using an isolated loopback TCP proxy for the main client; the
+- Supervised fault/recovery validation completed on Venus OS `v3.75` using an
+  isolated loopback TCP proxy for the main client; the
   Venus local broker was never stopped. With `localhost:18884` unavailable,
   main MQTT logged one actionable failure, local MQTT connected normally,
-  startup continued after the bounded 30-second wait, and es-ESS remained on
-  PID 12561 from 40 through 55 seconds without a crash loop.
+  startup continued after the bounded wait, and es-ESS remained stable without
+  a crash loop.
 - Local-broker refusal was not induced because stopping the Venus broker would
   disrupt platform MQTT consumers. Equivalent local-client refusal/recovery is
   retained in hardware-free orchestration coverage; the live run confirmed
   normal local-client isolation while the main client was unavailable.
 - Starting the proxy without restarting es-ESS produced exactly one main MQTT
-  connect callback on the same PID, restored all SolarOverheadDistributor and
+  connect callback in the same process, restored all SolarOverheadDistributor and
   Wattpilot subscriptions, republished `es-ESS/$SYS/Status=Online`, and resumed
   TimeToGo diagnostic publication.
-- The original configuration was restored with a matching SHA-256, production
-  main/local MQTT each connected normally after restart, PID 13293 remained
-  stable, live main-MQTT publication succeeded, the verified proxy was stopped,
+- The original configuration was restored with a matching SHA-256, main/local
+  MQTT each connected normally after restart, the process remained stable,
+  live main-MQTT publication succeeded, the verified proxy was stopped,
   port 18884 became free, and all temporary files were removed.
 - Main/local separation, TLS/authentication policy, retained status/last-will
   behavior, and orderly shutdown remain unchanged; permanent failures stay
@@ -1524,12 +1527,12 @@ Resolution:
 - README, sample configuration, and service inventory now state that GX/VRM
   time-to-go requires the selected BMS to publish `/TimeToGo`; es-ESS does not
   create a competing owner.
-- Production validation on Venus OS `v3.75` completed on 2026-07-15 with
+- Supervised validation on Venus OS `v3.75` completed with
   `TimeToGoCalculator=true`, `BatteryCapacityInWh=32000`, and
   `UpdateInterval=1000`. During natural discharge, complete D-Bus inputs
-  produced `es-ESS/TimeToGoCalculator/TimeToGo=108556` seconds, consistent
-  with changing power, SOC, active SOC limit, and capacity. The same supervised
-  PID remained healthy with increasing uptime and no recent critical error,
+  produced a plausible time-to-go estimate consistent with changing power,
+  SOC, active SOC limit, and capacity. The same supervised process remained
+  healthy with increasing uptime and no recent critical error,
   traceback, or exception.
 
 ### Completed 2026-07-15 - Decide And Align Wattpilot Hibernate-Mode Remote Control
@@ -1598,17 +1601,15 @@ Completion record:
 
 Completion record:
 
-- The supported Venus OS `v3.75` GX processed a representative APP_DEBUG
-  `current.log` containing 210,294 lines/records and 29,918,910 bytes while
-  es-ESS remained online.
-- Peak resident set was 107,656 KB from an initial 642,456 KB available. Even
-  conservative subtraction left about 522 MiB available, and the post-run
-  reading recovered to 640,836 KB.
-- Log loading took 53.66 seconds and analysis 25.85 seconds. Exit code `2`
+- The supported Venus OS `v3.75` GX processed a large representative APP_DEBUG
+  `current.log` while es-ESS remained online.
+- Peak resident memory left substantial available headroom, and the post-run
+  reading recovered normally.
+- Loading and analysis completed successfully. Exit code `2`
   reflected earlier operational anomalies in the complete current-day input,
   not a resource limit or report failure.
-- The supervised es-ESS process remained PID 2494 and uptime advanced from 525
-  to 636 seconds. The implementation had already passed 67 focused daily-report
+- The supervised es-ESS process remained stable with increasing uptime. The
+  implementation had already passed 67 focused daily-report
   tests and the complete 415-test hardware-free suite.
 - Decision: close measurement-only. Do not add line, continuation, record, or
   byte caps: the measured supported-GX workload has ample headroom, while
@@ -1644,12 +1645,11 @@ Implementation status (2026-07-21):
 
 Problem:
 
-The default current source reads calculated Venus system consumption currents. Live
-commissioning showed those current values alternating between approximately
-4.5 A and 8.6 A while one-phase Wattpilot power remained near 1.33-1.37 kW and
-the charger reported approximately 5.8 A. That calculated source is therefore
-not sufficiently trustworthy as the future authoritative site-current
-measurement.
+The default current source reads calculated Venus system consumption currents.
+Private commissioning evidence showed those values diverging materially from
+the charger's direct current and power telemetry. That calculated source is
+therefore not sufficiently trustworthy as the future authoritative site-
+current measurement.
 The existing Shelly integration cannot be substituted directly: it consumes
 the Gen1 `/status`/`emeters[]` schema and registers a Venus
 `com.victronenergy.grid` service at position 0, while the planned Gen3 meter
@@ -2894,10 +2894,667 @@ Done criteria:
 - Unit tests cover credential-free URLs, safe error logging, and counter lock snapshots.
 - Full unittest suite passes.
 
+### P2 - Suppress Fault-Time Wattpilot Allocation And Log Shelly Poll Failure Reasons
+
+Goal:
+
+Prevent a failed selected site-current source from leaving a positive,
+apparently usable Wattpilot distributor allowance, and make the exact sanitized
+Shelly failure and recovery transitions visible in `current.log` without
+changing the existing fail-closed charger-command boundary.
+
+Problem:
+
+Private diagnostic evidence showed that a grid/topology change and loss of the
+selected Shelly source can precede a high distributor line. The distributor
+may combine apparent feed-in, still-reported Wattpilot consumption, and battery
+power into a positive raw-overhead calculation and allocation. The controller
+does not turn that allowance into a positive current command: it selects the
+unsafe site-current path, sends zero current, and sends Force Off. The raw-
+overhead and assigned-allowance diagnostics can nevertheless be misread as a
+charger increase.
+
+After the controller detects the source failure, `reportBaseRequest()` can
+still advertise a positive Wattpilot request because eligibility currently
+depends on Auto mode, effective vehicle connection, charge-complete state, and
+the effective current limit, but not on the mandatory site-current source
+health or recovery state. This permits later distributor cycles to continue
+publishing a positive allowance even though controller dispatch remains safely
+blocked.
+
+Separately, `Shelly3EMSiteCurrentSource.poll()` catches connection, device, and
+payload failures and records a sanitized status/error in its snapshot without
+logging the transition. The private diagnostic log consequently contains only
+the generic worker-overrun warning plus the controller's combined
+missing/invalid/stale/phase-uncertain message. It cannot show whether the
+selected source timed out, rejected authentication, returned an invalid
+payload, or reported a device error, even though the sanitized distinction is
+already available in the provider snapshot.
+
+Evidence:
+
+- `SolarOverheadDistributor.py:461-506` treats every finite negative grid
+  phase sum as feed-in and calculates `overhead = max(0, feedIn +
+  assignedConsumption + batPower)`. Its `Available Overhead` message does not
+  distinguish the raw calculation from a consumer allowance or Wattpilot
+  command.
+- `FroniusWattpilot.py:1508-1527` correctly refreshes and dispatches the
+  site-current guard before normal charging control. This ordering prevented a
+  positive command in the observed fault condition and must remain unchanged.
+- `FroniusWattpilot.py:2103-2181` publishes the Wattpilot distributor request
+  without checking selected-source health, `siteCurrentGuardBlocked`, or the
+  site-current recovery timer.
+- `FroniusWattpilot.py:3999-4031` proves the unsafe site-current stop sends
+  zero current before Force Off and issues no phase command.
+- `Shelly3EMSiteCurrent.py:43-91` converts poll failures into
+  `Unavailable`/`Invalid` snapshots and returns `False`, but emits no
+  transition log.
+- `Shelly3EMGen3Client.py:96-105` already reduces request exceptions to a
+  credential-free class name such as `Timeout`; the implementation must retain
+  that sanitization and must never log the host, URL, username, password, or
+  raw exception text.
+- `tests/test_solar_overhead_distributor.py`,
+  `tests/test_wattpilot_site_current_guard.py`, and
+  `tests/test_shelly3em_site_current.py` cover the individual arithmetic,
+  fail-closed controller, and provider invalidation paths, but no fault-shaped
+  synthetic regression proves their allocation and diagnostic behavior
+  together.
+
+Implementation:
+
+1. In `FroniusWattpilot.py`, wrap the selected asynchronous provider poll in a
+   controller-owned method rather than registering `source.poll` directly.
+   The provider remains command-free. On a failed Shelly poll, the wrapper must
+   immediately publish a zero Wattpilot `Request` on the existing
+   SolarOverheadDistributor request topic and record the source status/error
+   transition. It must not call `set_power`, `set_start_stop`, `set_phases`, or
+   dispatch controller state from the polling worker.
+2. Make source failure and recovery logging transition-only. The warning must
+   include the selected source, normalized status, sanitized error class/reason,
+   last-success age, current reported Wattpilot consumption, raw overhead when
+   available, and the explicit fact that allocation was suppressed and no
+   positive charger command was authorized. Recovery must produce one INFO
+   record. Repeated one-second failures must not flood the log.
+3. Extend `reportBaseRequest()` so Auto/Eco publishes `Request=0` while the
+   mandatory site-current source is disconnected, invalid, stale, blocked, or
+   still inside `SiteCurrentRecoverySeconds`. Continue reporting measured
+   `Consumption` truthfully; do not replace stale measured power with invented
+   zero consumption merely to change the overhead formula. Resume a positive
+   request only from the normal five-second controller cycle after fresh
+   telemetry and the existing recovery policy permit it.
+4. Keep the global distributor arithmetic and other consumers independent of
+   Wattpilot-specific source health. In `SolarOverheadDistributor.py`, clarify
+   diagnostics so `OverheadAvailable` is described as the calculated raw
+   overhead, consumer `Allowance` is described as an allocation, and neither
+   is described as a charger command. Preserve existing D-Bus paths, MQTT topic
+   names, numeric values, atomic allocation behavior, and external-consumer
+   compatibility.
+5. Teach the daily report to recognize the new transition-only source-failure,
+   allocation-suppression, and recovery records as site-current safety
+   evidence while remaining backward compatible with historical generic
+   messages.
+6. Preserve Manual mode as observation-only, keep site-current dispatch ahead
+   of grid/allowance/battery logic, retain zero-current-before-Force-Off order,
+   and do not change phase switching, battery assist, grid-import policy,
+   configuration defaults, firmware allowlists, or public runtime-status
+   values.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `SolarOverheadDistributor.py`
+- `scripts/es-ess-daily-report.py`
+- `tests/test_wattpilot_site_current_guard.py`
+- `tests/test_solar_overhead_distributor.py`
+- `tests/test_es_ess_daily_report.py`
+- `README.md`
+- `docs/wattpilot-architecture.md`
+- `docs/service-inventory.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_wattpilot_site_current_guard.py` with a synthetic fault-
+  shaped asynchronous Shelly failure: a previously healthy, actively charging
+  three-phase controller has a positive request/allowance and measured
+  consumption, the provider poll returns `Unavailable`, and the poll wrapper
+  publishes `Request=0` without issuing any Wattpilot command from that worker.
+- Prove the next normal controller cycle sends exactly zero current then Force
+  Off, sends no phase command, retains truthful measured consumption, and does
+  not restore a positive request until fresh source telemetry remains safe for
+  `SiteCurrentRecoverySeconds`.
+- Prove source failure and recovery produce one sanitized WARNING and one INFO
+  transition even across repeated failures; connection, authentication/device,
+  and payload errors remain distinguishable without credentials, hostnames,
+  URLs, or raw exception text.
+- Extend `tests/test_solar_overhead_distributor.py` with clearly synthetic,
+  non-derived feed-in, consumption, and battery inputs. Confirm the raw
+  calculation can remain visible for diagnosis while a zero Wattpilot request
+  receives a zero allowance and no external consumer behavior changes.
+- Extend `tests/test_es_ess_daily_report.py` to recognize the new records,
+  distinguish raw overhead, assigned allowance, requested amperes, and actual
+  stop commands, and retain compatibility with the historical generic log
+  wording.
+- Use the existing hardware-free `unittest`, `Mock`, `SimpleNamespace`, and
+  stub-module patterns. No real Shelly, MQTT, Wattpilot, D-Bus, or network
+  access is permitted in automated tests.
+- Run `python -m py_compile FroniusWattpilot.py SolarOverheadDistributor.py
+  scripts/es-ess-daily-report.py`.
+- Run `python -m unittest tests.test_wattpilot_site_current_guard
+  tests.test_solar_overhead_distributor tests.test_es_ess_daily_report`.
+- No configuration-contract or migration test change is expected because this
+  item adds no setting. If implementation introduces a setting despite this
+  specification, update `config.sample.ini`, README, migration validation, and
+  `tests/test_config_contract.py` in the same PR.
+
+Expected coverage:
+
+- Proves selected-source failure withdraws Wattpilot demand quickly enough for
+  the next distributor cycle and prevents a positive allowance from persisting
+  while charger control is ineligible.
+- Proves a race may still expose one raw pre-suppression calculation, but that
+  value is explicitly diagnostic, is not a charger command, and cannot bypass
+  the controller's existing fail-closed ordering.
+- Proves current consumption remains truthful, other distributor consumers are
+  unaffected, and recovery cannot bypass the existing continuous-safe timer.
+- Proves operators and the daily report receive the exact sanitized provider
+  failure class and a single recovery transition instead of only a generic
+  scheduler warning.
+- Existing Manual-mode, no-grid, battery-assist, phase-switching, command-
+  authority, runtime-status, and atomic-allocation tests remain unchanged and
+  passing.
+
+Manual validation:
+
+Fault simulation in a low-risk window. Use a normal supervised Auto/Eco PV
+charge, but isolate only GX-to-Shelly network access. Do not open the main
+breaker, create an overload, alter phase mapping, or interrupt unrelated site
+telemetry to validate this item.
+
+Manual test steps:
+
+1. Deploy on an approved Venus OS release with Wattpilot firmware `42.5`, the
+   validated native-controller settings, APP_DEBUG logging, and the
+   electrician-verified Shelly source selected.
+2. During a normal low-risk Auto/Eco PV charge, record the healthy Shelly
+   source status, positive request/allowance, per-phase current, and charger
+   setpoint.
+3. Briefly block only local GX access to the Shelly for longer than
+   `RequestTimeoutSeconds`; do not remove mains power or operate the breaker.
+4. Confirm one sanitized source-failure WARNING identifies the failure class,
+   the Wattpilot request and next allowance become zero, and the normal
+   controller cycle sends zero current plus Force Off without a phase command.
+   Confirm any raw-overhead value is labelled as a calculation rather than a
+   command.
+5. Keep the fault present for several poll intervals and confirm the warning is
+   not repeated every second and no positive Wattpilot request returns.
+6. Restore Shelly access and confirm exactly one recovery INFO record. Confirm
+   positive allocation does not return until telemetry is fresh and the
+   existing site-current recovery interval completes.
+7. Run the current-day daily report and confirm it attributes the stop to the
+   selected site-current source failure and does not describe the raw overhead
+   as a charger power increase.
+
+Risks and dependencies:
+
+- Publishing MQTT from the site-current polling worker is a new concurrency
+  edge. Reuse the existing thread-safe publication path and protect only the
+  transition state needed to prevent duplicate records; do not move controller
+  timers or Wattpilot commands into that worker.
+- A distributor cycle can race ahead of the first failed-source notification,
+  so one raw calculated-overhead sample may remain observable. The safety
+  requirement is that it cannot become a positive charger command and does not
+  persist as a usable Wattpilot allocation after failure detection.
+- Zeroing reported consumption would make the energy evidence false and can
+  distort the raw formula in the opposite direction; suppress only the request
+  and resulting allowance.
+- A global grid-topology gate must not be inferred from retained AC-input
+  labels, voltage alone, a missing GX, or the private Wattpilot Shelly source.
+  Such a gate would affect every consumer and requires separate authoritative
+  hardware evidence if pursued.
+- No prior open backlog item is a prerequisite.
+
+Open questions:
+
+- Whether Venus exposes an authoritative, timely grid/main-breaker state for
+  a supported installation remains unproven. This does not block the scoped
+  Wattpilot-request suppression and logging work; do not expand the item into a
+  global distributor topology policy without supervised evidence.
+
+Done criteria:
+
+- A failed selected site-current poll withdraws the Wattpilot distributor
+  request without issuing a charger command from the polling worker.
+- No positive Wattpilot allowance persists after the failure notification and
+  next distributor cycle.
+- The normal controller cycle retains zero-current-before-Force-Off ordering
+  and sends no phase command.
+- Failure and recovery are logged once per transition with useful sanitized
+  evidence and no credentials or endpoint details.
+- Raw overhead, request, allowance, displayed aggregate current, per-phase
+  current, and charger commands are unambiguously distinguished in logs,
+  documentation, and the daily report.
+- Manual mode remains command-free and every existing Wattpilot safety
+  invariant remains intact.
+- README, Wattpilot architecture, and service inventory describe the new
+  allocation-suppression and diagnostic behavior.
+- Focused syntax and unittest commands pass.
+- Full unittest suite passes.
+
+### P2 - Stabilize Wattpilot Allocation-Step Conversion Across Voltage Updates
+
+Goal:
+
+Prevent an allowance representing a complete number of Wattpilot amperes from
+being interpreted as one ampere less after a small voltage update, while
+preserving integer-ampere control, strict no-grid behavior, and the existing
+site-current recovery guard.
+
+Problem:
+
+The Wattpilot controller publishes the SolarOverheadDistributor `StepSize` as
+the rounded integer watts required for one ampere in the active phase mode.
+The distributor constructs the allowance from exact multiples of that value.
+When the allowance returns asynchronously, the controller converts watts back
+to amperes by dividing by a newly sampled, unrounded voltage value and applying
+`floor()`. A small voltage or rounding difference can therefore convert an
+allowance for `N` complete steps into `N-1` amperes.
+
+The lower target is applied immediately. Returning to `N` amperes then waits
+for `SiteCurrentRecoverySeconds` and rises only one ampere per controller cycle.
+If voltage movement repeatedly crosses the conversion boundary, the recovery
+timer restarts and the charge can oscillate one ampere below the fully funded
+target even when site-current headroom is ample. This produces avoidable export
+in addition to the unavoidable residual below one whole three-phase ampere.
+
+This is a control-quality defect, not a site-current overload or evidence of a
+cloud/load event. A residual smaller than one complete Wattpilot step remains
+normal because firmware `42.5` accepts whole-ampere current targets; this item
+must not round up into intentional grid use merely to consume that residual.
+
+Evidence:
+
+- `FroniusWattpilot.py:2142-2148` samples the current one- or three-phase
+  voltage and publishes `StepSize` using `int(round(stepSize))`.
+- `FroniusWattpilot.py:2279-2291` returns live floating-point voltage values;
+  three-phase voltage is the current sum of all three Wattpilot phase samples.
+- `FroniusWattpilot.py:2356-2371` converts an assigned allowance through
+  `targetCurrentForPhase()` and then applies site-current recovery.
+- `WattpilotPhaseDecisions.py:65-83` independently divides the allowance by
+  the supplied live voltage and applies `floor()`. It does not know which
+  rounded step produced that allowance.
+- `WattpilotSiteCurrentDecisions.py:93-119` immediately accepts a lower target,
+  resets recovery when `target <= current`, and delays a later increase. That
+  behavior is correct for a genuine reduction but amplifies a false one-step
+  conversion caused by the mismatched voltage basis.
+- Private supervised evidence showed allowances alternating by exactly one
+  active three-phase step, a current target remaining one ampere below a fully
+  allocated step count, continuously ample site-current headroom, and repeated
+  recovery restarts. Exact operational timestamps, values, and topology remain
+  outside the public repository.
+- `tests/test_wattpilot_phase_decisions.py` covers basic current bounds but has
+  no changing-voltage or allocation-round-trip case. Existing controller tests
+  do not exercise an asynchronous `StepSize` publication followed by an
+  allowance conversion with a slightly different voltage sample.
+
+Implementation:
+
+1. Add a controller-owned, per-phase-mode canonical allocation-step state. On
+   first usable telemetry for a phase mode, initialize it conservatively from
+   the ceiling of the relevant live voltage. While an Auto/Eco charge remains
+   in that phase mode, permit the canonical step to increase when a later live
+   voltage exceeds it, but do not decrease it on ordinary voltage movement.
+   Reset/reinitialize it only at an explicitly tested phase-mode boundary,
+   confirmed disconnect, or controller restart.
+2. Use that same canonical integer watts-per-ampere value for the Wattpilot
+   `Minimum`, `StepSize`, maximum distributor request, and allowance-to-current
+   conversion. Do not publish a rounded value and then divide by a separately
+   sampled floating-point value.
+3. When live voltage raises the canonical step, apply the larger conservative
+   divisor before issuing any current increase and publish the new step for the
+   next distributor cycle. A stale allowance based on the smaller prior step
+   may cause one safe reduction, but it must not authorize an extra ampere.
+   The step must not move downward during the active phase interval and create
+   repeated boundary chatter.
+4. Keep the assigned allowance in watts truthful and retain whole-ampere
+   Wattpilot commands. Do not add a tolerance that rounds a partially funded
+   ampere upward, do not infer extra PV from grid-export screenshots, and do
+   not weaken `AllowGridCharging=false`, grid-import stops, battery-assist
+   limits, or physical site-current protection.
+5. Preserve the existing recovery behavior for genuine target or headroom
+   reductions. With a consistent allocation step, an unchanged fully funded
+   target must no longer reset recovery merely because the live voltage moved
+   across the old rounded conversion boundary.
+6. Add transition-only APP_DEBUG diagnostics for canonical step initialization
+   and upward adjustment, including phase count and old/new non-identifying
+   watt values. Do not log every five-second cycle and do not include private
+   endpoint, vehicle, site, or correlated telemetry details.
+7. Document that strict PV-only whole-ampere charging can normally export less
+   than one active-phase step, while a persistent additional full-step deficit
+   indicates a control or telemetry issue. Do not introduce a new user setting
+   for the internal conversion contract.
+8. Preserve Manual mode as observation-only, command side effects in
+   `FroniusWattpilot.py`, pure helper boundaries, phase-switch timing,
+   transactional phase-current-Start ordering, public D-Bus/MQTT paths,
+   compatibility allowlists, and every existing safety invariant.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `WattpilotPhaseDecisions.py`
+- `tests/test_wattpilot_phase_decisions.py`
+- `tests/test_eco_pv_policy.py`
+- `tests/test_solar_overhead_distributor.py`
+- `README.md`
+- `docs/wattpilot-architecture.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_wattpilot_phase_decisions.py` with clearly synthetic
+  one- and three-phase allocation round trips. Prove that an allowance built
+  from exactly `N` canonical steps returns `N` amperes and that an allowance
+  even slightly below the next complete step never rounds upward.
+- Prove canonical step initialization uses a conservative ceiling, ordinary
+  lower voltage samples do not reduce an active phase-mode step, and a higher
+  voltage raises the step before any current-increase decision.
+- Extend `tests/test_eco_pv_policy.py` with asynchronous cycles where the live
+  voltage moves slightly around an integer boundary between StepSize
+  publication and allowance receipt. Prove the fully funded current does not
+  alternate between `N` and `N-1`, the recovery timer is not falsely reset,
+  and only a genuine lower allowance or reduced site headroom causes an
+  immediate reduction.
+- Prove an upward canonical-step adjustment treats an allowance calculated
+  with the prior smaller step conservatively, sends no increase, and recovers
+  only after the distributor returns an allowance based on the new step.
+- Extend `tests/test_solar_overhead_distributor.py` to prove scripted-consumer
+  minimum-first and whole-step allocation remain unchanged when StepSize is a
+  canonical integer, and that less than one remaining step stays unassigned
+  rather than being rounded into a command.
+- Prove phase changes and confirmed disconnects reinitialize the correct
+  one-/three-phase step without issuing any additional command; Manual mode
+  remains command-free.
+- Use the existing hardware-free `unittest`, `Mock`, `SimpleNamespace`, and
+  stub-module patterns. No real Wattpilot, vehicle, D-Bus, MQTT, or network is
+  permitted in automated tests.
+- Run `python -m py_compile FroniusWattpilot.py WattpilotPhaseDecisions.py`.
+- Run `python -m unittest tests.test_wattpilot_phase_decisions
+  tests.test_eco_pv_policy tests.test_solar_overhead_distributor
+  tests.test_wattpilot_site_current_guard`.
+- Run `python -m unittest tests.test_config_contract` because README behavior
+  documentation changes, even though no configuration key is added.
+
+Expected coverage:
+
+- Proves distributor step publication and controller current conversion share
+  one conservative watts-per-ampere contract across asynchronous cycles.
+- Proves small voltage movement cannot turn a fully funded `N`-ampere allowance
+  into an `N-1`-ampere command or repeatedly restart site-current recovery.
+- Proves a genuine allowance/headroom reduction remains immediate and every
+  later increase retains the configured delay and one-ampere-per-cycle ramp.
+- Proves strict no-grid behavior leaves a sub-step residual unassigned rather
+  than intentionally drawing the next ampere from grid or battery.
+- Existing Manual-mode, phase-switching, battery-assist, command-authority,
+  site-current, runtime-status, distributor, and firmware-compatibility tests
+  remain unchanged and passing.
+
+Manual validation:
+
+Active charging required. Observe a normal, supervised Auto/Eco PV charge
+during naturally stable production. Do not create grid import, switch loads,
+alter protective limits, or operate a breaker solely to validate this item.
+
+Manual test steps:
+
+1. Deploy on an approved runtime and confirm healthy Wattpilot command
+   authority, grid telemetry, and site-current telemetry before connecting the
+   vehicle.
+2. During a naturally stable three-phase charge, observe allowance, canonical
+   step diagnostics, per-phase measured current, aggregate setpoint,
+   site-allowed current, recovery elapsed time, and grid exchange for several
+   minutes.
+3. Confirm an allowance containing `N` complete canonical steps reaches `N`
+   amperes after any legitimate recovery delay and does not alternate to
+   `N-1` solely because phase voltage changes slightly.
+4. Confirm canonical step changes are transition-only and upward during the
+   active phase interval. A higher step must not cause a current increase from
+   an allowance produced with the previous lower step.
+5. Confirm remaining export is smaller than one complete active-phase step
+   when no other consumer or battery reservation can use it. Do not require
+   the controller to round up when doing so would intentionally import grid
+   power.
+6. Allow only natural PV/load movement to exercise a genuine lower target.
+   Confirm reduction remains immediate and recovery retains the configured
+   continuous-safe delay and one-ampere-per-cycle ramp.
+7. Return to Manual and disconnect normally; confirm no new Manual command path
+   and correct one-/three-phase step reinitialization on a later Auto session.
+
+Risks and dependencies:
+
+- A canonical step that can decrease during an active phase interval may
+  recreate the oscillation. Keep it monotonic until an explicit reset boundary.
+- A canonical step that does not rise before dispatch when voltage rises can
+  overstate funded current. Apply upward adjustments conservatively before
+  current increases and let the next distributor cycle provide new allowance.
+- Changing generic distributor arithmetic or allowance topics would affect
+  every consumer. Keep this item inside the Wattpilot step contract and retain
+  existing SolarOverheadDistributor allocation semantics.
+- Do not solve the residual below one whole ampere by weakening no-grid policy,
+  using battery assist outside its continuation bounds, or adding fractional
+  current commands unsupported by the validated Wattpilot contract.
+- The P3 duplicate-command suppression item is complementary but not a
+  prerequisite. This allocation fix should land first so deduplication tests
+  observe the corrected stable target.
+
+Open questions:
+
+- None. The implementation must remain conservative if live voltage rises;
+  supervised validation determines whether transition diagnostics need further
+  tuning without changing the no-grid contract.
+
+Done criteria:
+
+- One canonical conservative watts-per-ampere value governs Wattpilot minimum,
+  step, maximum request, and target-current conversion for each active phase
+  interval.
+- A complete `N`-step allowance cannot become `N-1` solely from rounding or a
+  later voltage sample.
+- A later higher voltage raises the canonical step before any increase and
+  cannot authorize current from a stale lower-step allowance.
+- Genuine reductions remain immediate; increases retain the configured delay
+  and one-ampere-per-cycle ramp.
+- Residual export below one complete step remains truthful and no partial step
+  is rounded into intentional grid use.
+- Manual mode and every existing Wattpilot safety invariant remain intact.
+- README and Wattpilot architecture document the canonical-step and residual-
+  export behavior.
+- Focused syntax, configuration-contract, and unittest commands pass.
+- Full unittest suite passes.
+
+### P3 - Suppress Duplicate Wattpilot Current-Setpoint Commands
+
+Goal:
+
+Avoid retransmitting an unchanged positive Wattpilot current setpoint on every
+five-second controller cycle while preserving every existing command guard,
+safety reduction, and transactional start invariant.
+
+Problem:
+
+The normal Auto/Eco current-adjustment branch logs an adjustment and calls
+`set_power(targetAmps)` on every eligible controller cycle, even when fresh
+Wattpilot telemetry already reports the same `amp` setpoint. The transport then
+sends another `setValue amp=<target>` request because it has no unchanged-value
+suppression. During a stable charge this can produce one redundant WebSocket
+write and one misleading INFO adjustment record approximately every five
+seconds.
+
+This is a transport-efficiency and diagnostic-quality issue, not evidence that
+the EV draws a new current step on every cycle. The Wattpilot treats `amp` as
+its requested current limit; the vehicle chooses its actual draw up to the
+advertised limit. Repeating the same limit is not known to have caused a
+charging or protective-device fault.
+
+Evidence:
+
+- `FroniusWattpilot.py:666-671` registers `_update()` at a 5000 ms interval.
+- `FroniusWattpilot.py:4229-4242` calculates the target, emits `Adjusting charge
+  current`, and unconditionally calls `self.wattpilot.set_power(targetAmps)` on
+  the no-phase-change path.
+- `Wattpilot.py:514-515` maps every `set_power()` call directly to
+  `send_update("amp", power)`.
+- `Wattpilot.py:531-560` runs the common guard and then constructs and sends a
+  new `setValue` request without comparing the requested value with the latest
+  reported `amp` value.
+- `FroniusWattpilot.py:1391-1409` recognizes an unchanged current only to avoid
+  resetting site-current recovery state. It still authorizes and transmits the
+  repeated command.
+- Existing current-policy and command-boundary tests assert individual command
+  calls, but no two-cycle regression proves that an unchanged confirmed
+  positive setpoint is accepted without another transport write.
+
+Implementation:
+
+1. Introduce one controller-owned current-command helper used by every
+   Auto/Eco positive-current call site. It must distinguish `accepted` from
+   `dispatched`: a safely accepted unchanged setpoint is a no-op, while a
+   changed setpoint is sent through the existing `Wattpilot.set_power()` common
+   command boundary.
+2. Before suppressing a repeated positive target, require finite current
+   telemetry confirming that Wattpilot currently reports exactly that `amp`
+   value. Missing, malformed, or different telemetry must send the command.
+   Do not suppress zero-current commands, Force Off, phase commands, mode
+   commands, or any changed current value.
+3. Run the same firmware, command-authority, mode, and fresh site-current
+   command guard even for a proposed no-op. If the guard rejects the target,
+   return rejection rather than treating equality as authorization. Do not let
+   deduplication become a bypass around newly reduced physical headroom.
+4. Return accepted success for a guarded no-op so the existing phase-current-
+   Start transaction can proceed when the inactive Wattpilot already holds the
+   requested current. A rejected target must still prevent every later stage.
+5. Emit the existing INFO adjustment record only when a current command is
+   actually dispatched. Keep any unchanged-target diagnostic at APP_DEBUG or
+   lower and rate-limit or transition-scope it so stable charging does not
+   replace WebSocket spam with log spam.
+6. Preserve the five-second safety evaluation cadence, immediate reductions,
+   one-amp-per-cycle site-current recovery, Manual observation-only behavior,
+   no-grid policy, battery-assist bounds, phase-switch timing, public D-Bus/MQTT
+   contracts, configuration defaults, and firmware allowlists.
+
+Files to change:
+
+- `FroniusWattpilot.py`
+- `tests/test_eco_pv_policy.py`
+- `tests/test_wattpilot_command_boundary.py`
+- `README.md`
+- `docs/wattpilot-architecture.md`
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Extend `tests/test_eco_pv_policy.py` with two consecutive stable three-phase
+  cycles whose calculated target and confirmed Wattpilot `amp` are equal.
+  Prove the first required change is sent once and the next unchanged target
+  produces no second transport call or repeated INFO adjustment record.
+- Prove a changed target, an immediate reduction, and zero-current stop are
+  never suppressed.
+- Extend `tests/test_wattpilot_command_boundary.py` to prove an unchanged
+  positive target still executes the final command guard and is rejected when
+  current site headroom no longer permits it.
+- Prove an accepted no-op in a stopped phase-current-Start sequence permits the
+  following Start command, while a rejected no-op prevents Start.
+- Prove missing, malformed, or stale `amp` telemetry does not suppress the
+  command, and Manual mode gains no new command path.
+- Use the existing hardware-free `unittest`, `Mock`, `SimpleNamespace`, and
+  stub-module patterns. No real Wattpilot, vehicle, D-Bus, MQTT, or network is
+  permitted in automated tests.
+- Run `python -m py_compile FroniusWattpilot.py Wattpilot.py` if the transport
+  file is touched; otherwise syntax-check `FroniusWattpilot.py`.
+- Run `python -m unittest tests.test_eco_pv_policy
+  tests.test_wattpilot_command_boundary tests.test_wattpilot_site_current_guard`.
+- No configuration-contract or migration change is expected because this item
+  adds no setting.
+
+Expected coverage:
+
+- Proves stable Auto/Eco charging does not retransmit the same confirmed
+  positive current setpoint every five seconds.
+- Proves all controller safety checks continue to run at the existing cadence
+  and an unchanged value cannot bypass reduced site headroom.
+- Proves current reductions, stops, phase transitions, and transactional starts
+  retain their existing command ordering and acceptance semantics.
+- Existing Manual-mode, no-grid, battery-assist, phase-switching, site-current,
+  command-authority, runtime-status, and firmware-compatibility tests remain
+  unchanged and passing.
+
+Manual validation:
+
+Active charging required. Observe only a normal, supervised Auto/Eco PV charge;
+do not induce overload, grid import, telemetry loss, or a protective-device
+trip solely to validate command deduplication.
+
+Manual test steps:
+
+1. Start a normal Auto/Eco charge on an approved runtime with healthy command
+   authority and site-current telemetry.
+2. Allow PV and the calculated current target to remain stable for several
+   five-second cycles. Confirm one actual target change produces one adjustment
+   INFO record and stable later cycles do not repeat that record or the
+   corresponding outbound `amp` command.
+3. Let a natural PV change produce a different target and confirm the changed
+   current command is dispatched promptly and the Wattpilot reports the new
+   `amp` value.
+4. Stop or disconnect normally and confirm zero-current/Force-Off behavior and
+   Manual-mode ownership are unchanged.
+
+Risks and dependencies:
+
+- Some controller branches use command acceptance to decide whether a later
+  phase or Start stage may run. An unchanged safe target must therefore return
+  accepted success even though no WebSocket request was dispatched.
+- Suppression based on desired controller state rather than confirmed
+  Wattpilot telemetry could hide a lost, rejected, or externally changed
+  setpoint. Compare only against finite live `amp` telemetry.
+- Moving suppression ahead of the final command guard could bypass newly
+  reduced site headroom. The guard must execute before accepting every no-op.
+- Verify against the validated Wattpilot firmware that repeatedly writing an
+  unchanged `amp` value is not a required keepalive. No other open backlog item
+  is a prerequisite.
+
+Open questions:
+
+- None. Firmware-side no-keepalive behavior remains a manual validation gate,
+  not an implementation assumption that widens command authority.
+
+Done criteria:
+
+- A confirmed unchanged positive `amp` target is safely accepted without a
+  second WebSocket `setValue` request or repeated INFO adjustment message.
+- Missing or different current telemetry sends the requested value normally.
+- The final command guard evaluates every proposed no-op and can reject it.
+- Reductions, zero-current/Force-Off, phase commands, and changed current
+  targets are never suppressed.
+- Transactional Auto/Eco starts retain phase-current-Start ordering and do not
+  fail merely because the current stage is already satisfied.
+- Manual mode and every existing Wattpilot safety invariant remain intact.
+- README and Wattpilot architecture describe the deduplication boundary.
+- Focused syntax and unittest commands pass.
+- Full unittest suite passes.
+
 ## Suggested Implementation Order / PR Execution Queue
 
-No open items. All previously queued items were marked complete at the
-operator's request on 2026-08-30; their retained specifications appear above.
+1. P2 Suppress Fault-Time Wattpilot Allocation And Log Shelly Poll Failure Reasons — preserve the proven fail-closed command path while preventing misleading positive allocation from persisting and retaining actionable sanitized diagnostics.
+2. P2 Stabilize Wattpilot Allocation-Step Conversion Across Voltage Updates — remove avoidable one-ampere under-allocation without weakening strict no-grid or site-current recovery behavior.
+3. P3 Suppress Duplicate Wattpilot Current-Setpoint Commands — reduce stable-charge WebSocket and INFO-log noise after the corrected allocation target is stable.
 
 ## Verification Plan
 
@@ -2920,7 +3577,7 @@ For implementation PRs:
 ## Manual Validation History
 
 The following historical commissioning guidance was marked complete at the
-operator's request on 2026-08-30. Do not force an overcurrent, force grid
+operator's request. Do not force an overcurrent, force grid
 import, disconnect a production grid, interrupt critical telemetry, or alter
 the production energy system solely to recreate historical validation.
 
@@ -2978,5 +3635,7 @@ evidence rather than an open backlog requirement.
 
 ## Outstanding Manual Validation
 
-None. All previously listed manual-validation entries were marked complete at
-the operator's request on 2026-08-30.
+- P2 fault-time Wattpilot allocation suppression and Shelly transition logging:
+  after implementation, perform the low-risk GX-to-Shelly network-isolation
+  procedure defined in the item. Do not operate the main breaker or induce an
+  overload.

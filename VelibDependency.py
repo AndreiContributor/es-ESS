@@ -57,6 +57,20 @@ def verify_bundled_velib():
     if manifest.get("schema_version") != 1:
         raise RuntimeError("Unsupported velib_python pin manifest schema")
 
+    validated_versions = manifest.get("validated_venus_os_versions")
+    if (
+        not isinstance(validated_versions, list)
+        or not validated_versions
+        or any(
+            not isinstance(version, str) or not version.strip()
+            for version in validated_versions
+        )
+        or len(set(validated_versions)) != len(validated_versions)
+    ):
+        raise RuntimeError(
+            "Pinned velib_python manifest has invalid Venus OS compatibility"
+        )
+
     files = manifest.get("core_files")
     if not isinstance(files, dict) or set(files) != set(
         "{0}.py".format(name) for name in CORE_MODULES

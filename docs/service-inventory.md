@@ -40,9 +40,10 @@ sections and settings that already have runtime defaults remain compatible when
 absent.
 
 Before constructing the runtime at all, `RuntimeCompatibility.py` also requires
-the GX device to report the exact supported clean Venus OS release, `v3.75`. A
-missing, qualified, or different version exits with status
-1 before services, MQTT, or grid-setpoint writes begin. The Wattpilot service
+the GX device to report an explicitly supported clean Venus OS release:
+`v3.75` or `v3.79`. v3.79 is preferred and v3.75 remains available for
+stored-firmware rollback. A missing, qualified, or different version exits with
+status 1 before services, MQTT, or grid-setpoint writes begin. The Wattpilot service
 separately requires firmware `42.5` from
 `fwv` telemetry before its common `setValue` command boundary opens. The
 Solar.wattpilot app `2.1.0` baseline is operator-verified because the app version
@@ -104,7 +105,7 @@ not an upstream `master` checkout. The manifest records the source repository,
 per-file commit and Git blob IDs, canonical SHA-256 hashes, MIT license, and
 validated Venus OS baseline. Dependency updates require a new provenance audit,
 updated hashes and contract tests, the full hardware-free suite, and log-only
-GX startup/D-Bus registration validation on the supported Venus OS release.
+GX startup/D-Bus registration validation on every supported Venus OS release.
 
 ## Module Layout
 

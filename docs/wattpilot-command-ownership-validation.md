@@ -13,7 +13,8 @@ controllers issuing conflicting current and phase decisions.
 
 ## Safety boundaries
 
-- Use Venus OS `v3.75`, Wattpilot firmware `42.5`, and operator-verified
+- Use an explicitly supported clean Venus OS release (`v3.75` or `v3.79`),
+  Wattpilot firmware `42.5`, and operator-verified
   Solar.wattpilot app `2.1.0` only.
 - Keep the vehicle physically disconnected throughout setting discovery.
 - Keep flexible-tariff charging disabled when the vehicle is connected.
@@ -38,7 +39,7 @@ call added to the script.
 
 Before changing anything, record:
 
-- Venus OS version: `v3.75`;
+- Venus OS version and build (either clean `v3.75` or clean `v3.79`);
 - Wattpilot firmware: `42.5`;
 - Solar.wattpilot app version: `2.1.0`;
 - vehicle physically disconnected;
@@ -207,10 +208,10 @@ Gate-1 pass criteria:
 - ambiguous or unrelated live-telemetry changes are retained as evidence but
   are not classified as settings without a reversible pair.
 
-### Gate-1 evidence recorded on 2026-07-14
+### Gate-1 evidence retained
 
-The production capture passed with Venus OS `v3.75`, firmware `42.5`, app
-`2.1.0`, and the vehicle disconnected for all eight reports. Every report
+The supervised capture passed with Venus OS `v3.75`, firmware `42.5`, app
+`2.1.0`, and the vehicle disconnected for all reports. Every report
 recorded `all setValue requests blocked` and was protected with mode `0600`.
 
 - `fup` reversibly mapped `Use PV surplus`: `true` when enabled and `false`
@@ -225,7 +226,7 @@ recorded `all setValue requests blocked` and was protected with mode `0600`.
   restored ECO deliberately.
 - `cdci`/`dci` changed in only one control-response direction and remain
   unclassified. Zero feed-in was intentionally not changed. Phase settings
-  were unavailable because the selected Opel Corsa-e vehicle profile owns that
+  were unavailable because the selected vehicle profile owns that
   app surface.
 
 These captures justify only the strict read-only `fup=false` and `ful=false`
@@ -297,8 +298,8 @@ diagnostic and hardware-free tests before deployment.
 
 Expected firmware `42.5` visual artifact: raw Eco mode with both native PV
 surplus and flexible tariff disabled produces native status `114`. The Eco LED
-alternates white/orange and, as confirmed during operator validation on
-2026-07-15, may keep flashing while es-ESS is successfully charging. This state
+alternates white/orange and, as confirmed during supervised validation, may
+keep flashing while es-ESS is successfully charging. This state
 can be selected through the VRM web/Remote Console EVCS control or the dedicated
 Android home-screen EVCS widget even though Solar.wattpilot app `2.1.0` refuses
 to select Eco with both native options disabled. Accept this indication only
@@ -358,9 +359,9 @@ Manual ownership, bounded continuation-only battery assist, and a completed
 backlog entry. An inconclusive natural-PV window is recorded as inconclusive;
 unsafe conditions are never forced merely to close the item.
 
-### Gate-2 evidence recorded on 2026-07-15
+### Gate-2 evidence retained
 
-The production run used Venus OS `v3.75`, Wattpilot firmware `42.5`,
+The supervised run used Venus OS `v3.75`, Wattpilot firmware `42.5`,
 Solar.wattpilot app `2.1.0`, `AllowGridCharging=false`, and the reviewed files
 merged through PR #70. The run produced these results:
 
@@ -372,12 +373,12 @@ merged through PR #70. The run produced these results:
   observations then reported `0`; selecting Auto from the VRM web dashboard
   EVCS tile produced raw `lmo=4`, `/ModeLiteral=Auto`, and
   `/CommandAuthorityOk=1` with the sole-owner diagnostic.
-- During supervised one-phase charging, es-ESS requests progressed from 13 A
-  through 16 A and the measured charger power followed them without a native
-  current rewrite or clamp to the previous native 6 A behavior.
+- During supervised one-phase charging, measured charger power followed
+  multiple distinct es-ESS current requests without a native current rewrite
+  or clamp to the previous native minimum behavior.
 - Assigned allowance remained above the configured phase-up threshold for the
-  full `600`-second candidate. es-ESS issued the phase-up at 07:15:35 UTC and
-  live telemetry confirmed three-phase charging. A later single-cycle atomic
+  full configured candidate interval. es-ESS issued the phase-up and live
+  telemetry confirmed three-phase charging. A later single-cycle atomic
   `0 W` assignment produced a telemetry-confirmed phase-down and exposed that
   the three-phase deficit path bypassed `AllowanceDropGraceSeconds`; the
   follow-up controller fix now holds the existing command through that grace
@@ -392,23 +393,22 @@ merged through PR #70. The run produced these results:
   it was not needlessly repeated during this disconnected boundary check.
 - Solar.wattpilot app `2.1.0` refused to activate Eco while both native Eco
   options were disabled. The VRM web EVCS mode control successfully restored
-  Auto. Follow-up operator validation on 2026-07-15 also confirmed that the
+  Auto. Follow-up supervised validation also confirmed that the
   dedicated Android home-screen VRM EV Charging Station widget can restore
   Auto once its real-time MQTT action reaches the installation. The completed
-  vehicle-disconnected correlation is preserved in
-  `/data/es-ess-mode-boundary-20260715-155537.log`. Local raw `lmo=3` to public
-  Manual propagation took 5.080 seconds. An earlier widget attempt reported
+  vehicle-disconnected correlation is retained as private diagnostic evidence.
+  Local raw `lmo=3` to public Manual propagation completed within the normal
+  controller cadence. An earlier widget attempt reported
   that the MQTT action could not be sent because the installation might not be
   real-time and produced no es-ESS `/Mode` event; that was a VRM delivery
-  failure, not an es-ESS mode rejection. On retry, es-ESS received `/Mode=1` at
-  16:01:15.593 UTC, raw `lmo=4` at 16:01:15.706, and published Auto at
-  16:01:15.723: 130 ms server-observed end to end. No unintended `amp`, `psm`,
+  failure, not an es-ESS mode rejection. On retry, es-ESS received `/Mode=1`,
+  then raw `lmo=4`, and published Auto promptly. No unintended `amp`, `psm`,
   or `frc` command accompanied either disconnected transition. Firmware status
   `114` and the white/orange Eco LED flash persisted even during successful
   es-ESS charging, matching the documented native indication for Eco with
   neither native Eco option selected. Do not change a native authority setting
   merely to suppress this expected indicator.
-- The final health snapshot at 07:35:33 UTC showed the vehicle disconnected,
+- The final health snapshot showed the vehicle disconnected,
   Auto selected, zero EV power/current, stopped control state, unknown phase,
   healthy telemetry, validated runtime compatibility, both native observations
   at `0`, `/CommandAuthorityOk=1`, and no recent critical or error event.

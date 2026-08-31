@@ -15,6 +15,30 @@ Repository guidance for AI coding agents working on es-ESS.
 - Preserve unrelated user work. Do not revert, delete, or overwrite changes
   outside the approved task.
 
+## Public Repository Privacy
+
+- Treat tracked files, tests and fixtures, comments, documentation, and
+  commit/PR text as public.
+- Do not copy private operational evidence into the repository. This includes
+  personal or account names; local filenames and paths; private hosts, IPs,
+  portal IDs, or serial numbers; site or vehicle identity; exact private event
+  dates or clock times; location or timezone; installation topology or load
+  inventory; screenshots or log excerpts; and correlated site telemetry.
+- Convert private evidence into a generic technical condition supported by
+  current code references. Use clearly synthetic, non-derived values in tests
+  and examples.
+- Public product release/build/version identifiers and repository change or
+  completion dates are allowed when they describe compatibility or project
+  history rather than a private operational event. Documented generic
+  deployment paths and clearly synthetic command examples are also allowed.
+- Keep exact evidence only in a user-approved private location outside the
+  repository. Public documentation may refer to it as `private diagnostic
+  evidence` without naming its path.
+- Before delivery, scan every changed public file and the final diff for
+  sensitive data. If sensitive content was committed or pushed, warn that an
+  ordinary deletion does not remove Git history and obtain separate approval
+  before any history rewrite.
+
 ## Application Scope
 
 es-ESS is a Python service bundle deployed on Victron Venus OS / Cerbo GX and
@@ -87,11 +111,14 @@ safety-sensitive.
   module responsibilities, command boundaries, safety invariants, or the public
   D-Bus/MQTT runtime-status contract.
 - Do not add shared 16 A cable/current-limiting logic.
-- Preserve the supported runtime baseline in `RuntimeCompatibility.py`: clean
-  Venus OS `v3.75` only, Wattpilot firmware `42.5`, and operator-verified
-  Solar.wattpilot app `2.1.0`. The v3.75 migration and supervised live GX
-  validation are complete. Do not add or restore another version without
-  explicit integration validation and matching tests.
+- Preserve the explicit runtime allowlist in `RuntimeCompatibility.py`: clean
+  Venus OS `v3.75` and `v3.79` only, Wattpilot firmware `42.5`, and
+  operator-verified Solar.wattpilot app `2.1.0`. v3.79 is preferred and v3.75
+  remains accepted for stored-firmware rollback. The v3.75 migration and
+  supervised live GX validation are complete; v3.79 build `20260826152305`
+  still requires the documented supervised live validation before unattended
+  production use. Do not add another version without explicit integration
+  validation and matching tests.
 
 ## Backlog And Review Workflow
 

@@ -173,7 +173,7 @@ Healthy output normally shows:
 
 - Service state is `up`.
 - Python dependencies import successfully.
-- Venus OS matches the expected clean release.
+- Venus OS matches one of the explicitly expected clean releases.
 - Compatibility status is OK after Wattpilot firmware telemetry is received.
 - Auto/Eco command ownership shows `CommandAuthorityOk=1`,
   `NativePvSurplusEnabled=0`, and `FlexibleTariffEnabled=0` before a vehicle is
@@ -217,13 +217,15 @@ LOG_FILE=/data/log/es-ESS/current.log
 SERVICE_DIR=/service/es-ESS
 APP_DIR=/data/es-ESS
 WATTPILOT_DBUS_SERVICE=com.victronenergy.evcharger.esESS_FroniusWattpilot
-EXPECTED_VENUS_OS=v3.75
+EXPECTED_VENUS_OS_VERSIONS="v3.75 v3.79"
 ```
 
-Override them only when intentionally validating a different layout:
+`EXPECTED_VENUS_OS` remains a backward-compatible single-version override.
+Override these values only when intentionally validating a different layout or
+one specific release:
 
 ```sh
-LOG_LINES=800 EVENT_LINES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh
+EXPECTED_VENUS_OS=v3.79 LOG_LINES=800 EVENT_LINES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh
 ```
 
 ## Related Documentation

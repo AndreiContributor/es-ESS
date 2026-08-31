@@ -73,14 +73,17 @@ Your system needs to match the following requirements in order to use es-ESS:
 ## Supported runtime versions
 
 This checkout deliberately fails closed outside its explicitly approved runtime
-versions. Venus OS v3.75 is the only approved clean Venus OS runtime in this
-checkout. The upgrade, idle/no-vehicle, Manual charging, Manual current-change,
-Manual recovery, and supervised Auto/Eco PV-surplus daylight checks passed on a
-Cerbo GX running Venus OS v3.75 build `20260624163305`:
+versions. It accepts only the clean Venus OS v3.75 and v3.79 releases. v3.79 is
+the preferred target, while v3.75 remains accepted for a fast stored-firmware
+rollback. The v3.75 upgrade, idle/no-vehicle, Manual charging, Manual
+current-change, Manual recovery, and supervised Auto/Eco PV-surplus daylight
+checks passed on Cerbo GX build `20260624163305`. The v3.79 migration target is
+official Cerbo GX build `20260826152305` and requires the supervised validation
+in the firmware runbook before unattended production use:
 
 | Component | Approved version | Runtime enforcement |
 | --- | --- | --- |
-| Venus OS on the GX device | `v3.75` | This exact clean release is required before es-ESS constructs services, connects MQTT, or writes the grid setpoint. A missing or different version exits with status 1. Qualifiers such as `v3.75~1` do not match the clean release. |
+| Venus OS on the GX device | `v3.75` or `v3.79` | One of these exact clean releases is required before es-ESS constructs services, connects MQTT, or writes the grid setpoint. A missing or different version exits with status 1. Qualifiers such as `v3.79~1` and future releases such as `v3.80` do not match the explicit allowlist. |
 | Victron `velib_python` | Pinned bundled composite | `VelibDependency.py` verifies the canonical SHA-256 hashes in `velib_python-master/PINNED.json` and makes that repository-relative directory the only permitted import source. Startup fails before D-Bus registration if the pin is missing, modified, or mixed with the Venus OS system copy. |
 | Fronius Wattpilot firmware | `42.5` | Read from Wattpilot `fwv` telemetry. Until it matches exactly, every es-ESS Wattpilot `setValue` command is blocked and Auto/Eco reports a compatibility fault. Other es-ESS services may continue. |
 | Fronius Solar.wattpilot mobile app | `2.1.0` | Commissioning baseline only. The app version is not exposed to es-ESS and cannot be checked automatically. |
@@ -96,9 +99,10 @@ change.
 For preparation, online/offline upgrade steps, post-update checks, and both
 stored-firmware and manual rollback procedures, see
 [`docs/cerbo-gx-firmware-upgrade-and-rollback.md`](docs/cerbo-gx-firmware-upgrade-and-rollback.md).
-If a rollback boots an older Venus OS release, restore an es-ESS checkout whose
-`RuntimeCompatibility.py` explicitly supports that firmware before starting
-services.
+This checkout can restart directly after a stored-firmware rollback from v3.79
+to v3.75. If a rollback boots any other release, restore an es-ESS checkout
+whose `RuntimeCompatibility.py` explicitly supports that firmware before
+starting services.
 
 The bundled `velib_python-master` directory name is retained for deployment
 compatibility; it is not an unpinned checkout of upstream `master`. The four
@@ -108,7 +112,7 @@ recorded with their Git blob IDs and canonical SHA-256 hashes in
 directory or update from upstream `master` in place. Audit a proposed upstream
 revision, update the manifest and dependency-contract tests together, run the
 full hardware-free suite, then complete a log-only startup and D-Bus
-registration check on the supported Venus OS release before accepting it.
+registration check on every supported Venus OS release before accepting it.
 
 The `?version=1.2.9` value used by the optional Wattpilot cloud WebSocket URL is
 a protocol/client identifier. It is not the Solar.wattpilot mobile app version
@@ -328,7 +332,7 @@ If power, state of charge, or the active state-of-charge limit is temporarily
 unavailable, the calculator skips that cycle without replacing the last valid
 diagnostic value. Calculation resumes automatically when all inputs recover.
 
-On Venus OS v3.75, `dbus-systemcalc-py` owns
+On the supported Venus OS v3.75 and v3.79 releases, `dbus-systemcalc-py` owns
 `/Dc/Battery/TimeToGo` and reads the value from `/TimeToGo` on the selected
 battery service. TimeToGoCalculator does not own either D-Bus service and does
 not inject a value into that system path. VRM time-to-go therefore remains
@@ -1651,11 +1655,11 @@ that GX wall time and includes the UTC offset that applied at that instant, for
 example:
 
 ```text
-2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG ...
+2000-01-02 03:04:05,678 (UTC+0) APP_DEBUG ...
 ```
 
-The offset follows the device timezone and daylight-saving rules. In Romania,
-for example, the same format reports `(UTC+2)` during winter. This makes the
+The example is synthetic. The offset follows the configured device timezone
+and daylight-saving rules, so it may change seasonally. This makes the
 repeated autumn hour unambiguous without changing elapsed-time control logic.
 The setting is read with a bounded, read-only D-Bus query during logging
 startup and is updated by the existing settings subscription. If the setting

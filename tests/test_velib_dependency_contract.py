@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import VelibDependency
+import RuntimeCompatibility
 
 
 EXPECTED_PROVENANCE = {
@@ -151,7 +152,10 @@ class VelibPinContractTests(unittest.TestCase):
     def test_manifest_hashes_and_provenance_are_valid(self):
         manifest = VelibDependency.verify_bundled_velib()
         self.assertEqual("bundled-composite", manifest["selection"])
-        self.assertEqual("v3.75", manifest["validated_venus_os"])
+        self.assertEqual(
+            list(RuntimeCompatibility.VALIDATED_VENUS_OS_VERSIONS),
+            manifest["validated_venus_os_versions"],
+        )
         self.assertEqual(
             EXPECTED_PROVENANCE,
             {

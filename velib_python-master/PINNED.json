@@ -4,7 +4,10 @@
   "repository": "https://github.com/victronenergy/velib_python",
   "selection": "bundled-composite",
   "license": "MIT",
-  "validated_venus_os": "v3.75",
+  "validated_venus_os_versions": [
+    "v3.75",
+    "v3.79"
+  ],
   "notes": [
     "The directory name is retained for deployment compatibility; it is not an unpinned master checkout.",
     "The four runtime files form a recoverable composite of official Victron commits rather than one upstream tree commit.",

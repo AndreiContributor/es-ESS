@@ -504,7 +504,7 @@ class LoggingConfigurationTests(unittest.TestCase):
 
     def _timezone_context(self, timezone):
         return Mock(
-            snapshot=Mock(return_value=("Europe/Bucharest", timezone))
+            snapshot=Mock(return_value=("Etc/UTC", timezone))
         )
 
     def _format_at(self, instant, timezone):
@@ -521,9 +521,9 @@ class LoggingConfigurationTests(unittest.TestCase):
         )
         return formatter.format(record)
 
-    def test_formatter_uses_venus_timezone_in_romanian_summer(self):
+    def test_formatter_uses_synthetic_positive_three_hour_offset(self):
         instant = self.es_ess.datetime.datetime(
-            2026, 7, 15, 15, 42, 10, 123000,
+            2000, 7, 2, 15, 42, 10, 123000,
             tzinfo=self.es_ess.datetime.timezone.utc,
         )
 
@@ -534,12 +534,12 @@ class LoggingConfigurationTests(unittest.TestCase):
                     self.es_ess.datetime.timedelta(hours=3)
                 ),
             ),
-            "2026-07-15 18:42:10,123 (UTC+3) APP_DEBUG diagnostic",
+            "2000-07-02 18:42:10,123 (UTC+3) APP_DEBUG diagnostic",
         )
 
-    def test_formatter_uses_venus_timezone_in_romanian_winter(self):
+    def test_formatter_uses_synthetic_positive_two_hour_offset(self):
         instant = self.es_ess.datetime.datetime(
-            2026, 1, 15, 16, 42, 10, 123000,
+            2000, 1, 2, 16, 42, 10, 123000,
             tzinfo=self.es_ess.datetime.timezone.utc,
         )
 
@@ -550,13 +550,13 @@ class LoggingConfigurationTests(unittest.TestCase):
                     self.es_ess.datetime.timedelta(hours=2)
                 ),
             ),
-            "2026-01-15 18:42:10,123 (UTC+2) APP_DEBUG diagnostic",
+            "2000-01-02 18:42:10,123 (UTC+2) APP_DEBUG diagnostic",
         )
 
     def test_venus_timezone_query_reads_named_setting_with_timeout(self):
         completed = Mock(
             returncode=0,
-            stdout="'Europe/Bucharest'\n",
+            stdout="'Etc/UTC'\n",
             stderr="",
         )
         with patch.object(
@@ -566,8 +566,8 @@ class LoggingConfigurationTests(unittest.TestCase):
         ) as run:
             timezone_name = self.es_ess._readVenusTimezone()
 
-        self.assertEqual(timezone_name, "Europe/Bucharest")
-        zone_info.assert_called_once_with("Europe/Bucharest")
+        self.assertEqual(timezone_name, "Etc/UTC")
+        zone_info.assert_called_once_with("Etc/UTC")
         run.assert_called_once_with(
             [
                 "dbus",
@@ -641,11 +641,11 @@ class LoggingConfigurationTests(unittest.TestCase):
             )
             try:
                 current = self.es_ess.datetime.datetime(
-                    2026, 7, 15, 21, 30,
+                    2000, 1, 2, 21, 30,
                     tzinfo=self.es_ess.datetime.timezone.utc,
                 )
                 expected = self.es_ess.datetime.datetime(
-                    2026, 7, 17, 0, 0,
+                    2000, 1, 4, 0, 0,
                     tzinfo=timezone,
                 )
 
@@ -668,7 +668,7 @@ class LoggingConfigurationTests(unittest.TestCase):
             )
             try:
                 local_midnight = self.es_ess.datetime.datetime(
-                    2026, 7, 16, 0, 0, tzinfo=timezone
+                    2000, 1, 3, 0, 0, tzinfo=timezone
                 )
                 handler.rolloverAt = int(local_midnight.timestamp())
                 with patch.object(
@@ -680,7 +680,7 @@ class LoggingConfigurationTests(unittest.TestCase):
                 ):
                     handler.doRollover()
 
-                rotated = Path(str(base_log) + ".2026-07-15")
+                rotated = Path(str(base_log) + ".2000-01-02")
                 self.assertEqual(rotated.read_text(encoding="utf-8"), "completed day\n")
                 self.assertTrue(base_log.exists())
             finally:
