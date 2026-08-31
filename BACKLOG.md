@@ -60,8 +60,9 @@ Current validated state:
   watts-per-amp steps while the controller divides that allowance by a newer
   unrounded voltage sample and floors it to one ampere less. The existing
   recovery delay then amplifies small voltage-boundary movement into avoidable
-  current oscillation and export. A new open P2 item makes the allocation step
-  conservative and consistent across publication and command calculation.
+  current oscillation and export. The completed canonical-step item now keeps
+  the allocation divisor conservative and consistent across publication and
+  command calculation.
 - Supervised Auto/Eco validation confirmed that a partially elapsed phase-up
   candidate was cleared by a confirmed physical disconnect: after reconnect,
   without an es-ESS restart, the next candidate began from zero. The same
@@ -3159,7 +3160,22 @@ Done criteria:
 - Focused syntax and unittest commands pass.
 - Full unittest suite passes.
 
-### P2 - Stabilize Wattpilot Allocation-Step Conversion Across Voltage Updates
+### Completed 2026-08-31 - P2 Stabilize Wattpilot Allocation-Step Conversion Across Voltage Updates
+
+Completion record:
+
+- Added controller-owned canonical one-/three-phase allocation steps initialized
+  from the ceiling of usable live voltage, monotonic within each phase interval,
+  and reset at phase/disconnect boundaries.
+- The same integer step now governs Wattpilot minimum, distributor increment,
+  maximum request, and allowance-to-current conversion. Higher voltage is
+  applied before dispatch; partially funded amperes remain unassigned.
+- Added transition-only APP_DEBUG diagnostics plus pure and controller-level
+  round-trip, changing-voltage, recovery, phase-boundary, disconnect, and
+  distributor-residual regressions.
+- Updated operator and architecture documentation. Focused syntax,
+  configuration-contract, and 187 hardware-free tests passed; supervised
+  natural charging observation remains a deployment validation step.
 
 Goal:
 
@@ -3567,8 +3583,7 @@ Done criteria:
 
 ## Suggested Implementation Order / PR Execution Queue
 
-1. P2 Stabilize Wattpilot Allocation-Step Conversion Across Voltage Updates — remove avoidable one-ampere under-allocation without weakening strict no-grid or site-current recovery behavior.
-2. P3 Suppress Duplicate Wattpilot Current-Setpoint Commands — reduce stable-charge WebSocket and INFO-log noise after the corrected allocation target is stable.
+1. P3 Suppress Duplicate Wattpilot Current-Setpoint Commands — reduce stable-charge WebSocket and INFO-log noise after the corrected allocation target is stable.
 
 ## Verification Plan
 

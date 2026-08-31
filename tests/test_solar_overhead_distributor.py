@@ -358,6 +358,24 @@ class SolarOverheadDistributorTests(unittest.TestCase):
 
         self.assertEqual(assigned[scripted.consumerKey], 400)
 
+    def test_canonical_integer_step_leaves_partial_step_unassigned(self):
+        service = self._service()
+        wattpilot = StubConsumer("Wattpilot")
+        wattpilot.minimum = 6 * 231
+        wattpilot.request = 16 * 231
+        wattpilot.stepSize = 231
+        service._knownSolarOverheadConsumers = {
+            wattpilot.consumerKey: wattpilot
+        }
+
+        assigned = service.doAssign(
+            overhead=8 * 231 + 230,
+            overheadDistribution={wattpilot.consumerKey: 0},
+            minBatCharge=0,
+        )
+
+        self.assertEqual(assigned[wattpilot.consumerKey], 8 * 231)
+
     def test_update_distribution_publishes_atomic_npc_allowance(self):
         service = self._service(grid=(-1000, 0, 0), battery_power=0)
         consumer = StubConsumer("http")

@@ -174,6 +174,12 @@ It owns:
   target-current, distributor-request, and shared bidirectional phase timing
   decisions to
   `WattpilotPhaseDecisions.py`.
+- Controller-owned canonical Wattpilot allocation steps. Each phase interval
+  initializes its integer watts-per-ampere step from the ceiling of usable live
+  voltage, permits conservative upward adjustment, and does not decrease on
+  ordinary voltage movement. The same step is used for distributor minimum,
+  increment, maximum request, and allowance-to-current conversion, then resets
+  at a tested phase boundary or confirmed disconnect.
 - Continuation-only grid fallback when `AllowGridCharging=true`. This can hold
   an already-running Auto/Eco charge through insufficient PV, but cannot start
   a new grid-only session. Victron ESS, not the Wattpilot controller, determines
@@ -618,6 +624,12 @@ Future Wattpilot changes must preserve these invariants:
   phase-down; otherwise Auto/Eco stops.
 - Current limits must respect configured per-phase bounds and the
   Wattpilot-reported effective limit.
+- Wattpilot minimum, allocation increment, maximum request, and
+  allowance-to-current conversion must share one conservative canonical
+  integer watts-per-ampere step for each active phase interval. A higher live
+  voltage raises the step before any increase; ordinary lower samples do not
+  reduce it. A partial step must remain unassigned rather than rounding into
+  intentional grid or battery use.
 - Phase-switch command ordering must keep both the old and requested phase mode
   inside the calculated site-current headroom before any increase.
 - Public D-Bus and MQTT runtime-status paths are compatibility contracts.

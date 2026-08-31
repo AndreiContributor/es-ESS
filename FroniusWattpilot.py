@@ -2,7 +2,7 @@
 from builtins import int
 from enum import Enum
 import json
-from math import isfinite
+from math import ceil, isfinite
 import os
 import platform
 import sys
@@ -240,6 +240,8 @@ class FroniusWattpilot (esESSService):
         self.lastVarDump = 0
         self.chargingTime = 0
         self.currentPhaseMode = 1  # 1 = one phase, 2 = Wattpilot three-phase code
+        self.canonicalAllocationStepW = {1: 0, 2: 0}
+        self._allocationStepActivePhaseMode = self.currentPhaseMode
         self.mode: VrmEvChargerControlMode = VrmEvChargerControlMode.Manual
         self.autostart = 0
         self.noChargeSince = 0
@@ -1310,6 +1312,7 @@ class FroniusWattpilot (esESSService):
         self.clearPowerTransitionGrace()
         self.clearPendingPhaseSwitch()
         self.clearPhaseSwitchCandidate()
+        self.resetCanonicalAllocationSteps()
         # Safety telemetry was published before state dispatch in this duty
         # cycle. Republish the cleared values now because idle mode may defer
         # the next normal update for up to five minutes.
@@ -2257,14 +2260,13 @@ class FroniusWattpilot (esESSService):
             self.config["FroniusWattpilot"]["OverheadPriority"]
         )
 
-        if self.currentPhaseMode == 2:
-            stepSize = self.threePhaseVoltage()
-        else:
-            stepSize = self.onePhaseVoltage()
+        stepSize = self.allocationStepForPhase(
+            2 if self.currentPhaseMode == 2 else 1
+        )
 
         self.publishMainMqtt(
             "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/StepSize",
-            int(round(stepSize))
+            stepSize
         )
 
         effectiveCarConnected = getattr(
@@ -2375,10 +2377,10 @@ class FroniusWattpilot (esESSService):
         )
 
     def minimumChargePower(self):
-        return self.onePhaseVoltage() * self.minCurrentPerPhase
+        return self.allocationStepForPhase(1) * self.minCurrentPerPhase
 
     def threePhaseMinimumPower(self):
-        return self.threePhaseVoltage() * self.minCurrentPerPhase
+        return self.allocationStepForPhase(2) * self.minCurrentPerPhase
 
     def allowanceIsFresh(self):
         return DecisionInputs.allowance_is_fresh(
@@ -2425,6 +2427,77 @@ class FroniusWattpilot (esESSService):
             return float(sum(voltages))
         return self.onePhaseVoltage() * 3.0
 
+    def liveAllocationVoltageForPhase(self, phaseMode):
+        """Return usable live volts for one Wattpilot ampere, or None."""
+        if phaseMode == 1:
+            voltage = DecisionInputs.finite_number(
+                getattr(self.wattpilot, "voltage1", None)
+            )
+            return voltage if voltage is not None and voltage > 0 else None
+        if phaseMode == 2:
+            voltages = tuple(
+                DecisionInputs.finite_number(
+                    getattr(self.wattpilot, "voltage{0}".format(index), None)
+                )
+                for index in (1, 2, 3)
+            )
+            if all(voltage is not None and voltage > 0 for voltage in voltages):
+                return sum(voltages)
+            return None
+        raise ValueError("phaseMode must be 1 or 2")
+
+    def _syncAllocationStepPhaseBoundary(self):
+        """Reset the entering phase mode's step at an explicit mode boundary."""
+        currentMode = self.currentPhaseMode if self.currentPhaseMode in (1, 2) else 0
+        previousMode = getattr(self, "_allocationStepActivePhaseMode", None)
+        steps = getattr(self, "canonicalAllocationStepW", {1: 0, 2: 0})
+        if not isinstance(steps, dict):
+            steps = {1: 0, 2: 0}
+        steps.setdefault(1, 0)
+        steps.setdefault(2, 0)
+        if previousMode is not None and previousMode != currentMode:
+            if currentMode in (1, 2):
+                steps[currentMode] = 0
+            else:
+                steps = {1: 0, 2: 0}
+        self.canonicalAllocationStepW = steps
+        self._allocationStepActivePhaseMode = currentMode
+
+    def resetCanonicalAllocationSteps(self):
+        """Clear allocation steps after a confirmed disconnect."""
+        self.canonicalAllocationStepW = {1: 0, 2: 0}
+        self._allocationStepActivePhaseMode = (
+            self.currentPhaseMode if self.currentPhaseMode in (1, 2) else 0
+        )
+
+    def allocationStepForPhase(self, phaseMode):
+        """Return one conservative, monotonic watts-per-ampere allocation step."""
+        self._syncAllocationStepPhaseBoundary()
+        liveVoltage = self.liveAllocationVoltageForPhase(phaseMode)
+        fallbackVoltage = (
+            self.threePhaseVoltage() if phaseMode == 2 else self.onePhaseVoltage()
+        )
+        candidate = max(
+            1,
+            int(ceil(liveVoltage if liveVoltage is not None else fallbackVoltage)),
+        )
+        steps = self.canonicalAllocationStepW
+        previous = int(steps.get(phaseMode, 0) or 0)
+        if liveVoltage is not None and (previous <= 0 or candidate > previous):
+            steps[phaseMode] = candidate
+            d(
+                self,
+                "Wattpilot allocation step {0}: phases={1} old_step_w={2} "
+                "new_step_w={3}.".format(
+                    "initialized" if previous <= 0 else "increased",
+                    3 if phaseMode == 2 else 1,
+                    previous,
+                    candidate,
+                ),
+            )
+            return candidate
+        return previous if previous > 0 else candidate
+
     def getEffectiveMaxCurrent(self):
         wattpilotLimit = self.wattpilot.ampLimit
         if wattpilotLimit is None or wattpilotLimit <= 0:
@@ -2458,22 +2531,20 @@ class FroniusWattpilot (esESSService):
             self.currentPhaseMode,
             maxCurrent,
             self.minCurrentPerPhase,
-            self.onePhaseVoltage(),
-            self.threePhaseVoltage(),
+            self.allocationStepForPhase(1),
+            self.allocationStepForPhase(2),
             self.phaseUpThresholdW(),
             self.getPhaseSwitchCooldownSeconds(),
         )
 
     def maxRequestVoltageForCurrentPhase(self):
-        """Return the electrical voltage of the active phase mode.
+        """Return the canonical allocation step of the active phase mode.
 
         Allocation uses maximumRequestForDistributorW() so a 1-phase phase-up
         probe does not have to advertise the full 3-phase current capacity.
         """
-        return (
-            self.threePhaseVoltage()
-            if self.currentPhaseMode == 2
-            else self.onePhaseVoltage()
+        return self.allocationStepForPhase(
+            2 if self.currentPhaseMode == 2 else 1
         )
 
 
@@ -2493,8 +2564,8 @@ class FroniusWattpilot (esESSService):
         return PhaseDecisions.target_current_for_phase(
             phaseMode,
             allowance,
-            self.onePhaseVoltage(),
-            self.threePhaseVoltage(),
+            self.allocationStepForPhase(1),
+            self.allocationStepForPhase(2),
             self.minCurrentPerPhase,
             maxCurrent,
         )
@@ -3034,6 +3105,7 @@ class FroniusWattpilot (esESSService):
         self.lastConfirmedCarConnected = False
         self.carDisconnectedSince = 0
         self.effectiveCarConnected = False
+        self.resetCanonicalAllocationSteps()
         return False
 
     def allowanceStopGraceActive(self):

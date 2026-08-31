@@ -65,8 +65,8 @@ def desired_phase_mode(
 def target_current_for_phase(
     phase_mode,
     allowance_w,
-    one_phase_voltage,
-    three_phase_voltage,
+    one_phase_allocation_step,
+    three_phase_allocation_step,
     min_current,
     max_current,
 ):
@@ -74,8 +74,12 @@ def target_current_for_phase(
     if max_current < min_current:
         return 0
 
-    voltage = three_phase_voltage if phase_mode == 2 else one_phase_voltage
-    target = int(floor(max(0, allowance_w) / voltage))
+    allocation_step = (
+        three_phase_allocation_step
+        if phase_mode == 2
+        else one_phase_allocation_step
+    )
+    target = int(floor(max(0, allowance_w) / allocation_step))
 
     if target < min_current:
         return 0
@@ -87,8 +91,8 @@ def maximum_request_for_distributor_w(
     current_phase_mode,
     max_current,
     min_current,
-    one_phase_voltage,
-    three_phase_voltage,
+    one_phase_allocation_step,
+    three_phase_allocation_step,
     phase_up_threshold,
     cooldown_seconds,
 ):
@@ -96,15 +100,15 @@ def maximum_request_for_distributor_w(
     if max_current < min_current:
         return 0
 
-    one_phase_maximum = max_current * one_phase_voltage
+    one_phase_maximum = max_current * one_phase_allocation_step
 
     if current_phase_mode == 2:
-        return max_current * three_phase_voltage
+        return max_current * three_phase_allocation_step
 
     if cooldown_seconds > 0:
         return one_phase_maximum
 
-    allocation_step = max(1.0, one_phase_voltage)
+    allocation_step = max(1.0, one_phase_allocation_step)
     phase_up_probe = ceil(phase_up_threshold / allocation_step) * allocation_step
     return max(one_phase_maximum, phase_up_probe)
 
