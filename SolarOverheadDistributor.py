@@ -502,8 +502,8 @@ class SolarOverheadDistributor(esESSService):
          overhead = max(0, feedIn + assignedConsumption + batPower)
          self.Publish("/Calculations/OverheadAvailable",  overhead)
 
-         self.publishServiceMessage(self,  "Updating distribution. Available Overhead: {0}W, Battery Reservation: {1}W".format(overhead, minBatCharge))
-         i("SolarOverheadDistributor","Available Overhead: " + str(overhead) + "W + ("+str(minBatCharge)+"W BatteryReservation, tho.)")
+         self.publishServiceMessage(self,  "Updating distribution. Calculated raw overhead: {0}W; Battery Reservation: {1}W. Raw overhead is an allocation input, not a consumer allowance or device command.".format(overhead, minBatCharge))
+         i("SolarOverheadDistributor","Calculated raw overhead: " + str(overhead) + "W + ("+str(minBatCharge)+"W BatteryReservation). This is not a consumer allowance or device command.")
 
          overheadAssigned = 0
 
@@ -546,7 +546,7 @@ class SolarOverheadDistributor(esESSService):
                )
                overheadAssigned += consumer.allowance
                overhead -= consumer.allowance
-               self.publishServiceMessage(self, "Assigned {0}W to {1} ({2}, {3})".format(consumer.allowance, consumer.customName, consumer.priority, consumerKey))
+               self.publishServiceMessage(self, "Allocated {0}W allowance to {1} ({2}, {3}); this allocation is not a device command.".format(consumer.allowance, consumer.customName, consumer.priority, consumerKey))
             elif (not consumer.isInitialized):
                self.publishServiceMessage(self, "{0} ({1}) is not yet initialized.".format(consumer.customName, consumerKey), Globals.ServiceMessageType.Warning)
             elif (not consumer.isAutomatic):

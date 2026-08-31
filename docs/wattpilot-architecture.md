@@ -89,6 +89,9 @@ It owns:
   ownership during rapid disconnect/reconnect sequences.
 - Wattpilot authentication and secure message wrapping.
 - Parsing Wattpilot status messages into local client properties.
+- Timestamping explicit `amp` setpoint telemetry for the current connection and
+  invalidating that timestamp on disconnect/reconnect boundaries, so the
+  controller never deduplicates from pre-connection desired state.
 - Strict read-only parsing of firmware `42.5` native-command settings `fup`
   (`Use PV surplus`) and `ful` (flexible tariff). Non-booleans and reconnect
   gaps become unavailable rather than truthy/falsy guesses.
@@ -154,6 +157,13 @@ It owns:
   throttle. The normal five-second service worker consumes the latest provider
   snapshot and republishes current, age, health, and headroom paths without
   dispatching control or advancing site-recovery timers.
+- The asynchronous Shelly polling wrapper. A failed selected-source poll
+  immediately publishes a zero Wattpilot distributor request and records one
+  sanitized failure transition; repeated failures do not repeat the warning.
+  It may copy provider telemetry and publish that request, but it does not issue
+  a Wattpilot command, dispatch controller state, or mutate recovery/phase
+  timers. Recovery is logged once and positive demand resumes only from the
+  normal controller cycle after fresh telemetry and site-current recovery.
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
@@ -167,6 +177,12 @@ It owns:
   target-current, distributor-request, and shared bidirectional phase timing
   decisions to
   `WattpilotPhaseDecisions.py`.
+- Controller-owned canonical Wattpilot allocation steps. Each phase interval
+  initializes its integer watts-per-ampere step from the ceiling of usable live
+  voltage, permits conservative upward adjustment, and does not decrease on
+  ordinary voltage movement. The same step is used for distributor minimum,
+  increment, maximum request, and allowance-to-current conversion, then resets
+  at a tested phase boundary or confirmed disconnect.
 - Continuation-only grid fallback when `AllowGridCharging=true`. This can hold
   an already-running Auto/Eco charge through insufficient PV, but cannot start
   a new grid-only session. Victron ESS, not the Wattpilot controller, determines
@@ -180,6 +196,12 @@ It owns:
   then rejects positive Auto/Eco current, start, or phase commands without
   fresh and sufficient physical site-current headroom. Safe zero-current,
   Force Off, and automatic-phase release commands remain available.
+- A controller-owned current-command helper used by positive Auto/Eco current
+  paths. It runs the final guard before accepting a connected, explicitly
+  confirmed unchanged `amp` target as a command-free no-op and reports
+  acceptance separately from transport dispatch. Missing, malformed,
+  connection-reset, or different telemetry dispatches through the existing
+  `Wattpilot.set_power()` boundary. Zero-current commands are not deduplicated.
 - Transactional Auto/Eco start-state publication. The controller sends the
   guarded phase, current, and Start commands in that order and begins public
   transition grace only after all three are accepted. A rejection leaves the
@@ -358,6 +380,10 @@ periodic identity revalidation, and electrician-verified A/B/C-to-L1/L2/L3
 mapping. Only a complete successful poll refreshes all three timestamps. A
 failure invalidates the selected source without refreshing cached age. These
 provider modules do not publish commands or register a Victron grid service.
+The controller-owned polling wrapper consumes that command-free snapshot,
+withdraws only the Wattpilot SolarOverheadDistributor request on failure, and
+logs sanitized failure/recovery transitions. The provider still has no MQTT,
+D-Bus publication, or charger-command responsibility.
 
 ### `WattpilotControlState.py`
 
@@ -432,7 +458,9 @@ Wattpilot controller.
 It owns the shared surplus calculation, battery-charge reservation, consumer
 requests, and allowance publication. It does not own Wattpilot command policy.
 The Wattpilot controller decides whether a Wattpilot allowance is fresh, valid,
-and sufficient for a charge action.
+and sufficient for a charge action. Its raw-overhead diagnostic is a calculated
+allocation input, and a consumer allowance is an allocation result; neither is
+a Wattpilot command.
 
 ## Safety Invariants
 
@@ -476,6 +504,12 @@ Future Wattpilot changes must preserve these invariants:
   age. A command-free idle diagnostic refresh must remain on the normal
   five-second service cadence and must not issue commands, dispatch controller
   state, advance recovery timers, or mutate phase-switch candidates.
+- A failed selected asynchronous site-current poll must withdraw the Wattpilot
+  distributor request without changing truthful measured consumption or the
+  global raw-overhead calculation. Positive demand may resume only from the
+  normal controller cycle after source health, freshness, and the existing
+  site-current recovery interval are satisfied. The polling worker must not
+  issue charger commands or mutate controller recovery/phase timers.
 - One-phase charging subtracts measured EV current only from
   `Charger1PhaseMapping`. Three-phase charging subtracts the smallest measured
   EV phase current from all physical phases and receives one equal current
@@ -493,6 +527,12 @@ Future Wattpilot changes must preserve these invariants:
   final command boundary rejects any stage, later stages are not sent and the
   controller must not publish Start state, transition power, or a successful
   on/off timestamp.
+- An unchanged positive current may satisfy the current stage without a
+  WebSocket write only after the normal final guard accepts it and connected
+  Wattpilot `amp` telemetry explicitly confirms that exact value. Desired
+  controller state, missing/malformed telemetry, or telemetry invalidated by a
+  reconnect cannot suppress a command. Changed and zero-current targets remain
+  dispatchable, and an unsafe no-op must reject every later transaction stage.
 - `SiteMaxCurrent` has no hidden margin and does not replace the site breaker or
   downstream branch protection. A roughly five-second response cannot
   guarantee interception of short inrush, and stopping the EV cannot correct a
@@ -599,6 +639,12 @@ Future Wattpilot changes must preserve these invariants:
   phase-down; otherwise Auto/Eco stops.
 - Current limits must respect configured per-phase bounds and the
   Wattpilot-reported effective limit.
+- Wattpilot minimum, allocation increment, maximum request, and
+  allowance-to-current conversion must share one conservative canonical
+  integer watts-per-ampere step for each active phase interval. A higher live
+  voltage raises the step before any increase; ordinary lower samples do not
+  reduce it. A partial step must remain unassigned rather than rounding into
+  intentional grid or battery use.
 - Phase-switch command ordering must keep both the old and requested phase mode
   inside the calculated site-current headroom before any increase.
 - Public D-Bus and MQTT runtime-status paths are compatibility contracts.

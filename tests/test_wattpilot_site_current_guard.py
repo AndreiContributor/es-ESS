@@ -307,6 +307,113 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         self.assertEqual(controller.siteCurrentL1UpdatedAt, 50.0)
         controller.readDbusSubscription.assert_not_called()
 
+    def test_shelly_poll_failure_withdraws_request_and_logs_transitions_only(self):
+        controller = self._controller()
+        controller.siteCurrentSourceName = "Shelly3EMGen3"
+        controller.publishMainMqtt = Mock()
+        controller.mqttRawOverheadW = 4800
+        controller.mqttRawOverheadUpdatedAt = 110
+        controller.wattpilot.power = 4.2
+        failure = SiteCurrentSnapshot(
+            source="Shelly3EMGen3",
+            values={"L1": 6.0, "L2": 6.0, "L3": 6.0},
+            valid={"L1": False, "L2": False, "L3": False},
+            updated_at={"L1": 100.0, "L2": 100.0, "L3": 100.0},
+            connected=False,
+            status="Unavailable",
+            error="Shelly RPC request failed: Timeout",
+        )
+        healthy = SiteCurrentSnapshot(
+            source="Shelly3EMGen3",
+            values={"L1": 6.0, "L2": 6.0, "L3": 6.0},
+            valid={"L1": True, "L2": True, "L3": True},
+            updated_at={"L1": 112.0, "L2": 112.0, "L3": 112.0},
+            connected=True,
+            status="Healthy",
+        )
+        controller.siteCurrentSource = Mock()
+        controller.siteCurrentSource.poll.side_effect = (False, False, True)
+        controller.siteCurrentSource.read_sample.side_effect = (
+            failure,
+            failure,
+            healthy,
+        )
+
+        with patch.object(self.fwp, "w") as warning_log, patch.object(
+            self.fwp, "i"
+        ) as info_log:
+            with patch.object(self.fwp.time, "time", return_value=110.0):
+                self.assertFalse(controller.pollSiteCurrentSource())
+            with patch.object(self.fwp.time, "time", return_value=111.0):
+                self.assertFalse(controller.pollSiteCurrentSource())
+            with patch.object(self.fwp.time, "time", return_value=112.0):
+                self.assertTrue(controller.pollSiteCurrentSource())
+
+        request_calls = [
+            call
+            for call in controller.publishMainMqtt.call_args_list
+            if call.args[0].endswith("/Wattpilot/Request")
+        ]
+        self.assertEqual([call.args[1] for call in request_calls], [0, 0])
+        warning_log.assert_called_once()
+        info_log.assert_called_once()
+        warning = warning_log.call_args.args[1]
+        recovery = info_log.call_args.args[1]
+        self.assertIn("reason=Shelly RPC request failed: Timeout", warning)
+        self.assertIn("allocation_suppressed=true", warning)
+        self.assertIn("positive_charger_command_authorized=false", warning)
+        self.assertIn("site-current source recovered", recovery)
+        self.assertNotIn("http://", warning)
+        self.assertNotIn("password", warning.lower())
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+
+    def test_positive_request_waits_for_source_health_and_recovery(self):
+        controller = self._controller()
+        controller.siteCurrentSource = Mock()
+        controller.siteCurrentSourceConnected = False
+        controller.siteCurrentSourceStatus = "Unavailable"
+        controller.siteCurrentGuardBlocked = True
+        controller.publishMainMqtt = Mock()
+        self._set_site(controller, 3, 3, 3, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100.0):
+            controller.reportBaseRequest()
+        requests = [
+            call.args[1]
+            for call in controller.publishMainMqtt.call_args_list
+            if call.args[0].endswith("/Wattpilot/Request")
+        ]
+        self.assertEqual(requests, [0])
+
+        controller.publishMainMqtt.reset_mock()
+        controller.siteCurrentSourceConnected = True
+        controller.siteCurrentSourceStatus = "Healthy"
+        controller.siteCurrentGuardBlocked = False
+        controller.siteCurrentRecoverySince = {1: 105.0, 2: 105.0}
+        self._set_site(controller, 3, 3, 3, 105)
+        with patch.object(self.fwp.time, "time", return_value=105.0):
+            controller.reportBaseRequest()
+        requests = [
+            call.args[1]
+            for call in controller.publishMainMqtt.call_args_list
+            if call.args[0].endswith("/Wattpilot/Request")
+        ]
+        self.assertEqual(requests, [0])
+
+        controller.publishMainMqtt.reset_mock()
+        self._set_site(controller, 3, 3, 3, 136)
+        with patch.object(self.fwp.time, "time", return_value=136.0):
+            controller.reportBaseRequest()
+        requests = [
+            call.args[1]
+            for call in controller.publishMainMqtt.call_args_list
+            if call.args[0].endswith("/Wattpilot/Request")
+        ]
+        self.assertEqual(len(requests), 1)
+        self.assertGreater(requests[0], 0)
+
     def test_disconnected_idle_refresh_publishes_latest_shelly_snapshot_only(self):
         controller = self._controller()
         controller.mode = self.fwp.VrmEvChargerControlMode.Auto
@@ -690,6 +797,60 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
             controller.dbusService["/StartStop"],
             self.fwp.VrmEvChargerStartStop.Start.value,
         )
+
+    def test_auto_start_accepts_guarded_current_noop_before_start(self):
+        controller = self._controller()
+        controller.allowance = 4200
+        controller.allowanceUpdatedAt = 100
+        controller.surplusSince = 1
+        controller.wattpilot.connected = True
+        controller.wattpilot.amp = 6
+        controller.wattpilot.ampUpdatedAt = 100
+        self._set_site(controller, 0, 0, 0, 100)
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+        controller.wattpilot.set_phases.side_effect = (
+            lambda value: controller.allowWattpilotCommand("psm", value)
+        )
+        controller.wattpilot.set_start_stop.side_effect = (
+            lambda value: controller.allowWattpilotCommand(
+                "frc", int(getattr(value, "value", value))
+            )
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            started = controller.startFromPvAllowance()
+
+        self.assertTrue(started)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.On
+        )
+
+    def test_rejected_guarded_current_noop_aborts_start_transaction(self):
+        controller = self._controller()
+        controller.allowance = 4200
+        controller.allowanceUpdatedAt = 100
+        controller.surplusSince = 1
+        controller.wattpilot.connected = True
+        controller.wattpilot.amp = 6
+        controller.wattpilot.ampUpdatedAt = 100
+        self._set_site(controller, 0, 0, 0, 100)
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+
+        def accept_phase_then_remove_headroom(value):
+            accepted = controller.allowWattpilotCommand("psm", value)
+            self._set_site(controller, 15, 15, 15, 100)
+            return accepted
+
+        controller.wattpilot.set_phases.side_effect = accept_phase_then_remove_headroom
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            started = controller.startFromPvAllowance()
+
+        self.assertFalse(started)
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
 
     def test_rejected_auto_start_does_not_publish_false_transition_state(self):
         controller = self._controller()

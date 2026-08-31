@@ -2051,6 +2051,42 @@ NoBatToEV=false
         self.assertEqual(result.overall, "ATTENTION")
         self.assertIn("ATTENTION", self._statuses(result, "safety interventions"))
 
+    def test_site_current_source_transitions_are_safety_evidence(self):
+        records = self._records(
+            [
+                self._line(
+                    "21:47:00",
+                    "Wattpilot site-current source failure: source=Shelly3EMGen3 "
+                    "status=Unavailable reason=Shelly RPC request failed: Timeout "
+                    "last_success_age_s=10.0 consumption_w=4200 "
+                    "raw_overhead_w=4800 allocation_suppressed=true "
+                    "positive_charger_command_authorized=false.",
+                    "WARNING",
+                ),
+                self._line(
+                    "21:47:05",
+                    "ServiceMessage: Allocated 0W allowance to Fronius Wattpilot - "
+                    "Charging 3 phase (35, Wattpilot); this allocation is not a device command.",
+                ),
+                self._line(
+                    "21:47:10",
+                    "Wattpilot site-current source recovered: source=Shelly3EMGen3 "
+                    "status=Healthy last_success_age_s=0.0 consumption_w=0 "
+                    "raw_overhead_w=4800; allocation remains suppressed until the "
+                    "normal controller cycle confirms fresh telemetry and site-current recovery.",
+                    "INFO",
+                ),
+            ]
+        )
+        audit = self._audit(records)
+        result = audit.run()
+
+        self.assertEqual(len(audit.site_current_source_failures), 1)
+        self.assertEqual(len(audit.site_current_source_recoveries), 1)
+        self.assertEqual(len(audit.allowances), 1)
+        self.assertEqual(audit.allowances[0].watts, 0)
+        self.assertIn("ATTENTION", self._statuses(result, "safety interventions"))
+
     def test_no_grid_commissioning_profile_rejects_conflicting_services(self):
         settings = AUDIT.AuditSettings(
             log_level="APP_DEBUG",

@@ -54,6 +54,36 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
             0,
         )
 
+    def test_canonical_step_round_trip_never_funds_a_partial_ampere(self):
+        for phase_mode, one_step, three_step in (
+            (1, 231, 693),
+            (2, 231, 693),
+        ):
+            with self.subTest(phase_mode=phase_mode):
+                step = three_step if phase_mode == 2 else one_step
+                self.assertEqual(
+                    decisions.target_current_for_phase(
+                        phase_mode,
+                        8 * step,
+                        one_step,
+                        three_step,
+                        6,
+                        16,
+                    ),
+                    8,
+                )
+                self.assertEqual(
+                    decisions.target_current_for_phase(
+                        phase_mode,
+                        8 * step - 0.01,
+                        one_step,
+                        three_step,
+                        6,
+                        16,
+                    ),
+                    7,
+                )
+
     def test_maximum_request_uses_phase_up_probe_until_cooldown(self):
         self.assertEqual(
             decisions.maximum_request_for_distributor_w(

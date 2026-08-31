@@ -508,6 +508,122 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.set_phases.assert_called_once_with(2)
         controller.wattpilot.set_power.assert_called_once_with(7)
 
+    def test_canonical_allocation_step_is_ceiling_monotonic_and_transition_logged(self):
+        controller = self._controller()
+        controller.wattpilot.voltage1 = 230.2
+
+        with patch.object(self.fwp, "d") as debug_log:
+            self.assertEqual(controller.allocationStepForPhase(1), 231)
+            controller.wattpilot.voltage1 = 229.1
+            self.assertEqual(controller.allocationStepForPhase(1), 231)
+            controller.wattpilot.voltage1 = 231.1
+            self.assertEqual(controller.allocationStepForPhase(1), 232)
+
+        self.assertEqual(debug_log.call_count, 2)
+        self.assertIn("initialized", debug_log.call_args_list[0].args[1])
+        self.assertIn("increased", debug_log.call_args_list[1].args[1])
+
+    def test_voltage_movement_does_not_break_a_fully_funded_step_round_trip(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.wattpilot.voltage1 = 230.2
+        controller.wattpilot.amp = 7
+        controller.siteCurrentRecoverySince = {1: 90.0, 2: 90.0}
+        allowance = 8 * controller.allocationStepForPhase(1)
+
+        with patch.object(self.fwp.time, "time", return_value=100.0):
+            first = controller.safeTargetCurrentForPhase(1, allowance)
+        controller.wattpilot.voltage1 = 230.8
+        with patch.object(self.fwp.time, "time", return_value=105.0):
+            second = controller.safeTargetCurrentForPhase(1, allowance)
+
+        self.assertEqual((first, second), (7, 7))
+        self.assertEqual(controller.siteCurrentRecoverySince[1], 90.0)
+        self.assertEqual(controller.targetCurrentForPhase(1, allowance), 8)
+
+    def test_stable_confirmed_target_sends_once_without_repeated_info(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.wattpilot.connected = True
+        controller.wattpilot.amp = 6
+        controller.wattpilot.ampUpdatedAt = 0
+        controller.wattpilot.set_power.return_value = True
+        self._set_allowance(controller, 7 * 230, 100)
+
+        with patch.object(self.fwp, "i") as info_log:
+            with patch.object(self.fwp.time, "time", return_value=100.0):
+                first = controller.adjustChargeForPvAllowance()
+            controller.wattpilot.amp = 7
+            controller.wattpilot.ampUpdatedAt = 101.0
+            self._set_allowance(controller, 7 * 230, 105)
+            with patch.object(self.fwp.time, "time", return_value=105.0):
+                second = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(
+            (first, second),
+            (
+                self.fwp.VrmEvChargerStatus.Charging,
+                self.fwp.VrmEvChargerStatus.Charging,
+            ),
+        )
+        controller.wattpilot.set_power.assert_called_once_with(7)
+        adjustment_logs = [
+            call
+            for call in info_log.call_args_list
+            if "Adjusting charge current" in call.args[1]
+        ]
+        self.assertEqual(len(adjustment_logs), 1)
+
+    def test_changed_current_reduction_is_not_suppressed(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.wattpilot.connected = True
+        controller.wattpilot.amp = 8
+        controller.wattpilot.ampUpdatedAt = 99.0
+        controller.wattpilot.set_power.return_value = True
+        self._set_allowance(controller, 7 * 230, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100.0):
+            controller.adjustChargeForPvAllowance()
+
+        controller.wattpilot.set_power.assert_called_once_with(7)
+
+    def test_higher_voltage_raises_step_before_using_stale_allowance(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.wattpilot.voltage1 = 230.0
+        old_step = controller.allocationStepForPhase(1)
+        old_allowance = 8 * old_step
+        self.assertEqual(controller.targetCurrentForPhase(1, old_allowance), 8)
+
+        controller.wattpilot.voltage1 = 230.1
+
+        self.assertEqual(controller.allocationStepForPhase(1), 231)
+        self.assertEqual(controller.targetCurrentForPhase(1, old_allowance), 7)
+
+    def test_phase_boundary_and_disconnect_reinitialize_allocation_steps(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.wattpilot.voltage1 = 230.2
+        self.assertEqual(controller.allocationStepForPhase(1), 231)
+
+        controller.currentPhaseMode = 2
+        controller.wattpilot.voltage1 = 230.4
+        controller.wattpilot.voltage2 = 230.4
+        controller.wattpilot.voltage3 = 230.4
+        self.assertEqual(controller.allocationStepForPhase(2), 692)
+
+        controller.currentPhaseMode = 1
+        controller.wattpilot.voltage1 = 229.0
+        self.assertEqual(controller.allocationStepForPhase(1), 229)
+
+        controller.resetCanonicalAllocationSteps()
+
+        self.assertEqual(controller.canonicalAllocationStepW, {1: 0, 2: 0})
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+
     def test_transient_disconnect_preserves_phase_up_candidate(self):
         controller = self._controller()
         controller.phaseSwitchCandidateMode = 2
