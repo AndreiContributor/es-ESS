@@ -89,6 +89,9 @@ It owns:
   ownership during rapid disconnect/reconnect sequences.
 - Wattpilot authentication and secure message wrapping.
 - Parsing Wattpilot status messages into local client properties.
+- Timestamping explicit `amp` setpoint telemetry for the current connection and
+  invalidating that timestamp on disconnect/reconnect boundaries, so the
+  controller never deduplicates from pre-connection desired state.
 - Strict read-only parsing of firmware `42.5` native-command settings `fup`
   (`Use PV surplus`) and `ful` (flexible tariff). Non-booleans and reconnect
   gaps become unavailable rather than truthy/falsy guesses.
@@ -193,6 +196,12 @@ It owns:
   then rejects positive Auto/Eco current, start, or phase commands without
   fresh and sufficient physical site-current headroom. Safe zero-current,
   Force Off, and automatic-phase release commands remain available.
+- A controller-owned current-command helper used by positive Auto/Eco current
+  paths. It runs the final guard before accepting a connected, explicitly
+  confirmed unchanged `amp` target as a command-free no-op and reports
+  acceptance separately from transport dispatch. Missing, malformed,
+  connection-reset, or different telemetry dispatches through the existing
+  `Wattpilot.set_power()` boundary. Zero-current commands are not deduplicated.
 - Transactional Auto/Eco start-state publication. The controller sends the
   guarded phase, current, and Start commands in that order and begins public
   transition grace only after all three are accepted. A rejection leaves the
@@ -518,6 +527,12 @@ Future Wattpilot changes must preserve these invariants:
   final command boundary rejects any stage, later stages are not sent and the
   controller must not publish Start state, transition power, or a successful
   on/off timestamp.
+- An unchanged positive current may satisfy the current stage without a
+  WebSocket write only after the normal final guard accepts it and connected
+  Wattpilot `amp` telemetry explicitly confirms that exact value. Desired
+  controller state, missing/malformed telemetry, or telemetry invalidated by a
+  reconnect cannot suppress a command. Changed and zero-current targets remain
+  dispatchable, and an unsafe no-op must reject every later transaction stage.
 - `SiteMaxCurrent` has no hidden margin and does not replace the site breaker or
   downstream branch protection. A roughly five-second response cannot
   guarantee interception of short inrush, and stopping the EV cannot correct a

@@ -65,6 +65,13 @@ class SiteCurrentGuardSnapshot(NamedTuple):
     limit_exceeded: bool
     evaluated_at: float
 
+
+class CurrentCommandResult(NamedTuple):
+    """Controller current-command acceptance and transport-dispatch result."""
+
+    accepted: bool
+    dispatched: bool
+
 class FroniusWattpilot (esESSService):
     
     def __init__(self):
@@ -93,6 +100,7 @@ class FroniusWattpilot (esESSService):
         self.commandAuthorityForcedOff = False
         self._lastObservedModelStatusValue = None
         self._protocolChargingStatusSince = 0
+        self._lastSuppressedCurrentTarget = None
         self.minimumOnOffSeconds = int(settings["MinOnOffSeconds"])
         self.minimumPhaseSwitchSeconds = int(settings["MinPhaseSwitchSeconds"])
 
@@ -1986,7 +1994,8 @@ class FroniusWattpilot (esESSService):
             self.currentPhaseMode = previousPhaseMode
             self.handleRejectedStartCommand("phase")
             return False
-        if not self.wattpilot.set_power(targetAmps):
+        currentCommand = self.commandWattpilotCurrent(targetAmps)
+        if not currentCommand.accepted:
             self.recordSessionStartResult(False, "current")
             self.handleRejectedStartCommand("current")
             return False
@@ -2593,7 +2602,9 @@ class FroniusWattpilot (esESSService):
                 self.sitePhaseTransitionReductionAt = time.time()
                 self.sitePhaseTransitionTargetMode = phaseMode
                 self.sitePhaseTransitionTargetAmps = targetAmps
-            self.wattpilot.set_power(targetAmps)
+            currentCommand = self.commandWattpilotCurrent(targetAmps)
+            if not currentCommand.accepted:
+                return False
             # Wait for fresh Wattpilot current telemetry before changing phase.
             # A sent amp reduction is not proof that the wallbox applied it.
             return "reducing"
@@ -2626,7 +2637,9 @@ class FroniusWattpilot (esESSService):
         self.wattpilot.set_phases(phaseMode)
         self.currentPhaseMode = phaseMode
         if current <= targetAmps:
-            self.wattpilot.set_power(targetAmps)
+            currentCommand = self.commandWattpilotCurrent(targetAmps)
+            if not currentCommand.accepted:
+                return False
         return "switched"
 
     def currentChargeDemandPower(self):
@@ -2713,7 +2726,7 @@ class FroniusWattpilot (esESSService):
             if self.minimumCurrentTelemetryConfirmed(phaseMode):
                 self.clearMinimumCurrentReduction()
                 return True
-            self.wattpilot.set_power(self.minCurrentPerPhase)
+            self.commandWattpilotCurrent(self.minCurrentPerPhase)
             return False
 
         current = DecisionInputs.finite_number(getattr(self.wattpilot, "amp", None))
@@ -2722,7 +2735,7 @@ class FroniusWattpilot (esESSService):
 
         self.minimumCurrentReductionAt = time.time()
         self.minimumCurrentReductionPhaseMode = phaseMode
-        self.wattpilot.set_power(self.minCurrentPerPhase)
+        self.commandWattpilotCurrent(self.minCurrentPerPhase)
         self.publishServiceMessage(
             self,
             "PV no longer supports the current EV setpoint. Reducing to "
@@ -2774,14 +2787,15 @@ class FroniusWattpilot (esESSService):
             if current is not None and current > 0:
                 targetAmps = min(targetAmps, max(self.minCurrentPerPhase, int(current)))
             if current is None or targetAmps < current:
-                self.wattpilot.set_power(targetAmps)
-                i(
-                    self,
-                    "Reducing charge current from continuation PV to {0}A on "
-                    "{1} phase(s).".format(
-                        targetAmps, self.activePhaseCount(phaseMode)
-                    ),
-                )
+                currentCommand = self.commandWattpilotCurrent(targetAmps)
+                if currentCommand.dispatched:
+                    i(
+                        self,
+                        "Reducing charge current from continuation PV to {0}A on "
+                        "{1} phase(s).".format(
+                            targetAmps, self.activePhaseCount(phaseMode)
+                        ),
+                    )
             return VrmEvChargerStatus.Charging
 
         if self.batteryAssistDeficitSince == 0:
@@ -3108,6 +3122,42 @@ class FroniusWattpilot (esESSService):
         self.resetCanonicalAllocationSteps()
         return False
 
+    def wattpilotCurrentTelemetryConfirms(self, targetAmps):
+        """Return whether live connection-state telemetry confirms the setpoint."""
+        reported = DecisionInputs.finite_number(
+            getattr(self.wattpilot, "amp", None)
+        )
+        updatedAt = DecisionInputs.finite_number(
+            getattr(self.wattpilot, "ampUpdatedAt", None)
+        )
+        return bool(
+            getattr(self.wattpilot, "connected", False)
+            and reported is not None
+            and updatedAt is not None
+            and updatedAt > 0
+            and float(reported) == float(targetAmps)
+        )
+
+    def commandWattpilotCurrent(self, targetAmps):
+        """Safely accept or dispatch one controller-owned current target."""
+        target = int(targetAmps)
+        if target > 0 and self.wattpilotCurrentTelemetryConfirms(target):
+            if not self.allowWattpilotCommand("amp", target):
+                self._lastSuppressedCurrentTarget = None
+                return CurrentCommandResult(False, False)
+            if getattr(self, "_lastSuppressedCurrentTarget", None) != target:
+                d(
+                    self,
+                    "Wattpilot current setpoint already confirmed; accepting "
+                    "guarded no-op at {0}A.".format(target),
+                )
+                self._lastSuppressedCurrentTarget = target
+            return CurrentCommandResult(True, False)
+
+        self._lastSuppressedCurrentTarget = None
+        accepted = bool(self.wattpilot.set_power(target))
+        return CurrentCommandResult(accepted, accepted)
+
     def allowanceStopGraceActive(self):
         """Hold an active session briefly while awaiting a fresh allowance.
 
@@ -3413,8 +3463,8 @@ class FroniusWattpilot (esESSService):
                 decision.limiting_phase
             )
             self.siteCurrentRecoverySince[phaseMode] = 0
-            self.wattpilot.set_power(decision.allowed_current)
-            return "reduced"
+            currentCommand = self.commandWattpilotCurrent(decision.allowed_current)
+            return "reduced" if currentCommand.accepted else False
         return "safe"
 
     def _handleSiteCurrentTelemetryUnsafe(self):
@@ -4368,7 +4418,7 @@ class FroniusWattpilot (esESSService):
             if phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_WAIT_STABLE:
                 targetAmps = self.safeTargetCurrentForPhase(1, self.allowance)
                 self.currentPhaseMode = 1
-                self.wattpilot.set_power(targetAmps)
+                self.commandWattpilotCurrent(targetAmps)
                 if phaseUpDropGraceActive:
                     d(
                         self,
@@ -4412,7 +4462,7 @@ class FroniusWattpilot (esESSService):
             if phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_READY:
                 targetAmps = self.safeTargetCurrentForPhase(1, self.allowance)
                 self.currentPhaseMode = 1
-                self.wattpilot.set_power(targetAmps)
+                self.commandWattpilotCurrent(targetAmps)
                 d(
                     self,
                     "Phase-up timer is mature; waiting for assigned allowance "
@@ -4424,7 +4474,7 @@ class FroniusWattpilot (esESSService):
 
             targetAmps = self.safeTargetCurrentForPhase(1, self.allowance)
             self.currentPhaseMode = 1
-            self.wattpilot.set_power(targetAmps)
+            self.commandWattpilotCurrent(targetAmps)
             d(
                 self,
                 "3-phase PV threshold reached; phase-up cooldown active for {0:.0f}s.".format(
@@ -4439,13 +4489,14 @@ class FroniusWattpilot (esESSService):
         targetAmps = self.safeTargetCurrentForPhase(
             desiredPhaseMode, self.allowance
         )
-        i(
-            self,
-            "Adjusting charge current to {0}A on {1}-phase.".format(
-                targetAmps, 3 if desiredPhaseMode == 2 else 1
+        currentCommand = self.commandWattpilotCurrent(targetAmps)
+        if currentCommand.dispatched:
+            i(
+                self,
+                "Adjusting charge current to {0}A on {1}-phase.".format(
+                    targetAmps, 3 if desiredPhaseMode == 2 else 1
+                )
             )
-        )
-        self.wattpilot.set_power(targetAmps)
         return VrmEvChargerStatus.Charging
 
     def dumpEvChargerInfo(self):

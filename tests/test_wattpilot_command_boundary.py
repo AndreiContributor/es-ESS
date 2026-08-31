@@ -166,6 +166,64 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         self.assertFalse(controller.wattpilotFirmwareCompatible)
         self.assertIn("<unavailable>", controller.serviceMessages[-1])
 
+    def test_confirmed_unchanged_current_is_guarded_and_not_dispatched(self):
+        controller = self._controller()
+        controller.wattpilot.connected = True
+        controller.wattpilot.amp = 6
+        controller.wattpilot.ampUpdatedAt = self.fwp.time.time()
+        controller.wattpilot.set_power.return_value = True
+        controller.allowWattpilotCommand = Mock(return_value=True)
+
+        first = controller.commandWattpilotCurrent(6)
+        second = controller.commandWattpilotCurrent(6)
+
+        self.assertEqual(first, self.fwp.CurrentCommandResult(True, False))
+        self.assertEqual(second, self.fwp.CurrentCommandResult(True, False))
+        self.assertEqual(controller.allowWattpilotCommand.call_count, 2)
+        controller.wattpilot.set_power.assert_not_called()
+
+    def test_unchanged_current_noop_is_rejected_by_reduced_site_headroom(self):
+        controller = self._controller()
+        now = self.fwp.time.time()
+        controller.wattpilot.connected = True
+        controller.wattpilot.amp = 6
+        controller.wattpilot.ampUpdatedAt = now
+        controller.siteCurrentL1Value = 15
+        controller.siteCurrentL1UpdatedAt = now
+
+        result = controller.commandWattpilotCurrent(6)
+
+        self.assertEqual(result, self.fwp.CurrentCommandResult(False, False))
+        controller.wattpilot.set_power.assert_not_called()
+
+    def test_missing_malformed_or_stale_current_telemetry_is_dispatched(self):
+        for reported, updated_at in ((None, 100), ("bad", 100), (6, 0)):
+            with self.subTest(reported=reported, updated_at=updated_at):
+                controller = self._controller()
+                controller.wattpilot.connected = True
+                controller.wattpilot.amp = reported
+                controller.wattpilot.ampUpdatedAt = updated_at
+                controller.wattpilot.set_power.return_value = True
+
+                result = controller.commandWattpilotCurrent(6)
+
+                self.assertEqual(
+                    result, self.fwp.CurrentCommandResult(True, True)
+                )
+                controller.wattpilot.set_power.assert_called_once_with(6)
+
+    def test_zero_current_is_never_suppressed(self):
+        controller = self._controller()
+        controller.wattpilot.connected = True
+        controller.wattpilot.amp = 0
+        controller.wattpilot.ampUpdatedAt = self.fwp.time.time()
+        controller.wattpilot.set_power.return_value = True
+
+        result = controller.commandWattpilotCurrent(0)
+
+        self.assertEqual(result, self.fwp.CurrentCommandResult(True, True))
+        controller.wattpilot.set_power.assert_called_once_with(0)
+
     def test_set_current_is_rejected_when_wattpilot_reports_manual_mode(self):
         controller = self._controller()
         controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default

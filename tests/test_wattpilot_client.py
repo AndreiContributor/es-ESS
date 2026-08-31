@@ -440,6 +440,29 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
         client.disconnect(auto_reconnect=False)
         self.assertEqual(client.energyTelemetryUpdatedAt, 0)
 
+    def test_current_setpoint_telemetry_is_timestamped_and_reset_on_disconnect(self):
+        _install_wattpilot_client_stubs()
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_amp_timestamp_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+
+        with patch.object(wattpilot_module.time, "time", return_value=234.5):
+            client._Wattpilot__on_message(
+                client._wsapp,
+                json.dumps(
+                    {
+                        "type": "deltaStatus",
+                        "status": {"amp": 7},
+                    }
+                ),
+            )
+
+        self.assertEqual(client.amp, 7)
+        self.assertEqual(client.ampUpdatedAt, 234.5)
+        client.disconnect(auto_reconnect=False)
+        self.assertEqual(client.ampUpdatedAt, 0)
+
     def test_command_guard_blocks_every_state_changing_update(self):
         _install_wattpilot_client_stubs()
         wattpilot_module = self.load_wattpilot_module(

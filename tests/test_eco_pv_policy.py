@@ -541,6 +541,53 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(controller.siteCurrentRecoverySince[1], 90.0)
         self.assertEqual(controller.targetCurrentForPhase(1, allowance), 8)
 
+    def test_stable_confirmed_target_sends_once_without_repeated_info(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.wattpilot.connected = True
+        controller.wattpilot.amp = 6
+        controller.wattpilot.ampUpdatedAt = 0
+        controller.wattpilot.set_power.return_value = True
+        self._set_allowance(controller, 7 * 230, 100)
+
+        with patch.object(self.fwp, "i") as info_log:
+            with patch.object(self.fwp.time, "time", return_value=100.0):
+                first = controller.adjustChargeForPvAllowance()
+            controller.wattpilot.amp = 7
+            controller.wattpilot.ampUpdatedAt = 101.0
+            self._set_allowance(controller, 7 * 230, 105)
+            with patch.object(self.fwp.time, "time", return_value=105.0):
+                second = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(
+            (first, second),
+            (
+                self.fwp.VrmEvChargerStatus.Charging,
+                self.fwp.VrmEvChargerStatus.Charging,
+            ),
+        )
+        controller.wattpilot.set_power.assert_called_once_with(7)
+        adjustment_logs = [
+            call
+            for call in info_log.call_args_list
+            if "Adjusting charge current" in call.args[1]
+        ]
+        self.assertEqual(len(adjustment_logs), 1)
+
+    def test_changed_current_reduction_is_not_suppressed(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.wattpilot.connected = True
+        controller.wattpilot.amp = 8
+        controller.wattpilot.ampUpdatedAt = 99.0
+        controller.wattpilot.set_power.return_value = True
+        self._set_allowance(controller, 7 * 230, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100.0):
+            controller.adjustChargeForPvAllowance()
+
+        controller.wattpilot.set_power.assert_called_once_with(7)
+
     def test_higher_voltage_raises_step_before_using_stale_allowance(self):
         controller = self._controller()
         controller.currentPhaseMode = 1

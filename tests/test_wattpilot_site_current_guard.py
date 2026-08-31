@@ -798,6 +798,60 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
             self.fwp.VrmEvChargerStartStop.Start.value,
         )
 
+    def test_auto_start_accepts_guarded_current_noop_before_start(self):
+        controller = self._controller()
+        controller.allowance = 4200
+        controller.allowanceUpdatedAt = 100
+        controller.surplusSince = 1
+        controller.wattpilot.connected = True
+        controller.wattpilot.amp = 6
+        controller.wattpilot.ampUpdatedAt = 100
+        self._set_site(controller, 0, 0, 0, 100)
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+        controller.wattpilot.set_phases.side_effect = (
+            lambda value: controller.allowWattpilotCommand("psm", value)
+        )
+        controller.wattpilot.set_start_stop.side_effect = (
+            lambda value: controller.allowWattpilotCommand(
+                "frc", int(getattr(value, "value", value))
+            )
+        )
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            started = controller.startFromPvAllowance()
+
+        self.assertTrue(started)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.On
+        )
+
+    def test_rejected_guarded_current_noop_aborts_start_transaction(self):
+        controller = self._controller()
+        controller.allowance = 4200
+        controller.allowanceUpdatedAt = 100
+        controller.surplusSince = 1
+        controller.wattpilot.connected = True
+        controller.wattpilot.amp = 6
+        controller.wattpilot.ampUpdatedAt = 100
+        self._set_site(controller, 0, 0, 0, 100)
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+
+        def accept_phase_then_remove_headroom(value):
+            accepted = controller.allowWattpilotCommand("psm", value)
+            self._set_site(controller, 15, 15, 15, 100)
+            return accepted
+
+        controller.wattpilot.set_phases.side_effect = accept_phase_then_remove_headroom
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            started = controller.startFromPvAllowance()
+
+        self.assertFalse(started)
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+
     def test_rejected_auto_start_does_not_publish_false_transition_state(self):
         controller = self._controller()
         controller.allowance = 4200

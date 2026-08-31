@@ -63,6 +63,10 @@ Current validated state:
   current oscillation and export. The completed canonical-step item now keeps
   the allocation divisor conservative and consistent across publication and
   command calculation.
+- Stable Auto/Eco current control now suppresses a repeated positive `amp`
+  write only when connected Wattpilot telemetry confirms that exact setpoint
+  and the final command guard accepts it. Changed, zero, missing/reset
+  telemetry, unsafe headroom, and transactional rejection paths remain active.
 - Supervised Auto/Eco validation confirmed that a partially elapsed phase-up
   candidate was cleared by a confirmed physical disconnect: after reconnect,
   without an es-ESS restart, the next candidate began from zero. The same
@@ -3408,7 +3412,23 @@ Done criteria:
 - Focused syntax, configuration-contract, and unittest commands pass.
 - Full unittest suite passes.
 
-### P3 - Suppress Duplicate Wattpilot Current-Setpoint Commands
+### Completed 2026-08-31 - P3 Suppress Duplicate Wattpilot Current-Setpoint Commands
+
+Completion record:
+
+- Added one controller-owned positive-current helper that returns independent
+  accepted/dispatched results. A connected, explicitly timestamped matching
+  Wattpilot `amp` value is a no-op only after the normal final guard accepts it.
+- Added Wattpilot `amp` receipt timestamps that reset across transport
+  disconnect/reconnect boundaries. Missing, malformed, reset, or different
+  telemetry dispatches normally; zero-current commands are never suppressed.
+- Routed every Auto/Eco positive-current call site through the helper, retained
+  transactional start ordering, and limited INFO adjustment records to actual
+  dispatches while keeping one transition-scoped APP_DEBUG no-op diagnostic.
+- Added stable-cycle, reduction, zero, command-boundary, reconnect-timestamp,
+  and accepted/rejected start-transaction regressions. Syntax checks, 189
+  focused/configuration/legacy tests, and the complete 597-test suite passed;
+  normal supervised charging remains the firmware no-keepalive validation gate.
 
 Goal:
 
@@ -3583,7 +3603,7 @@ Done criteria:
 
 ## Suggested Implementation Order / PR Execution Queue
 
-1. P3 Suppress Duplicate Wattpilot Current-Setpoint Commands — reduce stable-charge WebSocket and INFO-log noise after the corrected allocation target is stable.
+- No open implementation items remain.
 
 ## Verification Plan
 
@@ -3668,3 +3688,12 @@ evidence rather than an open backlog requirement.
   after implementation, perform the low-risk GX-to-Shelly network-isolation
   procedure defined in the item. Do not operate the main breaker or induce an
   overload.
+- P2 canonical Wattpilot allocation step: during a naturally stable supervised
+  Auto/Eco charge, confirm complete-step allowances do not oscillate one ampere
+  lower solely from voltage movement and that any residual remains below one
+  active-phase step. Do not induce grid import or switch loads solely for this
+  check.
+- P3 duplicate current-command suppression: during a normal supervised
+  Auto/Eco charge, confirm stable confirmed targets do not repeat outbound
+  `amp` writes or INFO adjustment records and that a natural changed target is
+  dispatched. Do not induce an overload, telemetry loss, or protective trip.
