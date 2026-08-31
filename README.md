@@ -891,6 +891,7 @@ optional running-session grid fallback:
 
 - A new charge starts only after a fresh, distributor-assigned **real PV allowance** has continuously met the electrical minimum for `MinOnOffSeconds`. It starts on one phase when allowance is below the phase-up threshold, or directly on three phases when allowance already meets the full phase-up threshold. Battery assist cannot create either start.
 - Auto/Eco also requires fresh whole-site current on physical L1/L2/L3. One-phase charging uses `Charger1PhaseMapping`; three-phase charging receives one equal current command capped by the smallest available phase headroom. Site-current reductions and stops take priority over allowance grace, battery assist, and grid fallback. There is no overload grace above `SiteMaxCurrent`.
+- If the selected asynchronous Shelly site-current poll fails, its command-free worker immediately withdraws the Wattpilot distributor request and logs one sanitized failure transition. Measured Wattpilot consumption and calculated raw overhead remain truthful diagnostics, but no positive Wattpilot allocation request returns until the normal controller cycle confirms fresh telemetry and the configured site-current recovery interval. Charger stop/current commands remain owned by that normal fail-closed controller cycle. Recovery produces one transition record; repeated one-second failures do not flood the log.
 - After headroom recovers, it must remain safe for `SiteCurrentRecoverySeconds`; current then rises by 1 A on each normal five-second controller cycle. A stopped session still obeys `MinOnOffSeconds`, and a running one-phase session still needs `MinPhaseSwitchSeconds` before phase-up. A new stopped session can start directly on three phases once the normal start and site-recovery conditions are both satisfied.
 - Wattpilot may retain the previous configured current while stopped. es-ESS does not treat a lower pre-start setpoint as active EV-current reduction or reset already-stable site headroom. Phase, current, and Start commands are still individually guarded; if any is rejected, the session remains publicly stopped, no transition power is reported, and the stable-PV interval is rebuilt before retrying.
 - Both one-to-three and three-to-one phase changes use `MinPhaseSwitchSeconds` as their normal stability timer and minimum interval between phase commands. On the normal current-adjustment path, an active one-to-three candidate survives a shorter-than-`SurplusDropGraceSeconds` dip below the phase-up threshold only while fresh allowance remains above the effective three-phase floor; a deeper dip that requires minimum-current fallback resets it. Battery assist cannot create or preserve a phase-up candidate, and fresh assigned allowance must complete the normal phase-up conditions before any three-phase command is sent.
@@ -957,6 +958,11 @@ their own protection and installation.
 When `AllowGridCharging=false` (the recommended no-grid configuration), Auto/Eco charging requires valid, fresh grid-power telemetry for all three grid phases. If any L1, L2, or L3 value is missing, invalid, or older than `GridTelemetryFreshSeconds`, es-ESS will not start a new Auto/Eco session and will stop an active Auto/Eco session immediately. This means a grid-meter or D-Bus telemetry outage can stop charging until fresh values recover.
 
 Auto/Eco also requires a valid Wattpilot allowance received within `AllowanceFreshSeconds`. Missing, malformed, or stale allowance is never replaced with raw-overhead data. The distributor may truthfully assign `0 W` when an active request cannot receive its atomic minimum. For an already-running session only, fresh raw overhead may estimate PV available for a current reduction or minimum-current continuation; it cannot start charging, increase current, or authorize phase-up, and `/PvAllowance` remains the truthful assigned value. `AllowanceDropGraceSeconds` starts at the original deficit and debounces phase reduction or stop, but it is not granted again after battery-assist timeout. This allowance-only grace never delays stale-grid or grid-import safety handling. SOC-dependent battery assist and battery-reservation bypass require valid finite system SOC plus a finite selected-battery `/Dc/Battery/Power` update received within `BatterySocFreshSeconds`. This power path is the liveness heartbeat because unchanged SOC is not periodically republished by Venus OS. Missing or invalid SOC, or missing, invalid, or stale battery activity, fails closed without changing Manual charging. Manual Wattpilot mode remains under the Wattpilot user's control and is not changed by these Auto/Eco freshness guards.
+
+SolarOverheadDistributor diagnostics distinguish the calculated raw overhead
+from each consumer's allocated allowance. Neither value is itself a charger
+command. For Wattpilot, only the normal Auto/Eco controller may turn an eligible
+fresh allowance into guarded phase, current, or start commands.
 
 ### Runtime status
 
@@ -1399,6 +1405,13 @@ SolarOverheadDistributor recalculates allowances every configured
 allows the ESS, grid meter, consumers, and MQTT/D-Bus feedback to settle. Faster
 updates improve response time but can amplify delayed consumer feedback and
 short PV fluctuations.
+
+`/Calculations/OverheadAvailable` and its matching MQTT/service diagnostics are
+the calculated raw allocation input. A consumer `Allowance` is the distributor's
+allocated share after request, minimum, step, priority, consumption, and battery
+reservation processing. Raw overhead and allowance are diagnostic/allocation
+values, not device commands; each consumer remains responsible for its own
+command and safety policy.
 
 ### Usage
 Each consumer can create a SolarOverhead-Request, which then will be accepted or not by the SolarOverheadDistributor based on various parameters. The overall request has to be send to the mqtt topic `es-ESS/SolarOverheadDistributor/Requests` where es-ESS will catch up the request, process it and add the `allowance` property to the request.

@@ -198,7 +198,8 @@ LOG_LINE_RE = re.compile(
     r"(?P<level>[A-Z_]+) (?P<message>.*)$"
 )
 ALLOWANCE_RE = re.compile(
-    r"Assigned\s+(?P<watts>-?\d+(?:\.\d+)?)W\s+to\s+.*Wattpilot.*?"
+    r"(?:Assigned|Allocated)\s+(?P<watts>-?\d+(?:\.\d+)?)W"
+    r"(?:\s+allowance)?\s+to\s+.*Wattpilot.*?"
     r"\s-\s(?P<state>.+?)\s+\([^\n]*Wattpilot\)"
 )
 ALLOCATION_INPUT_RE = re.compile(
@@ -1338,6 +1339,8 @@ class EsEssDailyReport:
         self.reconnect_records: list[LogRecord] = []
         self.stale_telemetry_records: list[LogRecord] = []
         self.site_current_stop_records: list[LogRecord] = []
+        self.site_current_source_failures: list[LogRecord] = []
+        self.site_current_source_recoveries: list[LogRecord] = []
         self.battery_assist_limit_records: list[LogRecord] = []
         self.raw_command_records: list[LogRecord] = []
         self._manual_control_records: list[LogRecord] = []
@@ -1386,7 +1389,10 @@ class EsEssDailyReport:
 
             allowance_match = (
                 ALLOWANCE_RE.search(message)
-                if "Assigned " in message and "Wattpilot" in message
+                if (
+                    ("Assigned " in message or "Allocated " in message)
+                    and "Wattpilot" in message
+                )
                 else None
             )
             if allowance_match:
@@ -1551,6 +1557,11 @@ class EsEssDailyReport:
             ):
                 self.site_current_stop_records.append(record)
                 self.safety_override_records.append(record)
+            if "Wattpilot site-current source failure:" in message:
+                self.site_current_source_failures.append(record)
+                self.safety_override_records.append(record)
+            if "Wattpilot site-current source recovered:" in message:
+                self.site_current_source_recoveries.append(record)
             if authority_blocked:
                 self.safety_override_records.append(record)
 
@@ -1958,6 +1969,7 @@ class EsEssDailyReport:
             self.grid_guard_actions
             + self.stale_telemetry_records
             + self.site_current_stop_records
+            + self.site_current_source_failures
             + self.battery_assist_limit_records
             + self.authority_blocked
         )

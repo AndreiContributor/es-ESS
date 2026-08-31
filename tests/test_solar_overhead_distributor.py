@@ -209,6 +209,35 @@ class SolarOverheadDistributorTests(unittest.TestCase):
         self.assertEqual(service.dbusService["/Calculations/OverheadAssigned"], 0)
         self.assertEqual(service.dbusService["/Calculations/OverheadRemaining"], 200)
 
+    def test_zero_wattpilot_request_keeps_raw_overhead_diagnostic_truthful(self):
+        service = self._service(grid=(-900, -700, -400), battery_power=100)
+        consumer = StubConsumer("Wattpilot")
+        consumer.customName = "Fronius Wattpilot - Charging 3 phase"
+        consumer.request = 0
+        consumer.minimum = 1380
+        consumer.stepSize = 690
+        consumer.consumption = 900
+        service._knownSolarOverheadConsumers[consumer.consumerKey] = consumer
+
+        service.updateDistribution()
+
+        self.assertEqual(
+            service.dbusService["/Calculations/OverheadAvailable"],
+            3000,
+        )
+        self.assertEqual(consumer.allowance_updates, [0])
+        messages = [call.args[1] for call in service.publishServiceMessage.call_args_list]
+        self.assertTrue(
+            any("Calculated raw overhead: 3000W" in message for message in messages)
+        )
+        self.assertTrue(
+            any(
+                "Allocated 0W allowance" in message
+                and "not a device command" in message
+                for message in messages
+            )
+        )
+
     def test_http_and_mqtt_npc_allocation_requires_complete_request(self):
         for npc_attribute in ("isHttpConsumer", "isMqttConsumer"):
             with self.subTest(npc_attribute=npc_attribute):

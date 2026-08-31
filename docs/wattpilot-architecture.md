@@ -154,6 +154,13 @@ It owns:
   throttle. The normal five-second service worker consumes the latest provider
   snapshot and republishes current, age, health, and headroom paths without
   dispatching control or advancing site-recovery timers.
+- The asynchronous Shelly polling wrapper. A failed selected-source poll
+  immediately publishes a zero Wattpilot distributor request and records one
+  sanitized failure transition; repeated failures do not repeat the warning.
+  It may copy provider telemetry and publish that request, but it does not issue
+  a Wattpilot command, dispatch controller state, or mutate recovery/phase
+  timers. Recovery is logged once and positive demand resumes only from the
+  normal controller cycle after fresh telemetry and site-current recovery.
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
@@ -358,6 +365,10 @@ periodic identity revalidation, and electrician-verified A/B/C-to-L1/L2/L3
 mapping. Only a complete successful poll refreshes all three timestamps. A
 failure invalidates the selected source without refreshing cached age. These
 provider modules do not publish commands or register a Victron grid service.
+The controller-owned polling wrapper consumes that command-free snapshot,
+withdraws only the Wattpilot SolarOverheadDistributor request on failure, and
+logs sanitized failure/recovery transitions. The provider still has no MQTT,
+D-Bus publication, or charger-command responsibility.
 
 ### `WattpilotControlState.py`
 
@@ -432,7 +443,9 @@ Wattpilot controller.
 It owns the shared surplus calculation, battery-charge reservation, consumer
 requests, and allowance publication. It does not own Wattpilot command policy.
 The Wattpilot controller decides whether a Wattpilot allowance is fresh, valid,
-and sufficient for a charge action.
+and sufficient for a charge action. Its raw-overhead diagnostic is a calculated
+allocation input, and a consumer allowance is an allocation result; neither is
+a Wattpilot command.
 
 ## Safety Invariants
 
@@ -476,6 +489,12 @@ Future Wattpilot changes must preserve these invariants:
   age. A command-free idle diagnostic refresh must remain on the normal
   five-second service cadence and must not issue commands, dispatch controller
   state, advance recovery timers, or mutate phase-switch candidates.
+- A failed selected asynchronous site-current poll must withdraw the Wattpilot
+  distributor request without changing truthful measured consumption or the
+  global raw-overhead calculation. Positive demand may resume only from the
+  normal controller cycle after source health, freshness, and the existing
+  site-current recovery interval are satisfied. The polling worker must not
+  issue charger commands or mutate controller recovery/phase timers.
 - One-phase charging subtracts measured EV current only from
   `Charger1PhaseMapping`. Three-phase charging subtracts the smallest measured
   EV phase current from all physical phases and receives one equal current

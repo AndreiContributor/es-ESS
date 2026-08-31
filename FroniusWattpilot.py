@@ -6,6 +6,7 @@ from math import isfinite
 import os
 import platform
 import sys
+import threading
 import time
 from typing import NamedTuple
 
@@ -330,6 +331,8 @@ class FroniusWattpilot (esESSService):
         self.siteCurrentSourceDeviceModel = ""
         self.siteCurrentSourceFirmware = ""
         self.siteCurrentSourceLastSampleAt = 0
+        self._siteCurrentPollTransitionLock = threading.Lock()
+        self._lastSiteCurrentPollHealthy = None
         for phase in ("L1", "L2", "L3"):
             setattr(self, "siteCurrent{0}Value".format(phase), None)
             setattr(self, "siteCurrent{0}Valid".format(phase), False)
@@ -592,29 +595,7 @@ class FroniusWattpilot (esESSService):
                 )
                 return
 
-            for phase in ("L1", "L2", "L3"):
-                setattr(
-                    self,
-                    "siteCurrent{0}Value".format(phase),
-                    sample.values.get(phase),
-                )
-                setattr(
-                    self,
-                    "siteCurrent{0}Valid".format(phase),
-                    bool(sample.valid.get(phase, False)),
-                )
-                setattr(
-                    self,
-                    "siteCurrent{0}UpdatedAt".format(phase),
-                    sample.updated_at.get(phase, 0),
-                )
-            self.siteCurrentSourceName = sample.source
-            self.siteCurrentSourceConnected = sample.connected
-            self.siteCurrentSourceStatus = sample.status
-            self.siteCurrentSourceError = sample.error
-            self.siteCurrentSourceDeviceModel = sample.device_model
-            self.siteCurrentSourceFirmware = sample.firmware
-            self.siteCurrentSourceLastSampleAt = sample.last_sample_at
+            self.recordSiteCurrentSourceSample(sample)
             return
 
         for phase in ("L1", "L2", "L3"):
@@ -634,6 +615,144 @@ class FroniusWattpilot (esESSService):
                 self.recordSiteCurrentTelemetry(phase, value)
             else:
                 setattr(self, "siteCurrent{0}Valid".format(phase), False)
+
+    def recordSiteCurrentSourceSample(self, sample):
+        """Copy one normalized provider snapshot into controller telemetry."""
+        for phase in ("L1", "L2", "L3"):
+            setattr(
+                self,
+                "siteCurrent{0}Value".format(phase),
+                sample.values.get(phase),
+            )
+            setattr(
+                self,
+                "siteCurrent{0}Valid".format(phase),
+                bool(sample.valid.get(phase, False)),
+            )
+            setattr(
+                self,
+                "siteCurrent{0}UpdatedAt".format(phase),
+                sample.updated_at.get(phase, 0),
+            )
+        self.siteCurrentSourceName = sample.source
+        self.siteCurrentSourceConnected = sample.connected
+        self.siteCurrentSourceStatus = sample.status
+        self.siteCurrentSourceError = sample.error
+        self.siteCurrentSourceDeviceModel = sample.device_model
+        self.siteCurrentSourceFirmware = sample.firmware
+        self.siteCurrentSourceLastSampleAt = sample.last_sample_at
+
+    def _siteCurrentPollEvidence(self, sample):
+        """Return non-identifying provider evidence for transition logs."""
+        lastSuccessAge = (
+            max(0.0, time.time() - sample.last_sample_at)
+            if sample.last_sample_at > 0
+            else -1.0
+        )
+        try:
+            consumptionW = self.actualMeasuredPowerW()
+        except Exception:
+            consumptionW = 0.0
+        try:
+            rawOverheadW = self.rawPvOverheadW()
+        except Exception:
+            rawOverheadW = None
+        return (
+            lastSuccessAge,
+            consumptionW,
+            "unavailable" if rawOverheadW is None else "{0:.0f}".format(rawOverheadW),
+        )
+
+    def pollSiteCurrentSource(self):
+        """Poll the asynchronous source and withdraw unsafe EV allocation.
+
+        This worker may update provider telemetry and the Wattpilot distributor
+        request. It deliberately does not dispatch controller state, mutate
+        recovery timers, or issue any Wattpilot command.
+        """
+        source = getattr(self, "siteCurrentSource", None)
+        if source is None:
+            return False
+
+        pollSucceeded = bool(source.poll())
+        try:
+            sample = source.read_sample()
+        except Exception as ex:
+            sample = None
+            pollSucceeded = False
+            status = "Invalid"
+            error = "Site-current source snapshot failed: {0}".format(
+                ex.__class__.__name__
+            )
+        else:
+            self.recordSiteCurrentSourceSample(sample)
+            status = sample.status
+            error = sample.error
+
+        healthy = bool(
+            pollSucceeded
+            and sample is not None
+            and sample.connected
+            and sample.status == "Healthy"
+            and all(sample.valid.get(phase, False) for phase in ("L1", "L2", "L3"))
+        )
+
+        if not healthy:
+            self.publishMainMqtt(
+                "es-ESS/SolarOverheadDistributor/Requests/Wattpilot/Request",
+                0,
+            )
+
+        lock = getattr(self, "_siteCurrentPollTransitionLock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._siteCurrentPollTransitionLock = lock
+        with lock:
+            previousHealthy = getattr(self, "_lastSiteCurrentPollHealthy", None)
+            self._lastSiteCurrentPollHealthy = healthy
+
+        if not healthy and previousHealthy is not False:
+            if sample is not None:
+                lastSuccessAge, consumptionW, rawOverheadW = (
+                    self._siteCurrentPollEvidence(sample)
+                )
+                sourceName = sample.source
+            else:
+                lastSuccessAge, consumptionW, rawOverheadW = (-1.0, 0.0, "unavailable")
+                sourceName = getattr(self, "siteCurrentSourceName", "Unknown")
+            message = (
+                "Wattpilot site-current source failure: source={0} status={1} "
+                "reason={2} last_success_age_s={3:.1f} consumption_w={4:.0f} "
+                "raw_overhead_w={5} allocation_suppressed=true "
+                "positive_charger_command_authorized=false."
+            ).format(
+                sourceName,
+                status,
+                error or "unspecified",
+                lastSuccessAge,
+                consumptionW,
+                rawOverheadW,
+            )
+            w(self, message)
+        elif healthy and previousHealthy is False:
+            lastSuccessAge, consumptionW, rawOverheadW = (
+                self._siteCurrentPollEvidence(sample)
+            )
+            message = (
+                "Wattpilot site-current source recovered: source={0} status={1} "
+                "last_success_age_s={2:.1f} consumption_w={3:.0f} "
+                "raw_overhead_w={4}; allocation remains suppressed until the "
+                "normal controller cycle confirms fresh telemetry and site-current recovery."
+            ).format(
+                sample.source,
+                sample.status,
+                lastSuccessAge,
+                consumptionW,
+                rawOverheadW,
+            )
+            i(self, message)
+
+        return pollSucceeded
 
     def onMqttMessage(self, client, userdata, msg):
         """Receive Wattpilot allowance and raw distributor-overhead updates."""
@@ -667,7 +786,7 @@ class FroniusWattpilot (esESSService):
         source = getattr(self, "siteCurrentSource", None)
         interval = getattr(source, "worker_interval_ms", None)
         if interval is not None:
-            self.registerWorkerThread(source.poll, interval)
+            self.registerWorkerThread(self.pollSiteCurrentSource, interval)
         self.registerWorkerThread(self._update, 5000)
 
     def signOfLive(self):
@@ -2157,6 +2276,7 @@ class FroniusWattpilot (esESSService):
             and not self.chargeCompleteHold
             and self.noChargeSince < self.chargeCompleteConfirmSeconds
             and self.canChargeAtMinimumCurrent()
+            and self.siteCurrentRequestEligible()
         ):
             # A one-phase session must ask the distributor for enough power to
             # *decide* whether a three-phase change is possible. Previously it
@@ -2181,6 +2301,21 @@ class FroniusWattpilot (esESSService):
         )
 
         self.reportPhaseMode()
+
+    def siteCurrentRequestEligible(self):
+        """Require healthy, recovered site-current state for positive demand."""
+        source = getattr(self, "siteCurrentSource", None)
+        if source is not None and (
+            not getattr(self, "siteCurrentSourceConnected", False)
+            or getattr(self, "siteCurrentSourceStatus", "Initializing") != "Healthy"
+        ):
+            return False
+        if not self.siteCurrentTelemetryIsFresh(requireChargerCurrent=False):
+            return False
+        if getattr(self, "siteCurrentGuardBlocked", True):
+            return False
+        phaseMode = self.currentPhaseMode if self.currentPhaseMode in (1, 2) else 1
+        return self.siteCurrentRecoveryReady(phaseMode)
 
 
     def reportConsumption(self):

@@ -51,10 +51,10 @@ Current validated state:
 - Private diagnostic evidence showed that a selected site-current source can
   fail before the distributor publishes a misleading positive raw-overhead
   result. This value is not a charger command: the Wattpilot controller checks
-  the failed source first and sends zero current plus Force Off. A new open P2
-  item preserves that safe command behavior while preventing fault-time
-  Wattpilot allocation from remaining actionable or misleading and making the
-  sanitized Shelly failure reason visible in `current.log`.
+  the failed source first and sends zero current plus Force Off. The completed
+  fault-time allocation item preserves that safe command behavior, withdraws
+  Wattpilot demand from the command-free polling worker, and makes the
+  sanitized Shelly failure/recovery transitions visible in `current.log`.
 - Supervised active-charging evidence exposed a separate whole-amp conversion
   boundary: the distributor can allocate an exact number of rounded
   watts-per-amp steps while the controller divides that allowance by a newer
@@ -2894,7 +2894,22 @@ Done criteria:
 - Unit tests cover credential-free URLs, safe error logging, and counter lock snapshots.
 - Full unittest suite passes.
 
-### P2 - Suppress Fault-Time Wattpilot Allocation And Log Shelly Poll Failure Reasons
+### Completed 2026-08-31 - P2 Suppress Fault-Time Wattpilot Allocation And Log Shelly Poll Failure Reasons
+
+Completion record:
+
+- Added a controller-owned asynchronous site-current poll wrapper that
+  immediately publishes a zero Wattpilot distributor request on selected-source
+  failure without issuing charger commands or mutating controller timers.
+- Added transition-only sanitized failure/recovery diagnostics and kept
+  measured consumption and calculated raw overhead truthful.
+- Positive Wattpilot demand now requires healthy fresh site-current telemetry,
+  an unblocked guard, and the existing recovery interval; global distributor
+  arithmetic and other consumers remain independent.
+- Updated the daily report, operator/architecture/service documentation, and
+  hardware-free fault/allocation regressions. Focused syntax checks and 147
+  tests passed; the low-risk supervised network-isolation procedure remains in
+  Outstanding Manual Validation.
 
 Goal:
 
@@ -3552,9 +3567,8 @@ Done criteria:
 
 ## Suggested Implementation Order / PR Execution Queue
 
-1. P2 Suppress Fault-Time Wattpilot Allocation And Log Shelly Poll Failure Reasons — preserve the proven fail-closed command path while preventing misleading positive allocation from persisting and retaining actionable sanitized diagnostics.
-2. P2 Stabilize Wattpilot Allocation-Step Conversion Across Voltage Updates — remove avoidable one-ampere under-allocation without weakening strict no-grid or site-current recovery behavior.
-3. P3 Suppress Duplicate Wattpilot Current-Setpoint Commands — reduce stable-charge WebSocket and INFO-log noise after the corrected allocation target is stable.
+1. P2 Stabilize Wattpilot Allocation-Step Conversion Across Voltage Updates — remove avoidable one-ampere under-allocation without weakening strict no-grid or site-current recovery behavior.
+2. P3 Suppress Duplicate Wattpilot Current-Setpoint Commands — reduce stable-charge WebSocket and INFO-log noise after the corrected allocation target is stable.
 
 ## Verification Plan
 
