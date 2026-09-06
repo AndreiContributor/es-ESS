@@ -470,6 +470,68 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.set_phases.assert_called_once_with(2)
         controller.wattpilot.set_power.assert_called_once_with(6)
 
+    def test_phase_up_reports_switch_only_after_phase_command_is_accepted(self):
+        controller = self._controller()
+        controller.minimumPhaseSwitchSeconds = 0
+        controller.wattpilot.amp = 16
+        controller.wattpilot.amps1 = 16
+        messages = []
+        controller.publishServiceMessage = (
+            lambda *_args: messages.append(_args[-1])
+        )
+        self._set_allowance(controller, 5000, 100)
+
+        with patch.object(
+            controller, "getPhaseSwitchCooldownSeconds", return_value=0
+        ), patch.object(self.fwp.time, "time", return_value=100):
+            reducing = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(reducing, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertFalse(
+            any("Switching to 3-phase" in message for message in messages)
+        )
+        controller.wattpilot.set_phases.assert_not_called()
+
+        controller.wattpilot.amp = 7
+        controller.wattpilot.amps1 = 7
+        self._set_allowance(controller, 5000, 101)
+        with patch.object(
+            controller, "getPhaseSwitchCooldownSeconds", return_value=0
+        ), patch.object(self.fwp.time, "time", return_value=101):
+            switched = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(
+            switched,
+            self.fwp.VrmEvChargerStatus.SwitchingTo3Phase,
+        )
+        self.assertEqual(
+            [message for message in messages if "Switching to 3-phase" in message],
+            ["Switching to 3-phase from PV surplus."],
+        )
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+
+    def test_rejected_phase_up_is_not_reported_as_switching(self):
+        controller = self._controller()
+        controller.minimumPhaseSwitchSeconds = 0
+        controller.wattpilot.set_phases.return_value = False
+        messages = []
+        controller.publishServiceMessage = (
+            lambda *_args: messages.append(_args[-1])
+        )
+        self._set_allowance(controller, 4200, 100)
+
+        with patch.object(
+            controller, "getPhaseSwitchCooldownSeconds", return_value=0
+        ), patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 1)
+        self.assertEqual(controller.pendingPhaseSwitchMode, 0)
+        self.assertFalse(
+            any("Switching to 3-phase" in message for message in messages)
+        )
+
     def test_one_to_three_phase_switch_is_blocked_during_cooldown(self):
         controller = self._controller()
         controller.lastPhaseSwitchTime = 100
@@ -1196,6 +1258,10 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
     def test_grid_import_guard_can_phase_down_before_shared_timer(self):
         controller = self._controller()
+        messages = []
+        controller.publishServiceMessage = (
+            lambda *_args: messages.append(_args[-1])
+        )
         controller.currentPhaseMode = 2
         controller.wattpilot.power = 10
         controller.wattpilot.amp = 14
@@ -1211,6 +1277,9 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             self.assertTrue(controller.shouldPhaseDownForPvDip())
             status = controller._handleGridImportPhaseDown()
         self.assertTrue(status)
+        self.assertFalse(
+            any("Switching to 1-phase" in message for message in messages)
+        )
         controller.wattpilot.set_power.assert_called_once_with(8)
         controller.wattpilot.set_phases.assert_not_called()
 
@@ -1221,6 +1290,13 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.energyTelemetryUpdatedAt = 107
         with patch.object(self.fwp.time, "time", return_value=107):
             controller._handleGridImportPhaseDown()
+        self.assertEqual(
+            [message for message in messages if "Switching to 1-phase" in message],
+            [
+                "Grid import guard triggered, but PV supports 1-phase. "
+                "Switching to 1-phase before stopping."
+            ],
+        )
         controller.wattpilot.set_phases.assert_called_once_with(1)
         controller.wattpilot.set_start_stop.assert_not_called()
 
@@ -1708,6 +1784,41 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(controller.pendingPhaseSwitchMode, 0)
         controller.wattpilot.set_phases.assert_called_once_with(1)
         controller.wattpilot.set_power.assert_called_once_with(7)
+
+    def test_rejected_one_phase_recovery_stops_instead_of_claiming_switch(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.pendingPhaseSwitchMode = 2
+        controller.pendingPhaseSwitchSince = 100
+        controller.wattpilot.power = 3.6
+        controller.wattpilot.power1 = 3.6
+        controller.wattpilot.power2 = 0
+        controller.wattpilot.power3 = 0
+        controller.wattpilot.startState = self.fwp.WattpilotStartStop.On
+        controller.wattpilot.set_phases.return_value = False
+        messages = []
+        controller.publishServiceMessage = (
+            lambda *_args: messages.append(_args[-1])
+        )
+        self._set_allowance(controller, 3600, 160)
+
+        with patch.object(self.fwp.time, "time", return_value=160):
+            status = controller.reconcilePendingPhaseSwitch()
+
+        self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+        self.assertEqual(controller.currentPhaseMode, 0)
+        self.assertEqual(controller.pendingPhaseSwitchMode, 0)
+        self.assertIn(
+            "Wattpilot rejected the 1-phase fallback command. "
+            "Stopping Eco charging for safety.",
+            messages,
+        )
+        self.assertFalse(
+            any("Switching to 1-phase" in message for message in messages)
+        )
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
 
     def test_pending_one_phase_confirmation_stops_if_three_phase_power_remains(self):
         controller = self._controller()

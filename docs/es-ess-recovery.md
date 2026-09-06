@@ -10,6 +10,12 @@ Wattpilot control is safety-sensitive. Keep the vehicle disconnected or use
 the Solar.wattpilot app to stop charging or select Manual before changing
 service state. Manual mode remains user-controlled.
 
+Recovery uses the production health monitor for before/after checkpoints. It
+does not require the current-command monitor, charging-session capture, daily
+report, or Wattpilot setting capture unless a separate investigation calls for
+one of them. See [Diagnostic tools](diagnostic-tools.md) before collecting
+additional evidence.
+
 ## What Survives A Manual Folder Deletion
 
 - A running `python /data/es-ESS/es-ESS.py` process can continue from memory
@@ -295,6 +301,7 @@ manifest rather than manual pruning.
 
 ## Related Documentation
 
+- [Diagnostic tool selector](diagnostic-tools.md)
 - [README setup and configuration](../README.md#setup)
 - [Production health monitor](es-ess-health-monitor.md)
 - [Cerbo GX firmware upgrade and rollback](cerbo-gx-firmware-upgrade-and-rollback.md)

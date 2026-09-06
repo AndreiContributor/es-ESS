@@ -274,6 +274,49 @@ class WattpilotSessionPathTests(unittest.TestCase):
         )
         self.assertEqual(after, before)
 
+    def test_wattpilot_debug_snapshot_reports_setpoint_phase_currents_and_power(self):
+        controller = self._controller()
+        controller.wattpilot.modelStatus = "Charging"
+        controller.wattpilot.amp = 10
+        controller.wattpilot.amps1 = 10.42
+        controller.wattpilot.amps2 = 10.35
+        controller.wattpilot.amps3 = 10.38
+        controller.wattpilot.power1 = 2.42
+        controller.wattpilot.power2 = 2.40
+        controller.wattpilot.power3 = 2.43
+        controller.wattpilot.power = 7.25
+
+        message = controller.wattpilotTelemetryLogMessage()
+
+        self.assertEqual(
+            message,
+            "Wattpilot Modelstatus: Charging; charge telemetry (read-only): "
+            "reported_setpoint=10.00A/phase, L1=10.42A/2420W, "
+            "L2=10.35A/2400W, L3=10.38A/2430W, total=7250W",
+        )
+
+    def test_wattpilot_debug_snapshot_marks_missing_or_nonfinite_values_unavailable(self):
+        controller = self._controller()
+        controller.wattpilot.modelStatus = "Charging"
+        controller.wattpilot.amp = None
+        controller.wattpilot.amps1 = None
+        controller.wattpilot.amps2 = float("nan")
+        controller.wattpilot.amps3 = float("inf")
+        controller.wattpilot.power1 = None
+        controller.wattpilot.power2 = float("nan")
+        controller.wattpilot.power3 = float("inf")
+        controller.wattpilot.power = None
+
+        message = controller.wattpilotTelemetryLogMessage()
+
+        self.assertEqual(
+            message,
+            "Wattpilot Modelstatus: Charging; charge telemetry (read-only): "
+            "reported_setpoint=unavailable/phase, L1=unavailable/unavailable, "
+            "L2=unavailable/unavailable, L3=unavailable/unavailable, "
+            "total=unavailable",
+        )
+
     def test_session_transition_and_checkpoint_log_levels_are_bounded(self):
         controller = self._controller()
         info_messages = []

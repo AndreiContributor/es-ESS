@@ -11,6 +11,12 @@ Do not skip the first gate. Wattpilot firmware settings are not a public es-ESS
 API, and a guessed mapping could either block safe charging or leave two
 controllers issuing conflicting current and phase decisions.
 
+This is the only normal procedure that uses
+`scripts/wattpilot-setting-capture.py`. Do not use that specialist utility for
+a charging session, deployment health check, current-command check, or daily
+report. See [Diagnostic tools](diagnostic-tools.md) for the purpose and privacy
+boundary of every diagnostic script.
+
 ## Safety boundaries
 
 - Use an explicitly supported clean Venus OS release (`v3.75` or `v3.79`),
