@@ -384,6 +384,28 @@ class EsEssDailyReportTests(unittest.TestCase):
         self.assertIn("FAIL", self._statuses(result, "phase timing"))
         self.assertIn("FAIL", self._statuses(result, "phase threshold"))
 
+    def test_phase_preparation_messages_are_not_counted_as_commands(self):
+        records = self._records(
+            [
+                self._line(
+                    "13:00:00",
+                    "ServiceMessage: PV allowance dropped below the three-phase "
+                    "threshold. Preparing a 1-phase transition before applying "
+                    "battery-assist or stop logic.",
+                ),
+                self._line(
+                    "13:00:05",
+                    "ServiceMessage: Grid import guard triggered, but PV supports "
+                    "1-phase. Preparing a 1-phase fallback before stopping.",
+                ),
+            ]
+        )
+        audit = self._audit(records)
+
+        audit.collect()
+
+        self.assertEqual(audit.phase_actions, [])
+
     def test_sustained_grid_import_without_guard_fails(self):
         lines = []
         for clock in ("14:00:00", "14:00:05", "14:00:10", "14:00:15"):

@@ -11,6 +11,13 @@ Wattpilot control values. It only reads local files, D-Bus paths, service
 status, selected config keys, disk usage, Python dependency imports, and recent
 logs.
 
+Use this tool for a deployment or configuration checkpoint and short live
+observation. Use the current-command monitor for a focused repeated-current
+check, the session capture for a complete charging session, and the daily
+report for retained historical evidence. The setting capture is unrelated to
+normal health monitoring. See [Diagnostic tools](diagnostic-tools.md) for the
+complete selection table.
+
 ## Install The Script
 
 ### Option 1: the script is already in the es-ESS checkout
@@ -230,6 +237,7 @@ EXPECTED_VENUS_OS=v3.79 LOG_LINES=800 EVENT_LINES=120 /data/es-ESS/scripts/es-es
 
 ## Related Documentation
 
+- [Diagnostic tool selector](diagnostic-tools.md)
 - [Accidental-deletion recovery](es-ess-recovery.md)
 - [es-ESS daily report](es-ess-daily-report.md)
 - [Cerbo GX firmware upgrade and rollback](cerbo-gx-firmware-upgrade-and-rollback.md)

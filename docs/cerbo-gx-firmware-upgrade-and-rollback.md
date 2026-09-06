@@ -13,6 +13,12 @@ same checkout can operate after a stored-firmware rollback.
 
 ## Safety Notes
 
+This runbook uses the production health monitor as its deployment checkpoint
+and may use a bounded private transition capture during supervised validation.
+For the distinction between that checkpoint, the focused current-command
+monitor, the six-hour charging-session capture, the daily report, and the
+specialist setting capture, see [Diagnostic tools](diagnostic-tools.md).
+
 - Schedule the work for a maintenance window with someone able to access the
   GX locally if networking does not recover.
 - Do not update while an EV is actively charging. Put Wattpilot in Manual mode
@@ -637,3 +643,4 @@ compatible with that firmware before starting es-ESS.
 - [Official Cerbo GX `einstein` firmware archive](https://updates.victronenergy.com/feeds/venus/release/images/einstein/)
 - [Victron root access, firmware password reset, and persistent SSH-key guidance](https://www.victronenergy.com/live/ccgx%3Aroot_access)
 - [Local es-ESS production health monitor](es-ess-health-monitor.md)
+- [Local diagnostic tool selector](diagnostic-tools.md)

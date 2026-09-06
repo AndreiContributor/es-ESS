@@ -8,6 +8,13 @@ battery-assist, command-authority, grid-safety, and rare-status evidence against
 the safe values in `config.ini`.
 The existing `scripts/es-ess-health-monitor.sh` remains the live snapshot tool.
 
+Use this analyzer for a completed APP_DEBUG day or an explicitly partial
+current-day review. For a live six-hour charge with ten-second per-phase data,
+use the charging-session capture; for only an immediate repeated-current check,
+use the current-command monitor. The specialist setting capture is not part of
+daily operation. See [Diagnostic tools](diagnostic-tools.md) for the complete
+selection table.
+
 ## Mandatory APP_DEBUG And Coverage Rules
 
 The analyzer always requires `[Common] LogLevel=APP_DEBUG` (or the more verbose
@@ -296,6 +303,7 @@ checkpoint; do not add five-second logging spam.
 
 ## Related Documentation
 
+- [Diagnostic tool selector](diagnostic-tools.md)
 - [Production health monitor](es-ess-health-monitor.md)
 - [Wattpilot architecture](wattpilot-architecture.md)
 - [Wattpilot command-ownership validation](wattpilot-command-ownership-validation.md)

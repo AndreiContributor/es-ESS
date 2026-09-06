@@ -551,6 +551,19 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
             self.fwp.VrmEvChargerStartStop.Start.name,
         )
 
+    def test_direct_current_write_reports_rejected_phase_transition(self):
+        controller = self._controller()
+        controller.wattpilot.set_phases.return_value = False
+
+        self.assertFalse(
+            controller._froniusHandleChangedValue("/SetCurrent", 18)
+        )
+
+        self.assertEqual(controller.currentPhaseMode, 1)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+        controller.wattpilot.set_power.assert_not_called()
+        controller.dumpEvChargerInfo.assert_called_once_with()
+
     def test_mode_write_can_still_select_auto_and_manual(self):
         controller = self._controller()
         controller.mode = self.fwp.VrmEvChargerControlMode.Manual

@@ -17,6 +17,10 @@ and phase-switch EV charging. Changes in this area must preserve Manual mode,
 PV-only Auto/Eco behavior, grid-use guards, battery-assist limits, telemetry
 freshness checks, and the public D-Bus/MQTT status contract.
 
+Operator-facing selection and privacy guidance for the command-free diagnostic
+utilities is centralized in [Diagnostic tools](diagnostic-tools.md). This
+document remains authoritative for their command and architecture boundaries.
+
 ### Example electrical topology
 
 An illustrative installation may place a grid-exchange meter before the
@@ -206,6 +210,11 @@ It owns:
   guarded phase, current, and Start commands in that order and begins public
   transition grace only after all three are accepted. A rejection leaves the
   session stopped and rebuilds the stable-PV interval.
+- Running phase-transition dispatch. The controller may first reduce current
+  and wait for fresh Wattpilot telemetry, but it changes remembered phase state
+  and publishes a `Switching to ...` service message only after `set_phases()`
+  is accepted. A rejected phase command remains in the prior phase state; a
+  rejected safety fallback stops Auto/Eco instead of claiming a transition.
 - Read-only command-authority evaluation. Positive current, start, phase-up,
   and normal Auto/Eco dispatch require ECO plus `fup=false` and `ful=false`;
   missing or conflicting settings fail closed while zero-current and safe stop
@@ -213,7 +222,11 @@ It owns:
 - Rejection of a Manual-to-Auto request until both native command competitors
   are observed disabled. The user-requested transition may then send `lmo=4`;
   any firmware-side re-enable blocks authority again.
-- Wattpilot shutdown behavior during es-ESS termination.
+- Wattpilot shutdown behavior during es-ESS termination. WebSocket close races
+  are reduced to a sanitized warning while connection, command-authority, and
+  telemetry state is always invalidated. Explicit disconnect notification is
+  emitted once per connection lifecycle, and selected site-current-source
+  cleanup still runs if Wattpilot cleanup fails.
 
 This file remains the place where command side effects are allowed. Refactors
 should move decision logic only when the same behavior is covered by focused
@@ -618,6 +631,11 @@ Future Wattpilot changes must preserve these invariants:
   charge. It may reduce or maintain the current setpoint and support a safer
   one-phase fallback, but must not start charging, increase current, authorize
   phase-up, or mutate phase state without a matching Wattpilot phase command.
+- A running phase command must be accepted by the Wattpilot client before the
+  controller changes `currentPhaseMode`, begins confirmation grace, or logs an
+  actual `Switching to ...` action. Current reduction while preparing a phase
+  change is not itself a phase command. If an unconfirmed three-phase recovery
+  cannot dispatch its one-phase fallback, Auto/Eco stops fail-closed.
 - Assigned Wattpilot allowance remains authoritative for starts, increases,
   and phase-up. Raw overhead never replaces the truthful public allowance.
 - `MinPhaseSwitchSeconds` is the single normal stability/cooldown timer for
@@ -648,11 +666,18 @@ Future Wattpilot changes must preserve these invariants:
 - Phase-switch command ordering must keep both the old and requested phase mode
   inside the calculated site-current headroom before any increase.
 - Public D-Bus and MQTT runtime-status paths are compatibility contracts.
-- Keep read-only diagnostics such as `scripts/es-ess-health-monitor.sh` and
-  `scripts/es-ess-daily-report.py` command-free. Monitoring tools may read the
-  runtime-status contract, service state, selected config values and logs, but
-  must not write Wattpilot, D-Bus, MQTT, service or configuration state. The
-  daily report may invoke only allowlisted `svstat` and D-Bus `GetValue`
+- Keep read-only diagnostics such as `scripts/es-ess-health-monitor.sh`,
+  `scripts/es-ess-daily-report.py`, and the
+  `scripts/wattpilot-session-capture.sh` /
+  `scripts/wattpilot-session-capture.py` pair command-free. Monitoring tools
+  may read the runtime-status contract, service state, selected config values
+  and logs, but must not write Wattpilot, D-Bus, MQTT, service or configuration
+  state. The session capture must reuse a persistent read-only D-Bus connection,
+  read the controller-normalized selected-site-current source, freshness,
+  headroom, and one-phase mapping contract instead of assuming the Venus system
+  is the selected safety source, calculate durations and energy from observed
+  timestamps, and exclude long gaps rather than extrapolating missing samples.
+  The daily report may invoke only allowlisted `svstat` and D-Bus `GetValue`
   snapshots. Historical dates must stop unless APP_DEBUG (or more verbose)
   covers the complete requested window. A current-day partial report may
   analyze available diagnostic records, but must remain incomplete unless it

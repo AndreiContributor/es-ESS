@@ -11,7 +11,10 @@ grid-setpoint ownership, or active/dormant service status changes.
 For Wattpilot command policy and safety invariants, also read
 `docs/wattpilot-architecture.md`. For read-only post-deploy and post-firmware
 operator evidence, use `scripts/es-ess-health-monitor.sh`; install and usage
-steps are in `docs/es-ess-health-monitor.md`.
+steps are in `docs/es-ess-health-monitor.md`. The distinction between that
+checkpoint and the current-command monitor, charging-session capture, daily
+report, and specialist setting capture is documented in
+`docs/diagnostic-tools.md`.
 
 ## Runtime Service Loading
 

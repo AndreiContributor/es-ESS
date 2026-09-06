@@ -39,6 +39,7 @@ system for at least 10ish years, there will be plenty of updates and/or bugfixes
 - [Accidental-deletion recovery](docs/es-ess-recovery.md) - Preserve a surviving process, logs, runtime data and configuration evidence before a staged reinstall.
 - [Production health monitor](#production-health-monitor) - Read-only GX health snapshot after firmware updates, deploys, config changes and Wattpilot validation runs.
 - [es-ESS daily report](#es-ess-daily-report) - Read-only complete-day runtime, charging-session, phase and safety report.
+- [Diagnostic tool selector](docs/diagnostic-tools.md) - Choose between the health monitor, quick current-command check, six-hour session capture, daily report, and specialist setting capture.
 - [Dormant service modules](#dormant-service-modules) - Legacy code that is retained for reference but is not available for configuration.
 - [This and that](#this-and-that) - Various information that doesn't fit elsewhere.
 - [F.A.Q](#faq) - Frequently Asked Questions
@@ -901,7 +902,7 @@ optional running-session grid fallback:
 - Wattpilot allocation uses one conservative whole-watt step per ampere for the active phase interval. The step starts at the ceiling of live one- or three-phase voltage, may increase before a current decision if voltage rises, and does not decrease on ordinary voltage movement. The same step governs the distributor minimum, increment, maximum request, and allowance-to-current conversion, so a complete `N`-step allowance remains `N` amperes across asynchronous voltage samples. A stale allowance created with a smaller earlier step can only reduce the target safely. The step is reinitialized at a phase boundary or confirmed disconnect.
 - Wattpilot may retain the previous configured current while stopped. es-ESS does not treat a lower pre-start setpoint as active EV-current reduction or reset already-stable site headroom. Phase, current, and Start commands are still individually guarded; if any is rejected, the session remains publicly stopped, no transition power is reported, and the stable-PV interval is rebuilt before retrying.
 - Every positive Auto/Eco current target passes the final firmware, ownership, mode, and site-current guard. When connected Wattpilot telemetry has explicitly confirmed the exact same `amp` setpoint since the current connection began, the controller accepts that stage as a no-op instead of retransmitting it or repeating the INFO adjustment record. This accepted no-op can satisfy the current stage of a phase-current-Start transaction. Missing, malformed, reset-after-reconnect, or different telemetry sends the command normally; rejected no-ops abort later transaction stages. Zero-current stops, changed targets, phase commands, Force Off, and Manual-mode constraint release are never suppressed by this optimization.
-- Both one-to-three and three-to-one phase changes use `MinPhaseSwitchSeconds` as their normal stability timer and minimum interval between phase commands. On the normal current-adjustment path, an active one-to-three candidate survives a shorter-than-`SurplusDropGraceSeconds` dip below the phase-up threshold only while fresh allowance remains above the effective three-phase floor; a deeper dip that requires minimum-current fallback resets it. Battery assist cannot create or preserve a phase-up candidate, and fresh assigned allowance must complete the normal phase-up conditions before any three-phase command is sent.
+- Both one-to-three and three-to-one phase changes use `MinPhaseSwitchSeconds` as their normal stability timer and minimum interval between phase commands. On the normal current-adjustment path, an active one-to-three candidate survives a shorter-than-`SurplusDropGraceSeconds` dip below the phase-up threshold only while fresh allowance remains above the effective three-phase floor; a deeper dip that requires minimum-current fallback resets it. Battery assist cannot create or preserve a phase-up candidate, and fresh assigned allowance must complete the normal phase-up conditions before any three-phase command is sent. If current must first be reduced, logs describe preparation rather than a completed phase action. The controller reports `Switching to ...`, changes remembered phase state, and begins confirmation only after the Wattpilot accepts the phase command; a rejected safety fallback stops Auto/Eco fail-closed.
 - A confirmed vehicle disconnect clears any pending phase-switch candidate, so reconnecting requires a new complete `MinPhaseSwitchSeconds` interval from fresh assigned PV. A transient false connection reading inside `CarDisconnectConfirmSeconds` does not reset the timer, and disconnect does not erase the cooldown from the last confirmed phase command.
 - During a PV deficit, Auto/Eco first reduces the common Wattpilot current according to available PV. If PV cannot sustain the configured minimum, the controller commands the minimum and requires fresh current telemetry before battery or grid continuation. A valid battery bridge holds that minimum-current phase mode for its bounded window; it never holds a previous higher setpoint.
 - With `AllowGridCharging=false`, loss or expiry of an eligible battery bridge reduces three-phase charging to one phase when fresh continuation PV supports it; otherwise Auto/Eco stops. `AllowanceDropGraceSeconds` starts at the original below-minimum event and is not restarted after a full battery-assist window. Stale grid telemetry and the grid-import guard can still act sooner.
@@ -1087,6 +1088,28 @@ initialization, authentication, matching firmware confirmation, and no charger
 command, reconnect, or second initialization during that interval. Wrong,
 unresolved, or incomplete compatibility evidence remains an anomaly.
 
+### Diagnostic script inventory
+
+The `scripts/` directory contains six diagnostic files representing five
+tools. The charging-session capture intentionally has two files: its small
+POSIX-shell launcher selects `python` or `python3` on Venus OS, while the
+companion Python file owns the persistent D-Bus connection, calculations, and
+report generation.
+
+See the [diagnostic tool selector](docs/diagnostic-tools.md) for when to use
+each tool, what must be copied to the GX, and the privacy boundary of each
+output. In particular, the short current-command monitor is optional when the
+six-hour session capture is already running, and the setting capture is only
+for the attended command-ownership discovery procedure.
+
+| Tool | Files | Purpose |
+| --- | --- | --- |
+| Production health monitor | `es-ess-health-monitor.sh` | Repeated live service, compatibility, D-Bus, config, storage, and recent-log checks. |
+| Daily report | `es-ess-daily-report.py` | Full-day or current-day APP_DEBUG log analysis and optional current snapshot. |
+| Current-command monitor | `wattpilot-current-command-monitor.sh` | Short live check that an unchanged positive current target is not repeatedly dispatched. |
+| Charging-session capture | `wattpilot-session-capture.sh` and `wattpilot-session-capture.py` | Six-hour read-only sampling and session analysis; the shell file is only the launcher. |
+| Setting capture | `wattpilot-setting-capture.py` | Redacted before/after native-setting observation with charger commands blocked. |
+
 ### Production health monitor
 
 For firmware-update, deploy, config-change, early daylight and mid-day
@@ -1111,6 +1134,40 @@ mode-boundary validation, and interpretation steps are documented in
 [docs/es-ess-health-monitor.md](docs/es-ess-health-monitor.md).
 The monitor uses `python` when available and falls back to `python3` for both
 dependency checks.
+
+### Wattpilot charging-session capture
+
+Use the command-free session capture to observe a complete charging session,
+including start/stop and phase transitions, charging power/current per phase,
+the controller-normalized selected site-current source, source freshness and
+headroom per phase, separate Venus consumption power, controller command
+evidence, and message cadence. This makes the report follow the configured
+source, including `Shelly3EMGen3`, and records `Charger1PhaseMapping` so a
+one-phase L1/L2/L3 installation is interpreted correctly. The launcher keeps
+one Python process and one persistent system D-Bus connection instead of
+starting a D-Bus command for every value in every sample.
+
+```bash
+nohup sh /data/es-ESS/scripts/wattpilot-session-capture.sh \
+  >/data/wattpilot-capture-launch.log 2>&1 &
+echo $!
+```
+
+The defaults are six hours and a ten-second interval. Results are stored in a
+new private directory below `/data/es-ESS-private-diagnostics/`; the launch log
+prints its exact path. The directory contains `samples.tsv`, `transitions.tsv`,
+new es-ESS log records, `summary.txt`, and `progress.log`.
+
+Copy both `scripts/wattpilot-session-capture.sh` and
+`scripts/wattpilot-session-capture.py` to the GX device. They are one tool, not
+duplicate implementations: the 19-line shell file launches the Python capture.
+The summary integrates energy and state durations from actual sample timestamps
+and excludes long sampling gaps rather than assuming every requested interval
+was collected.
+Controller message counts come from D-Bus/runtime/log evidence; they are not an
+encrypted Wattpilot WebSocket packet capture. The tool only performs D-Bus
+`GetValue` reads and does not send charger, D-Bus, MQTT, service, or config
+commands.
 
 ### es-ESS daily report
 

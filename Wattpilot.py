@@ -446,6 +446,7 @@ class Wattpilot(object):
             self._energyTelemetryUpdatedAt = 0
             self._ampUpdatedAt = 0
             self._stop_reconnect.clear()
+            self._disconnect_notified = False
             self._wst = threading.Thread(target=self.__connection_worker)
             self._wst.daemon = True
             self._wst.start()
@@ -458,12 +459,33 @@ class Wattpilot(object):
             self._auto_reconnect = auto_reconnect
             if not auto_reconnect:
                 self._stop_reconnect.set()
+            should_finalize = not self._disconnect_notified
+            self._disconnect_notified = True
 
-        self._wsapp.close()
-        self._connected=False
-        self._reset_command_authority_telemetry()
-        self._energyTelemetryUpdatedAt = 0
-        self._ampUpdatedAt = 0
+        if not should_finalize:
+            d(self, "Wattpilot disconnect already completed.")
+            return
+
+        try:
+            close_websocket = getattr(self._wsapp, "close", None)
+            if callable(close_websocket):
+                close_websocket()
+        except Exception as ex:
+            # websocket-client may race its close-frame teardown with the
+            # worker callback. Shutdown must still invalidate every cached
+            # authority and telemetry timestamp, without logging frame data.
+            w(
+                self,
+                "Wattpilot WebSocket close failed during disconnect: {0}.".format(
+                    ex.__class__.__name__
+                ),
+            )
+        finally:
+            self._connected = False
+            self._reset_command_authority_telemetry()
+            self._energyTelemetryUpdatedAt = 0
+            self._ampUpdatedAt = 0
+
         self.__call_event_handler(Event.WP_DISCONNECT)
         i(self, "Wattpilot disconnected")
 
@@ -763,6 +785,8 @@ class Wattpilot(object):
         self._wsapp.send(json.dumps(message))
 
     def __on_AuthSuccess(self,message):
+        with self._connection_lock:
+            self._disconnect_notified = False
         self._connected = True
         self.request_full_status()
         self.__call_event_handler(Event.WP_AUTH_SUCCESS, message)
@@ -925,6 +949,7 @@ class Wattpilot(object):
         self._wst=None
         self._connection_lock = threading.Lock()
         self._stop_reconnect = threading.Event()
+        self._disconnect_notified = False
 
         websocket.setdefaulttimeout(self._websocket_default_timeout)
         self._wsapp = websocket.WebSocketApp(

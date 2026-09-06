@@ -200,6 +200,53 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
         self.assertEqual(FakeWebSocketApp.instances[0].run_forever_calls, 1)
         self.assertTrue(FakeWebSocketApp.instances[0].closed)
 
+    def test_disconnect_close_failure_still_resets_state_and_notifies_once(self):
+        info_messages = []
+        warning_messages = []
+        _install_wattpilot_client_stubs(
+            info_messages=info_messages,
+            warning_messages=warning_messages,
+        )
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_disconnect_close_failure_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+        disconnect_events = []
+        client.add_event_handler(
+            wattpilot_module.Event.WP_DISCONNECT,
+            lambda event: disconnect_events.append(event["type"]),
+        )
+        client._connected = True
+        client._nativePvSurplusEnabled = False
+        client._flexibleTariffEnabled = False
+        client._energyTelemetryUpdatedAt = 123.0
+        client._ampUpdatedAt = 124.0
+        client._wsapp.close = Mock(
+            side_effect=AttributeError("synthetic close-frame race")
+        )
+
+        client.disconnect(auto_reconnect=False)
+        client.disconnect(auto_reconnect=False)
+
+        self.assertFalse(client.connected)
+        self.assertIsNone(client.nativePvSurplusEnabled)
+        self.assertIsNone(client.flexibleTariffEnabled)
+        self.assertEqual(client.energyTelemetryUpdatedAt, 0)
+        self.assertEqual(client.ampUpdatedAt, 0)
+        self.assertEqual(disconnect_events, [wattpilot_module.Event.WP_DISCONNECT])
+        self.assertEqual(
+            info_messages.count("Wattpilot disconnected"),
+            1,
+        )
+        client._wsapp.close.assert_called_once_with()
+        self.assertEqual(
+            warning_messages,
+            [
+                "Wattpilot WebSocket close failed during disconnect: "
+                "AttributeError."
+            ],
+        )
+
     def test_connect_replaces_worker_that_is_already_stopping(self):
         _install_wattpilot_client_stubs()
         wattpilot_module = self.load_wattpilot_module(

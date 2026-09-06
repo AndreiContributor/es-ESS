@@ -3601,6 +3601,40 @@ Done criteria:
 - Focused syntax and unittest commands pass.
 - Full unittest suite passes.
 
+### Completed 2026-09-06 - P1 Require Accepted Running Phase Commands Before State Changes
+
+Completion record:
+
+- `commandSiteSafePhaseTransition()` now checks the guarded `set_phases()`
+  result before changing `currentPhaseMode`; rejected phase commands retain the
+  prior controller phase state.
+- An unconfirmed three-phase transition whose one-phase recovery command is
+  rejected now stops Auto/Eco fail-closed instead of reporting a successful
+  fallback.
+- Phase-up, PV phase-down, and grid-guard messages distinguish current-reduction
+  preparation from an accepted phase command. The established `Switching to
+  ...` records are emitted only after phase dispatch is accepted, so diagnostic
+  reports no longer count preparation as a phase action.
+- Added hardware-free accepted, reducing, rejected, recovery-stop, and message-
+  ordering regressions while preserving Manual ownership, no-grid policy,
+  site-current limits, battery-assist bounds, and phase confirmation.
+
+### Completed 2026-09-06 - P2 Make Wattpilot Shutdown Cleanup Exception-Safe
+
+Completion record:
+
+- `Wattpilot.disconnect()` is idempotent for each connection lifecycle and
+  catches WebSocket close races as a sanitized warning while always clearing
+  connection state, command-authority telemetry, and freshness timestamps.
+- Explicit Wattpilot disconnect notification and its INFO record are emitted
+  once per connection lifecycle, including when the underlying WebSocket close
+  raises.
+- `FroniusWattpilot.handleSigterm()` now isolates Wattpilot cleanup failures and
+  closes the selected site-current source from a `finally` path, after the
+  existing Auto/Eco Force Off attempt.
+- Added hardware-free regressions for a synthetic WebSocket close race,
+  repeated disconnect, and independent site-current-source cleanup.
+
 ## Suggested Implementation Order / PR Execution Queue
 
 - No open implementation items remain.

@@ -573,6 +573,32 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
             self.fwp.WattpilotStartStop.Off
         )
 
+    def test_disconnect_failure_cannot_skip_site_source_cleanup(self):
+        controller = self._controller()
+        events = []
+        controller.wattpilot = Mock()
+        controller.wattpilot.connected = False
+
+        def fail_disconnect():
+            events.append("disconnect")
+            raise RuntimeError("synthetic disconnect failure")
+
+        controller.wattpilot.disconnect.side_effect = fail_disconnect
+        controller.siteCurrentSource = Mock()
+        controller.siteCurrentSource.close.side_effect = (
+            lambda: events.append("source-close")
+        )
+
+        with patch.object(self.fwp, "w") as warning_log:
+            controller.handleSigterm()
+
+        self.assertEqual(events, ["disconnect", "source-close"])
+        warning_log.assert_called_once()
+        self.assertIn(
+            "Wattpilot cleanup failed during shutdown: RuntimeError.",
+            warning_log.call_args.args[1],
+        )
+
     def test_three_phase_start_falls_back_to_one_phase_when_another_phase_is_full(self):
         controller = self._controller()
         controller.allowance = 5000
@@ -647,6 +673,19 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
 
         self.assertEqual(switched, "switched")
         controller.wattpilot.set_phases.assert_called_once_with(2)
+
+    def test_rejected_phase_command_does_not_mutate_controller_phase_state(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 1
+        controller.wattpilot.amp = 6
+        controller.wattpilot.set_phases.return_value = False
+
+        result = controller.commandSiteSafePhaseTransition(2, 6)
+
+        self.assertFalse(result)
+        self.assertEqual(controller.currentPhaseMode, 1)
+        controller.wattpilot.set_phases.assert_called_once_with(2)
+        controller.wattpilot.set_power.assert_not_called()
 
     def test_final_command_boundary_fails_closed_but_allows_stop_commands(self):
         controller = self._controller()
