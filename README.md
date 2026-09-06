@@ -617,6 +617,11 @@ surplus:
   transitions, authoritative available counter deltas, bounded sampled-power
   estimates, onboarding latency, and one APP_DEBUG checkpoint per connected
   minute for the daily report. They do not identify the vehicle.
+- On each eligible APP_DEBUG controller cycle, the existing Wattpilot model-
+  status record also shows the reported current setpoint per phase, measured
+  L1/L2/L3 current and power, and measured total power. Missing or non-finite
+  telemetry is shown as `unavailable`; this read-only record is not a device
+  command.
 - Auto/Eco charging uses [SolarOverheadDistributor](#solaroverheaddistributor)
   allowances, fresh grid telemetry, configured current limits, and no-grid
   guards.

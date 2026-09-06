@@ -1604,10 +1604,7 @@ class FroniusWattpilot (esESSService):
             else:
                 d(self, "Car State not yet ready, not performing idle checks.")
 
-            d(
-                self,
-                "Wattpilot Modelstatus: {0}".format(self.wattpilot.modelStatus)
-            )
+            d(self, self.wattpilotTelemetryLogMessage())
 
             priorMode = self.mode
 
@@ -1664,6 +1661,41 @@ class FroniusWattpilot (esESSService):
             c(self, "Exception during duty-cycle.", exc_info=ex)
             if self.autoControlActive():
                 self.failSafeStopForAutoControlFault()
+
+    def wattpilotTelemetryLogMessage(self):
+        """Format one command-free snapshot of reported charging telemetry."""
+
+        def current(value):
+            parsed = DecisionInputs.finite_number(value)
+            return (
+                "unavailable"
+                if parsed is None
+                else "{0:.2f}A".format(parsed)
+            )
+
+        def power(value):
+            parsed = DecisionInputs.finite_number(value)
+            return (
+                "unavailable"
+                if parsed is None
+                else "{0:.0f}W".format(parsed * 1000.0)
+            )
+
+        return (
+            "Wattpilot Modelstatus: {0}; charge telemetry (read-only): "
+            "reported_setpoint={1}/phase, L1={2}/{3}, L2={4}/{5}, "
+            "L3={6}/{7}, total={8}".format(
+                getattr(self.wattpilot, "modelStatus", None),
+                current(getattr(self.wattpilot, "amp", None)),
+                current(getattr(self.wattpilot, "amps1", None)),
+                power(getattr(self.wattpilot, "power1", None)),
+                current(getattr(self.wattpilot, "amps2", None)),
+                power(getattr(self.wattpilot, "power2", None)),
+                current(getattr(self.wattpilot, "amps3", None)),
+                power(getattr(self.wattpilot, "power3", None)),
+                power(getattr(self.wattpilot, "power", None)),
+            )
+        )
 
     def logSessionStatisticsRecords(self, records):
         """Emit versioned command-free records at transition/checkpoint levels."""

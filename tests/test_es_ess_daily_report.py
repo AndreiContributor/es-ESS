@@ -639,7 +639,12 @@ class EsEssDailyReportTests(unittest.TestCase):
                     "are disabled.",
                     "WARNING",
                 ),
-                self._line("15:40:05", "Wattpilot Modelstatus: Charging"),
+                self._line(
+                    "15:40:05",
+                    "Wattpilot Modelstatus: Charging; charge telemetry (read-only): "
+                    "reported_setpoint=10.00A/phase, L1=10.42A/2420W, "
+                    "L2=10.35A/2400W, L3=10.38A/2430W, total=7250W",
+                ),
             ]
         )
 
