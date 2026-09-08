@@ -226,6 +226,7 @@ class ConfigContractTests(unittest.TestCase):
                 "Password",
                 "PollFrequencyMs",
                 "RequestTimeoutSeconds",
+                "TransientFailureGraceSeconds",
                 "PhaseA",
                 "PhaseB",
                 "PhaseC",

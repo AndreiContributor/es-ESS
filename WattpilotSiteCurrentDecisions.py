@@ -104,8 +104,12 @@ def limit_current_recovery(
     delay = max(0.0, float(recovery_seconds))
     current_time = float(now)
 
-    if target <= current:
+    if target < current:
         return SiteCurrentRecoveryDecision(target, 0, 0)
+
+    if target == current:
+        elapsed = max(0.0, current_time - since) if since > 0 else 0
+        return SiteCurrentRecoveryDecision(target, since, elapsed)
 
     if since <= 0:
         return SiteCurrentRecoveryDecision(current, current_time, 0)

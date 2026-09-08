@@ -155,8 +155,11 @@ It owns:
   three subscribed BusItems once at the start of each controller cycle. That
   immutable guard result is passed through state selection and command
   dispatch, so one cycle cannot act on two contradictory provider reads. The
-  Shelly provider timestamps only a complete successful RPC sample. There is
-  no automatic provider fallback.
+  Shelly provider timestamps only a complete successful RPC sample. Its
+  optional bounded connection-only grace can retain that still-fresh snapshot
+  as `Degraded` for an already-running charge while positive demand, starts,
+  increases, and phase-up remain blocked. There is no automatic provider
+  fallback.
 - Command-free site-current diagnostic refresh during the disconnected idle
   throttle. The normal five-second service worker consumes the latest provider
   snapshot and republishes current, age, health, and headroom paths without
@@ -166,8 +169,11 @@ It owns:
   sanitized failure transition; repeated failures do not repeat the warning.
   It may copy provider telemetry and publish that request, but it does not issue
   a Wattpilot command, dispatch controller state, or mutate recovery/phase
-  timers. Recovery is logged once and positive demand resumes only from the
-  normal controller cycle after fresh telemetry and site-current recovery.
+  timers. If the provider reports `Degraded`, the normal controller may use
+  the last still-fresh sample only to hold or reduce an existing charge;
+  authentication, HTTP/device, and payload failures bypass grace. Recovery is
+  logged once and positive demand resumes only from the normal controller
+  cycle after fresh telemetry and site-current recovery.
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
@@ -391,8 +397,11 @@ in URLs or logs.
 `Shelly3EMSiteCurrent.py` owns the lock-protected asynchronous meter snapshot,
 periodic identity revalidation, and electrician-verified A/B/C-to-L1/L2/L3
 mapping. Only a complete successful poll refreshes all three timestamps. A
-failure invalidates the selected source without refreshing cached age. These
-provider modules do not publish commands or register a Victron grid service.
+connection failure may retain the prior valid snapshot as `Degraded` for the
+configured `0..5` second grace without refreshing cached age; the default zero
+disables grace. Grace expiry and authentication, HTTP/device, or payload
+failures invalidate the selected source immediately. These provider modules do
+not publish commands or register a Victron grid service.
 The controller-owned polling wrapper consumes that command-free snapshot,
 withdraws only the Wattpilot SolarOverheadDistributor request on failure, and
 logs sanitized failure/recovery transitions. The provider still has no MQTT,
@@ -510,8 +519,13 @@ Future Wattpilot changes must preserve these invariants:
   state selection and active-charge dispatch; it fails closed without another
   provider read if it expires before dispatch. The Shelly provider uses the
   timestamp of its last complete HTTP poll. A failed selected-source read never
-  refreshes cached age and fails Auto/Eco closed; the controller must not
-  silently fall back to another provider.
+  refreshes cached age. A configured connection-only grace may keep a running
+  charge at or below its reported current from the last still-fresh snapshot,
+  but it immediately withdraws demand and blocks starts, increases, and
+  phase-up. The grace is capped at five seconds and cannot exceed the ordinary
+  freshness window. Authentication, HTTP/device, payload, stale, or expired
+  data fails closed immediately; the controller must not silently fall back to
+  another provider.
 - The disconnected five-minute Wattpilot idle throttle must not freeze the
   public site-current contract or advertise a stale sample with a frozen young
   age. A command-free idle diagnostic refresh must remain on the normal
@@ -531,7 +545,14 @@ Future Wattpilot changes must preserve these invariants:
 - Site-current reductions and stops run before allowance grace, battery assist,
   grid fallback, or transition grace. Recovery must remain continuously safe
   for `SiteCurrentRecoverySeconds`; increases then rise by 1 A per normal
-  controller cycle.
+  controller cycle. A genuine lower target resets recovery, but an equal safe
+  active-current target preserves the running timer. This distinction prevents
+  the controller from indefinitely suppressing its own positive distributor
+  request while still requiring a complete delay before any later increase.
+- A transient Shelly connection grace resets site-current recovery timers.
+  After the next complete successful poll, positive allocation, restart, and
+  current increases remain blocked until the existing continuous recovery
+  interval completes.
 - A stopped Wattpilot may retain its prior configured `amp` value. Changing
   that inactive setpoint before a start must not be treated as measured EV
   current or clear an already-mature site-recovery timer. The following Start

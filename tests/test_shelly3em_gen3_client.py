@@ -19,6 +19,12 @@ class Timeout(RequestException):
     pass
 
 
+class HTTPError(RequestException):
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        self.response = types.SimpleNamespace(status_code=status_code)
+
+
 class FakeHTTPDigestAuth:
     def __init__(self, username, password):
         self.username = username
@@ -30,6 +36,7 @@ REQUESTS.Session = Mock
 REQUESTS.exceptions = types.SimpleNamespace(
     RequestException=RequestException,
     Timeout=Timeout,
+    HTTPError=HTTPError,
 )
 REQUESTS_AUTH = types.ModuleType("requests.auth")
 REQUESTS_AUTH.HTTPDigestAuth = FakeHTTPDigestAuth
@@ -176,6 +183,21 @@ class Shelly3EMGen3ClientTests(unittest.TestCase):
         client, _session = self._client([ValueError("invalid json")])
         with self.assertRaises(Shelly3EMGen3PayloadError):
             client.identify()
+
+    def test_http_authentication_and_device_responses_are_not_connection_failures(self):
+        for status_code in (401, 403, 500):
+            with self.subTest(status_code=status_code):
+                client, _session = self._client(
+                    [device_info()],
+                )
+                client.session.get.side_effect = HTTPError(
+                    "private response", status_code=status_code
+                )
+
+                with self.assertRaises(Shelly3EMGen3DeviceError) as raised:
+                    client.identify()
+
+                self.assertNotIn("private response", str(raised.exception))
 
     def test_host_rejects_urls_paths_and_credentials(self):
         for host in (

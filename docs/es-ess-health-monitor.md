@@ -188,6 +188,10 @@ Healthy output normally shows:
 - `TelemetryHealthy` is `1` during Auto/Eco decisions.
 - `SiteCurrentTelemetryHealthy` is `1`, each phase age remains inside
   `SiteCurrentFreshSeconds`, and limiting phase/headroom matches live load.
+- A configured Shelly connection grace appears as source status `Degraded`.
+  During that bounded interval the last sample age continues increasing,
+  positive allocation and risky commands remain blocked, and the source must
+  return to `Healthy` before normal site-current recovery begins.
 - `GridImportGuardActive` is `0` during normal no-grid operation.
 - Battery assist, when active, remains bounded and later recovers.
 - Manual mode reports state but does not produce repeated Wattpilot

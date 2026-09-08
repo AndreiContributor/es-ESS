@@ -10,11 +10,12 @@ from WattpilotSiteCurrentSource import VenusSystemSiteCurrentSource
 
 
 class Shelly3EMSiteCurrentSourceTests(unittest.TestCase):
-    def _source(self, client, clock):
+    def _source(self, client, clock, grace_seconds=0):
         return Shelly3EMSiteCurrentSource(
             client,
             {"A": "L3", "B": "L1", "C": "L2"},
             poll_frequency_ms=1000,
+            transient_failure_grace_seconds=grace_seconds,
             clock=clock,
         )
 
@@ -76,6 +77,58 @@ class Shelly3EMSiteCurrentSourceTests(unittest.TestCase):
         self.assertEqual(sample.status, "Invalid")
         self.assertFalse(any(sample.valid.values()))
         client.read_currents.assert_not_called()
+
+    def test_connection_failure_retains_only_a_bounded_still_fresh_snapshot(self):
+        now = [100.0]
+        client = Mock()
+        client.identify.return_value = {
+            "model": "S3EM-003CXCEU63",
+            "ver": "1.7.0",
+        }
+        client.read_currents.return_value = {
+            "currents": {"A": 3.0, "B": 1.0, "C": 2.0},
+            "flags": {"A": [], "B": [], "C": []},
+        }
+        source = self._source(client, lambda: now[0], grace_seconds=5)
+        self.assertTrue(source.poll())
+
+        now[0] = 101.0
+        client.read_currents.side_effect = Shelly3EMGen3ConnectionError("down")
+        self.assertFalse(source.poll())
+        degraded = source.read_sample()
+
+        self.assertEqual(degraded.status, "Degraded")
+        self.assertFalse(degraded.connected)
+        self.assertTrue(all(degraded.valid.values()))
+        self.assertEqual(degraded.last_sample_at, 100.0)
+
+        now[0] = 106.0
+        expired = source.read_sample()
+        self.assertEqual(expired.status, "Unavailable")
+        self.assertFalse(any(expired.valid.values()))
+        self.assertEqual(expired.last_sample_at, 100.0)
+
+    def test_device_failure_never_uses_connection_grace(self):
+        now = [100.0]
+        client = Mock()
+        client.identify.return_value = {
+            "model": "S3EM-003CXCEU63",
+            "ver": "1.7.0",
+        }
+        client.read_currents.return_value = {
+            "currents": {"A": 3.0, "B": 1.0, "C": 2.0},
+            "flags": {"A": [], "B": [], "C": []},
+        }
+        source = self._source(client, lambda: now[0], grace_seconds=5)
+        self.assertTrue(source.poll())
+
+        now[0] = 101.0
+        client.read_currents.side_effect = Shelly3EMGen3DeviceError("alarm")
+        self.assertFalse(source.poll())
+
+        sample = source.read_sample()
+        self.assertEqual(sample.status, "Invalid")
+        self.assertFalse(any(sample.valid.values()))
 
     def test_identity_is_refreshed_periodically(self):
         now = [100.0]

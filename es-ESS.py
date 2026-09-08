@@ -601,6 +601,7 @@ class esESS:
 
         if (self.config.has_section("FroniusWattpilot")):
             section = "FroniusWattpilot"
+            shelly_transient_failure_grace = None
             min_current = integer(section, "MinCurrentPerPhase", 6)
             max_current = integer(section, "MaxCurrentPerPhase", 16)
 
@@ -699,6 +700,20 @@ class esESS:
                             request_timeout,
                         )
 
+                    shelly_transient_failure_grace = integer(
+                        source_section, "TransientFailureGraceSeconds", 0
+                    )
+                    if (
+                        shelly_transient_failure_grace is not None
+                        and not 0 <= shelly_transient_failure_grace <= 5
+                    ):
+                        invalid(
+                            source_section,
+                            "TransientFailureGraceSeconds",
+                            "must be between 0 and 5 seconds",
+                            shelly_transient_failure_grace,
+                        )
+
                     source_mapping = [
                         self.config[source_section].get(
                             "Phase{0}".format(channel), default
@@ -793,6 +808,7 @@ class esESS:
                 if (value is not None and value < 0):
                     invalid(section, key, "must be greater than or equal to 0", value)
 
+            site_current_fresh_seconds = None
             for key, default, minimum in (
                 ("GridTelemetryFreshSeconds", 15, 1),
                 ("AllowanceFreshSeconds", 15, 1),
@@ -800,6 +816,8 @@ class esESS:
                 ("SiteCurrentFreshSeconds", 15, 1),
             ):
                 value = integer(section, key, default)
+                if key == "SiteCurrentFreshSeconds":
+                    site_current_fresh_seconds = value
                 if (value is not None and value < minimum):
                     invalid(
                         section,
@@ -807,6 +825,18 @@ class esESS:
                         "must be greater than or equal to {0}".format(minimum),
                         value,
                     )
+
+            if (
+                shelly_transient_failure_grace is not None
+                and site_current_fresh_seconds is not None
+                and shelly_transient_failure_grace > site_current_fresh_seconds
+            ):
+                invalid(
+                    "Shelly3EMSiteCurrent",
+                    "TransientFailureGraceSeconds",
+                    "must not exceed [FroniusWattpilot] SiteCurrentFreshSeconds",
+                    shelly_transient_failure_grace,
+                )
 
             startup_telemetry_ratio = number(
                 section, "StartupTelemetryRatio", 0.80
@@ -1341,6 +1371,15 @@ class esESS:
             self._setConfigDefault("Shelly3EMSiteCurrent", "PhaseA", "L1")
             self._setConfigDefault("Shelly3EMSiteCurrent", "PhaseB", "L2")
             self._setConfigDefault("Shelly3EMSiteCurrent", "PhaseC", "L3")
+
+        version = 16
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+            self._setConfigDefault(
+                "Shelly3EMSiteCurrent", "TransientFailureGraceSeconds", "0"
+            )
 
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 
         if (loadedVersion < int(self.config["Common"]["ConfigVersion"])):

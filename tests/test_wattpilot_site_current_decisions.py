@@ -114,6 +114,13 @@ class WattpilotSiteCurrentDecisionTests(unittest.TestCase):
         self.assertEqual(result.allowed_current, 9)
         self.assertEqual(result.next_recovery_since, 0)
 
+    def test_equal_current_preserves_recovery_timer(self):
+        result = decisions.limit_current_recovery(9, 9, 200, 30, 225)
+
+        self.assertEqual(result.allowed_current, 9)
+        self.assertEqual(result.next_recovery_since, 200)
+        self.assertEqual(result.recovery_elapsed, 25)
+
 
 if __name__ == "__main__":
     unittest.main()

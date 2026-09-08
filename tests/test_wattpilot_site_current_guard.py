@@ -414,6 +414,71 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         self.assertGreater(requests[0], 0)
 
+    def test_equal_active_current_allows_request_recovery_after_a_reduction(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.siteCurrentSource = Mock()
+        controller.siteCurrentSourceConnected = True
+        controller.siteCurrentSourceStatus = "Healthy"
+        controller.siteCurrentRecoverySince = {1: 0, 2: 1}
+        controller.publishMainMqtt = Mock()
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.power = 7.0
+        controller.wattpilot.amp = 10
+        controller.wattpilot.amps1 = 10
+        controller.wattpilot.amps2 = 10
+        controller.wattpilot.amps3 = 10
+        self._set_site(controller, 10, 10, 10, 100)
+        allowance = 9 * controller.allocationStepForPhase(2)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertEqual(
+                controller.safeTargetCurrentForPhase(2, allowance), 9
+            )
+        self.assertEqual(controller.siteCurrentRecoverySince[2], 0)
+
+        controller.wattpilot.amp = 9
+        controller.wattpilot.amps1 = 9
+        controller.wattpilot.amps2 = 9
+        controller.wattpilot.amps3 = 9
+        self._set_site(controller, 9, 9, 9, 105)
+        with patch.object(self.fwp.time, "time", return_value=105):
+            controller.updateSiteCurrentRecovery(
+                2, controller.siteCurrentDecision(2, True), now=105
+            )
+            self.assertEqual(
+                controller.safeTargetCurrentForPhase(2, allowance), 9
+            )
+            controller.reportBaseRequest()
+
+        request_calls = [
+            call.args[1]
+            for call in controller.publishMainMqtt.call_args_list
+            if call.args[0].endswith("/Wattpilot/Request")
+        ]
+        self.assertEqual(request_calls, [0])
+        self.assertEqual(controller.siteCurrentRecoverySince[2], 105)
+
+        controller.publishMainMqtt.reset_mock()
+        self._set_site(controller, 9, 9, 9, 135)
+        with patch.object(self.fwp.time, "time", return_value=135):
+            controller.updateSiteCurrentRecovery(
+                2, controller.siteCurrentDecision(2, True), now=135
+            )
+            self.assertEqual(
+                controller.safeTargetCurrentForPhase(2, allowance), 9
+            )
+            controller.reportBaseRequest()
+
+        request_calls = [
+            call.args[1]
+            for call in controller.publishMainMqtt.call_args_list
+            if call.args[0].endswith("/Wattpilot/Request")
+        ]
+        self.assertEqual(len(request_calls), 1)
+        self.assertGreater(request_calls[0], 0)
+        self.assertEqual(controller.siteCurrentRecoverySince[2], 105)
+
     def test_disconnected_idle_refresh_publishes_latest_shelly_snapshot_only(self):
         controller = self._controller()
         controller.mode = self.fwp.VrmEvChargerControlMode.Auto
@@ -545,7 +610,82 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
             client=client,
             phase_mapping={"A": "L3", "B": "L1", "C": "L2"},
             poll_frequency_ms=1000,
+            transient_failure_grace_seconds=0,
         )
+
+    def test_transient_shelly_grace_blocks_risky_commands_but_allows_reduction(self):
+        controller = self._controller()
+        self._active_one_phase(controller, 100, amps=8)
+        self._set_site(controller, 8, 0, 0, 100)
+        controller.siteCurrentSourceName = "Shelly3EMGen3"
+        controller.siteCurrentSourceConnected = False
+        controller.siteCurrentSourceStatus = "Degraded"
+        controller.siteCurrentSourceLastSampleAt = 100
+        controller.siteCurrentTransientFailureGraceSeconds = 5
+        controller.siteCurrentRecoverySince = {1: 1, 2: 1}
+
+        with patch.object(self.fwp.time, "time", return_value=102):
+            snapshot = controller.refreshSiteCurrentGuard()
+            self.assertTrue(snapshot.telemetry_fresh)
+            self.assertTrue(controller.siteCurrentGuardBlocked)
+            self.assertEqual(controller.siteCurrentRecoverySince, {1: 0, 2: 0})
+            self.assertTrue(controller.allowWattpilotCommand("amp", 7))
+            self.assertTrue(controller.allowWattpilotCommand("amp", 8))
+            self.assertFalse(controller.allowWattpilotCommand("amp", 9))
+            self.assertFalse(controller.allowWattpilotCommand("psm", 2))
+            self.assertFalse(
+                controller.allowWattpilotCommand(
+                    "frc", self.fwp.WattpilotStartStop.On
+                )
+            )
+            self.assertTrue(controller.allowWattpilotCommand("amp", 0))
+            self.assertTrue(
+                controller.allowWattpilotCommand(
+                    "frc", self.fwp.WattpilotStartStop.Off
+                )
+            )
+
+    def test_transient_shelly_grace_allows_active_phase_down_only(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.power = 5.5
+        controller.wattpilot.amp = 8
+        controller.wattpilot.amps1 = 8
+        controller.wattpilot.amps2 = 8
+        controller.wattpilot.amps3 = 8
+        controller.wattpilot.energyTelemetryUpdatedAt = 100
+        self._set_site(controller, 8, 8, 8, 100)
+        controller.siteCurrentSourceName = "Shelly3EMGen3"
+        controller.siteCurrentSourceStatus = "Degraded"
+        controller.siteCurrentSourceLastSampleAt = 100
+        controller.siteCurrentTransientFailureGraceSeconds = 5
+
+        with patch.object(self.fwp.time, "time", return_value=102):
+            self.assertTrue(controller.allowWattpilotCommand("psm", 1))
+            self.assertFalse(controller.allowWattpilotCommand("psm", 2))
+
+    def test_expired_transient_shelly_grace_blocks_positive_commands(self):
+        controller = self._controller()
+        self._active_one_phase(controller, 100, amps=8)
+        self._set_site(controller, 8, 0, 0, 100)
+        controller.siteCurrentSource = Mock()
+        controller.siteCurrentSource.read_sample.return_value = SiteCurrentSnapshot(
+            source="Shelly3EMGen3",
+            values={"L1": 8.0, "L2": 0.0, "L3": 0.0},
+            valid={"L1": True, "L2": True, "L3": True},
+            updated_at={"L1": 100.0, "L2": 100.0, "L3": 100.0},
+            connected=False,
+            status="Degraded",
+            error="Shelly RPC request failed: Timeout",
+        )
+        controller.siteCurrentTransientFailureGraceSeconds = 5
+
+        with patch.object(self.fwp.time, "time", return_value=106):
+            snapshot = controller.refreshSiteCurrentGuard()
+            self.assertFalse(snapshot.telemetry_fresh)
+            self.assertFalse(controller.allowWattpilotCommand("amp", 7))
+            self.assertTrue(controller.allowWattpilotCommand("amp", 0))
 
     def test_source_cleanup_failure_cannot_interrupt_auto_shutdown_stop(self):
         controller = self._controller()
