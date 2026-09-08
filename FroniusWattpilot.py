@@ -123,6 +123,15 @@ class FroniusWattpilot (esESSService):
         self.siteCurrentRecoverySeconds = max(
             0, int(settings.get("SiteCurrentRecoverySeconds", 30))
         )
+        shellySettings = (
+            self.config["Shelly3EMSiteCurrent"]
+            if self.config.has_section("Shelly3EMSiteCurrent")
+            else {}
+        )
+        self.siteCurrentTransientFailureGraceSeconds = max(
+            0,
+            int(shellySettings.get("TransientFailureGraceSeconds", 0)),
+        )
         self.sessionStatistics = WattpilotSessionStatistics(
             checkpoint_interval_seconds=60,
             max_integration_gap_seconds=15,
@@ -522,6 +531,9 @@ class FroniusWattpilot (esESSService):
                 poll_frequency_ms=int(
                     source_settings.get("PollFrequencyMs", 1000)
                 ),
+                transient_failure_grace_seconds=int(
+                    source_settings.get("TransientFailureGraceSeconds", 0)
+                ),
             )
         self.overheadAvailableDbus = self.registerDbusSubscription(
             "com.victronenergy.settings.esESS_SolarOverheadDistributor",
@@ -734,7 +746,8 @@ class FroniusWattpilot (esESSService):
                 "Wattpilot site-current source failure: source={0} status={1} "
                 "reason={2} last_success_age_s={3:.1f} consumption_w={4:.0f} "
                 "raw_overhead_w={5} allocation_suppressed=true "
-                "positive_charger_command_authorized=false."
+                "positive_charger_command_authorized=false "
+                "transient_grace_active={6}."
             ).format(
                 sourceName,
                 status,
@@ -742,6 +755,7 @@ class FroniusWattpilot (esESSService):
                 lastSuccessAge,
                 consumptionW,
                 rawOverheadW,
+                "true" if status == "Degraded" else "false",
             )
             w(self, message)
         elif healthy and previousHealthy is False:
@@ -1482,10 +1496,47 @@ class FroniusWattpilot (esESSService):
 
         activeCharge = self.wattpilotReportsActiveCharge()
         decision = self.siteCurrentDecision(requestedPhase, activeCharge)
-        self.updateSiteCurrentRecovery(requestedPhase, decision)
+        transientGraceActive = self.siteCurrentTransientFailureGraceActive()
+        self.updateSiteCurrentRecovery(
+            requestedPhase,
+            None if transientGraceActive else decision,
+        )
         if decision is None or decision.allowed_current < self.minCurrentPerPhase:
             self.siteCurrentGuardBlocked = True
             self.siteCurrentGuardReason = "Blocked command without safe site-current headroom"
+            return False
+
+        if transientGraceActive:
+            self.siteCurrentGuardBlocked = True
+            self.siteCurrentGuardReason = (
+                "Transient Shelly connection grace: starts, increases, and "
+                "phase-up are blocked"
+            )
+            if name == "frc":
+                return False
+            if name == "psm":
+                current = DecisionInputs.finite_number(
+                    getattr(self.wattpilot, "amp", None)
+                )
+                return bool(
+                    activeCharge
+                    and self.currentPhaseMode == 2
+                    and requestedPhase == 1
+                    and current is not None
+                    and current <= decision.allowed_current
+                )
+            if name == "amp":
+                requestedCurrent = int(value)
+                reportedCurrent = DecisionInputs.finite_number(
+                    getattr(self.wattpilot, "amp", None)
+                )
+                return bool(
+                    activeCharge
+                    and reportedCurrent is not None
+                    and requestedCurrent >= self.minCurrentPerPhase
+                    and requestedCurrent <= reportedCurrent
+                    and requestedCurrent <= decision.allowed_current
+                )
             return False
 
         if name == "frc":
@@ -3330,8 +3381,36 @@ class FroniusWattpilot (esESSService):
         )
         return all(current is not None and current >= 0 for current in currents)
 
+    def siteCurrentTransientFailureGraceActive(self):
+        """Return whether cached Shelly telemetry is in its bounded grace."""
+        if getattr(self, "siteCurrentSourceName", "") != "Shelly3EMGen3":
+            return False
+        if getattr(self, "siteCurrentSourceStatus", "") != "Degraded":
+            return False
+        graceSeconds = max(
+            0,
+            int(getattr(self, "siteCurrentTransientFailureGraceSeconds", 0)),
+        )
+        lastSampleAt = getattr(self, "siteCurrentSourceLastSampleAt", 0)
+        return bool(
+            graceSeconds > 0
+            and lastSampleAt > 0
+            and time.time() - lastSampleAt <= graceSeconds
+            and self.siteCurrentTelemetryIsFresh(requireChargerCurrent=False)
+        )
+
     def siteCurrentDecision(self, requestedPhaseMode, activeCharge=None):
         """Calculate site-safe current for a requested Wattpilot phase mode."""
+        source = getattr(self, "siteCurrentSource", None)
+        if source is not None:
+            sourceStatus = getattr(
+                self, "siteCurrentSourceStatus", "Initializing"
+            )
+            if (
+                sourceStatus != "Healthy"
+                and not self.siteCurrentTransientFailureGraceActive()
+            ):
+                return None
         if activeCharge is None:
             activeCharge = self.wattpilotReportsActiveCharge()
         if not self.siteCurrentTelemetryIsFresh(activeCharge):
@@ -3402,8 +3481,13 @@ class FroniusWattpilot (esESSService):
             for phase in (1, 2)
         }
         now = time.time()
+        transientGraceActive = self.siteCurrentTransientFailureGraceActive()
         for phase, decision in decisions.items():
-            self.updateSiteCurrentRecovery(phase, decision, now)
+            self.updateSiteCurrentRecovery(
+                phase,
+                None if transientGraceActive else decision,
+                now,
+            )
 
         currentPhase = self.currentPhaseMode if self.currentPhaseMode in (1, 2) else 1
         selected = decisions[currentPhase]
@@ -3425,6 +3509,13 @@ class FroniusWattpilot (esESSService):
         elif limitExceeded:
             self.siteCurrentGuardBlocked = True
             self.siteCurrentGuardReason = "No phase headroom for the 6 A charging minimum"
+            self.clearPhaseSwitchCandidate()
+        elif transientGraceActive:
+            self.siteCurrentGuardBlocked = True
+            self.siteCurrentGuardReason = (
+                "Transient Shelly connection grace: starts, increases, and "
+                "phase-up are blocked"
+            )
             self.clearPhaseSwitchCandidate()
         else:
             self.siteCurrentGuardBlocked = False
@@ -3459,6 +3550,12 @@ class FroniusWattpilot (esESSService):
             self.siteCurrentGuardBlocked = True
             self.siteCurrentGuardReason = (
                 "Site-current telemetry missing, invalid, stale, or phase-uncertain"
+            )
+        elif self.siteCurrentTransientFailureGraceActive():
+            self.siteCurrentGuardBlocked = True
+            self.siteCurrentGuardReason = (
+                "Transient Shelly connection grace: starts, increases, and "
+                "phase-up are blocked"
             )
         elif decision.allowed_current < self.minCurrentPerPhase:
             self.siteCurrentGuardBlocked = True

@@ -3635,6 +3635,55 @@ Completion record:
 - Added hardware-free regressions for a synthetic WebSocket close race,
   repeated disconnect, and independent site-current-source cleanup.
 
+### Completed 2026-09-08 - P2 Add Opt-In Shelly Connection-Failure Grace
+
+Completion record:
+
+- Added `TransientFailureGraceSeconds` under `[Shelly3EMSiteCurrent]`, bounded
+  to `0..5` seconds and no longer than `SiteCurrentFreshSeconds`. The default
+  remains `0`, preserving strict immediate failure unless an operator opts in
+  after commissioning the meter.
+- Only transport connection failures can retain the last complete still-fresh
+  snapshot as `Degraded`. Authentication, HTTP/device, payload, stale, and
+  expired data invalidate the selected source immediately, with no provider
+  fallback.
+- Every failed poll still immediately withdraws the Wattpilot distributor
+  request. During the bounded grace, an existing Auto/Eco charge may hold or
+  reduce current or phase down, while starts, current increases, and phase-up
+  remain blocked at the final command boundary.
+- Grace entry resets site-current recovery eligibility. A complete successful
+  poll must be followed by the existing continuous
+  `SiteCurrentRecoverySeconds` interval before positive allocation, restart,
+  or current increase can resume.
+- Extended configuration migration/validation, the private-safe daily report,
+  public operator documentation, and hardware-free regressions. The full test
+  suite passes with 574 tests and 322 subtests.
+
+### Completed 2026-09-08 - P2 Close Equal-Target Allocation Recovery Loop
+
+Completion record:
+
+- New supervised evidence showed the Wattpilot accepting 10 A before returning
+  to a lower three-phase current, while the Shelly source remained healthy,
+  physical headroom allowed a higher current, the positive distributor
+  allowance stayed at zero, and site-current recovery repeatedly returned to
+  zero.
+- This contradicted the earlier equal-current completion boundary: the final
+  command guard already preserved recovery for a confirmed no-op, but the
+  controller-level target limiter still treated `target == current` as a
+  reduction before that command boundary and cleared the timer.
+- `WattpilotSiteCurrentDecisions.limit_current_recovery()` now distinguishes a
+  genuine lower target from an equal safe target. Reductions still apply
+  immediately and clear recovery; equality holds current while preserving the
+  existing recovery timestamp and elapsed time.
+- Added pure-helper and production-shaped controller regressions proving that
+  a reduction suppresses positive demand, an equal active target lets the
+  recovery interval mature, and the Wattpilot request becomes positive only
+  after the complete configured delay. Manual ownership, source-failure grace,
+  stale telemetry, no-grid policy, physical headroom, and the one-amp increase
+  ramp remain unchanged. The full test suite passes with 576 tests and 322
+  subtests.
+
 ## Suggested Implementation Order / PR Execution Queue
 
 - No open implementation items remain.
@@ -3718,10 +3767,13 @@ evidence rather than an open backlog requirement.
 
 ## Outstanding Manual Validation
 
-- P2 fault-time Wattpilot allocation suppression and Shelly transition logging:
-  after implementation, perform the low-risk GX-to-Shelly network-isolation
-  procedure defined in the item. Do not operate the main breaker or induce an
-  overload.
+- P2 Shelly connection-grace commissioning: leave the default at `0` until the
+  dedicated meter identity, phase mapping, and one-second polling are verified.
+  If a five-second grace is enabled, use only a supervised low-risk
+  GX-to-meter network interruption to confirm `Degraded`, immediate zero
+  request, no start/increase/phase-up, expiry stop, healthy recovery, and the
+  full site-current recovery delay. Do not operate the main breaker, induce an
+  overload, or force grid import.
 - P2 canonical Wattpilot allocation step: during a naturally stable supervised
   Auto/Eco charge, confirm complete-step allowances do not oscillate one ampere
   lower solely from voltage movement and that any residual remains below one

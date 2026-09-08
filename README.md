@@ -284,6 +284,9 @@ configuration errors are logged at CRITICAL level and startup exits with status
 - `MinPhaseSwitchSeconds`, `AllowanceDropGraceSeconds`, `SurplusDropGraceSeconds`,
   `CarDisconnectConfirmSeconds`, and `StartupGraceSeconds` must be `0` or
   greater. Existing controller-side minimums still apply where defined.
+- When the dedicated Shelly source is selected,
+  `TransientFailureGraceSeconds` must be an integer in `0..5` and must not
+  exceed `SiteCurrentFreshSeconds`.
 - `TimeToGoCalculator` and `SolarOverheadDistributor` `UpdateInterval` values,
   plus `FroniusSmartmeterJSON`, `Shelly3EMGrid`, and every
   `ShellyPMInverter:*` `PollFrequencyMs`, must be greater than `0` milliseconds.
@@ -879,6 +882,7 @@ when `SiteCurrentSource=Shelly3EMGen3`:
 | [Shelly3EMSiteCurrent] | Password | Local device password. May be empty only when device authentication is disabled. | String | `<device password>` |
 | [Shelly3EMSiteCurrent] | PollFrequencyMs | Asynchronous RPC polling interval; must be at least 500 ms. | Integer (ms) | 1000 |
 | [Shelly3EMSiteCurrent] | RequestTimeoutSeconds | Bounded HTTP request timeout, greater than 0 and at most 10 seconds. | Number (seconds) | 2 |
+| [Shelly3EMSiteCurrent] | TransientFailureGraceSeconds | Opt-in connection-only grace for an already-running charge. `0` keeps strict immediate failure; `1..5` retains the last complete still-fresh sample while the distributor request, starts, current increases, and phase-up remain blocked. Authentication, HTTP/device, and payload errors bypass the grace. Must not exceed `SiteCurrentFreshSeconds`; `5` is the recommended commissioned Wi-Fi value. | Integer (seconds) | 0 |
 | [Shelly3EMSiteCurrent] | PhaseA | Physical site phase measured by Shelly channel A. | L1/L2/L3 | L1 |
 | [Shelly3EMSiteCurrent] | PhaseB | Physical site phase measured by Shelly channel B. | L1/L2/L3 | L2 |
 | [Shelly3EMSiteCurrent] | PhaseC | Physical site phase measured by Shelly channel C. The A/B/C mapping must be a permutation of L1/L2/L3. | L1/L2/L3 | L3 |
@@ -897,8 +901,8 @@ optional running-session grid fallback:
 
 - A new charge starts only after a fresh, distributor-assigned **real PV allowance** has continuously met the electrical minimum for `MinOnOffSeconds`. It starts on one phase when allowance is below the phase-up threshold, or directly on three phases when allowance already meets the full phase-up threshold. Battery assist cannot create either start.
 - Auto/Eco also requires fresh whole-site current on physical L1/L2/L3. One-phase charging uses `Charger1PhaseMapping`; three-phase charging receives one equal current command capped by the smallest available phase headroom. Site-current reductions and stops take priority over allowance grace, battery assist, and grid fallback. There is no overload grace above `SiteMaxCurrent`.
-- If the selected asynchronous Shelly site-current poll fails, its command-free worker immediately withdraws the Wattpilot distributor request and logs one sanitized failure transition. Measured Wattpilot consumption and calculated raw overhead remain truthful diagnostics, but no positive Wattpilot allocation request returns until the normal controller cycle confirms fresh telemetry and the configured site-current recovery interval. Charger stop/current commands remain owned by that normal fail-closed controller cycle. Recovery produces one transition record; repeated one-second failures do not flood the log.
-- After headroom recovers, it must remain safe for `SiteCurrentRecoverySeconds`; current then rises by 1 A on each normal five-second controller cycle. A stopped session still obeys `MinOnOffSeconds`, and a running one-phase session still needs `MinPhaseSwitchSeconds` before phase-up. A new stopped session can start directly on three phases once the normal start and site-recovery conditions are both satisfied.
+- If the selected asynchronous Shelly site-current poll fails, its command-free worker immediately withdraws the Wattpilot distributor request and logs one sanitized failure transition. With `TransientFailureGraceSeconds=0`, or for authentication, HTTP/device, or payload errors, the existing strict fail-closed stop applies immediately. With an opt-in `1..5` second value, only a transport connection failure may retain the last complete still-fresh sample for an already-running charge. During that short `Degraded` interval, starts, current increases, and phase-up are blocked; equal/lower current, phase-down, zero current, and Force Off remain available subject to physical headroom. Grace expiry invalidates the cached sample and invokes the normal stop. Measured Wattpilot consumption and calculated raw overhead remain truthful diagnostics, and no positive allocation returns until a complete successful poll plus `SiteCurrentRecoverySeconds`. Recovery produces one transition record; repeated failures do not flood the log.
+- After headroom recovers, it must remain safe for `SiteCurrentRecoverySeconds`; current then rises by 1 A on each normal five-second controller cycle. A genuine current reduction resets this timer, while an unchanged safe active-current target preserves it so the controller can restore its positive distributor request after recovery instead of remaining at zero allowance. A stopped session still obeys `MinOnOffSeconds`, and a running one-phase session still needs `MinPhaseSwitchSeconds` before phase-up. A new stopped session can start directly on three phases once the normal start and site-recovery conditions are both satisfied.
 - Wattpilot allocation uses one conservative whole-watt step per ampere for the active phase interval. The step starts at the ceiling of live one- or three-phase voltage, may increase before a current decision if voltage rises, and does not decrease on ordinary voltage movement. The same step governs the distributor minimum, increment, maximum request, and allowance-to-current conversion, so a complete `N`-step allowance remains `N` amperes across asynchronous voltage samples. A stale allowance created with a smaller earlier step can only reduce the target safely. The step is reinitialized at a phase boundary or confirmed disconnect.
 - Wattpilot may retain the previous configured current while stopped. es-ESS does not treat a lower pre-start setpoint as active EV-current reduction or reset already-stable site headroom. Phase, current, and Start commands are still individually guarded; if any is rejected, the session remains publicly stopped, no transition power is reported, and the stable-PV interval is rebuilt before retrying.
 - Every positive Auto/Eco current target passes the final firmware, ownership, mode, and site-current guard. When connected Wattpilot telemetry has explicitly confirmed the exact same `amp` setpoint since the current connection began, the controller accepts that stage as a no-op instead of retransmitting it or repeating the INFO adjustment record. This accepted no-op can satisfy the current stage of a phase-current-Start transaction. Missing, malformed, reset-after-reconnect, or different telemetry sends the command normally; rejected no-ops abort later transaction stages. Zero-current stops, changed targets, phase commands, Force Off, and Manual-mode constraint release are never suppressed by this optimization.
@@ -949,9 +953,11 @@ timestamped safety result is used for state selection and active-charge command
 dispatch, preventing contradictory reads within one cycle. If that result
 expires before dispatch, Auto/Eco fails closed without another provider read.
 The Shelly provider timestamps only a complete successful HTTP sample. A failed
-read invalidates the selected source while preserving the age of the last
-successful value, so Auto/Eco fails closed. There is no automatic fallback
-between providers.
+read preserves the age of the last successful value and never falls back to
+another provider. An opt-in connection-only grace may expose that still-fresh
+sample as `Degraded` for at most five seconds to let an existing charge hold or
+reduce safely; it never authorizes positive demand, a start, an increase, or
+phase-up. Other failures and grace expiry invalidate the sample immediately.
 
 `SiteMaxCurrent` is expressed in amperes and applied independently to each
 physical phase. The `20 A` default is not a fixed product limit: configure it

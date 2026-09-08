@@ -100,6 +100,17 @@ class Shelly3EMGen3Client:
             response = self.session.get(self.base_url + path, **kwargs)
             response.raise_for_status()
             payload = response.json()
+        except self._requests.exceptions.HTTPError as ex:
+            status_code = getattr(getattr(ex, "response", None), "status_code", None)
+            if status_code in (401, 403):
+                raise Shelly3EMGen3DeviceError(
+                    "Shelly RPC authentication failed"
+                )
+            raise Shelly3EMGen3DeviceError(
+                "Shelly RPC returned HTTP status {0}".format(
+                    status_code if status_code is not None else "error"
+                )
+            )
         except self._requests.exceptions.RequestException as ex:
             raise Shelly3EMGen3ConnectionError(
                 "Shelly RPC request failed: {0}".format(ex.__class__.__name__)

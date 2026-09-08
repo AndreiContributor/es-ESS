@@ -425,6 +425,12 @@ and rerun the one-sample health command above. Require:
 Do not connect the vehicle if command authority, compatibility, selected-source
 identity, or any mandatory telemetry is unavailable.
 
+If `TransientFailureGraceSeconds` is enabled for a commissioned Shelly source,
+`Degraded` is an observable running-session safety state, not a commissioning
+pass state. Require `Healthy` before connecting the vehicle or selecting Auto;
+after recovery, wait for `SiteCurrentRecoverySeconds` before expecting positive
+demand or a current increase.
+
 ### 4. Start a bounded private transition capture
 
 The full health monitor performs many sequential D-Bus reads and is intended

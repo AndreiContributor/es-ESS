@@ -729,6 +729,9 @@ GridImportPositive=true
 GridImportStopW=300
 GridImportStopSeconds=15
 StartupGraceSeconds=60
+
+[Shelly3EMSiteCurrent]
+TransientFailureGraceSeconds=5
 """
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.ini"
@@ -738,6 +741,9 @@ StartupGraceSeconds=60
         self.assertEqual(warnings, [])
         self.assertEqual(settings.allowance_drop_grace_seconds, 30)
         self.assertEqual(settings.site_current_source, "Shelly3EMGen3")
+        self.assertEqual(
+            settings.site_current_transient_failure_grace_seconds, 5
+        )
         self.assertNotIn("secret-value", json.dumps(AUDIT.asdict(settings)))
 
     def test_default_documentation_values_are_not_treated_as_service_flags(self):
@@ -2084,10 +2090,11 @@ NoBatToEV=false
                 self._line(
                     "21:47:00",
                     "Wattpilot site-current source failure: source=Shelly3EMGen3 "
-                    "status=Unavailable reason=Shelly RPC request failed: Timeout "
+                    "status=Degraded reason=Shelly RPC request failed: Timeout "
                     "last_success_age_s=10.0 consumption_w=4200 "
                     "raw_overhead_w=4800 allocation_suppressed=true "
-                    "positive_charger_command_authorized=false.",
+                    "positive_charger_command_authorized=false "
+                    "transient_grace_active=true.",
                     "WARNING",
                 ),
                 self._line(
@@ -2110,6 +2117,8 @@ NoBatToEV=false
 
         self.assertEqual(len(audit.site_current_source_failures), 1)
         self.assertEqual(len(audit.site_current_source_recoveries), 1)
+        self.assertEqual(len(audit.site_current_source_grace_events), 1)
+        self.assertEqual(result.metrics["site_current_source_grace_events"], 1)
         self.assertEqual(len(audit.allowances), 1)
         self.assertEqual(audit.allowances[0].watts, 0)
         self.assertIn("ATTENTION", self._statuses(result, "safety interventions"))

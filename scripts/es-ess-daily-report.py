@@ -345,6 +345,7 @@ class AuditSettings:
     charger_one_phase_mapping: str = "L1"
     site_current_fresh_seconds: int = 15
     site_current_recovery_seconds: int = 30
+    site_current_transient_failure_grace_seconds: int = 0
     three_phase_start_w: float = 4500.0
     three_phase_stop_w: float = 4100.0
     min_on_off_seconds: int = 60
@@ -1019,6 +1020,17 @@ def load_settings(path: Path) -> tuple[AuditSettings, list[str]]:
         warnings.append("[Services] section missing; enabled services unavailable")
 
     section = "FroniusWattpilot"
+    shelly_transient_failure_grace_seconds = 0
+    if parser.has_option(
+        "Shelly3EMSiteCurrent", "TransientFailureGraceSeconds"
+    ):
+        shelly_transient_failure_grace_seconds = _get_int(
+            parser,
+            "Shelly3EMSiteCurrent",
+            "TransientFailureGraceSeconds",
+            0,
+            warnings,
+        )
     settings = AuditSettings(
         log_level=parser.get("Common", "LogLevel", fallback="INFO").upper(),
         enabled_services=sorted(enabled_services),
@@ -1036,6 +1048,9 @@ def load_settings(path: Path) -> tuple[AuditSettings, list[str]]:
         ),
         site_current_recovery_seconds=_get_int(
             parser, section, "SiteCurrentRecoverySeconds", 30, warnings
+        ),
+        site_current_transient_failure_grace_seconds=(
+            shelly_transient_failure_grace_seconds
         ),
         three_phase_start_w=_get_float(
             parser, section, "ThreePhasePvSurplusStartW", 4500.0, warnings
@@ -1341,6 +1356,7 @@ class EsEssDailyReport:
         self.site_current_stop_records: list[LogRecord] = []
         self.site_current_source_failures: list[LogRecord] = []
         self.site_current_source_recoveries: list[LogRecord] = []
+        self.site_current_source_grace_events: list[LogRecord] = []
         self.battery_assist_limit_records: list[LogRecord] = []
         self.raw_command_records: list[LogRecord] = []
         self._manual_control_records: list[LogRecord] = []
@@ -1559,6 +1575,8 @@ class EsEssDailyReport:
                 self.safety_override_records.append(record)
             if "Wattpilot site-current source failure:" in message:
                 self.site_current_source_failures.append(record)
+                if "transient_grace_active=true" in message:
+                    self.site_current_source_grace_events.append(record)
                 self.safety_override_records.append(record)
             if "Wattpilot site-current source recovered:" in message:
                 self.site_current_source_recoveries.append(record)
@@ -3483,6 +3501,9 @@ class EsEssDailyReport:
             "grid_samples": len(self.grid_samples),
             "service_initializations": len(self.restart_records),
             "wattpilot_reconnect_events": len(self.reconnect_records),
+            "site_current_source_grace_events": len(
+                self.site_current_source_grace_events
+            ),
             "charging_sessions": len(sessions),
             "connection_sessions": (
                 len(sessions) if self.session_statistics_records else None
@@ -3631,7 +3652,9 @@ def render_human(result: AuditResult) -> str:
         f"limit={result.configuration.site_max_current} A per physical phase; "
         f"1-phase={result.configuration.charger_one_phase_mapping}; "
         f"fresh/recovery={result.configuration.site_current_fresh_seconds}/"
-        f"{result.configuration.site_current_recovery_seconds} s",
+        f"{result.configuration.site_current_recovery_seconds} s; "
+        f"Shelly connection grace="
+        f"{result.configuration.site_current_transient_failure_grace_seconds} s",
         f"ThreePhaseStart/Stop={result.configuration.three_phase_start_w:.0f}/"
         f"{result.configuration.three_phase_stop_w:.0f} W",
         f"MinOnOff/MinPhaseSwitch={result.configuration.min_on_off_seconds}/"
