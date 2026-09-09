@@ -136,6 +136,14 @@ class WattpilotSessionCaptureTests(unittest.TestCase):
         )
         self.assertEqual(sum(reader.failures.values()), 0)
 
+    def test_capture_has_no_statistics_module_dependency(self):
+        source = SCRIPT_PATH.read_text(encoding="utf-8")
+
+        self.assertNotIn("import statistics", source)
+        self.assertEqual(self.capture.arithmetic_mean([1.0, 2.0, 6.0]), 3.0)
+        with self.assertRaises(ValueError):
+            self.capture.arithmetic_mean([])
+
     def test_dbus_reader_discards_failed_proxy_until_next_sample(self):
         failing = FakeProxy([RuntimeError("service restarted")])
         recovered = FakeProxy([12])

@@ -1173,7 +1173,9 @@ was collected.
 Controller message counts come from D-Bus/runtime/log evidence; they are not an
 encrypted Wattpilot WebSocket packet capture. The tool only performs D-Bus
 `GetValue` reads and does not send charger, D-Bus, MQTT, service, or config
-commands.
+commands. Its arithmetic summaries do not import the optional `statistics`
+module, so the launcher remains compatible with the maintained older Venus OS
+Python environment without installing another package.
 
 ### es-ESS daily report
 

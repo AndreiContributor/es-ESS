@@ -444,6 +444,40 @@ class EsEssDailyReportTests(unittest.TestCase):
         self.assertIn("FAIL", self._statuses(result, "runtime errors"))
         self.assertIn("NOT_OBSERVED", self._statuses(result, "charging"))
 
+    def test_recovered_transport_timeout_is_visible_without_runtime_failure(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:10:00", "Connection timed out - goodbye", "ERROR"
+                ),
+                self._line("15:10:40", "Authentication successful", "INFO"),
+            ]
+        )
+
+        self.assertIn("PASS", self._statuses(result, "runtime errors"))
+        self.assertIn(
+            "INFO", self._statuses(result, "Wattpilot transport recovery")
+        )
+        self.assertEqual(result.metrics["wattpilot_transport_timeouts"], 1)
+        self.assertEqual(
+            result.metrics["wattpilot_transport_timeouts_recovered"], 1
+        )
+
+    def test_transport_timeout_without_bounded_authentication_is_failure(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:10:00", "Connection timed out - goodbye", "ERROR"
+                ),
+                self._line("15:12:00", "Authentication successful", "INFO"),
+            ]
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+        self.assertEqual(
+            result.metrics["wattpilot_transport_timeouts_recovered"], 0
+        )
+
     def test_unvalidated_wattpilot_firmware_is_a_runtime_failure(self):
         result = self._run(
             [
@@ -2122,6 +2156,94 @@ NoBatToEV=false
         self.assertEqual(len(audit.allowances), 1)
         self.assertEqual(audit.allowances[0].watts, 0)
         self.assertIn("ATTENTION", self._statuses(result, "safety interventions"))
+
+    def test_unreachable_wattpilot_allowance_is_parsed_without_stale_gap(self):
+        records = self._records(
+            [
+                self._line(
+                    "21:48:00",
+                    "ServiceMessage: Allocated 6489.0W allowance to Wattpilot "
+                    "not reachable (35, Wattpilot); this allocation is not a "
+                    "device command.",
+                )
+            ]
+        )
+        audit = self._audit(records)
+        audit.collect()
+
+        self.assertEqual(len(audit.allowances), 1)
+        self.assertEqual(audit.allowances[0].watts, 6489.0)
+        self.assertEqual(audit.allowances[0].state, "not reachable")
+        self.assertIsNone(audit.allowances[0].phase)
+
+    def test_current_command_chatter_and_zero_power_are_reported(self):
+        result = self._run(
+            [
+                self._line(
+                    "21:49:00",
+                    "Wattpilot Modelstatus: Charging; charge telemetry (read-only): "
+                    "reported_setpoint=8.00A/phase, L1=8.00A/1840W, "
+                    "L2=8.00A/1840W, L3=8.00A/1840W, total=5520W",
+                ),
+                self._line(
+                    "21:49:00",
+                    "Adjusting charge current to 8A on 3-phase.",
+                    "INFO",
+                    "200",
+                ),
+                self._line(
+                    "21:49:05",
+                    "Wattpilot Modelstatus: Charging; charge telemetry (read-only): "
+                    "reported_setpoint=8.00A/phase, L1=8.00A/1840W, "
+                    "L2=8.00A/1840W, L3=8.00A/1840W, total=5520W",
+                ),
+                self._line(
+                    "21:49:05",
+                    "Adjusting charge current to 9A on 3-phase.",
+                    "INFO",
+                    "200",
+                ),
+                self._line(
+                    "21:49:10",
+                    "Wattpilot Modelstatus: Charging; charge telemetry (read-only): "
+                    "reported_setpoint=9.00A/phase, L1=9.00A/2070W, "
+                    "L2=9.00A/2070W, L3=9.00A/2070W, total=6210W",
+                ),
+                self._line(
+                    "21:49:10",
+                    "Adjusting charge current to 8A on 3-phase.",
+                    "INFO",
+                    "200",
+                ),
+                self._line(
+                    "21:49:15",
+                    "Wattpilot Modelstatus: Ready; charge telemetry (read-only): "
+                    "reported_setpoint=8.00A/phase, L1=0.00A/0W, "
+                    "L2=0.00A/0W, L3=0.00A/0W, total=0W",
+                ),
+                self._line(
+                    "21:49:15",
+                    "Adjusting charge current to 9A on 3-phase.",
+                    "INFO",
+                    "200",
+                ),
+                self._line(
+                    "21:49:20",
+                    "Wattpilot current setpoint already confirmed; accepting guarded no-op at 9A.",
+                ),
+            ]
+        )
+
+        self.assertEqual(result.metrics["current_adjustments"], 4)
+        self.assertEqual(result.metrics["rapid_current_reversals"], 2)
+        self.assertEqual(result.metrics["zero_power_current_adjustments"], 1)
+        self.assertEqual(result.metrics["guarded_current_noops"], 1)
+        self.assertIn(
+            "ATTENTION", self._statuses(result, "current command reversals")
+        )
+        self.assertIn(
+            "ATTENTION", self._statuses(result, "zero-power current commands")
+        )
 
     def test_no_grid_commissioning_profile_rejects_conflicting_services(self):
         settings = AUDIT.AuditSettings(

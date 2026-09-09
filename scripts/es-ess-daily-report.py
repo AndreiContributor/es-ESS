@@ -55,6 +55,10 @@ VENUS_TIMEZONE_DBUS_PATH = "/Settings/System/TimeZone"
 VERBOSE_LOG_LEVELS = frozenset({"APP_DEBUG", "DEBUG", "TRACE"})
 FULL_DAY_BOUNDARY_TOLERANCE = timedelta(minutes=10)
 HEARTBEAT_GAP_SECONDS = 180
+CURRENT_REVERSAL_WINDOW_SECONDS = 6
+CURRENT_POWER_CORRELATION_SECONDS = 6
+ZERO_POWER_THRESHOLD_W = 100.0
+TRANSPORT_RECOVERY_WINDOW_SECONDS = 90
 SESSION_STATISTICS_MARKER = "Wattpilot session statistics: "
 SESSION_EVENT_VERSION = 1
 SESSION_EVENT_NAMES = frozenset(
@@ -199,8 +203,9 @@ LOG_LINE_RE = re.compile(
 )
 ALLOWANCE_RE = re.compile(
     r"(?:Assigned|Allocated)\s+(?P<watts>-?\d+(?:\.\d+)?)W"
-    r"(?:\s+allowance)?\s+to\s+.*Wattpilot.*?"
-    r"\s-\s(?P<state>.+?)\s+\([^\n]*Wattpilot\)"
+    r"(?:\s+allowance)?\s+to\s+[^()\n]*?\bWattpilot\b\s+"
+    r"(?:-\s+(?P<state>.+?)|(?P<unreachable>not reachable))"
+    r"\s+\([^,\n]+,\s*Wattpilot\)"
 )
 ALLOCATION_INPUT_RE = re.compile(
     r"Allocation input for Wattpilot:.*?request=(?P<request>-?\d+(?:\.\d+)?)W, "
@@ -254,6 +259,14 @@ START_RE = re.compile(
 )
 MODEL_CHARGING_RE = re.compile(
     r"Wattpilot Modelstatus:\s+(?:WattpilotModelStatus\.)?Charging", re.IGNORECASE
+)
+MODEL_POWER_RE = re.compile(
+    r"Wattpilot Modelstatus:.*?; charge telemetry \(read-only\):.*?"
+    r"total=(?P<power>-?\d+(?:\.\d+)?)W",
+    re.IGNORECASE,
+)
+WATTPILOT_TRANSPORT_TIMEOUT_RE = re.compile(
+    r"\bConnection timed out - goodbye\b", re.IGNORECASE
 )
 RARE_ENTER_RE = re.compile(
     r"Wattpilot special charging model status entered: "
@@ -1324,6 +1337,11 @@ class EsEssDailyReport:
         self._allowance_timestamps: list[datetime] = []
         self.grid_samples: list[GridSample] = []
         self.current_adjustments: list[tuple[LogRecord, int, int]] = []
+        self.guarded_current_noops: list[LogRecord] = []
+        self.model_power_samples: list[tuple[LogRecord, float]] = []
+        self._model_power_timestamps: list[datetime] = []
+        self.rapid_current_reversals: list[LogRecord] = []
+        self.zero_power_current_adjustments: list[LogRecord] = []
         self.assist_samples: list[
             tuple[LogRecord, float, float | None, int | None, float]
         ] = []
@@ -1352,6 +1370,8 @@ class EsEssDailyReport:
         ] = []
         self.restart_records: list[LogRecord] = []
         self.reconnect_records: list[LogRecord] = []
+        self.transport_timeout_records: list[LogRecord] = []
+        self.resolved_transport_timeouts: list[tuple[LogRecord, LogRecord]] = []
         self.stale_telemetry_records: list[LogRecord] = []
         self.site_current_stop_records: list[LogRecord] = []
         self.site_current_source_failures: list[LogRecord] = []
@@ -1412,7 +1432,9 @@ class EsEssDailyReport:
                 else None
             )
             if allowance_match:
-                state = allowance_match.group("state")
+                state = allowance_match.group("state") or allowance_match.group(
+                    "unreachable"
+                )
                 event = AllowanceEvent(
                     record=record,
                     watts=float(allowance_match.group("watts")),
@@ -1453,6 +1475,22 @@ class EsEssDailyReport:
                     )
                 )
                 self.charge_records.append(record)
+
+            if (
+                "current setpoint already confirmed; accepting guarded no-op"
+                in message
+            ):
+                self.guarded_current_noops.append(record)
+
+            model_power_match = (
+                MODEL_POWER_RE.search(message)
+                if "Wattpilot Modelstatus:" in message and "total=" in message
+                else None
+            )
+            if model_power_match:
+                self.model_power_samples.append(
+                    (record, float(model_power_match.group("power")))
+                )
 
             assist_message = "Battery assist active" in message
             assist_match = ASSIST_RE.search(message) if assist_message else None
@@ -1607,6 +1645,10 @@ class EsEssDailyReport:
             ):
                 self.reconnect_records.append(record)
 
+            transport_timeout = WATTPILOT_TRANSPORT_TIMEOUT_RE.search(message)
+            if transport_timeout:
+                self.transport_timeout_records.append(record)
+
             raw_command = bool(
                 (
                     "setValue" in message
@@ -1651,7 +1693,10 @@ class EsEssDailyReport:
                 )
 
             if (
-                record.level in ("ERROR", "CRITICAL")
+                (
+                    record.level in ("ERROR", "CRITICAL")
+                    and transport_timeout is None
+                )
                 or "Traceback (most recent call last)" in message
                 or "ModuleNotFoundError" in message
                 or "CompatibilityError" in message
@@ -1681,6 +1726,9 @@ class EsEssDailyReport:
         self._allowance_timestamps = [
             event.record.timestamp for event in self.allowances
         ]
+        self._model_power_timestamps = [
+            record.timestamp for record, _power in self.model_power_samples
+        ]
         self._stop_timestamps = [record.timestamp for record in self._stop_records]
         self._manual_control_records = sorted(
             {
@@ -1692,7 +1740,84 @@ class EsEssDailyReport:
         self._manual_control_timestamps = [
             record.timestamp for record in self._manual_control_records
         ]
+        self._classify_transport_timeouts()
+        self._classify_current_command_evidence()
         self._classify_startup_compatibility()
+
+    def _classify_transport_timeouts(self) -> None:
+        """Resolve only bounded reconnects with authentication before control."""
+        control_records = self._manual_control_records
+        for timeout in self.transport_timeout_records:
+            deadline = timeout.timestamp + timedelta(
+                seconds=TRANSPORT_RECOVERY_WINDOW_SECONDS
+            )
+            authentication = next(
+                (
+                    record
+                    for record in self.authentication_records
+                    if timeout.timestamp < record.timestamp <= deadline
+                ),
+                None,
+            )
+            command_before_recovery = next(
+                (
+                    record
+                    for record in control_records
+                    if timeout.timestamp < record.timestamp
+                    and (
+                        authentication is None
+                        or record.timestamp < authentication.timestamp
+                    )
+                ),
+                None,
+            )
+            if authentication is None or command_before_recovery is not None:
+                self.failure_records.append(timeout)
+                continue
+            self.resolved_transport_timeouts.append((timeout, authentication))
+
+    def _model_power_at_or_before(self, timestamp: datetime) -> Optional[float]:
+        index = bisect_right(self._model_power_timestamps, timestamp) - 1
+        if index < 0:
+            return None
+        record, power = self.model_power_samples[index]
+        if (timestamp - record.timestamp).total_seconds() > CURRENT_POWER_CORRELATION_SECONDS:
+            return None
+        return power
+
+    def _classify_current_command_evidence(self) -> None:
+        directions: list[tuple[LogRecord, int]] = []
+        for previous, current in zip(
+            self.current_adjustments, self.current_adjustments[1:]
+        ):
+            previous_record, previous_amps, _previous_phase = previous
+            current_record, current_amps, _current_phase = current
+            if current_amps == previous_amps:
+                continue
+            direction = 1 if current_amps > previous_amps else -1
+            directions.append((current_record, direction))
+
+        for previous, current in zip(directions, directions[1:]):
+            previous_record, previous_direction = previous
+            current_record, current_direction = current
+            if (
+                current_direction != previous_direction
+                and (
+                    current_record.timestamp - previous_record.timestamp
+                ).total_seconds()
+                <= CURRENT_REVERSAL_WINDOW_SECONDS
+            ):
+                self.rapid_current_reversals.append(current_record)
+
+        self.zero_power_current_adjustments = [
+            record
+            for record, _amps, _phase in self.current_adjustments
+            if (
+                (power := self._model_power_at_or_before(record.timestamp))
+                is not None
+                and power <= ZERO_POWER_THRESHOLD_W
+            )
+        ]
 
     def _classify_startup_compatibility(self) -> None:
         """Resolve only the proven fail-closed pre-authentication startup gap."""
@@ -1875,6 +2000,27 @@ class EsEssDailyReport:
                 "INFO",
                 "Wattpilot reconnects",
                 "No Wattpilot reconnect event was observed.",
+            )
+
+        if self.resolved_transport_timeouts:
+            evidence = []
+            for timeout, authentication in self.resolved_transport_timeouts:
+                evidence.extend((timeout, authentication))
+            status = (
+                "ATTENTION"
+                if len(self.resolved_transport_timeouts) > 1
+                else "INFO"
+            )
+            self.add(
+                status,
+                "Wattpilot transport recovery",
+                "Observed {0} WebSocket timeout(s) followed by authentication within "
+                "{1} seconds and before any charger control action. These recovered "
+                "events remain visible but are not runtime failures.".format(
+                    len(self.resolved_transport_timeouts),
+                    TRANSPORT_RECOVERY_WINDOW_SECONDS,
+                ),
+                evidence,
             )
 
         long_gaps: list[LogRecord] = []
@@ -2062,6 +2208,60 @@ class EsEssDailyReport:
                 "current limits",
                 f"All {len(amps)} logged current adjustments stayed within configured bounds "
                 f"({min(amps)}..{max(amps)} A observed).",
+            )
+
+    def check_current_command_activity(self) -> None:
+        if not self.current_adjustments:
+            self.add(
+                "NOT_OBSERVED",
+                "current command activity",
+                "No changed-current command evidence was available for chatter analysis.",
+            )
+            return
+
+        if self.rapid_current_reversals:
+            self.add(
+                "ATTENTION",
+                "current command reversals",
+                "Observed {0} current-command direction reversal(s) within {1} seconds. "
+                "Inspect whether short-lived allowance changes caused unnecessary charger "
+                "writes.".format(
+                    len(self.rapid_current_reversals),
+                    CURRENT_REVERSAL_WINDOW_SECONDS,
+                ),
+                self.rapid_current_reversals,
+            )
+        else:
+            self.add(
+                "PASS",
+                "current command reversals",
+                "No rapid current-command direction reversal was observed.",
+            )
+
+        if self.zero_power_current_adjustments:
+            self.add(
+                "ATTENTION",
+                "zero-power current commands",
+                "Observed {0} changed-current command(s) while the most recent read-only "
+                "Wattpilot telemetry reported no material charging power. Startup and phase "
+                "transitions may be valid explanations; inspect the cited records.".format(
+                    len(self.zero_power_current_adjustments)
+                ),
+                self.zero_power_current_adjustments,
+            )
+        else:
+            self.add(
+                "PASS",
+                "zero-power current commands",
+                "No changed-current command was correlated with recent zero-power telemetry.",
+            )
+
+        if self.guarded_current_noops:
+            self.add(
+                "INFO",
+                "suppressed current commands",
+                "Suppressed {0} already-confirmed current request(s) without a WebSocket "
+                "write.".format(len(self.guarded_current_noops)),
             )
 
     def _allowance_at_or_before(
@@ -3457,6 +3657,7 @@ class EsEssDailyReport:
         self.check_commissioning_profile()
         self.check_charging()
         self.check_current_bounds()
+        self.check_current_command_activity()
         self.check_allowance()
         self.check_allowance_grace()
         self.check_phase_switching()
@@ -3482,6 +3683,12 @@ class EsEssDailyReport:
             overall = "GOOD"
             exit_code = EXIT_PASS
 
+        evidence_seconds = max(
+            1.0,
+            (self.records[-1].timestamp - self.records[0].timestamp).total_seconds()
+            if len(self.records) > 1
+            else 1.0,
+        )
         metrics = {
             "records": len(self.records),
             "charging_records": len(self.charge_records),
@@ -3497,10 +3704,22 @@ class EsEssDailyReport:
             "phase_commands": len(self.phase_actions),
             "phase_confirmations": len(self.phase_confirmations),
             "current_adjustments": len(self.current_adjustments),
+            "current_adjustments_per_hour": round(
+                len(self.current_adjustments) * 3600.0 / evidence_seconds, 3
+            ),
+            "rapid_current_reversals": len(self.rapid_current_reversals),
+            "zero_power_current_adjustments": len(
+                self.zero_power_current_adjustments
+            ),
+            "guarded_current_noops": len(self.guarded_current_noops),
             "battery_assist_samples": len(self.assist_samples),
             "grid_samples": len(self.grid_samples),
             "service_initializations": len(self.restart_records),
             "wattpilot_reconnect_events": len(self.reconnect_records),
+            "wattpilot_transport_timeouts": len(self.transport_timeout_records),
+            "wattpilot_transport_timeouts_recovered": len(
+                self.resolved_transport_timeouts
+            ),
             "site_current_source_grace_events": len(
                 self.site_current_source_grace_events
             ),
@@ -3697,10 +3916,16 @@ def render_human(result: AuditResult) -> str:
             f"phases={session.phases or ['unknown']}; stop={session.stop_reason}; "
             f"source={session.source}"
         )
+        phase_change_label = (
+            "observed phase-segment transitions"
+            if session.source.startswith("structured")
+            else "phase commands"
+        )
         lines.append(
             "  current adjustments="
-            f"{_summarize_current_adjustments(session.current_adjustments_a)}; phase switches="
-            f"{len(session.phase_switches)}; battery assist={session.battery_assist_events}; "
+            f"{_summarize_current_adjustments(session.current_adjustments_a)}; "
+            f"{phase_change_label}={len(session.phase_switches)}; "
+            f"battery assist={session.battery_assist_events}; "
             f"grid guards={session.grid_guard_events}; stale telemetry="
             f"{session.stale_telemetry_events}; restart={session.restart_during_session}"
         )
