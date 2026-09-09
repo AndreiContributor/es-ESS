@@ -35,7 +35,9 @@ directory on the GX device.
   telemetry, or message frequency must be correlated over one live session.
 - Use the **daily report** after APP_DEBUG evidence covers the requested period.
   It analyzes retained history; it does not replace high-frequency live session
-  sampling.
+  sampling. It distinguishes changed-current writes from guarded no-ops,
+  highlights rapid current reversals and zero-power adjustments, and keeps
+  bounded authenticated WebSocket recoveries separate from unresolved errors.
 - Use the **setting capture** only for the command-ownership discovery procedure.
   It is not needed for ordinary charging validation, health monitoring, or
   daily reporting.
@@ -72,6 +74,10 @@ nohup sh /data/es-ESS/scripts/wattpilot-session-capture.sh \
   >/data/wattpilot-capture-launch.log 2>&1 &
 echo $!
 ```
+
+The Python implementation deliberately avoids the optional `statistics`
+standard-library module because older Venus OS Python builds may not provide
+it. No package installation is required for its arithmetic summaries.
 
 Analyze yesterday after a complete APP_DEBUG day:
 

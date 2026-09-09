@@ -14,7 +14,6 @@ import math
 import os
 import re
 import signal
-import statistics
 import sys
 import threading
 import time
@@ -153,6 +152,14 @@ LOG_TIMESTAMP_RE = re.compile(
 ADJUSTMENT_TARGET_RE = re.compile(
     r"Adjusting charge current to (?P<amps>\d+)A"
 )
+
+
+def arithmetic_mean(values: Iterable[float]) -> float:
+    """Return a mean without the optional-on-older-Venus statistics module."""
+    materialized = list(values)
+    if not materialized:
+        raise ValueError("arithmetic_mean requires at least one value")
+    return sum(materialized) / len(materialized)
 
 
 def finite_number(value: Any) -> Optional[float]:
@@ -476,7 +483,7 @@ def analyze_samples(
         if (value := finite_number(sample.get("read_seconds"))) is not None
     ]
     if read_seconds:
-        result["mean_read_seconds"] = statistics.fmean(read_seconds)
+        result["mean_read_seconds"] = arithmetic_mean(read_seconds)
         result["max_read_seconds"] = max(read_seconds)
 
     stat_fields = (
@@ -568,7 +575,7 @@ def analyze_samples(
                     result["safety_seconds"][name] += delta * 0.5
 
     if intervals:
-        result["mean_interval_seconds"] = statistics.fmean(intervals)
+        result["mean_interval_seconds"] = arithmetic_mean(intervals)
         result["max_interval_seconds"] = max(intervals)
     return result
 
@@ -613,7 +620,7 @@ def analyze_log(path: Path, duration_seconds: float) -> dict[str, Any]:
                 count * 3600.0 / duration_seconds if duration_seconds > 0 else 0.0
             ),
             "average_interval_seconds": (
-                statistics.fmean(intervals) if intervals else None
+                arithmetic_mean(intervals) if intervals else None
             ),
         }
     results["consecutive_same_adjustment_candidates"] = sum(

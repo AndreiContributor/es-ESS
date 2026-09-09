@@ -209,6 +209,9 @@ Version 4 detects or summarizes:
 
 - `CRITICAL`, `ERROR`, traceback, dependency, firmware, and Venus OS
   compatibility failures;
+- Wattpilot WebSocket timeouts, keeping unresolved or command-before-recovery
+  events as failures while reporting a bounded authentication-first recovery
+  as visible transport lifecycle evidence;
 - repeated service initializations or Wattpilot reconnect lifecycle events;
 - site-current stops and stale site-current telemetry found in controller logs;
 - Auto/Eco actions while command authority is blocked;
@@ -221,6 +224,9 @@ Version 4 detects or summarizes:
   `0 W` allocation during three-phase charging;
 - excessive, premature, low-allowance, or unconfirmed phase switching;
 - current outside configured per-phase bounds;
+- changed-current command rate, guarded equal-target no-ops, rapid direction
+  reversals within one normal controller cycle, and changed-current commands
+  correlated with recent zero-power Wattpilot telemetry;
 - raw or interpreted start/stop/current/phase commands while Manual mode owns
   charging, while allowing the documented immediate command-authority release;
 - configuration combinations inconsistent with the documented no-grid
@@ -235,6 +241,19 @@ command, reconnect, or second initialization before confirmation. A wrong
 version, missing confirmation, incomplete sequence, or intervening control or
 connection-lifecycle event remains a compatibility failure and produces an
 `ANOMALY`.
+
+An exact WebSocket `Connection timed out - goodbye` error is not hidden. It is
+classified as recovered lifecycle evidence only when `Authentication
+successful` follows within 90 seconds and no charger-control action occurs
+between the timeout and authentication. Missing or late authentication, a
+command during the unvalidated interval, any other error, a traceback, or a
+service failure remains a runtime failure. Multiple recovered timeouts in one
+window produce `ATTENTION`.
+
+Allowance parsing accepts both the normal `... Wattpilot - Charging ...`
+assignment and the distributor's `... Wattpilot not reachable ...` form. The
+consumer metadata must still identify the Wattpilot consumer, so temporary
+transport loss does not create a false allowance-freshness gap.
 
 ## Structured Session Evidence
 
