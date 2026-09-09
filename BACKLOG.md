@@ -67,6 +67,9 @@ Current validated state:
   write only when connected Wattpilot telemetry confirms that exact setpoint
   and the final command guard accepts it. Changed, zero, missing/reset
   telemetry, unsafe headroom, and transactional rejection paths remain active.
+  Running same-phase increases additionally require fresh assigned PV support
+  for the existing `SiteCurrentRecoverySeconds` interval, one ampere at a time;
+  reductions remain immediate and zero-power charging state cannot ramp upward.
 - Supervised Auto/Eco validation confirmed that a partially elapsed phase-up
   candidate was cleared by a confirmed physical disconnect: after reconnect,
   without an es-ESS restart, the next candidate began from zero. The same
@@ -153,6 +156,34 @@ Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
+### Completed 2026-09-09 - Stabilize Wattpilot Current Increases And Validation Tools
+
+- Privacy-sanitized complete-session evidence showed frequent one-cycle
+  current-command direction reversals after site-current recovery had already
+  matured. Independent distributor and controller workers could expose one
+  briefly higher allowance before the following cycle restored the lower
+  target. Exact confirmed duplicate suppression worked, but it could not
+  suppress these genuinely different adjacent targets.
+- Normal same-phase control now captures one internally consistent allowance
+  decision and requires continuously sufficient fresh PV across distinct
+  allowance updates for the existing `SiteCurrentRecoverySeconds` duration.
+  It releases one ampere, then rebuilds the interval. Reductions, zero current,
+  stops, site/grid safety, starts, and phase transitions remain immediate or
+  retain their existing dedicated guards. Manual mode remains command-free.
+- Normal current adjustment cannot ramp upward while measured EV power is at
+  or below the existing charge-complete threshold. This prevents an idle or
+  completed connected vehicle from walking its inactive setpoint upward.
+- The command-free session capture no longer imports the unavailable
+  `statistics` module on older maintained Venus OS Python environments. The
+  daily report now parses the Wattpilot-unreachable allowance form, separates
+  bounded authentication-first WebSocket recovery from unresolved failures,
+  and reports changed-current rate, guarded no-ops, rapid reversals, and
+  zero-power adjustments.
+- Hardware-free tests cover continuous and interrupted increase evidence,
+  distinct allowance observations, one-amp progression, immediate reduction,
+  zero-power blocking, immutable allowance snapshots, diagnostic compatibility,
+  timeout classification, and both reachable/unreachable allowance forms.
 
 ### Completed 2026-07-22 - Resolve Proven Pre-Authentication Compatibility Warnings In The Daily Report
 
@@ -3779,7 +3810,10 @@ evidence rather than an open backlog requirement.
   lower solely from voltage movement and that any residual remains below one
   active-phase step. Do not induce grid import or switch loads solely for this
   check.
-- P3 duplicate current-command suppression: during a normal supervised
-  Auto/Eco charge, confirm stable confirmed targets do not repeat outbound
-  `amp` writes or INFO adjustment records and that a natural changed target is
-  dispatched. Do not induce an overload, telemetry loss, or protective trip.
+- P2 current-increase stabilization: during a naturally variable supervised
+  Auto/Eco charge, run the command-free session capture and complete-day report.
+  Confirm short higher allowances do not create adjacent up/down writes, each
+  sustained increase advances only one ampere after the configured site-current
+  recovery interval, lower targets remain immediate, and no normal increase is
+  sent after measured charging power falls to the charge-complete threshold.
+  Do not induce an overload, telemetry loss, grid import, or protective trip.

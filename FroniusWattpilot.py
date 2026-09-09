@@ -66,6 +66,15 @@ class SiteCurrentGuardSnapshot(NamedTuple):
     evaluated_at: float
 
 
+class AllowanceSnapshot(NamedTuple):
+    """One immutable distributor allowance for a current-adjustment decision."""
+
+    watts: float
+    valid: bool
+    updated_at: float
+    observed_at: float
+
+
 class CurrentCommandResult(NamedTuple):
     """Controller current-command acceptance and transport-dispatch result."""
 
@@ -237,6 +246,7 @@ class FroniusWattpilot (esESSService):
         self.allowance = 0
         self.allowanceValid = False
         self.allowanceUpdatedAt = 0
+        self.allowanceLock = threading.Lock()
         self.allowanceBelowMinimumSince = 0
         self.surplusSince = 0
         self.surplusBelowMinimumSince = 0
@@ -302,6 +312,10 @@ class FroniusWattpilot (esESSService):
         # recovery timer applies only to increases; reductions and stops are
         # immediate on the next controller cycle.
         self.siteCurrentRecoverySince = {1: 0, 2: 0}
+        self.pvCurrentIncreasePhaseMode = 0
+        self.pvCurrentIncreaseSince = 0
+        self.pvCurrentIncreaseAllowanceUpdatedAt = 0
+        self.pvCurrentIncreaseObservationCount = 0
         self.siteCurrentGuardBlocked = False
         self.siteCurrentGuardReason = "Waiting for site-current telemetry"
         self.siteCurrentAllowedCurrent = 0
@@ -785,9 +799,7 @@ class FroniusWattpilot (esESSService):
             value = DecisionInputs.parse_finite_payload(msg.payload)
 
             if topic == self.mqttAllowanceTopic:
-                self.allowance = value
-                self.allowanceValid = True
-                self.allowanceUpdatedAt = time.time()
+                self.storeAllowance(value, True, time.time())
                 return
 
             if topic == self.mqttRawOverheadTopic:
@@ -797,14 +809,25 @@ class FroniusWattpilot (esESSService):
             if topic == self.mqttAllowanceTopic:
                 # A malformed message must invalidate any previously assigned
                 # allowance. Raw overhead is not a substitute for it.
-                self.allowance = 0
-                self.allowanceValid = False
-                self.allowanceUpdatedAt = time.time()
+                self.storeAllowance(0, False, time.time())
             c(
                 self,
                 "Exception while processing Wattpilot distributor message.",
                 exc_info=ex,
             )
+
+    def storeAllowance(self, value, valid, updatedAt):
+        """Atomically replace the three fields that form allowance evidence."""
+        lock = getattr(self, "allowanceLock", None)
+        if lock is None:
+            self.allowance = value
+            self.allowanceValid = bool(valid)
+            self.allowanceUpdatedAt = updatedAt
+            return
+        with lock:
+            self.allowance = value
+            self.allowanceValid = bool(valid)
+            self.allowanceUpdatedAt = updatedAt
 
     def initWorkerThreads(self):
         source = getattr(self, "siteCurrentSource", None)
@@ -1669,6 +1692,7 @@ class FroniusWattpilot (esESSService):
             else:
                 self.autostart = 0
                 self.mode = VrmEvChargerControlMode.Manual
+                self.clearPvCurrentIncreaseCandidate()
                 self.clearChargeCompleteHold("manual mode selected")
                 if priorMode == VrmEvChargerControlMode.Auto:
                     self.releaseAutoControlLimitsForManualMode()
@@ -1927,6 +1951,7 @@ class FroniusWattpilot (esESSService):
             )
             return
 
+        self.clearPvCurrentIncreaseCandidate()
         self.clearBatteryAssist()
 
         # Do not restart, phase switch, or force the charger off after a car
@@ -2265,6 +2290,7 @@ class FroniusWattpilot (esESSService):
         unavailable = self.isWattpilotTransportUnavailableForDashboard()
 
         if unavailable:
+            self.clearPvCurrentIncreaseCandidate()
             if not getattr(self, "wattpilotDashboardTransportUnavailable", False):
                 self.publishServiceMessage(
                     self,
@@ -2477,6 +2503,37 @@ class FroniusWattpilot (esESSService):
     def threePhaseMinimumPower(self):
         return self.allocationStepForPhase(2) * self.minCurrentPerPhase
 
+    def captureAllowanceSnapshot(self, now=None):
+        """Capture one internally consistent allowance for command selection."""
+        observedAt = time.time() if now is None else float(now)
+        lock = getattr(self, "allowanceLock", None)
+        if lock is None:
+            value = getattr(self, "allowance", 0)
+            valid = getattr(self, "allowanceValid", False)
+            updatedAt = getattr(self, "allowanceUpdatedAt", 0)
+        else:
+            with lock:
+                value = self.allowance
+                valid = self.allowanceValid
+                updatedAt = self.allowanceUpdatedAt
+
+        numeric = DecisionInputs.finite_number(value)
+        timestamp = DecisionInputs.finite_number(updatedAt)
+        return AllowanceSnapshot(
+            max(0.0, numeric) if numeric is not None else 0.0,
+            bool(valid and numeric is not None and timestamp is not None),
+            timestamp if timestamp is not None else 0.0,
+            observedAt,
+        )
+
+    def allowanceSnapshotIsFresh(self, snapshot):
+        return DecisionInputs.allowance_is_fresh(
+            snapshot.valid,
+            snapshot.updated_at,
+            self.allowanceFreshSeconds,
+            snapshot.observed_at,
+        )
+
     def allowanceIsFresh(self):
         return DecisionInputs.allowance_is_fresh(
             getattr(self, "allowanceValid", False),
@@ -2564,6 +2621,7 @@ class FroniusWattpilot (esESSService):
         self._allocationStepActivePhaseMode = (
             self.currentPhaseMode if self.currentPhaseMode in (1, 2) else 0
         )
+        self.clearPvCurrentIncreaseCandidate()
 
     def allocationStepForPhase(self, phaseMode):
         """Return one conservative, monotonic watts-per-ampere allocation step."""
@@ -2643,13 +2701,15 @@ class FroniusWattpilot (esESSService):
         )
 
 
-    def desiredPhaseModeForPvAllowance(self):
+    def desiredPhaseModeForPvAllowance(self, allowance=None):
         # Hysteresis: phase-up requires the configured higher threshold, while
         # phase-down happens below the configured lower threshold. Both are
         # clamped to the electrical three-phase 6 A minimum.
+        if allowance is None:
+            allowance = self.allowance
         return PhaseDecisions.desired_phase_mode(
             self.currentPhaseMode,
-            self.allowance,
+            allowance,
             self.phaseUpThresholdW(),
             self.phaseDownThresholdW(),
         )
@@ -2671,8 +2731,75 @@ class FroniusWattpilot (esESSService):
             self.targetCurrentForPhase(phaseMode, allowance),
         )
 
+    def clearPvCurrentIncreaseCandidate(self):
+        self.pvCurrentIncreasePhaseMode = 0
+        self.pvCurrentIncreaseSince = 0
+        self.pvCurrentIncreaseAllowanceUpdatedAt = 0
+        self.pvCurrentIncreaseObservationCount = 0
+
+    def stablePvTargetCurrent(self, phaseMode, allowanceSnapshot):
+        """Return an immediate reduction or a stability-gated PV increase."""
+        rawTarget = self.targetCurrentForPhase(
+            phaseMode, allowanceSnapshot.watts
+        )
+        reported = DecisionInputs.finite_number(
+            getattr(self.wattpilot, "amp", None)
+        )
+        current = int(reported) if reported is not None and reported > 0 else 0
+        increaseAllowed = bool(
+            self.actualMeasuredPowerW() > self.chargeCompletePowerThresholdW
+            and not self.powerTransitionGraceActive()
+            and getattr(self, "pendingPhaseSwitchMode", 0) == 0
+        )
+        decision = PhaseDecisions.stabilize_current_increase(
+            current,
+            rawTarget,
+            phaseMode,
+            getattr(self, "pvCurrentIncreasePhaseMode", 0),
+            getattr(self, "pvCurrentIncreaseSince", 0),
+            getattr(self, "pvCurrentIncreaseAllowanceUpdatedAt", 0),
+            getattr(self, "pvCurrentIncreaseObservationCount", 0),
+            allowanceSnapshot.updated_at,
+            self.siteCurrentRecoverySeconds,
+            allowanceSnapshot.observed_at,
+            increaseAllowed,
+        )
+        self.pvCurrentIncreasePhaseMode = decision.next_candidate_phase_mode
+        self.pvCurrentIncreaseSince = decision.next_candidate_since
+        self.pvCurrentIncreaseAllowanceUpdatedAt = (
+            decision.next_allowance_updated_at
+        )
+        self.pvCurrentIncreaseObservationCount = decision.next_observation_count
+        if decision.reason == PhaseDecisions.CURRENT_INCREASE_STARTED:
+            d(
+                self,
+                "PV supports a higher current; waiting {0}s of continuous "
+                "allowance before increasing from {1}A.".format(
+                    self.siteCurrentRecoverySeconds, current
+                ),
+            )
+        return self.siteLimitedTargetCurrent(
+            phaseMode, decision.allowed_current
+        )
+
+    def commandStablePvCurrent(self, phaseMode, allowanceSnapshot):
+        """Dispatch one same-phase PV target and reset a completed up-step."""
+        reported = DecisionInputs.finite_number(
+            getattr(self.wattpilot, "amp", None)
+        )
+        targetAmps = self.stablePvTargetCurrent(phaseMode, allowanceSnapshot)
+        currentCommand = self.commandWattpilotCurrent(targetAmps)
+        if (
+            currentCommand.dispatched
+            and reported is not None
+            and targetAmps > reported
+        ):
+            self.clearPvCurrentIncreaseCandidate()
+        return targetAmps, currentCommand
+
     def commandSiteSafePhaseTransition(self, phaseMode, targetAmps):
         """Order amp/phase commands so both the old and new mode stay safe."""
+        self.clearPvCurrentIncreaseCandidate()
         if targetAmps < self.minCurrentPerPhase:
             self.sitePhaseTransitionReductionAt = 0
             self.sitePhaseTransitionTargetMode = 0
@@ -4228,6 +4355,7 @@ class FroniusWattpilot (esESSService):
             return
 
         self.chargeCompleteHold = True
+        self.clearPvCurrentIncreaseCandidate()
         self.chargeCompleteSince = time.time()
         self.chargeCompleteResumeSince = 0
         self.surplusSince = 0
@@ -4324,6 +4452,7 @@ class FroniusWattpilot (esESSService):
 
         try:
             self.clearBatteryAssist()
+            self.clearPvCurrentIncreaseCandidate()
             self.clearPowerTransitionGrace()
             self.clearPendingPhaseSwitch()
         except Exception:
@@ -4355,6 +4484,7 @@ class FroniusWattpilot (esESSService):
         self.surplusBelowMinimumSince = 0
         self.allowanceBelowMinimumSince = 0
         self.clearBatteryAssist()
+        self.clearPvCurrentIncreaseCandidate()
         self.clearPowerTransitionGrace()
         self.clearPendingPhaseSwitch()
         self.clearPhaseSwitchCandidate()
@@ -4386,6 +4516,7 @@ class FroniusWattpilot (esESSService):
         self.surplusBelowMinimumSince = 0
         self.allowanceBelowMinimumSince = 0
         self.clearBatteryAssist()
+        self.clearPvCurrentIncreaseCandidate()
         self.clearPowerTransitionGrace()
         self.clearPendingPhaseSwitch()
 
@@ -4420,6 +4551,7 @@ class FroniusWattpilot (esESSService):
         self.surplusBelowMinimumSince = 0
         self.allowanceBelowMinimumSince = 0
         self.clearBatteryAssist()
+        self.clearPvCurrentIncreaseCandidate()
         self.clearPowerTransitionGrace()
         self.clearPendingPhaseSwitch()
         self.clearPhaseSwitchCandidate()
@@ -4465,11 +4597,13 @@ class FroniusWattpilot (esESSService):
         self.phaseSwitchCandidateSince = 0
         self.phaseSwitchBelowThresholdSince = 0
 
-    def preservePhaseUpCandidateThroughShortDip(self):
+    def preservePhaseUpCandidateThroughShortDip(self, allowance=None):
         """Evaluate normal-path grace for an electrically safe PV dip."""
+        if allowance is None:
+            allowance = self.allowance
         decision = PhaseDecisions.evaluate_phase_up_drop_grace(
             self.phaseSwitchCandidateMode,
-            max(0.0, float(self.allowance)),
+            max(0.0, float(allowance)),
             self.phaseUpThresholdW(),
             self.phaseDownThresholdW(),
             getattr(self, "phaseSwitchBelowThresholdSince", 0),
@@ -4507,7 +4641,13 @@ class FroniusWattpilot (esESSService):
         return decision.preserve_candidate
 
     def adjustChargeForPvAllowance(self):
-        desiredPhaseMode = self.desiredPhaseModeForPvAllowance()
+        allowanceSnapshot = self.captureAllowanceSnapshot()
+        if not self.allowanceSnapshotIsFresh(allowanceSnapshot):
+            self.clearPvCurrentIncreaseCandidate()
+            return VrmEvChargerStatus.Charging
+
+        allowance = allowanceSnapshot.watts
+        desiredPhaseMode = self.desiredPhaseModeForPvAllowance(allowance)
         enteringPhaseMode = self.currentPhaseMode
 
         if desiredPhaseMode == 2 and enteringPhaseMode != 2:
@@ -4534,7 +4674,7 @@ class FroniusWattpilot (esESSService):
             self.phaseSwitchBelowThresholdSince = 0
         elif enteringPhaseMode != 2:
             phaseUpDropGraceActive = (
-                self.preservePhaseUpCandidateThroughShortDip()
+                self.preservePhaseUpCandidateThroughShortDip(allowance)
             )
             if phaseUpDropGraceActive:
                 desiredPhaseMode = 2
@@ -4577,9 +4717,10 @@ class FroniusWattpilot (esESSService):
                 )
 
             if phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_WAIT_STABLE:
-                targetAmps = self.safeTargetCurrentForPhase(1, self.allowance)
+                targetAmps, _currentCommand = self.commandStablePvCurrent(
+                    1, allowanceSnapshot
+                )
                 self.currentPhaseMode = 1
-                self.commandWattpilotCurrent(targetAmps)
                 if phaseUpDropGraceActive:
                     d(
                         self,
@@ -4601,9 +4742,10 @@ class FroniusWattpilot (esESSService):
 
             if (
                 phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_READY
-                and self.allowance >= self.phaseUpThresholdW()
+                and allowance >= self.phaseUpThresholdW()
             ):
-                targetAmps = self.safeTargetCurrentForPhase(2, self.allowance)
+                targetAmps = self.safeTargetCurrentForPhase(2, allowance)
+                self.clearPvCurrentIncreaseCandidate()
                 phaseResult = self.commandSiteSafePhaseTransition(2, targetAmps)
                 if not phaseResult:
                     self.clearPhaseSwitchCandidate()
@@ -4621,9 +4763,10 @@ class FroniusWattpilot (esESSService):
                 return VrmEvChargerStatus.SwitchingTo3Phase
 
             if phaseUpDecision.action == PhaseDecisions.PHASE_SWITCH_READY:
-                targetAmps = self.safeTargetCurrentForPhase(1, self.allowance)
+                targetAmps, _currentCommand = self.commandStablePvCurrent(
+                    1, allowanceSnapshot
+                )
                 self.currentPhaseMode = 1
-                self.commandWattpilotCurrent(targetAmps)
                 d(
                     self,
                     "Phase-up timer is mature; waiting for assigned allowance "
@@ -4633,9 +4776,10 @@ class FroniusWattpilot (esESSService):
                 )
                 return VrmEvChargerStatus.Charging
 
-            targetAmps = self.safeTargetCurrentForPhase(1, self.allowance)
+            targetAmps, _currentCommand = self.commandStablePvCurrent(
+                1, allowanceSnapshot
+            )
             self.currentPhaseMode = 1
-            self.commandWattpilotCurrent(targetAmps)
             d(
                 self,
                 "3-phase PV threshold reached; phase-up cooldown active for {0:.0f}s.".format(
@@ -4647,10 +4791,9 @@ class FroniusWattpilot (esESSService):
         # No phase change; adjust current from PV allowance only.
         self.clearPhaseSwitchCandidate()
         self.currentPhaseMode = desiredPhaseMode
-        targetAmps = self.safeTargetCurrentForPhase(
-            desiredPhaseMode, self.allowance
+        targetAmps, currentCommand = self.commandStablePvCurrent(
+            desiredPhaseMode, allowanceSnapshot
         )
-        currentCommand = self.commandWattpilotCurrent(targetAmps)
         if currentCommand.dispatched:
             i(
                 self,

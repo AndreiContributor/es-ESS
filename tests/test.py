@@ -588,6 +588,9 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         controller.allowance = 5000
         controller.minimumPhaseSwitchSeconds = 300
         controller.lastPhaseSwitchTime = 100
+        controller.wattpilot.amp = 7
+        controller.wattpilot.ampUpdatedAt = 199
+        controller.wattpilot.power = 1.61
 
         with patch.object(self.fwp.time, "time", return_value=200):
             status = controller.adjustChargeForPvAllowance()
@@ -595,13 +598,16 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
         self.assertEqual(controller.currentPhaseMode, 1)
         controller.wattpilot.set_phases.assert_not_called()
-        controller.wattpilot.set_power.assert_called_once_with(16)
+        controller.wattpilot.set_power.assert_not_called()
 
     def test_phase_up_waits_for_shared_phase_switch_timer(self):
         controller = self._controller()
         controller.allowance = 5000
         controller.minimumPhaseSwitchSeconds = 120
         controller.lastPhaseSwitchTime = -120
+        controller.wattpilot.amp = 7
+        controller.wattpilot.ampUpdatedAt = 99
+        controller.wattpilot.power = 1.61
 
         with patch.object(self.fwp.time, "time", return_value=100):
             status = controller.adjustChargeForPvAllowance()
@@ -610,7 +616,7 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         self.assertEqual(controller.currentPhaseMode, 1)
         self.assertEqual(controller.phaseSwitchCandidateMode, 2)
         controller.wattpilot.set_phases.assert_not_called()
-        controller.wattpilot.set_power.assert_called_once_with(16)
+        controller.wattpilot.set_power.assert_not_called()
 
         controller.wattpilot.set_power.reset_mock()
         with patch.object(self.fwp.time, "time", return_value=219):
@@ -618,7 +624,7 @@ class WattpilotControlRegressionTests(unittest.TestCase):
 
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
         controller.wattpilot.set_phases.assert_not_called()
-        controller.wattpilot.set_power.assert_called_once_with(16)
+        controller.wattpilot.set_power.assert_not_called()
 
         controller.wattpilot.set_power.reset_mock()
         with patch.object(self.fwp.time, "time", return_value=220):
@@ -628,13 +634,16 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         self.assertEqual(controller.currentPhaseMode, 2)
         self.assertEqual(controller.phaseSwitchCandidateMode, 0)
         controller.wattpilot.set_phases.assert_called_once_with(2)
-        controller.wattpilot.set_power.assert_called_once_with(7)
+        controller.wattpilot.set_power.assert_not_called()
 
     def test_raw_overhead_cannot_cause_a_false_phase_up(self):
         controller = self._controller()
         controller.allowance = 4199
         controller.mqttRawOverheadW = 10000
         controller.mqttRawOverheadUpdatedAt = 100
+        controller.wattpilot.amp = 16
+        controller.wattpilot.ampUpdatedAt = 100
+        controller.wattpilot.power = 3.68
 
         with patch.object(self.fwp.time, "time", return_value=101):
             status = controller.adjustChargeForPvAllowance()
@@ -642,7 +651,7 @@ class WattpilotControlRegressionTests(unittest.TestCase):
         self.assertEqual(status, self.fwp.VrmEvChargerStatus.Charging)
         self.assertEqual(controller.currentPhaseMode, 1)
         controller.wattpilot.set_phases.assert_not_called()
-        controller.wattpilot.set_power.assert_called_once_with(16)
+        controller.wattpilot.set_power.assert_not_called()
 
     def test_three_to_one_fallback_uses_fresh_raw_pv_overhead(self):
         controller = self._controller()

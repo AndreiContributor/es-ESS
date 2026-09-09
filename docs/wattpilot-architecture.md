@@ -212,6 +212,11 @@ It owns:
   acceptance separately from transport dispatch. Missing, malformed,
   connection-reset, or different telemetry dispatches through the existing
   `Wattpilot.set_power()` boundary. Zero-current commands are not deduplicated.
+- Normal same-phase PV current selection captures the allowance value,
+  validity, and update timestamp atomically once for the adjustment decision.
+  `WattpilotPhaseDecisions.py` evaluates the command-free upward-stability
+  policy; mutable candidate state and command dispatch remain in
+  `FroniusWattpilot.py`.
 - Transactional Auto/Eco start-state publication. The controller sends the
   guarded phase, current, and Start commands in that order and begins public
   transition grace only after all three are accepted. A rejection leaves the
@@ -544,11 +549,18 @@ Future Wattpilot changes must preserve these invariants:
   current commands per phase.
 - Site-current reductions and stops run before allowance grace, battery assist,
   grid fallback, or transition grace. Recovery must remain continuously safe
-  for `SiteCurrentRecoverySeconds`; increases then rise by 1 A per normal
-  controller cycle. A genuine lower target resets recovery, but an equal safe
-  active-current target preserves the running timer. This distinction prevents
-  the controller from indefinitely suppressing its own positive distributor
-  request while still requiring a complete delay before any later increase.
+  for `SiteCurrentRecoverySeconds`. During an already-running same-phase
+  charge, fresh assigned allowance must also continuously support at least the
+  next ampere for that same interval and across distinct allowance updates.
+  Each accepted upward ampere clears the PV candidate, so another increase
+  requires a new complete interval. A lower target remains immediate and
+  clears the candidate. An equal safe active-current target preserves the
+  independent site-recovery timer so the controller can restore its positive
+  distributor request without authorizing an unproven increase.
+- Normal same-phase current adjustment cannot increase while measured EV power
+  is at or below the configured charge-complete threshold. Start and phase
+  transition transactions remain governed by their existing stability,
+  ordering, site-current, authority, and confirmation guards.
 - A transient Shelly connection grace resets site-current recovery timers.
   After the next complete successful poll, positive allocation, restart, and
   current increases remain blocked until the existing continuous recovery

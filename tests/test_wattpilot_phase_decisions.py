@@ -84,6 +84,72 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
                     7,
                 )
 
+    def test_current_increase_requires_continuous_distinct_allowance_updates(self):
+        started = decisions.stabilize_current_increase(
+            8, 10, 2, 0, 0, 0, 0, 100, 30, 100, True
+        )
+        self.assertEqual(started.allowed_current, 8)
+        self.assertEqual(started.reason, decisions.CURRENT_INCREASE_STARTED)
+
+        same_message = decisions.stabilize_current_increase(
+            8,
+            10,
+            2,
+            started.next_candidate_phase_mode,
+            started.next_candidate_since,
+            started.next_allowance_updated_at,
+            started.next_observation_count,
+            100,
+            30,
+            130,
+            True,
+        )
+        self.assertEqual(same_message.allowed_current, 8)
+        self.assertEqual(same_message.reason, decisions.CURRENT_INCREASE_WAITING)
+
+        refreshed = decisions.stabilize_current_increase(
+            8,
+            10,
+            2,
+            same_message.next_candidate_phase_mode,
+            same_message.next_candidate_since,
+            same_message.next_allowance_updated_at,
+            same_message.next_observation_count,
+            125,
+            30,
+            130,
+            True,
+        )
+        self.assertEqual(refreshed.allowed_current, 9)
+        self.assertEqual(refreshed.reason, decisions.CURRENT_INCREASE_READY)
+
+    def test_current_reduction_is_immediate_and_clears_increase_candidate(self):
+        reduced = decisions.stabilize_current_increase(
+            9, 8, 2, 2, 100, 125, 3, 130, 30, 130, False
+        )
+
+        self.assertEqual(reduced.allowed_current, 8)
+        self.assertEqual(reduced.reason, decisions.CURRENT_INCREASE_NOT_NEEDED)
+        self.assertEqual(reduced.next_candidate_phase_mode, 0)
+        self.assertEqual(reduced.next_candidate_since, 0)
+
+    def test_zero_recovery_retains_one_amp_per_cycle_behavior(self):
+        ready = decisions.stabilize_current_increase(
+            8, 12, 1, 0, 0, 0, 0, 100, 0, 100, True
+        )
+
+        self.assertEqual(ready.allowed_current, 9)
+        self.assertEqual(ready.reason, decisions.CURRENT_INCREASE_READY)
+
+    def test_current_increase_is_blocked_without_material_charging_power(self):
+        blocked = decisions.stabilize_current_increase(
+            8, 10, 2, 2, 100, 125, 3, 130, 30, 130, False
+        )
+
+        self.assertEqual(blocked.allowed_current, 8)
+        self.assertEqual(blocked.reason, decisions.CURRENT_INCREASE_BLOCKED)
+        self.assertEqual(blocked.next_candidate_since, 0)
+
     def test_maximum_request_uses_phase_up_probe_until_cooldown(self):
         self.assertEqual(
             decisions.maximum_request_for_distributor_w(

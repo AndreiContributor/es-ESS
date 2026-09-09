@@ -14,6 +14,12 @@ PHASE_UP_DROP_GRACE_STARTED = "grace_started"
 PHASE_UP_DROP_GRACE_ACTIVE = "grace_active"
 PHASE_UP_DROP_GRACE_EXPIRED = "grace_expired"
 
+CURRENT_INCREASE_NOT_NEEDED = "not_needed"
+CURRENT_INCREASE_BLOCKED = "blocked"
+CURRENT_INCREASE_STARTED = "started"
+CURRENT_INCREASE_WAITING = "waiting"
+CURRENT_INCREASE_READY = "ready"
+
 # Compatibility aliases for existing callers and diagnostics. New code uses
 # the direction-neutral names because the same timing decision now controls
 # both 1-to-3 and 3-to-1 changes.
@@ -36,6 +42,17 @@ class PhaseUpDropGraceDecision:
     preserve_candidate: bool
     next_below_threshold_since: float
     drop_seconds: float
+    reason: str
+
+
+@dataclass(frozen=True)
+class CurrentIncreaseDecision:
+    allowed_current: int
+    next_candidate_phase_mode: int
+    next_candidate_since: float
+    next_allowance_updated_at: float
+    next_observation_count: int
+    stable_seconds: float
     reason: str
 
 
@@ -85,6 +102,95 @@ def target_current_for_phase(
         return 0
 
     return min(max_current, target)
+
+
+def stabilize_current_increase(
+    current_command,
+    target_current,
+    phase_mode,
+    candidate_phase_mode,
+    candidate_since,
+    candidate_allowance_updated_at,
+    observation_count,
+    allowance_updated_at,
+    recovery_seconds,
+    now,
+    increase_allowed,
+):
+    """Delay only increases until fresh PV support remains continuous.
+
+    Reductions are returned immediately. A positive delay also requires at
+    least two distinct allowance observations, so a single still-fresh MQTT
+    value cannot mature an increase by itself.
+    """
+    current = max(0, int(current_command))
+    target = max(0, int(target_current))
+    current_phase = int(phase_mode)
+    delay = max(0.0, float(recovery_seconds))
+    current_time = float(now)
+    allowance_time = float(allowance_updated_at)
+
+    def reset(allowed_current, reason):
+        return CurrentIncreaseDecision(
+            allowed_current,
+            0,
+            0,
+            0,
+            0,
+            0,
+            reason,
+        )
+
+    if target <= current:
+        return reset(target, CURRENT_INCREASE_NOT_NEEDED)
+
+    if not increase_allowed or current_phase not in (1, 2) or allowance_time <= 0:
+        return reset(current, CURRENT_INCREASE_BLOCKED)
+
+    if delay <= 0:
+        return CurrentIncreaseDecision(
+            min(target, current + 1),
+            current_phase,
+            current_time,
+            allowance_time,
+            1,
+            0,
+            CURRENT_INCREASE_READY,
+        )
+
+    if candidate_phase_mode != current_phase or candidate_since <= 0:
+        return CurrentIncreaseDecision(
+            current,
+            current_phase,
+            current_time,
+            allowance_time,
+            1,
+            0,
+            CURRENT_INCREASE_STARTED,
+        )
+
+    observations = max(1, int(observation_count))
+    last_allowance_time = float(candidate_allowance_updated_at)
+    if allowance_time > last_allowance_time:
+        observations += 1
+        last_allowance_time = allowance_time
+
+    stable_seconds = max(0.0, current_time - float(candidate_since))
+    reason = (
+        CURRENT_INCREASE_READY
+        if stable_seconds >= delay and observations >= 2
+        else CURRENT_INCREASE_WAITING
+    )
+    allowed_current = min(target, current + 1) if reason == CURRENT_INCREASE_READY else current
+    return CurrentIncreaseDecision(
+        allowed_current,
+        current_phase,
+        float(candidate_since),
+        last_allowance_time,
+        observations,
+        stable_seconds,
+        reason,
+    )
 
 
 def maximum_request_for_distributor_w(
