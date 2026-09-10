@@ -133,6 +133,24 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
         self.assertEqual(reduced.next_candidate_phase_mode, 0)
         self.assertEqual(reduced.next_candidate_since, 0)
 
+    def test_current_increase_requires_one_additional_target_ampere(self):
+        reserve_only = decisions.stabilize_current_increase(
+            8, 9, 2, 0, 0, 0, 0, 100, 30, 100, True
+        )
+
+        self.assertEqual(reserve_only.allowed_current, 8)
+        self.assertEqual(
+            reserve_only.reason, decisions.CURRENT_INCREASE_RESERVE
+        )
+        self.assertEqual(reserve_only.next_candidate_since, 0)
+
+        supported = decisions.stabilize_current_increase(
+            8, 10, 2, 0, 0, 0, 0, 105, 30, 105, True
+        )
+
+        self.assertEqual(supported.allowed_current, 8)
+        self.assertEqual(supported.reason, decisions.CURRENT_INCREASE_STARTED)
+
     def test_zero_recovery_retains_one_amp_per_cycle_behavior(self):
         ready = decisions.stabilize_current_increase(
             8, 12, 1, 0, 0, 0, 0, 100, 0, 100, True

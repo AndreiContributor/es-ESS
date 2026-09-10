@@ -68,8 +68,9 @@ Current validated state:
   and the final command guard accepts it. Changed, zero, missing/reset
   telemetry, unsafe headroom, and transactional rejection paths remain active.
   Running same-phase increases additionally require fresh assigned PV support
-  for the existing `SiteCurrentRecoverySeconds` interval, one ampere at a time;
-  reductions remain immediate and zero-power charging state cannot ramp upward.
+  for the existing `SiteCurrentRecoverySeconds` interval and one additional
+  allocation step of reserve, one ampere at a time; reductions remain immediate
+  and zero-power charging state cannot ramp upward.
 - Supervised Auto/Eco validation confirmed that a partially elapsed phase-up
   candidate was cleared by a confirmed physical disconnect: after reconnect,
   without an es-ESS restart, the next candidate began from zero. The same
@@ -156,6 +157,23 @@ Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
+### Completed 2026-09-10 - Add A Dynamic Reserve To Running Current Increases
+
+- Privacy-sanitized supervised diagnostics confirmed that every normal upward
+  current adjustment observed the existing stability interval, while a smaller
+  set of increases still reversed on the next controller cycle. Assigned PV
+  had remained exactly at the next-ampere boundary; after measured EV demand
+  rose, the asynchronous distributor update could return one lower allocation
+  step and correctly trigger an immediate reduction.
+- A running same-phase increase now requires assigned allowance for the next
+  ampere plus one additional active-phase allocation step. It still releases
+  only one ampere and rebuilds `SiteCurrentRecoverySeconds` afterward. The
+  reserve is derived from the existing allocation step and adds no setting.
+- Immediate reductions, site/grid stops, Manual ownership, zero-power blocking,
+  stopped-session starts, and phase-transition transactions are unchanged.
+  Hardware-free regression coverage proves the reserve boundary and preserves
+  the existing current-increase safety cases.
 
 ### Completed 2026-09-09 - Stabilize Wattpilot Current Increases And Validation Tools
 
