@@ -612,7 +612,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.ampUpdatedAt = 99
         controller.wattpilot.power = 1.38
         controller.wattpilot.set_power.return_value = True
-        self._set_allowance(controller, 7 * 230, 100)
+        self._set_allowance(controller, 8 * 230, 100)
 
         with patch.object(self.fwp, "i") as info_log:
             with patch.object(self.fwp.time, "time", return_value=100.0):
@@ -662,15 +662,22 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         controller.wattpilot.set_power.reset_mock()
         controller.wattpilot.amp = 9
-        for timestamp in (131, 145):
-            self._set_allowance(controller, 10 * 690, timestamp)
+        self._set_allowance(controller, 10 * 690, 131)
+        with patch.object(self.fwp.time, "time", return_value=131):
+            controller.adjustChargeForPvAllowance()
+
+        controller.wattpilot.set_power.assert_not_called()
+        self.assertEqual(controller.pvCurrentIncreaseSince, 0)
+
+        for timestamp in (132, 146):
+            self._set_allowance(controller, 11 * 690, timestamp)
             with patch.object(self.fwp.time, "time", return_value=timestamp):
                 controller.adjustChargeForPvAllowance()
 
         controller.wattpilot.set_power.assert_not_called()
 
-        self._set_allowance(controller, 10 * 690, 161)
-        with patch.object(self.fwp.time, "time", return_value=161):
+        self._set_allowance(controller, 11 * 690, 162)
+        with patch.object(self.fwp.time, "time", return_value=162):
             controller.adjustChargeForPvAllowance()
 
         controller.wattpilot.set_power.assert_called_once_with(10)
@@ -697,7 +704,7 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             controller.adjustChargeForPvAllowance()
 
         controller.wattpilot.set_power.assert_not_called()
-        self.assertEqual(controller.pvCurrentIncreaseSince, 110)
+        self.assertEqual(controller.pvCurrentIncreaseSince, 0)
 
     def test_current_does_not_increase_while_vehicle_draws_zero_power(self):
         controller = self._controller()

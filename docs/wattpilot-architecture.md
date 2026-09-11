@@ -551,7 +551,10 @@ Future Wattpilot changes must preserve these invariants:
   grid fallback, or transition grace. Recovery must remain continuously safe
   for `SiteCurrentRecoverySeconds`. During an already-running same-phase
   charge, fresh assigned allowance must also continuously support at least the
-  next ampere for that same interval and across distinct allowance updates.
+  next ampere plus one additional allocation step for that same interval and
+  across distinct allowance updates. The controller releases only one ampere;
+  the extra step is a dynamic reserve against the asynchronous allowance
+  feedback change when measured demand rises. It is not configurable.
   Each accepted upward ampere clears the PV candidate, so another increase
   requires a new complete interval. A lower target remains immediate and
   clears the candidate. An equal safe active-current target preserves the

@@ -16,9 +16,12 @@ PHASE_UP_DROP_GRACE_EXPIRED = "grace_expired"
 
 CURRENT_INCREASE_NOT_NEEDED = "not_needed"
 CURRENT_INCREASE_BLOCKED = "blocked"
+CURRENT_INCREASE_RESERVE = "reserve"
 CURRENT_INCREASE_STARTED = "started"
 CURRENT_INCREASE_WAITING = "waiting"
 CURRENT_INCREASE_READY = "ready"
+
+CURRENT_INCREASE_RESERVE_AMPS = 1
 
 # Compatibility aliases for existing callers and diagnostics. New code uses
 # the direction-neutral names because the same timing decision now controls
@@ -116,6 +119,7 @@ def stabilize_current_increase(
     recovery_seconds,
     now,
     increase_allowed,
+    reserve_amps=CURRENT_INCREASE_RESERVE_AMPS,
 ):
     """Delay only increases until fresh PV support remains continuous.
 
@@ -127,6 +131,7 @@ def stabilize_current_increase(
     target = max(0, int(target_current))
     current_phase = int(phase_mode)
     delay = max(0.0, float(recovery_seconds))
+    reserve = max(0, int(reserve_amps))
     current_time = float(now)
     allowance_time = float(allowance_updated_at)
 
@@ -146,6 +151,14 @@ def stabilize_current_increase(
 
     if not increase_allowed or current_phase not in (1, 2) or allowance_time <= 0:
         return reset(current, CURRENT_INCREASE_BLOCKED)
+
+    # Do not begin an upward candidate when allocation covers only the next
+    # ampere. The distributor and controller update asynchronously; that
+    # boundary value can fall by one step as the new measured demand arrives,
+    # producing an immediate and unnecessary reversal. Keep one allocation
+    # step in reserve while still releasing only one ampere at a time.
+    if target < current + 1 + reserve:
+        return reset(current, CURRENT_INCREASE_RESERVE)
 
     if delay <= 0:
         return CurrentIncreaseDecision(
