@@ -667,7 +667,8 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             controller.adjustChargeForPvAllowance()
 
         controller.wattpilot.set_power.assert_not_called()
-        self.assertEqual(controller.pvCurrentIncreaseSince, 0)
+        self.assertEqual(controller.pvCurrentIncreaseSince, 131)
+        self.assertEqual(controller.pvCurrentIncreaseSupportLevel, 1)
 
         for timestamp in (132, 146):
             self._set_allowance(controller, 11 * 690, timestamp)
@@ -682,6 +683,107 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
 
         controller.wattpilot.set_power.assert_called_once_with(10)
         self.assertEqual(controller.pvCurrentIncreaseSince, 0)
+
+    def test_running_charge_reaches_effective_maximum_after_slow_pv_support(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.wattpilot.amp = 15
+        controller.wattpilot.ampUpdatedAt = 99
+        controller.wattpilot.ampLimit = 16
+        controller.wattpilot.power = 10.35
+        controller.siteCurrentRecoverySince[2] = 1
+        controller.minimumPhaseSwitchSeconds = 600
+
+        for timestamp in range(100, 700, 10):
+            self._set_allowance(controller, 16 * 690, timestamp)
+            with patch.object(self.fwp.time, "time", return_value=timestamp):
+                controller.adjustChargeForPvAllowance()
+
+        controller.wattpilot.set_power.assert_not_called()
+        self.assertEqual(controller.pvCurrentIncreaseSupportLevel, 1)
+
+        self._set_allowance(controller, 16 * 690, 700)
+        with patch.object(self.fwp.time, "time", return_value=700):
+            controller.adjustChargeForPvAllowance()
+
+        controller.wattpilot.set_power.assert_called_once_with(16)
+        self.assertEqual(controller.pvCurrentIncreaseSince, 0)
+        self.assertEqual(controller.pvCurrentIncreaseSupportLevel, 0)
+
+    def test_one_step_only_increase_never_uses_fast_candidate_time(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.wattpilot.amp = 9
+        controller.wattpilot.ampUpdatedAt = 99
+        controller.wattpilot.power = 6.21
+        controller.siteCurrentRecoverySince[2] = 1
+
+        self._set_allowance(controller, 11 * 690, 100)
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.adjustChargeForPvAllowance()
+
+        self._set_allowance(controller, 10 * 690, 125)
+        with patch.object(self.fwp.time, "time", return_value=125):
+            controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(controller.pvCurrentIncreaseSince, 125)
+        self.assertEqual(controller.pvCurrentIncreaseSupportLevel, 1)
+
+        self._set_allowance(controller, 10 * 690, 700)
+        with patch.object(self.fwp.time, "time", return_value=700):
+            controller.adjustChargeForPvAllowance()
+
+        controller.wattpilot.set_power.assert_not_called()
+
+        self._set_allowance(controller, 9 * 690, 705)
+        with patch.object(self.fwp.time, "time", return_value=705):
+            controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(controller.pvCurrentIncreaseSince, 0)
+        self.assertEqual(controller.pvCurrentIncreaseSupportLevel, 0)
+
+    def test_slow_current_candidate_cannot_bypass_site_headroom(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.amp = 15
+        controller.wattpilot.ampUpdatedAt = 99
+        controller.wattpilot.amps1 = 15
+        controller.wattpilot.amps2 = 15
+        controller.wattpilot.amps3 = 15
+        controller.wattpilot.power = 10.35
+        controller.siteCurrentRecoverySince[2] = 1
+        for phase in ("L1", "L2", "L3"):
+            setattr(controller, "siteCurrent{0}Value".format(phase), 20)
+
+        for timestamp in (100, 700):
+            self._set_allowance(controller, 16 * 690, timestamp)
+            with patch.object(self.fwp.time, "time", return_value=timestamp):
+                controller.adjustChargeForPvAllowance()
+
+        controller.wattpilot.set_power.assert_not_called()
+        self.assertEqual(controller.wattpilot.amp, 15)
+
+    def test_stale_allowance_clears_slow_current_candidate(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.wattpilot.amp = 15
+        controller.wattpilot.ampUpdatedAt = 99
+        controller.wattpilot.power = 10.35
+        controller.siteCurrentRecoverySince[2] = 1
+
+        self._set_allowance(controller, 16 * 690, 100)
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(controller.pvCurrentIncreaseSince, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=116):
+            controller.adjustChargeForPvAllowance()
+
+        controller.wattpilot.set_power.assert_not_called()
+        self.assertEqual(controller.pvCurrentIncreaseSince, 0)
+        self.assertEqual(controller.pvCurrentIncreaseSupportLevel, 0)
 
     def test_short_higher_allowance_does_not_create_up_down_commands(self):
         controller = self._controller()
@@ -704,7 +806,8 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             controller.adjustChargeForPvAllowance()
 
         controller.wattpilot.set_power.assert_not_called()
-        self.assertEqual(controller.pvCurrentIncreaseSince, 0)
+        self.assertEqual(controller.pvCurrentIncreaseSince, 110)
+        self.assertEqual(controller.pvCurrentIncreaseSupportLevel, 1)
 
     def test_current_does_not_increase_while_vehicle_draws_zero_power(self):
         controller = self._controller()

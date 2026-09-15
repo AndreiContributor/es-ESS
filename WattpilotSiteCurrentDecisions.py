@@ -96,8 +96,9 @@ def limit_current_recovery(
     recovery_since,
     recovery_seconds,
     now,
+    site_allowed_current=None,
 ):
-    """Apply immediate reductions and delayed one-amp-per-cycle recovery."""
+    """Reduce immediately; preserve recovery for PV-only drops with safe headroom."""
     current = max(0, int(current_command))
     target = max(0, int(target_current))
     since = float(recovery_since)
@@ -105,7 +106,10 @@ def limit_current_recovery(
     current_time = float(now)
 
     if target < current:
-        return SiteCurrentRecoveryDecision(target, 0, 0)
+        if site_allowed_current is None or int(site_allowed_current) < current:
+            return SiteCurrentRecoveryDecision(target, 0, 0)
+        elapsed = max(0.0, current_time - since) if since > 0 else 0
+        return SiteCurrentRecoveryDecision(target, since, elapsed)
 
     if target == current:
         elapsed = max(0.0, current_time - since) if since > 0 else 0

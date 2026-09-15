@@ -103,6 +103,7 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
             30,
             130,
             True,
+            candidate_support_level=started.next_candidate_support_level,
         )
         self.assertEqual(same_message.allowed_current, 8)
         self.assertEqual(same_message.reason, decisions.CURRENT_INCREASE_WAITING)
@@ -119,6 +120,7 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
             30,
             130,
             True,
+            candidate_support_level=same_message.next_candidate_support_level,
         )
         self.assertEqual(refreshed.allowed_current, 9)
         self.assertEqual(refreshed.reason, decisions.CURRENT_INCREASE_READY)
@@ -133,16 +135,38 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
         self.assertEqual(reduced.next_candidate_phase_mode, 0)
         self.assertEqual(reduced.next_candidate_since, 0)
 
-    def test_current_increase_requires_one_additional_target_ampere(self):
-        reserve_only = decisions.stabilize_current_increase(
+    def test_one_step_only_support_uses_ten_minute_candidate(self):
+        started = decisions.stabilize_current_increase(
             8, 9, 2, 0, 0, 0, 0, 100, 30, 100, True
         )
 
-        self.assertEqual(reserve_only.allowed_current, 8)
+        self.assertEqual(started.allowed_current, 8)
+        self.assertEqual(started.reason, decisions.CURRENT_INCREASE_STARTED)
+        self.assertEqual(started.required_seconds, 600)
         self.assertEqual(
-            reserve_only.reason, decisions.CURRENT_INCREASE_RESERVE
+            started.next_candidate_support_level,
+            decisions.CURRENT_INCREASE_SUPPORT_ONE_STEP,
         )
-        self.assertEqual(reserve_only.next_candidate_since, 0)
+
+        waiting = decisions.stabilize_current_increase(
+            8, 9, 2, 2, 100, 100, 1, 699, 30, 699, True,
+            candidate_support_level=started.next_candidate_support_level,
+        )
+        self.assertEqual(waiting.allowed_current, 8)
+        self.assertEqual(waiting.reason, decisions.CURRENT_INCREASE_WAITING)
+
+        ready = decisions.stabilize_current_increase(
+            8, 9, 2, 2, 100, 699, 2, 700, 30, 700, True,
+            candidate_support_level=waiting.next_candidate_support_level,
+        )
+        self.assertEqual(ready.allowed_current, 9)
+        self.assertEqual(ready.reason, decisions.CURRENT_INCREASE_READY)
+
+        shorter_phase_setting = decisions.stabilize_current_increase(
+            8, 9, 2, 0, 0, 0, 0, 100, 30, 100, True,
+            slow_recovery_seconds=300,
+        )
+        self.assertEqual(shorter_phase_setting.required_seconds, 600)
 
         supported = decisions.stabilize_current_increase(
             8, 10, 2, 0, 0, 0, 0, 105, 30, 105, True
@@ -150,6 +174,61 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
 
         self.assertEqual(supported.allowed_current, 8)
         self.assertEqual(supported.reason, decisions.CURRENT_INCREASE_STARTED)
+        self.assertEqual(supported.required_seconds, 30)
+
+    def test_support_tier_change_restarts_candidate_without_borrowing_time(self):
+        slow = decisions.stabilize_current_increase(
+            8, 9, 2, 0, 0, 0, 0, 100, 30, 100, True
+        )
+        fast = decisions.stabilize_current_increase(
+            8, 10, 2, 2, 100, 100, 1, 680, 30, 680, True,
+            candidate_support_level=slow.next_candidate_support_level,
+        )
+        self.assertEqual(fast.allowed_current, 8)
+        self.assertEqual(fast.next_candidate_since, 680)
+        self.assertEqual(fast.required_seconds, 30)
+
+        back_to_slow = decisions.stabilize_current_increase(
+            8, 9, 2, 2, 680, 680, 1, 690, 30, 690, True,
+            candidate_support_level=fast.next_candidate_support_level,
+        )
+        self.assertEqual(back_to_slow.allowed_current, 8)
+        self.assertEqual(back_to_slow.next_candidate_since, 690)
+        self.assertEqual(back_to_slow.required_seconds, 600)
+
+    def test_effective_maximum_is_reachable_after_slow_stability(self):
+        self.assertEqual(
+            decisions.target_current_for_phase(2, 16 * 690, 230, 690, 6, 16),
+            16,
+        )
+        started = decisions.stabilize_current_increase(
+            15, 16, 2, 0, 0, 0, 0, 100, 30, 100, True,
+            slow_recovery_seconds=750,
+        )
+        self.assertEqual(started.allowed_current, 15)
+        self.assertEqual(started.required_seconds, 750)
+
+        ready = decisions.stabilize_current_increase(
+            15, 16, 2, 2, 100, 100, 1, 850, 30, 850, True,
+            candidate_support_level=started.next_candidate_support_level,
+            slow_recovery_seconds=750,
+        )
+        self.assertEqual(ready.allowed_current, 16)
+
+    def test_one_step_support_never_bypasses_material_power_or_reduction(self):
+        blocked = decisions.stabilize_current_increase(
+            15, 16, 2, 2, 100, 110, 2, 700, 30, 700, False,
+            candidate_support_level=decisions.CURRENT_INCREASE_SUPPORT_ONE_STEP,
+        )
+        self.assertEqual(blocked.allowed_current, 15)
+        self.assertEqual(blocked.next_candidate_since, 0)
+
+        reduced = decisions.stabilize_current_increase(
+            15, 14, 2, 2, 100, 110, 2, 700, 30, 700, True,
+            candidate_support_level=decisions.CURRENT_INCREASE_SUPPORT_ONE_STEP,
+        )
+        self.assertEqual(reduced.allowed_current, 14)
+        self.assertEqual(reduced.next_candidate_since, 0)
 
     def test_zero_recovery_retains_one_amp_per_cycle_behavior(self):
         ready = decisions.stabilize_current_increase(

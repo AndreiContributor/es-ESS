@@ -114,6 +114,27 @@ class WattpilotSiteCurrentDecisionTests(unittest.TestCase):
         self.assertEqual(result.allowed_current, 9)
         self.assertEqual(result.next_recovery_since, 0)
 
+    def test_pv_reduction_preserves_safe_site_recovery(self):
+        result = decisions.limit_current_recovery(
+            10, 9, 200, 30, 235, site_allowed_current=16
+        )
+        self.assertEqual(result.allowed_current, 9)
+        self.assertEqual(result.next_recovery_since, 200)
+        self.assertEqual(result.recovery_elapsed, 35)
+
+        waiting = decisions.limit_current_recovery(
+            10, 9, 200, 30, 215, site_allowed_current=16
+        )
+        self.assertEqual(waiting.next_recovery_since, 200)
+        self.assertEqual(waiting.recovery_elapsed, 15)
+
+    def test_physical_headroom_reduction_still_resets_recovery(self):
+        result = decisions.limit_current_recovery(
+            10, 9, 200, 30, 235, site_allowed_current=9
+        )
+        self.assertEqual(result.allowed_current, 9)
+        self.assertEqual(result.next_recovery_since, 0)
+
     def test_equal_current_preserves_recovery_timer(self):
         result = decisions.limit_current_recovery(9, 9, 200, 30, 225)
 
