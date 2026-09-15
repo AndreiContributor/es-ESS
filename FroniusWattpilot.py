@@ -316,6 +316,7 @@ class FroniusWattpilot (esESSService):
         self.pvCurrentIncreaseSince = 0
         self.pvCurrentIncreaseAllowanceUpdatedAt = 0
         self.pvCurrentIncreaseObservationCount = 0
+        self.pvCurrentIncreaseSupportLevel = 0
         self.siteCurrentGuardBlocked = False
         self.siteCurrentGuardReason = "Waiting for site-current telemetry"
         self.siteCurrentAllowedCurrent = 0
@@ -2736,6 +2737,7 @@ class FroniusWattpilot (esESSService):
         self.pvCurrentIncreaseSince = 0
         self.pvCurrentIncreaseAllowanceUpdatedAt = 0
         self.pvCurrentIncreaseObservationCount = 0
+        self.pvCurrentIncreaseSupportLevel = 0
 
     def stablePvTargetCurrent(self, phaseMode, allowanceSnapshot):
         """Return an immediate reduction or a stability-gated PV increase."""
@@ -2763,6 +2765,10 @@ class FroniusWattpilot (esESSService):
             self.siteCurrentRecoverySeconds,
             allowanceSnapshot.observed_at,
             increaseAllowed,
+            candidate_support_level=getattr(
+                self, "pvCurrentIncreaseSupportLevel", 0
+            ),
+            slow_recovery_seconds=self.minimumPhaseSwitchSeconds,
         )
         self.pvCurrentIncreasePhaseMode = decision.next_candidate_phase_mode
         self.pvCurrentIncreaseSince = decision.next_candidate_since
@@ -2770,12 +2776,15 @@ class FroniusWattpilot (esESSService):
             decision.next_allowance_updated_at
         )
         self.pvCurrentIncreaseObservationCount = decision.next_observation_count
+        self.pvCurrentIncreaseSupportLevel = (
+            decision.next_candidate_support_level
+        )
         if decision.reason == PhaseDecisions.CURRENT_INCREASE_STARTED:
             d(
                 self,
                 "PV supports a higher current; waiting {0}s of continuous "
                 "allowance before increasing from {1}A.".format(
-                    self.siteCurrentRecoverySeconds, current
+                    int(decision.required_seconds), current
                 ),
             )
         return self.siteLimitedTargetCurrent(
@@ -3718,6 +3727,7 @@ class FroniusWattpilot (esESSService):
             since,
             self.siteCurrentRecoverySeconds,
             time.time(),
+            site_allowed_current=decision.allowed_current,
         )
         recoveryTimers = getattr(self, "siteCurrentRecoverySince", {1: 0, 2: 0})
         recoveryTimers[phaseMode] = recovery.next_recovery_since

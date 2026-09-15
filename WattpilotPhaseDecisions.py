@@ -16,12 +16,14 @@ PHASE_UP_DROP_GRACE_EXPIRED = "grace_expired"
 
 CURRENT_INCREASE_NOT_NEEDED = "not_needed"
 CURRENT_INCREASE_BLOCKED = "blocked"
-CURRENT_INCREASE_RESERVE = "reserve"
 CURRENT_INCREASE_STARTED = "started"
 CURRENT_INCREASE_WAITING = "waiting"
 CURRENT_INCREASE_READY = "ready"
 
 CURRENT_INCREASE_RESERVE_AMPS = 1
+CURRENT_INCREASE_SLOW_MIN_SECONDS = 600
+CURRENT_INCREASE_SUPPORT_ONE_STEP = 1
+CURRENT_INCREASE_SUPPORT_WITH_RESERVE = 2
 
 # Compatibility aliases for existing callers and diagnostics. New code uses
 # the direction-neutral names because the same timing decision now controls
@@ -57,6 +59,8 @@ class CurrentIncreaseDecision:
     next_observation_count: int
     stable_seconds: float
     reason: str
+    next_candidate_support_level: int = 0
+    required_seconds: float = 0
 
 
 def phase_up_threshold_w(three_phase_start_w, three_phase_minimum_power):
@@ -120,12 +124,16 @@ def stabilize_current_increase(
     now,
     increase_allowed,
     reserve_amps=CURRENT_INCREASE_RESERVE_AMPS,
+    candidate_support_level=0,
+    slow_recovery_seconds=CURRENT_INCREASE_SLOW_MIN_SECONDS,
 ):
     """Delay only increases until fresh PV support remains continuous.
 
-    Reductions are returned immediately. A positive delay also requires at
-    least two distinct allowance observations, so a single still-fresh MQTT
-    value cannot mature an increase by itself.
+    Reductions are returned immediately. Reserve-backed increases use the
+    ordinary recovery interval; one-step-only increases use a separate slow
+    interval with a ten-minute floor. Both require at least two distinct
+    allowance observations, so one still-fresh MQTT value cannot mature an
+    increase by itself.
     """
     current = max(0, int(current_command))
     target = max(0, int(target_current))
@@ -152,13 +160,20 @@ def stabilize_current_increase(
     if not increase_allowed or current_phase not in (1, 2) or allowance_time <= 0:
         return reset(current, CURRENT_INCREASE_BLOCKED)
 
-    # Do not begin an upward candidate when allocation covers only the next
-    # ampere. The distributor and controller update asynchronously; that
-    # boundary value can fall by one step as the new measured demand arrives,
-    # producing an immediate and unnecessary reversal. Keep one allocation
-    # step in reserve while still releasing only one ampere at a time.
-    if target < current + 1 + reserve:
-        return reset(current, CURRENT_INCREASE_RESERVE)
+    # The reserve-backed path is fast. A one-step-only allowance uses a
+    # separate, much longer candidate instead of permanently blocking the
+    # effective maximum (where the bounded target cannot include a reserve).
+    # Never transfer elapsed time between the two support levels.
+    support_level = (
+        CURRENT_INCREASE_SUPPORT_WITH_RESERVE
+        if target >= current + 1 + reserve
+        else CURRENT_INCREASE_SUPPORT_ONE_STEP
+    )
+    if support_level == CURRENT_INCREASE_SUPPORT_ONE_STEP:
+        delay = max(
+            float(CURRENT_INCREASE_SLOW_MIN_SECONDS),
+            float(slow_recovery_seconds),
+        )
 
     if delay <= 0:
         return CurrentIncreaseDecision(
@@ -169,9 +184,15 @@ def stabilize_current_increase(
             1,
             0,
             CURRENT_INCREASE_READY,
+            support_level,
+            delay,
         )
 
-    if candidate_phase_mode != current_phase or candidate_since <= 0:
+    if (
+        candidate_phase_mode != current_phase
+        or candidate_support_level != support_level
+        or candidate_since <= 0
+    ):
         return CurrentIncreaseDecision(
             current,
             current_phase,
@@ -180,6 +201,8 @@ def stabilize_current_increase(
             1,
             0,
             CURRENT_INCREASE_STARTED,
+            support_level,
+            delay,
         )
 
     observations = max(1, int(observation_count))
@@ -203,6 +226,8 @@ def stabilize_current_increase(
         observations,
         stable_seconds,
         reason,
+        support_level,
+        delay,
     )
 
 

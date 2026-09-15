@@ -414,7 +414,7 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         self.assertGreater(requests[0], 0)
 
-    def test_equal_active_current_allows_request_recovery_after_a_reduction(self):
+    def test_equal_active_current_allows_request_recovery_after_a_site_reduction(self):
         controller = self._controller()
         controller.currentPhaseMode = 2
         controller.siteCurrentSource = Mock()
@@ -428,7 +428,8 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         controller.wattpilot.amps1 = 10
         controller.wattpilot.amps2 = 10
         controller.wattpilot.amps3 = 10
-        self._set_site(controller, 10, 10, 10, 100)
+        # Physical headroom allows only 9 A while Wattpilot still reports 10 A.
+        self._set_site(controller, 21, 21, 21, 100)
         allowance = 9 * controller.allocationStepForPhase(2)
 
         with patch.object(self.fwp.time, "time", return_value=100):
@@ -441,7 +442,7 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         controller.wattpilot.amps1 = 9
         controller.wattpilot.amps2 = 9
         controller.wattpilot.amps3 = 9
-        self._set_site(controller, 9, 9, 9, 105)
+        self._set_site(controller, 20, 20, 20, 105)
         with patch.object(self.fwp.time, "time", return_value=105):
             controller.updateSiteCurrentRecovery(
                 2, controller.siteCurrentDecision(2, True), now=105
@@ -460,7 +461,7 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         self.assertEqual(controller.siteCurrentRecoverySince[2], 105)
 
         controller.publishMainMqtt.reset_mock()
-        self._set_site(controller, 9, 9, 9, 135)
+        self._set_site(controller, 20, 20, 20, 135)
         with patch.object(self.fwp.time, "time", return_value=135):
             controller.updateSiteCurrentRecovery(
                 2, controller.siteCurrentDecision(2, True), now=135
@@ -478,6 +479,40 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         self.assertEqual(len(request_calls), 1)
         self.assertGreater(request_calls[0], 0)
         self.assertEqual(controller.siteCurrentRecoverySince[2], 105)
+
+    def test_pv_reduction_keeps_positive_request_with_safe_site_headroom(self):
+        controller = self._controller()
+        controller.currentPhaseMode = 2
+        controller.siteCurrentSource = Mock()
+        controller.siteCurrentSourceConnected = True
+        controller.siteCurrentSourceStatus = "Healthy"
+        controller.siteCurrentGuardBlocked = False
+        controller.siteCurrentRecoverySince = {1: 1, 2: 60}
+        controller.publishMainMqtt = Mock()
+        controller.wattpilot.modelStatus.value = 3
+        controller.wattpilot.power = 7.0
+        controller.wattpilot.amp = 10
+        controller.wattpilot.amps1 = 10
+        controller.wattpilot.amps2 = 10
+        controller.wattpilot.amps3 = 10
+        self._set_site(controller, 10, 10, 10, 100)
+        allowance = 9 * controller.allocationStepForPhase(2)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertEqual(
+                controller.safeTargetCurrentForPhase(2, allowance), 9
+            )
+            self.assertTrue(controller.allowWattpilotCommand("amp", 9))
+            controller.reportBaseRequest()
+
+        self.assertEqual(controller.siteCurrentRecoverySince[2], 60)
+        requests = [
+            call.args[1]
+            for call in controller.publishMainMqtt.call_args_list
+            if call.args[0].endswith("/Wattpilot/Request")
+        ]
+        self.assertEqual(len(requests), 1)
+        self.assertGreater(requests[0], 0)
 
     def test_disconnected_idle_refresh_publishes_latest_shelly_snapshot_only(self):
         controller = self._controller()

@@ -551,15 +551,25 @@ Future Wattpilot changes must preserve these invariants:
   grid fallback, or transition grace. Recovery must remain continuously safe
   for `SiteCurrentRecoverySeconds`. During an already-running same-phase
   charge, fresh assigned allowance must also continuously support at least the
-  next ampere plus one additional allocation step for that same interval and
-  across distinct allowance updates. The controller releases only one ampere;
-  the extra step is a dynamic reserve against the asynchronous allowance
-  feedback change when measured demand rises. It is not configurable.
-  Each accepted upward ampere clears the PV candidate, so another increase
+  next ampere plus one additional allocation step for
+  `SiteCurrentRecoverySeconds` and across distinct allowance updates. That
+  reserve-backed path releases one ampere. If fresh assigned allowance covers
+  only the next full ampere, a separate slow candidate may release it after at
+  least 600 seconds or the longer `MinPhaseSwitchSeconds` duration, including
+  at the effective current ceiling. A change between support levels restarts
+  the current candidate; it never borrows elapsed time from the other path or
+  from a phase-switch candidate. Both paths still require normal authority,
+  material charging power, and safe site headroom. The extra step protects
+  against asynchronous allowance feedback; the slow path may still reverse
+  after a real PV drop. Neither path adds a configuration setting. Each
+  accepted upward ampere clears the PV candidate, so another increase
   requires a new complete interval. A lower target remains immediate and
-  clears the candidate. An equal safe active-current target preserves the
-  independent site-recovery timer so the controller can restore its positive
-  distributor request without authorizing an unproven increase.
+  clears the candidate. A PV-only reduction preserves an already-recovered
+  independent site-recovery timer and positive distributor demand when fresh
+  physical headroom still covers the previous current. A genuine site-headroom
+  reduction or selected-source fault resets recovery and withdraws demand;
+  an equal safe active-current target then allows recovery to mature without
+  authorizing an unproven increase.
 - Normal same-phase current adjustment cannot increase while measured EV power
   is at or below the configured charge-complete threshold. Start and phase
   transition transactions remain governed by their existing stability,
