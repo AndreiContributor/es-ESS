@@ -144,6 +144,22 @@ safety-sensitive.
 - If hardware, Venus OS, MQTT, or D-Bus access is required and unavailable,
   document what could not be tested and provide manual validation steps.
 
+## Developer Tooling Layout
+
+- Keep `requirements-dev.txt` and `ruff.toml` in the repository root so their
+  standard contributor and CI commands remain easy to discover.
+- Treat `requirements-dev.txt` as the pinned Python host/CI tool manifest. It is
+  not a Venus OS / GX runtime dependency manifest and must not be installed on
+  a GX device.
+- Treat `ruff.toml` as the repository-wide Ruff configuration discovered by
+  `ruff check .`; keep deliberately narrower command-line rule selections in
+  the CI workflow explicit.
+- If multiple dependency manifests become necessary, consider a
+  `requirements/` directory. If the project later adopts Python packaging,
+  consider consolidating developer dependencies and Ruff configuration in a
+  root-level `pyproject.toml`. Do not reorganize these files solely to reduce
+  the number of root files.
+
 ## Documentation Expectations
 
 - Update `README.md` and `config.sample.ini` whenever
