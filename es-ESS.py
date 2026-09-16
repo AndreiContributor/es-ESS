@@ -276,6 +276,7 @@ class esESS:
             self._services: Dict[str, esESSService] = {}
             self._dbusSubscriptions: Dict[str, list[DbusSubscription]] = {}
             self._mqttSubscriptions: Dict[str, list[MqttSubscription]] = {}
+            self._mqttSubscriptionsLock = threading.Lock()
             self._serviceMessageIndex: Dict[str, int] = {}
             self._dbusMonitor: DbusMonitor = None
             self._gridSetPointRequests: Dict[str, float] = {}
@@ -320,18 +321,18 @@ class esESS:
             self.mainMqttClient:mqtt.Client = mqtt.Client("es-ESS-MQTT-Client")
             self.localMqttClient:mqtt.Client = mqtt.Client("es-ESS-Local-MQTT-Client")
                 
-        i(Globals.esEssTag, "MQTT: Connecting to broker: {0}".format(config["Mqtt"]["Host"]))
+        i(Globals.esEssTag, "MQTT: Connecting to broker: {0}".format(self.config["Mqtt"]["Host"]))
         self.mainMqttClient.on_disconnect = self.onMainMqttDisconnect
         self.mainMqttClient.on_connect = self.onMainMqttConnect
         self.mainMqttClient.on_connect_fail = self.onMainMqttConnectFail
 
-        if 'User' in config['Mqtt'] and 'Password' in config['Mqtt'] and config['Mqtt']['User'] != '' and config['Mqtt']['Password'] != '':
-            self.mainMqttClient.username_pw_set(username=config['Mqtt']['User'], password=config['Mqtt']['Password'])
+        if 'User' in self.config['Mqtt'] and 'Password' in self.config['Mqtt'] and self.config['Mqtt']['User'] != '' and self.config['Mqtt']['Password'] != '':
+            self.mainMqttClient.username_pw_set(username=self.config['Mqtt']['User'], password=self.config['Mqtt']['Password'])
 
         self.mainMqttClient.will_set("es-ESS/$SYS/Status", "Offline", 2, True)
 
         if (self.config["Mqtt"]["SslEnabled"].lower() == "true"):
-            i(self, "Connecting to broker: {0}://{1}:{2}".format("tcp-ssl", config["Mqtt"]["Host"], config["Mqtt"]["Port"]))
+            i(self, "Connecting to broker: {0}://{1}:{2}".format("tcp-ssl", self.config["Mqtt"]["Host"], self.config["Mqtt"]["Port"]))
             self._configureMqttTls(
                 self.mainMqttClient,
                 "SslVerification",
@@ -340,15 +341,15 @@ class esESS:
             )
             self._startMqttClient(
                 self.mainMqttClient,
-                config["Mqtt"]["Host"],
-                int(config["Mqtt"]["Port"]),
+                self.config["Mqtt"]["Host"],
+                int(self.config["Mqtt"]["Port"]),
             )
         else:
-            i(self, "Connecting to broker: {0}://{1}:{2}".format("tcp", config["Mqtt"]["Host"], config["Mqtt"]["Port"]))
+            i(self, "Connecting to broker: {0}://{1}:{2}".format("tcp", self.config["Mqtt"]["Host"], self.config["Mqtt"]["Port"]))
             self._startMqttClient(
                 self.mainMqttClient,
-                config["Mqtt"]["Host"],
-                int(config["Mqtt"]["Port"]),
+                self.config["Mqtt"]["Host"],
+                int(self.config["Mqtt"]["Port"]),
             )
 
         #local mqtt
@@ -467,12 +468,11 @@ class esESS:
             self._publishMainMqttConnectionMetadata()
 
             #Check, if we need to subscribe again.
-            for (key, sublist) in self._mqttSubscriptions.items():
-                for sub in sublist:
-                    if (sub.type == MqttSubscriptionType.Main):
-                        d(self, "Restoring main MQTT subscription for Service {0} on {1} with callback: {2}".format(sub.requestingService.__class__.__name__, sub.topic, Helper.formatCallback(sub.callback)))
-                        self.mainMqttClient.subscribe(sub.topic, sub.qos)
-                        self.mainMqttClient.message_callback_add(sub.topic, sub.callback)
+            for sub in self._mqttSubscriptionSnapshot():
+                if (sub.type == MqttSubscriptionType.Main):
+                    d(self, "Restoring main MQTT subscription for Service {0} on {1} with callback: {2}".format(sub.requestingService.__class__.__name__, sub.topic, Helper.formatCallback(sub.callback)))
+                    self.mainMqttClient.subscribe(sub.topic, sub.qos)
+                    self.mainMqttClient.message_callback_add(sub.topic, sub.callback)
         else:
             self.mainMqttClientConnected = False
             self._recordMqttConnectionFailure("Main", "CONNACK {0}".format(rc))
@@ -484,12 +484,11 @@ class esESS:
             self._mqttConnectionFailures.pop("Local", None)
             
             #Check, if we need to subscribe again.
-            for (key, sublist) in self._mqttSubscriptions.items():
-                for sub in sublist:
-                    if (sub.type == MqttSubscriptionType.Local):
-                        d(self, "Restoring local MQTT subscription for Service {0} on {1} with callback: {2}".format(sub.requestingService.__class__.__name__, sub.topic, Helper.formatCallback(sub.callback)))
-                        self.localMqttClient.subscribe(sub.topic, sub.qos)
-                        self.localMqttClient.message_callback_add(sub.topic, sub.callback)
+            for sub in self._mqttSubscriptionSnapshot():
+                if (sub.type == MqttSubscriptionType.Local):
+                    d(self, "Restoring local MQTT subscription for Service {0} on {1} with callback: {2}".format(sub.requestingService.__class__.__name__, sub.topic, Helper.formatCallback(sub.callback)))
+                    self.localMqttClient.subscribe(sub.topic, sub.qos)
+                    self.localMqttClient.message_callback_add(sub.topic, sub.callback)
         else:
             self.localMqttClientConnected = False
             self._recordMqttConnectionFailure("Local", "CONNACK {0}".format(rc))
@@ -513,10 +512,7 @@ class esESS:
 
         w(self, "Mqtt Disconnect.")
 
-        if (self.mainMqttClient.reconnect):
-            i(self, "Waiting for automatic reconnect.")
-        else:
-            w(self, "Automatic reconnect is disabled.")
+        i(self, "Waiting for automatic reconnect.")
 
     def onLocalMqttDisconnect(self, client, userdata, rc):
         self.localMqttClientConnected = False
@@ -526,10 +522,7 @@ class esESS:
 
         w(self, "Mqtt Disconnect.")
 
-        if (self.localMqttClient.reconnect):
-            i(self, "Waiting for automatic reconnect.")
-        else:
-            w(self, "Automatic reconnect is disabled.")
+        i(self, "Waiting for automatic reconnect.")
 
     
     def _checkAndEnable(self, clazz):
@@ -1638,19 +1631,24 @@ class esESS:
             return not workerThread.onlyOnce
     
     def _signOfLive(self):
-        self.publishServiceMessage(self, "Executed {0} threads in the past minute.".format(self._threadExecutionsMinute))
-        i(self, "Executed {0} threads in the past minute.".format(self._threadExecutionsMinute))
-        load1, load5, load15 = os.getloadavg()
+        try:
+            self.publishServiceMessage(self, "Executed {0} threads in the past minute.".format(self._threadExecutionsMinute))
+            i(self, "Executed {0} threads in the past minute.".format(self._threadExecutionsMinute))
+            load1, load5, load15 = os.getloadavg()
 
-        self.publishMainMqtt("{0}/$SYS/Load/1".format(Globals.esEssTag), load1, 0, False, True)
-        self.publishMainMqtt("{0}/$SYS/Load/5".format(Globals.esEssTag), load5, 0, False, True)
-        self.publishMainMqtt("{0}/$SYS/Load/15".format(Globals.esEssTag), load15, 0, False, True)
+            self.publishMainMqtt("{0}/$SYS/Load/1".format(Globals.esEssTag), load1, 0, False, True)
+            self.publishMainMqtt("{0}/$SYS/Load/5".format(Globals.esEssTag), load5, 0, False, True)
+            self.publishMainMqtt("{0}/$SYS/Load/15".format(Globals.esEssTag), load15, 0, False, True)
 
-        self._threadExecutionsMinute = 0
+            self._threadExecutionsMinute = 0
 
-        for service in self._services.values():
-            service.signOfLive()
-
+            for service in list(self._services.values()):
+                try:
+                    service.signOfLive()
+                except Exception as ex:
+                    c(self, "Exception during signOfLive on service {0}".format(service.__class__.__name__), exc_info=ex)
+        except Exception as ex:
+            c(self, "Exception during signOfLive heartbeat", exc_info=ex)
         return True
     
     def _manageGridSetPoint(self):
@@ -1715,10 +1713,10 @@ class esESS:
         self.registerGridSetPointRequest(service, None)
     
     def registerMqttSubscription(self, sub:MqttSubscription):
-        if (sub.valueKey not in self._mqttSubscriptions):
-            self._mqttSubscriptions[sub.valueKey] = []
-       
-        self._mqttSubscriptions[sub.valueKey].append(sub)
+        with self._mqttSubscriptionsLock:
+            if (sub.valueKey not in self._mqttSubscriptions):
+                self._mqttSubscriptions[sub.valueKey] = []
+            self._mqttSubscriptions[sub.valueKey].append(sub)
 
         d(self, "Creating Mqtt-Subscriptions for Service {0} on {1} with callback: {2}".format(sub.requestingService.__class__.__name__, sub.topic, Helper.formatCallback(sub.callback)))
         if (sub.type == MqttSubscriptionType.Main):
@@ -1727,6 +1725,10 @@ class esESS:
         elif (sub.type == MqttSubscriptionType.Local):
             self.localMqttClient.subscribe(sub.topic, sub.qos)
             self.localMqttClient.message_callback_add(sub.topic, sub.callback)
+
+    def _mqttSubscriptionSnapshot(self):
+        with self._mqttSubscriptionsLock:
+            return [sub for sublist in self._mqttSubscriptions.values() for sub in sublist]
 
     def registerWorkerThread(self, t:WorkerThread):
         i(self, "Scheduling Workerthread {0}".format(Helper.formatCallback(t.thread)))
@@ -1905,13 +1907,12 @@ class esESS:
         )
 
         #unsubscribe any mqtt sub, so we no longer receive new messages. 
-        for sublist in self._mqttSubscriptions.values():
-            for sub in sublist:
-                d(self, "Unsubscribing from Mqtt-Subscriptions for Service {0} on {1} with callback: {2}".format(sub.requestingService.__class__.__name__, sub.topic, Helper.formatCallback(sub.callback)))
-                if (sub.type == MqttSubscriptionType.Main):
-                    self.mainMqttClient.unsubscribe(sub.topic)
-                elif (sub.type == MqttSubscriptionType.Local):
-                    self.localMqttClient.unsubscribe(sub.topic)
+        for sub in self._mqttSubscriptionSnapshot():
+            d(self, "Unsubscribing from Mqtt-Subscriptions for Service {0} on {1} with callback: {2}".format(sub.requestingService.__class__.__name__, sub.topic, Helper.formatCallback(sub.callback)))
+            if (sub.type == MqttSubscriptionType.Main):
+                self.mainMqttClient.unsubscribe(sub.topic)
+            elif (sub.type == MqttSubscriptionType.Local):
+                self.localMqttClient.unsubscribe(sub.topic)
         
         #dbusmonitor has no disconnect method, so we just stop forwarding the messages in the global handler.
 
@@ -1925,8 +1926,6 @@ class esESS:
 
         #finally, clean up internally.
         #disconnect from mqtts
-        self.mainMqttClient.reconnect = False
-        self.localMqttClient.reconnect = False
         self._logShutdownMqttDisconnect("Main")
         self._logShutdownMqttDisconnect("Local")
         self.mainMqttClient.disconnect()

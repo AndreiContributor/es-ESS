@@ -270,6 +270,8 @@ class FroniusWattpilot (esESSService):
         self.canonicalAllocationStepW = {1: 0, 2: 0}
         self._allocationStepActivePhaseMode = self.currentPhaseMode
         self.mode: VrmEvChargerControlMode = VrmEvChargerControlMode.Manual
+        self.pendingManualRelease = False
+        self.manualReleasePhaseAccepted = False
         self.autostart = 0
         self.noChargeSince = 0
         self.isIdleMode = False
@@ -1058,19 +1060,31 @@ class FroniusWattpilot (esESSService):
         self.dumpEvChargerInfo()
 
     def releaseAutoControlLimitsForManualMode(self):
-        """Release stale Auto/Eco phase and current commands once on Manual entry."""
+        """Release Auto/Eco limits after explicit Manual telemetry confirms the mode."""
+        if (
+            self.wattpilot.mode != WattpilotControlMode.Default
+            or not bool(getattr(self.wattpilot, "connected", False))
+        ):
+            return False
         self.clearBatteryAssist()
         self.clearPowerTransitionGrace()
         self.clearPendingPhaseSwitch()
         self.clearPhaseSwitchCandidate()
         self.currentPhaseMode = 0
 
+        if not getattr(self, "manualReleasePhaseAccepted", False):
+            if not self.wattpilot.set_phases(0):
+                return False
+            self.manualReleasePhaseAccepted = True
+        if not self.wattpilot.set_power(self.getEffectiveMaxCurrent()):
+            return False
+        self.pendingManualRelease = False
+        self.manualReleasePhaseAccepted = False
         self.publishServiceMessage(
             self,
-            "Manual mode selected. Releasing Auto/Eco phase and current limits."
+            "Manual mode selected. Released Auto/Eco phase and current limits."
         )
-        self.wattpilot.set_phases(0)
-        self.wattpilot.set_power(self.getEffectiveMaxCurrent())
+        return True
 
     def switchMode(self, fromMode:VrmEvChargerControlMode, toMode:VrmEvChargerControlMode):
         # Hibernate intentionally disconnects while no EV is present. Remote
@@ -1099,19 +1113,40 @@ class FroniusWattpilot (esESSService):
                 return False
 
         if (toMode == VrmEvChargerControlMode.Auto or toMode == VrmEvChargerControlMode.Manual):
+            commandMode = None
+            if fromMode == VrmEvChargerControlMode.Manual and toMode == VrmEvChargerControlMode.Auto:
+                commandMode = WattpilotControlMode.ECO
+            elif fromMode == VrmEvChargerControlMode.Auto and toMode == VrmEvChargerControlMode.Manual:
+                commandMode = WattpilotControlMode.Default
+            if commandMode is not None:
+                try:
+                    accepted = bool(self.wattpilot.set_mode(commandMode))
+                except Exception as ex:
+                    c(self, "Wattpilot mode request failed.", exc_info=ex)
+                    accepted = False
+                if not accepted:
+                    self.publishServiceMessage(
+                        self, "{0} selection rejected: Wattpilot did not accept the mode request.".format(toMode.name)
+                    )
+                    self.mode = fromMode
+                    self.dbusService["/Mode"] = fromMode.value
+                    self.dbusService["/ModeLiteral"] = fromMode.name
+                    return False
+
             self.mode = toMode
             self.dbusService["/Mode"] = toMode.value
             self.dbusService["/ModeLiteral"] = toMode.name
 
             if (fromMode == VrmEvChargerControlMode.Manual and toMode == VrmEvChargerControlMode.Auto):
                 self.autostart = 1
-                self.wattpilot.set_mode(WattpilotControlMode.ECO)
+                self.pendingManualRelease = False
+                self.manualReleasePhaseAccepted = False
 
             elif (fromMode == VrmEvChargerControlMode.Auto and toMode == VrmEvChargerControlMode.Manual):
                 self.autostart = 0
                 self.clearChargeCompleteHold("manual mode selected")
-                self.wattpilot.set_mode(WattpilotControlMode.Default)
-                self.releaseAutoControlLimitsForManualMode()
+                self.pendingManualRelease = True
+                self.manualReleasePhaseAccepted = False
 
             return True
 
@@ -1642,6 +1677,7 @@ class FroniusWattpilot (esESSService):
                 or self.lastVarDump < (time.time() - 300)
                 or not self.wattpilot.carStateReady
                 or modeTelemetryPending
+                or getattr(self, "pendingManualRelease", False)
             ):
                 # Keep the public site-current contract truthful while the
                 # disconnected Wattpilot control path remains throttled.
@@ -1690,12 +1726,15 @@ class FroniusWattpilot (esESSService):
             if self.wattpilot.mode == WattpilotControlMode.ECO:
                 self.autostart = 1
                 self.mode = VrmEvChargerControlMode.Auto
+                self.manualReleasePhaseAccepted = False
             else:
                 self.autostart = 0
                 self.mode = VrmEvChargerControlMode.Manual
                 self.clearPvCurrentIncreaseCandidate()
                 self.clearChargeCompleteHold("manual mode selected")
                 if priorMode == VrmEvChargerControlMode.Auto:
+                    self.pendingManualRelease = True
+                if getattr(self, "pendingManualRelease", False):
                     self.releaseAutoControlLimitsForManualMode()
 
             self.refreshCommandAuthorityStatus()
@@ -4019,7 +4058,8 @@ class FroniusWattpilot (esESSService):
             and rawOverhead is not None
         ):
             usablePv = rawOverhead
-        targetAmps = self.safeTargetCurrentForPhase(1, usablePv)
+        pvTargetAmps = self.targetCurrentForPhase(1, usablePv)
+        targetAmps = self.siteLimitedTargetCurrent(1, pvTargetAmps)
 
         if reason != "grid":
             self.publishServiceMessage(
@@ -4029,7 +4069,16 @@ class FroniusWattpilot (esESSService):
             )
         phaseResult = self.commandSiteSafePhaseTransition(1, targetAmps)
         if not phaseResult:
-            self.forceStopForSiteCurrentLimit()
+            if pvTargetAmps < self.minCurrentPerPhase:
+                self.forceStopForNoAllowance()
+            elif targetAmps < self.minCurrentPerPhase or self.siteCurrentGuardBlocked:
+                self.forceStopForSiteCurrentLimit()
+            else:
+                self.publishServiceMessage(
+                    self,
+                    "One-phase fallback command was rejected. Stopping Auto/Eco charging."
+                )
+                self.forceStopForNoAllowance()
             return VrmEvChargerStatus.StopCharging
         if phaseResult == "reducing":
             return VrmEvChargerStatus.Charging

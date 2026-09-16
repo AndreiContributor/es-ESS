@@ -632,9 +632,10 @@ surplus:
 - Manual Wattpilot mode remains user-controlled. es-ESS reports Manual status,
   but Auto/Eco PV policy does not start, stop, current-limit, or phase-switch a
   normal Manual session, including during service startup while telemetry is
-  still arriving. When leaving Auto/Eco for Manual, es-ESS releases its previous
-  Auto/Eco phase and current commands once so Manual charging is not left
-  constrained by the PV controller.
+  still arriving. When leaving Auto/Eco for Manual, es-ESS waits for Wattpilot
+  telemetry to confirm Manual/default mode, then releases its previous Auto/Eco
+  phase and current commands once. A rejected release is retried on a later
+  controller cycle so Manual charging is not left constrained by PV control.
 - Battery assist is optional and only bridges a short PV dip during an
   already-running Auto/Eco charge. It cannot start a charge and cannot authorize
   a phase-up.
@@ -835,7 +836,7 @@ or force-state commands.
 | [FroniusWattpilot]  | OverheadPriority | SolarOverheadDistributor priority used for Wattpilot allowance requests. | Integer | 35 |
 | [FroniusWattpilot]  | ResetChargedEnergyCounter |  Define when the counters *Charge Time* and *Charged Energy* in VRM should reset. Options: OnDisconnect, OnConnect| String  | OnDisconnect |
 | [FroniusWattpilot]  | Position | Position, where the Wattpilot is connected to. Options: 0:=ac-out, 1:=ac-in | Integer  | 0 |
-| [FroniusWattpilot]  | Host | Hostname or IP address of Wattpilot; replace this example address as needed. | String  | 192.168.1.101 |
+| [FroniusWattpilot]  | Host | Hostname or IP address of Wattpilot; replace this example address as needed. | String  | 192.0.2.101 |
 | [FroniusWattpilot]  | Password | Wattpilot device/app-access password; this is not the hotspot/Wi-Fi key, technician password, MQTT password, or Fronius account password. Replace the placeholder before enabling the service. | String  | change-me |
 | [FroniusWattpilot]  | HibernateMode | When `false`, idle polling keeps the Wattpilot connection available. When `true`, es-ESS intentionally disconnects while no EV is connected and reconnects about every five minutes for a status probe, which can delay car detection. Remote mode changes through VRM are unsupported while disconnected; Scheduled is only a best-effort probe, not a supported keep-awake/control path. | Boolean  | false |
 | [FroniusWattpilot] | MinCurrentPerPhase | Minimum configured EV current per active phase. Must be within `6..32 A`. | Integer (A) | 6 |

@@ -31,13 +31,16 @@ Current integration boundaries:
 
 Current validated state:
 
-- Venus OS `v3.75`, Wattpilot firmware `42.5`, and operator-verified
-  Solar.wattpilot app `2.1.0` are the approved runtime baseline. The v3.75
+- Clean Venus OS `v3.79` is preferred and `v3.75` remains accepted for stored-
+  firmware rollback; Wattpilot firmware `42.5` and operator-verified
+  Solar.wattpilot app `2.1.0` complete the runtime baseline. The v3.75
   upgrade, idle/no-vehicle, Manual charging, Manual current-change, and Manual
   recovery checks passed during supervised GX validation. Supervised Auto/Eco
   daylight validation confirmed one-phase PV charging,
   three-phase phase-up, no-grid/grid-import guard behavior, bounded battery
   assist timeout, dynamic current reduction, and phase-down/fallback behavior.
+  The documented supervised v3.79 build validation remains required before
+  unattended production use.
 - Auto/Eco PV-only control, no-grid protection, bounded running-session battery
   assist, telemetry freshness, phase switching, reconnect handling, runtime
   status, configuration migration/validation, and graceful shutdown are
@@ -135,11 +138,21 @@ Resolved decisions retained for history:
 
 Resolved runtime decision:
 
-- Preserve exact clean-release support for Venus OS `v3.75` only in this
-  checkout. Continue to reject qualified builds and unapproved future releases.
-  If firmware rollback boots an older Venus OS release, restore an es-ESS
-  checkout whose runtime baseline explicitly supports that firmware before
-  starting services.
+- Preserve exact clean-release support for Venus OS `v3.79` and `v3.75` in this
+  checkout, preferring v3.79 and retaining v3.75 for stored-firmware rollback.
+  Continue to reject qualified builds and unapproved future releases. If a
+  rollback boots another Venus OS release, restore a checkout whose runtime
+  baseline explicitly supports it before starting services.
+
+Deferred dormant-service reactivation blockers:
+
+- `FroniusSmartmeterRS485` retains unused HTTP-path references to attributes
+  that its constructor does not initialize. Its worker remains disabled; an
+  eventual RS485 design must remove or define those paths with configuration
+  and tests rather than infer device behavior here.
+- `ChargeCurrentReducer` retains a fixed local grid-setpoint MQTT target and
+  bypasses the shared grid-setpoint request combiner. It must not be enabled
+  without separate command-ownership design, configuration, and validation.
 
 ## Completed
 
@@ -157,6 +170,24 @@ Unless an entry explicitly says otherwise, the work preserved Manual-mode
 ownership, Auto/Eco no-grid safety, bounded continuation-only battery assist,
 Wattpilot command ownership, public D-Bus/MQTT contracts, configuration
 compatibility, and the prohibition on shared 16 A cable/current-limiting logic.
+
+### Completed 2026-09-16 - Correct Manual Release And Service Reliability Findings
+
+- Auto/Eco-to-Manual limit release now waits for explicit Manual/default
+  telemetry, retains rejected stages for retry, and checks mode-send acceptance.
+  PV-only Auto/Eco authority and normal Manual command ownership remain intact.
+- MQTT reconnect diagnostics no longer treat Paho's method as a boolean;
+  subscription restoration uses a locked snapshot and validated instance
+  configuration. The 60-second heartbeat isolates service failures, and the
+  distributor's initial daily rollover registration uses an integer interval.
+- Low-PV phase-down stops are attributed separately from site-current limits;
+  MQTT temperature and dormant DC publishing guard absent D-Bus services.
+  Dormant DC naming and deprecated thread-name calls were corrected without
+  enabling any dormant service.
+- Hardware-free regressions cover mode timing and guarded dispatch, rejected
+  stages, stop attribution, reconnect registration, heartbeat continuation,
+  rollover rescheduling, and pre-init MQTT publishing. Supervised Manual-release
+  validation remains listed below.
 
 ### Completed 2026-09-10 - Add A Dynamic Reserve To Running Current Increases
 
@@ -3815,6 +3846,13 @@ evidence rather than an open backlog requirement.
   invariants remain in `docs/wattpilot-architecture.md`.
 
 ## Outstanding Manual Validation
+
+- Manual release after Auto/Eco: during an ordinary supervised charging session
+  on an already validated GX/charger baseline, request Manual through the normal
+  user control and confirm live `lmo` changes to Manual/default before es-ESS
+  sends one automatic-phase release and one effective-maximum-current release.
+  Confirm no es-ESS Start/Stop or ongoing Manual current commands. Do not induce
+  grid import or a site-current fault to perform this check.
 
 - P2 Shelly connection-grace commissioning: leave the default at `0` until the
   dedicated meter identity, phase mapping, and one-second polling are verified.

@@ -62,6 +62,8 @@ requests. Both MQTT clients start with non-blocking initial connections and
 bounded reconnect backoff, so broker boot ordering does not terminate es-ESS.
 Successful main-broker connections and reconnects republish the retained
 runtime identity/status metadata before restoring main subscriptions.
+Subscription registration and reconnect snapshots share one lock; broker calls
+run after the snapshot is taken so registration cannot invalidate an iteration.
 
 Logging bootstrap makes one bounded, read-only `GetValue` query to
 `com.victronenergy.settings` `/Settings/System/TimeZone`. That named Venus
@@ -148,7 +150,7 @@ adds config, docs, and tests for the new active behavior.
 
 | Service | Module | Observed behavior if re-enabled | Current runtime status |
 | --- | --- | --- | --- |
-| `MqttDC` | `MqttDC.py` | Reads `MqttDC:*` sections, subscribes to MQTT power, voltage, and current topics, and publishes `com.victronenergy.dcsystem` D-Bus services. | Intentionally unavailable: commented out in `es-ESS.py` and absent from the maintained sample and active-service README table. Legacy user flags are ignored and preserved for compatibility. |
+| `MqttDC` | `MqttDC.py` | Reads `MqttDC:*` sections, subscribes to MQTT power, voltage, and current topics, and would publish `com.victronenergy.dcsystem.<instance>` D-Bus services. | Intentionally unavailable: commented out in `es-ESS.py` and absent from the maintained sample and active-service README table. Legacy user flags are ignored and preserved for compatibility. |
 | `ChargeCurrentReducer` | `ChargeCurrentReducer.py` | Reads battery and grid D-Bus values and writes local Venus MQTT grid-setpoint commands to reduce battery charge current. | Intentionally unavailable: commented out in `es-ESS.py` and absent from the maintained sample and active-service README table. It requires a separate safety and shared-setpoint-ownership implementation before reactivation. |
 | `FroniusSmartmeterRS485` | `FroniusSmartmeterRS485.py` | Creates a grid-meter D-Bus service and has experimental Modbus RTU setup in `initFinalize()`; its worker is commented out. | Intentionally unavailable: commented out in `es-ESS.py` and absent from the maintained sample and active-service README table. Legacy user flags are ignored and preserved for compatibility. |
 | `Grid2Bat` | none in this checkout | No module is present in this checkout. | Unavailable: its commented runtime hook is retained as historical context, but the stale sample flag was removed. Legacy user flags are ignored and preserved for compatibility. |

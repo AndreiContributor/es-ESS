@@ -124,6 +124,7 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
             "/StartStopLiteral": self.fwp.VrmEvChargerStartStop.Stop.name,
         }
         controller.wattpilot = SimpleNamespace(
+            connected=True,
             ampLimit=None,
             amp=0,
             amps1=0,
@@ -599,10 +600,9 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         controller.wattpilot.set_mode.assert_called_once_with(
             self.fwp.WattpilotControlMode.Default
         )
-        controller.wattpilot.set_phases.assert_called_once_with(0)
-        controller.wattpilot.set_power.assert_called_once_with(
-            controller.getEffectiveMaxCurrent()
-        )
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+        self.assertTrue(controller.pendingManualRelease)
         controller.clearChargeCompleteHold.assert_called_once_with(
             "manual mode selected"
         )
@@ -611,6 +611,113 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
             controller.dbusService["/ModeLiteral"],
             self.fwp.VrmEvChargerControlMode.Manual.name,
         )
+
+    def test_requested_manual_release_waits_for_telemetry_and_passes_real_guard(self):
+        controller = self._controller()
+        self._prepare_disconnected_idle_update(controller)
+        controller.mode = self.fwp.VrmEvChargerControlMode.Auto
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.ECO
+        controller.wattpilot.set_phases.side_effect = (
+            lambda value: controller.allowWattpilotCommand("psm", value)
+        )
+        controller.wattpilot.set_power.side_effect = (
+            lambda value: controller.allowWattpilotCommand("amp", value)
+        )
+
+        self.assertTrue(controller._froniusHandleChangedValue(
+            "/Mode", self.fwp.VrmEvChargerControlMode.Manual.value
+        ))
+        self.assertTrue(controller.pendingManualRelease)
+        self.assertFalse(controller.releaseAutoControlLimitsForManualMode())
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+        controller.dumpEvChargerInfo = Mock()
+        controller._update()
+
+        controller.wattpilot.set_phases.assert_called_once_with(0)
+        controller.wattpilot.set_power.assert_called_once_with(
+            controller.getEffectiveMaxCurrent()
+        )
+        self.assertFalse(controller.pendingManualRelease)
+
+    def test_manual_release_survives_an_update_with_still_eco_telemetry(self):
+        controller = self._controller()
+        self._prepare_disconnected_idle_update(controller)
+        controller.mode = self.fwp.VrmEvChargerControlMode.Auto
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.ECO
+        controller.dumpEvChargerInfo = Mock()
+
+        self.assertTrue(controller._froniusHandleChangedValue(
+            "/Mode", self.fwp.VrmEvChargerControlMode.Manual.value
+        ))
+        controller._update()
+        self.assertTrue(controller.pendingManualRelease)
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+        controller._update()
+        self.assertFalse(controller.pendingManualRelease)
+        controller.wattpilot.set_phases.assert_called_once_with(0)
+        controller.wattpilot.set_power.assert_called_once_with(
+            controller.getEffectiveMaxCurrent()
+        )
+
+    def test_manual_release_retries_only_rejected_stage(self):
+        controller = self._controller()
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+        controller.pendingManualRelease = True
+        controller.wattpilot.set_phases.return_value = True
+        controller.wattpilot.set_power.side_effect = [False, True]
+
+        self.assertFalse(controller.releaseAutoControlLimitsForManualMode())
+        self.assertTrue(controller.pendingManualRelease)
+        self.assertTrue(controller.releaseAutoControlLimitsForManualMode())
+        self.assertFalse(controller.pendingManualRelease)
+        controller.wattpilot.set_phases.assert_called_once_with(0)
+        self.assertEqual(controller.wattpilot.set_power.call_count, 2)
+
+    def test_pending_manual_release_waits_for_reconnection(self):
+        controller = self._controller()
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+        controller.wattpilot.connected = False
+        controller.pendingManualRelease = True
+
+        self.assertFalse(controller.releaseAutoControlLimitsForManualMode())
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+        self.assertTrue(controller.pendingManualRelease)
+
+        controller.wattpilot.connected = True
+        self.assertTrue(controller.releaseAutoControlLimitsForManualMode())
+        self.assertFalse(controller.pendingManualRelease)
+
+    def test_rejected_mode_request_keeps_auto_and_sends_no_release(self):
+        controller = self._controller()
+        controller.wattpilot.set_mode.return_value = False
+
+        self.assertFalse(controller._froniusHandleChangedValue(
+            "/Mode", self.fwp.VrmEvChargerControlMode.Manual.value
+        ))
+        self.assertEqual(controller.mode, self.fwp.VrmEvChargerControlMode.Auto)
+        self.assertEqual(controller.dbusService["/ModeLiteral"], "Auto")
+        self.assertFalse(getattr(controller, "pendingManualRelease", False))
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+
+    def test_transport_error_rejects_mode_request_without_publishing_manual(self):
+        controller = self._controller()
+        controller.wattpilot.set_mode.side_effect = RuntimeError("synthetic transport failure")
+
+        with patch.object(self.fwp, "c"):
+            self.assertFalse(controller._froniusHandleChangedValue(
+                "/Mode", self.fwp.VrmEvChargerControlMode.Manual.value
+            ))
+        self.assertEqual(controller.mode, self.fwp.VrmEvChargerControlMode.Auto)
+        self.assertEqual(controller.dbusService["/ModeLiteral"], "Auto")
+        self.assertFalse(getattr(controller, "pendingManualRelease", False))
 
     def test_observed_manual_mode_releases_auto_phase_and_current_once(self):
         controller = self._controller()

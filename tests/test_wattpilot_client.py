@@ -117,6 +117,19 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
     def load_wattpilot_module(self, module_name):
         return _load_module(module_name, ROOT / "Wattpilot.py")
 
+    def test_mode_helper_returns_guarded_send_acceptance(self):
+        _install_wattpilot_client_stubs()
+        module = self.load_wattpilot_module("wattpilot_mode_result_under_test")
+        client = module.Wattpilot.__new__(module.Wattpilot)
+        client.send_update = Mock(side_effect=[False, True])
+
+        self.assertFalse(client.set_mode(module.WattpilotControlMode.Default))
+        self.assertTrue(client.set_mode(module.WattpilotControlMode.ECO))
+        self.assertEqual(
+            client.send_update.call_args_list,
+            [call("lmo", 3), call("lmo", 4)],
+        )
+
     def test_connect_starts_only_one_worker(self):
         info_messages = []
         debug_messages = []

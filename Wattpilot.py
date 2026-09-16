@@ -554,7 +554,7 @@ class Wattpilot(object):
 
     def set_mode(self, mode:WattpilotControlMode):
         d(self, "Sending Conrol Mode {0}:{1} to Wattpilot.".format(mode, mode.value))
-        self.send_update("lmo", mode.value)
+        return self.send_update("lmo", mode.value)
 
     def send_update(self,name,value):
         if self._command_guard is not None:

@@ -22,7 +22,7 @@ def i(module, msg, **kwargs):
    func = inspect.currentframe().f_back.f_code
    lineIdentifier = "{0}.{1}".format(module, func.co_name)
    
-   lineIdentifier = "{0}|{1}".format(threading.currentThread().getName(), lineIdentifier)
+   lineIdentifier = "{0}|{1}".format(threading.current_thread().name, lineIdentifier)
    logging.info("[" + lineIdentifier + "] " + msg, **kwargs)
 
 def d(module, msg, **kwargs):
@@ -32,7 +32,7 @@ def d(module, msg, **kwargs):
    func = inspect.currentframe().f_back.f_code
    lineIdentifier = "{0}.{1}".format(module, func.co_name)
 
-   lineIdentifier = "{0}|{1}".format(threading.currentThread().getName(), lineIdentifier)
+   lineIdentifier = "{0}|{1}".format(threading.current_thread().name, lineIdentifier)
    logging.appDebug("[" + lineIdentifier + "] " + msg, **kwargs)
 
 def t(module, msg, **kwargs):
@@ -42,7 +42,7 @@ def t(module, msg, **kwargs):
    func = inspect.currentframe().f_back.f_code
    lineIdentifier = "{0}.{1}".format(module, func.co_name)
 
-   lineIdentifier = "{0}|{1}".format(threading.currentThread().getName(), lineIdentifier)
+   lineIdentifier = "{0}|{1}".format(threading.current_thread().name, lineIdentifier)
    logging.trace("[" + lineIdentifier + "] " + msg, **kwargs)
 
 def w(module, msg, **kwargs):
@@ -50,7 +50,7 @@ def w(module, msg, **kwargs):
        module = module.__class__.__name__
 
    func = inspect.currentframe().f_back.f_code
-   lineIdentifier = "{0}|{1}.{2}".format(threading.currentThread().getName(), module, func.co_name)
+   lineIdentifier = "{0}|{1}.{2}".format(threading.current_thread().name, module, func.co_name)
 
    if Globals.esESS is not None:
        Globals.esESS.publishServiceMessage(module, "[" + lineIdentifier + "] " + msg, Globals.ServiceMessageType.Warning)
@@ -62,7 +62,7 @@ def e(module, msg, **kwargs):
        module = module.__class__.__name__
 
    func = inspect.currentframe().f_back.f_code
-   lineIdentifier = "{0}|{1}.{2}".format(threading.currentThread().getName(), module, func.co_name)
+   lineIdentifier = "{0}|{1}.{2}".format(threading.current_thread().name, module, func.co_name)
 
    if Globals.esESS is not None:
        Globals.esESS.publishServiceMessage(module,  "[" + lineIdentifier + "] " + msg, Globals.ServiceMessageType.Error)
@@ -74,7 +74,7 @@ def c(module, msg, **kwargs):
         module = module.__class__.__name__
 
     func = inspect.currentframe().f_back.f_code
-    lineIdentifier = "{0}|{1}.{2}".format(threading.currentThread().getName(), module, func.co_name)
+    lineIdentifier = "{0}|{1}.{2}".format(threading.current_thread().name, module, func.co_name)
 
     if Globals.esESS is not None:
         Globals.esESS.publishServiceMessage(module,  "[" + lineIdentifier + "] " + msg, Globals.ServiceMessageType.Critical)

@@ -138,6 +138,45 @@ class MqttTemperatureTests(unittest.TestCase):
         self.assertEqual(service.publishServiceMessage.call_count, 4)
         self.module.c.assert_not_called()
 
+    def test_optional_values_received_before_dbus_init_do_not_raise(self):
+        service = self.module.MqttTemperature()
+        sensor = service.temperatureSensors["outside"]
+        sensor.onMqttMessage(
+            None, None,
+            SimpleNamespace(topic=sensor.humidityTopic, payload=b"48.2"),
+        )
+        sensor.onMqttMessage(
+            None, None,
+            SimpleNamespace(topic=sensor.pressureTopic, payload=b"1008.4"),
+        )
+        self.module.c.assert_not_called()
+        service.initDbusService()
+        sensor.publishOnDbus()
+        self.assertEqual(sensor.dbusService["/Humidity"], 48.2)
+        self.assertEqual(sensor.dbusService["/Pressure"], 1008.4)
+
+
+class DormantMqttDCTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _install_runtime_stubs()
+        _module("VelibDependency", activate_velib_python=lambda: None)
+        cls.module = _load_module("mqtt_dc_dormant_under_test", ROOT / "MqttDC.py")
+
+    def test_dbus_name_and_optional_messages_before_init(self):
+        root = SimpleNamespace(publishServiceMessage=Mock())
+        load = self.module.DCLoad(
+            root, "load", "Load", "dc/power", "dc/current", "dc/voltage", 61
+        )
+        load.onMqttMessage(None, None, SimpleNamespace(topic="dc/current", payload=b"4.2"))
+        load.onMqttMessage(None, None, SimpleNamespace(topic="dc/voltage", payload=b"24.0"))
+        load.initDbusService()
+        load.publishOnDbus()
+
+        self.assertTrue(load.serviceName.startswith("com.victronenergy.dcsystem."))
+        self.assertEqual(load.dbusService["/Dc/0/Current"], 4.2)
+        self.assertEqual(load.dbusService["/Dc/0/Voltage"], 24.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@
 
 import importlib.util
 import sys
+import threading
 import types
 import unittest
 from concurrent.futures import Future
@@ -111,7 +112,6 @@ def _load_es_ess_module():
 class FakeMqttClient:
     def __init__(self, connected=True, events=None, name="mqtt"):
         self.connected = connected
-        self.reconnect = True
         self.subscriptions = []
         self.callbacks = []
         self.publishes = []
@@ -128,6 +128,9 @@ class FakeMqttClient:
     def is_connected(self):
         return self.connected
 
+    def reconnect(self):
+        return None
+
     def subscribe(self, topic, qos):
         self.subscriptions.append((topic, qos))
 
@@ -136,6 +139,9 @@ class FakeMqttClient:
 
     def publish(self, topic, payload, qos, retain):
         self.publishes.append((topic, payload, qos, retain))
+
+    def will_set(self, *_args):
+        return None
 
     def unsubscribe(self, topic):
         self.unsubscriptions.append(topic)
@@ -208,6 +214,7 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         app._shutdownMqttDisconnectsLogged = set()
         app._mqttConnectionFailures = {}
         app._mqttSubscriptions = {}
+        app._mqttSubscriptionsLock = threading.Lock()
         app._dbusSubscriptions = {}
         app._services = {}
         app._serviceMessageIndex = {}
@@ -266,6 +273,23 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
             [{"host": "broker.example", "port": 8883}],
         )
         self.assertEqual(client.loop_starts, 1)
+
+    def test_mqtt_configuration_uses_the_validated_instance_config(self):
+        app = self._app()
+        app.config = {
+            "Mqtt": {
+                "Host": "broker.example", "Port": "1883",
+                "SslEnabled": "false", "LocalSslEnabled": "false",
+            }
+        }
+        with patch.object(self.es_ess.mqtt, "Client", side_effect=lambda *_args: FakeMqttClient()), patch.object(
+            self.es_ess, "config", {"Mqtt": {"Host": "stale.example"}}, create=True
+        ):
+            app.configureMqtt()
+
+        self.assertEqual(app.mainMqttClient.async_connections, [
+            {"host": "broker.example", "port": 1883}
+        ])
 
     def test_initial_connection_failure_is_deduplicated_and_recovers(self):
         app = self._app(main_connected=False)
@@ -543,6 +567,50 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         self.assertIn("es-ESS/local", debug_log.call_args.args[1])
         self.assertNotIn("es-ESS/main", debug_log.call_args.args[1])
 
+    def test_reconnect_uses_subscription_snapshot_during_registration(self):
+        app = self._app()
+        first = self._subscription("es-ESS/first", self.es_ess.MqttSubscriptionType.Main)
+        second = self._subscription("es-ESS/second", self.es_ess.MqttSubscriptionType.Main)
+        app._mqttSubscriptions[first.valueKey] = [first]
+        original_subscribe = app.mainMqttClient.subscribe
+        registered = False
+
+        def subscribe(topic, qos):
+            nonlocal registered
+            original_subscribe(topic, qos)
+            if not registered:
+                registered = True
+                app.registerMqttSubscription(second)
+
+        app.mainMqttClient.subscribe = subscribe
+        app.onMainMqttConnect(None, None, None, 0)
+
+        self.assertEqual(
+            {topic for topic, _qos in app.mainMqttClient.subscriptions},
+            {"es-ESS/first", "es-ESS/second"},
+        )
+        self.assertEqual(len(app._mqttSubscriptionSnapshot()), 2)
+
+    def test_heartbeat_continues_after_one_service_raises(self):
+        app = self._app()
+        app._threadExecutionsMinute = 2
+        app.publishServiceMessage = Mock()
+        app.publishMainMqtt = Mock()
+        broken = SimpleNamespace(signOfLive=Mock(side_effect=RuntimeError("synthetic")))
+        healthy = SimpleNamespace(signOfLive=Mock())
+        app._services = {"broken": broken, "healthy": healthy}
+
+        with patch.object(self.es_ess.os, "getloadavg", return_value=(1, 2, 3), create=True), patch.object(
+            self.es_ess, "c"
+        ) as critical:
+            self.assertTrue(app._signOfLive())
+            self.assertTrue(app._signOfLive())
+
+        self.assertEqual(broken.signOfLive.call_count, 2)
+        self.assertEqual(healthy.signOfLive.call_count, 2)
+        self.assertEqual(app.publishMainMqtt.call_count, 6)
+        self.assertEqual(critical.call_count, 2)
+
     def test_initial_registration_keeps_main_and_local_clients_separate(self):
         app = self._app()
         main_sub = self._subscription(
@@ -649,10 +717,8 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
             )
         )
 
-    def test_disabled_reconnect_outside_shutdown_logs_warnings(self):
+    def test_reconnect_method_is_preserved_during_disconnect_logging(self):
         app = self._app()
-        app.mainMqttClient.reconnect = False
-        app.localMqttClient.reconnect = False
 
         with patch.object(self.es_ess, "i") as info_log, patch.object(
             self.es_ess, "w"
@@ -660,8 +726,10 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
             app.onMainMqttDisconnect(None, None, 1)
             app.onLocalMqttDisconnect(None, None, 1)
 
-        self.assertEqual(warning_log.call_count, 4)
-        info_log.assert_not_called()
+        self.assertEqual(warning_log.call_count, 2)
+        self.assertEqual(info_log.call_count, 2)
+        self.assertTrue(callable(app.mainMqttClient.reconnect))
+        self.assertTrue(callable(app.localMqttClient.reconnect))
 
     def test_shutdown_cleanup_is_idempotent_and_termination_is_last(self):
         events = []
@@ -726,6 +794,8 @@ class EsEssMqttOrchestrationTests(unittest.TestCase):
         self.assertEqual(events.count("service-cleanup"), 1)
         self.assertEqual(events.count("main-disconnect"), 1)
         self.assertEqual(events.count("local-disconnect"), 1)
+        self.assertTrue(callable(app.mainMqttClient.reconnect))
+        self.assertTrue(callable(app.localMqttClient.reconnect))
         self.assertEqual(events.count("main-shutdown-info"), 1)
         self.assertEqual(events.count("local-shutdown-info"), 1)
         self.assertEqual(events.count("terminate"), 1)
