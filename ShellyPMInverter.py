@@ -6,6 +6,7 @@ import dbus # type: ignore
 import dbus.service # type: ignore
 import inspect
 import pprint
+import math
 import requests # type: ignore
 import os
 import sys
@@ -122,18 +123,30 @@ class ShellyPMInverterDevice:
 
     def queryShelly(self):
         try:
-            URL = "http://%s:%s@%s/rpc/Switch.GetStatus?id=%s" % (self.shellyUsername, self.shellyPassword, self.shellyHost, self.shellyRelay)
-            URL = URL.replace(":@", "")
+            URL = "http://%s/rpc/Switch.GetStatus?id=%s" % (self.shellyHost, self.shellyRelay)
+            request_options = {}
+            if self.shellyUsername or self.shellyPassword:
+                request_options["auth"] = (self.shellyUsername, self.shellyPassword)
 
             #timeout should be half the poll frequency, so there is time to process.
-            meter_r = requests.get(url = URL, timeout=(self.pollFrequencyMs/2000))
+            meter_r = requests.get(url=URL, timeout=(self.pollFrequencyMs/2000), **request_options)
             meter_data = meter_r.json()
             if not isinstance(meter_data, dict):
                 raise ValueError("response is not a JSON object")
             apower = meter_data['apower']
             voltage = meter_data['voltage']
             current = meter_data['current']
-            energy_forward = meter_data['aenergy']['total'] / 1000.0
+            energy_total = meter_data['aenergy']['total']
+            if any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                for value in (apower, voltage, current, energy_total)
+            ):
+                raise ValueError("meter data contains a non-finite or non-numeric measurement")
+            energy_forward = energy_total / 1000.0
+            if not math.isfinite(energy_forward):
+                raise ValueError("meter data contains a non-finite energy total")
 
             self.dbusService['/Connected'] = 1
             self.dbusService['/StatusCode'] = 7
@@ -158,14 +171,14 @@ class ShellyPMInverterDevice:
             self.dbusService['/Ac/Energy/Forward'] = energy_forward
 
         except requests.exceptions.Timeout as ex:
-            w(self.rootService, "Shelly PM ({0}) did not response fast enough to sustain a poll frequency of {1} ms. Please adjust. After 3 failures, null will be published.".format(self.key, self.pollFrequencyMs))
+            w(self.rootService, "Shelly PM ({0}) did not respond fast enough for a {1} ms poll interval. After more than three failures, null will be published.".format(self.key, self.pollFrequencyMs))
             self.connError()
 
         except requests.exceptions.RequestException as ex:
-            w(self.rootService, "Shelly PM ({0}) request failed: {1}".format(self.key, ex))
+            w(self.rootService, "Shelly PM ({0}) request failed ({1}).".format(self.key, type(ex).__name__))
             self.connError()
 
-        except (KeyError, IndexError, TypeError, ValueError) as ex:
+        except (KeyError, IndexError, TypeError, ValueError, OverflowError) as ex:
             e(self.rootService, "Shelly PM ({0}) returned an invalid or incomplete payload: {1}".format(self.key, ex))
             self.connError()
         

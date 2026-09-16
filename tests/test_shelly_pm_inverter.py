@@ -172,6 +172,49 @@ class ShellyPMInverterTests(unittest.TestCase):
         device.queryShelly()
         self.assertEqual(device.dbusService["/Connected"], 0)
 
+    def test_authenticated_poll_uses_clean_url_and_does_not_log_credentials(self):
+        device = self._device()
+        device.shellyUsername = "synthetic-user"
+        device.shellyPassword = "synthetic-password"
+        self.module.w = Mock()
+        self.module.requests.get = Mock(
+            side_effect=self.module.requests.exceptions.ConnectionError(
+                "synthetic-password in diagnostic"
+            )
+        )
+
+        device.queryShelly()
+
+        self.module.requests.get.assert_called_once_with(
+            url="http://pm.local/rpc/Switch.GetStatus?id=0",
+            timeout=0.5,
+            auth=("synthetic-user", "synthetic-password"),
+        )
+        warning = self.module.w.call_args.args[1]
+        self.assertIn("ConnectionError", warning)
+        self.assertNotIn("synthetic-user", warning)
+        self.assertNotIn("synthetic-password", warning)
+
+    def test_non_finite_sample_follows_failure_threshold_without_partial_publish(self):
+        device = self._device()
+        device.connectionErrors = 3
+        self.module.requests.get = Mock(
+            return_value=FakeResponse(
+                {
+                    "apower": 345.6,
+                    "voltage": 231.2,
+                    "current": float("inf"),
+                    "aenergy": {"total": 12345},
+                }
+            )
+        )
+
+        device.queryShelly()
+
+        self.assertEqual(device.dbusService["/Connected"], 0)
+        self.assertIsNone(device.dbusService["/Ac/Power"])
+        self.assertIsNone(device.dbusService["/Ac/L2/Power"])
+
     def test_partial_payload_uses_existing_failure_threshold_without_partial_publish(self):
         device = self._device()
         device.connectionErrors = 3

@@ -54,9 +54,13 @@ implementation tasks must preserve and update when they change.
 
 GitHub Actions CI is defined in
 [.github/workflows/ci.yml](.github/workflows/ci.yml). It runs on pull requests
-and on pushes to `main`, using Python 3.12 to syntax-check the repository,
-validate the `config.sample.ini` contract, and run the hardware-free unittest
-suite.
+and on pushes to `main`, using Python 3.12 to install the pinned host tools in
+`requirements-dev.txt`, run a narrow passing Ruff baseline, syntax-check the
+repository, validate the `config.sample.ini` contract, and run the hardware-free
+unittest suite with deprecation warnings treated as errors. The Paho contract
+test uses the installed client method spec without connecting to a broker.
+These host pins are not a GX deployment or runtime-compatibility update; see
+[docs/service-inventory.md](docs/service-inventory.md) for dependency ownership.
 
 `MqttDC`, `ChargeCurrentReducer`, and `FroniusSmartmeterRS485` are dormant
 legacy modules: the runtime does not initialize them and the maintained sample
@@ -1376,8 +1380,11 @@ Shelly3EMGrid requires a few variables to be set in `/data/es-ESS/config.ini`:
 | [Shelly3EMGrid]     | Metering | Type of measurement. See below: `Default` or `Net`. | String | Default |
 
 `PollFrequencyMs` is the worker interval. Each HTTP request uses a timeout of
-half that interval so requests do not pile up. Whenever there are 3 consecutive timeouts, the D-Bus service is fed with `null` values, and
-the device is marked offline, so the overall system notes that it now has to work without grid-meter values.
+half that interval so requests do not pile up. Timeouts, request failures, and
+missing or non-finite numeric readings count toward the same failure threshold.
+After more than three consecutive failures, the service publishes `null` grid
+readings and marks the meter offline. Net-metering energy counters use one
+consistent snapshot for persistence.
 
 ### Metering
 By Default, the Shelly 3EM uses Gross-Metering. Feed-In and Consumption are counted for each phase individually. 
@@ -1437,8 +1444,10 @@ each config Section needs to match the pattern `[ShellyPMInverter:aUniqueKey]` a
 | [ShellyPMInverter:aUniqueKey]     | Relay |  id of the relay, if multiple. | Integer | 0 |
 
 `PollFrequencyMs` is the worker interval. Each HTTP request uses a timeout of
-half that interval so requests do not pile up. Whenever there are 3 consecutive timeouts, the D-Bus service is fed with `null` values, and
-the device is marked offline, so the overall system notes that the inverter is currently considered not producing.
+half that interval so requests do not pile up. Timeouts, request failures, and
+missing or non-finite numeric readings count toward the same failure threshold.
+After more than three consecutive failures, the service publishes `null` values
+and marks the inverter offline.
 
 Example Configuration:
 

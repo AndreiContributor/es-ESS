@@ -26,8 +26,9 @@ Current integration boundaries:
   invariants are authoritative in `docs/wattpilot-architecture.md`.
 - Hardware-free regression tests under `tests/` cover Wattpilot policy,
   runtime status, command boundaries, configuration, orchestration, and active
-  service safety paths. CI runs Python 3.12 syntax, configuration-contract, and
-  unittest checks.
+  service safety paths. CI runs Python 3.12 syntax, configuration-contract,
+  a narrow Ruff baseline, a real Paho method-spec test, and unittests with
+  deprecation warnings treated as errors.
 
 Current validated state:
 
@@ -156,14 +157,37 @@ Deferred dormant-service reactivation blockers:
 
 ## Completed
 
+### Completed 2026-09-16 - Close Shelly Credential And Developer-Check Gaps
+
+- The earlier operator-completed Shelly credential/counter specification below
+  did not match the retained implementation: active pollers still placed Basic
+  credentials in HTTP URLs, logged raw request exceptions, accepted non-finite
+  measurements, and lacked a paired Net-counter lock. This repository review
+  supplied the contradictory evidence rather than assuming the old completion
+  claim was verified.
+- Both active Shelly pollers now send configured credentials through HTTP auth
+  on clean URLs, log request-error types without exception text, and reject
+  incomplete or non-finite numeric samples before D-Bus publication. The 3EM
+  Net counter update and forward/reverse persistence snapshot use one lock.
+- Python 3.12 CI installs pinned host dependencies, runs a passing Ruff
+  undefined-name/local-assignment baseline plus unused-import checks on stable
+  decision modules, and fails on deprecation warnings. A fresh-interpreter
+  Paho contract test uses the installed client method spec for reconnect and
+  connection-state behavior without broker or Venus OS access.
+- Focused hardware-free tests cover credential-free request URLs, secret-free
+  failure messages, finite-value rejection, a paired counter snapshot, and
+  Paho method semantics. The 673-test hardware-free suite passes with
+  deprecation warnings treated as errors. GX HTTP fault simulation remains
+  optional supervised validation and is not a Wattpilot charging test.
+
 ### Completed 2026-08-30 - Close Remaining Backlog Items At Operator Request
 
 The operator confirmed that every remaining implementation specification and
 manual-validation entry is fixed and complete. The retained specifications
 below preserve their original scope, evidence, risks, and verification plans;
 this dated status record is the completion authority for the previously open
-items at that point. A later privacy-sanitized diagnostic review added the open
-P2 item in the implementation queue below.
+items at that point. A later privacy-sanitized diagnostic review added a P2
+item that was subsequently completed; the current open queue appears below.
 
 All completed entries below retain their original identity and durable result.
 Unless an entry explicitly says otherwise, the work preserved Manual-mode
@@ -2907,6 +2931,12 @@ Risks and dependencies:
 
 ### Completed 2026-08-30 - P2 Sanitize HTTP Credentials, Exception Logs, And Counter Lock In Active Shelly Services
 
+Completion correction 2026-09-16: the prior operator completion record was
+contradicted by the HTTP URL, exception logging, numeric-payload, and counter
+paths in the current tree. The focused implementation and tests in the new
+completion note above finish this retained specification; its original
+identity and implementation rationale remain here for review.
+
 Goal:
 
 Prevent HTTP Basic credentials from embedding inside request URLs and leaking into log files during exception handling, protect multi-threaded counter persistence with explicit locks in Shelly3EMGrid, and ensure D-Bus telemetry arithmetic handles non-finite or missing payload values safely in active Shelly services.
@@ -3764,9 +3794,609 @@ Completion record:
   ramp remain unchanged. The full test suite passes with 576 tests and 322
   subtests.
 
+### P3 - Support Restricted Secret References Without Exposing Configuration Backups
+
+Goal:
+
+Keep integration credentials outside ordinary configuration while preserving
+existing installations and private recovery copies.
+
+Problem:
+
+`config.ini` stores MQTT, Wattpilot, and Shelly passwords directly. Restricted
+backups still duplicate those values during migration and uninstall; a new
+secret-reference syntax needs explicit precedence and failure behavior.
+
+Evidence:
+
+`es-ESS.py` reads and migrates `config.ini`; `uninstall.sh` copies it into a
+700/600 backup location. `.gitignore` excludes `config.ini`, but that does not
+remove secrets from private backup copies or make site-specific config public.
+
+Implementation:
+
+Define one restricted secret source and explicit reference syntax, preserve
+literal legacy values, reject unresolved references before services start,
+and keep secret values out of logs and exported diagnostics. Handle migration,
+uninstall, and rollback together; do not change Wattpilot command policy.
+
+Files to change:
+
+- `es-ESS.py`, `install.sh`, `uninstall.sh`, `README.md`, `config.sample.ini`,
+  `docs/service-inventory.md`, and focused tests.
+
+Files to add:
+
+- A narrowly scoped secret-resolution module and synthetic tests if needed.
+
+Tests:
+
+- Cover legacy literals, resolved/missing references, secret-free failures,
+  permissions, migration, and backup/restore behavior in `tests/test_config_migration.py`
+  and focused script tests using hardware-free stubs.
+
+Expected coverage:
+
+- Reference failures never start services or expose credentials; existing
+  literal configurations and passing tests remain compatible.
+
+Manual validation:
+
+Log-only GX startup and private backup/restore check after unit tests.
+
+Manual test steps:
+
+1. On a staged GX installation, verify restricted files, startup, migration,
+   and rollback without printing credential-bearing content.
+
+Risks and dependencies:
+
+- Secret precedence, process environment inheritance, and recovery copies can
+  break unattended startup; land after the completed Shelly log repair.
+
+Open questions:
+
+- Choose restricted file versus environment references and approved backup
+  retention before implementation.
+
+Done criteria:
+
+- Legacy literals work; unresolved references fail before service startup;
+  public and operator logs contain no credential values.
+- Full unittest suite passes.
+
+### P3 - Type-Check Stable Boundaries And Verify A GX Python CI Matrix
+
+Goal:
+
+Catch optional-value and typed-boundary errors without adding noisy checks to
+dynamic Venus OS integrations.
+
+Problem:
+
+CI has no type checker and tests only Python 3.12; the exact interpreter on
+each allowed Venus OS image has not been established in this checkout.
+
+Evidence:
+
+`.github/workflows/ci.yml` has one Python version. The completed incremental
+type-hint item notes that active D-Bus/MQTT services still use dynamic imports
+and incomplete annotations; `RuntimeCompatibility.py` allowlists v3.75/v3.79.
+
+Implementation:
+
+Add pinned mypy and targeted typed helper/module checks with narrow Venus
+stubs. Record the actual interpreter versions from supervised GX checks before
+adding a Python matrix; do not widen the runtime version allowlist.
+
+Files to change:
+
+- `.github/workflows/ci.yml`, `requirements-dev.txt`, stable typed modules,
+  tests, and developer documentation.
+
+Files to add:
+
+- Narrow type stubs/configuration if the selected boundary needs them.
+
+Tests:
+
+- Add typed fixtures for optional telemetry and method/attribute contracts;
+  run focused mypy and existing hardware-free unittests.
+
+Expected coverage:
+
+- Selected annotated boundaries reject real type mistakes while legacy
+  integration code and existing passing tests remain unchanged.
+
+Manual validation:
+
+Log-only interpreter/import inventory on each supported GX image.
+
+Manual test steps:
+
+1. Read the interpreter version and required import availability on supervised
+   v3.75 and v3.79 GX installs before choosing matrix versions.
+
+Risks and dependencies:
+
+- `Any` from missing Venus stubs hides defects; guesses about GX Python can
+  produce false confidence. Start with the typed pure helpers.
+
+Open questions:
+
+- Which measured interpreter versions and first typed boundary should be gated?
+
+Done criteria:
+
+- Targeted mypy and verified-version matrix checks pass without changing the
+  validated runtime allowlist.
+- Full unittest suite passes.
+
+### P4 - Centralize GLib Timeout Callback Exception Isolation
+
+Goal:
+
+Keep future recurring callbacks scheduled after one callback failure.
+
+Problem:
+
+The two current `gobject.timeout_add` callbacks are guarded individually;
+future registrations could omit isolation or accidentally retain one-shot work.
+
+Evidence:
+
+`es-ESS.py` schedules `_signOfLive` and `_runThread` directly. Both catch
+exceptions today; `WorkerThread.onlyOnce` intentionally returns `False`.
+
+Implementation:
+
+Introduce one registration guard that logs callback errors and preserves each
+callback's existing return/one-shot semantics. Keep worker side effects and
+Wattpilot command ownership in their current modules.
+
+Files to change:
+
+- `es-ESS.py` and `tests/test_es_ess_mqtt_orchestration.py`.
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Verify a failing recurring callback returns continue and a one-shot callback
+  still returns remove; use hardware-free GLib stubs.
+
+Expected coverage:
+
+- A new scheduled callback cannot lose recurrence from an ordinary exception;
+  existing heartbeat/worker tests remain passing.
+
+Manual validation:
+
+Hardware not needed for the structural guard.
+
+Manual test steps:
+
+1. Run the focused callback tests and inspect registered callback return values.
+
+Risks and dependencies:
+
+- Blanket `True` returns would repeat one-shot tasks; wrapper logging can itself
+  fail, so keep the guard small and tested.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- Recurrence and one-shot behavior are characterized and preserved.
+- Full unittest suite passes.
+
+### P4 - Simplify Helper Logging While Preserving Service Messages
+
+Goal:
+
+Avoid frame/prefix work for disabled debug levels without changing operator
+message or log attribution contracts.
+
+Problem:
+
+All six `Helper.py` methods inspect caller frames and build strings before
+logging can discard disabled messages. Warning/error/critical methods also
+publish service messages, so a blanket level guard would remove side effects.
+
+Evidence:
+
+`Helper.py` uses `inspect.currentframe()` in each helper; `es-ESS.py`
+configures the timezone-aware formatter and custom APP_DEBUG/TRACE levels.
+
+Implementation:
+
+Characterize existing prefixes and service-message payloads, then use logging
+record metadata/`stacklevel` and early guards only where safe. Preserve class
+identity, timezone formatting, and warning/error MQTT side effects.
+
+Files to change:
+
+- `Helper.py`, `es-ESS.py`, and `tests/test_helper_logging.py`.
+
+Files to add:
+
+- None expected.
+
+Tests:
+
+- Cover caller attribution, disabled APP_DEBUG/TRACE, and unchanged warning/
+  error service-message publication with hardware-free logging tests.
+
+Expected coverage:
+
+- Disabled helper paths avoid prefix work; existing message and timezone tests
+  remain passing.
+
+Manual validation:
+
+Log-only GX startup comparison at the supported log levels.
+
+Manual test steps:
+
+1. Compare generic startup log attribution and service messages before/after
+   without retaining private log excerpts publicly.
+
+Risks and dependencies:
+
+- Custom logging wrappers add stack frames; caller-side string formatting still
+  costs work unless separately characterized.
+
+Open questions:
+
+- Whether the current service-class prefix must remain byte-for-byte stable.
+
+Done criteria:
+
+- Log attribution and service-message semantics are preserved with a measured
+  disabled-level improvement.
+- Full unittest suite passes.
+
+### P4 - Extract Stable Unittest Runtime Stubs
+
+Goal:
+
+Reduce stub drift while preserving independent hardware-free test isolation.
+
+Problem:
+
+Multiple unittest files install `types.ModuleType` Victron/MQTT replacements
+into `sys.modules`; broad shared setup can make test order matter.
+
+Evidence:
+
+`tests/test_es_ess_mqtt_orchestration.py`, `tests/test_eco_pv_policy.py`, and
+service test files each define runtime stubs. CI uses unittest, not pytest.
+
+Implementation:
+
+Extract a few stable stub factories to `tests/_stubs.py`, retain per-test
+module ownership and cleanup, and avoid `conftest.py` fixture discovery.
+
+Files to change:
+
+- Selected existing hardware-free tests, one small batch at a time.
+
+Files to add:
+
+- `tests/_stubs.py`.
+
+Tests:
+
+- Run affected files alone and in the full discovery order; verify no fake
+  module or Paho spec leaks between tests.
+
+Expected coverage:
+
+- Shared factories stay consistent while all existing service regressions
+  remain passing and import-order independent.
+
+Manual validation:
+
+Hardware not needed.
+
+Manual test steps:
+
+1. Run selected unittest modules alone, then full discovery in normal order.
+
+Risks and dependencies:
+
+- Hidden `sys.modules` coupling could invalidate test outcomes; start with
+  utility factories rather than one global fixture.
+
+Open questions:
+
+- None.
+
+Done criteria:
+
+- At least two test modules share a stable factory without losing isolation.
+- Full unittest suite passes.
+
+### P4 - Verify The Python Launcher And Supervised Output Backstop
+
+Goal:
+
+Start the validated interpreter consistently and retain bounded stdout when
+the application's own log path fails.
+
+Problem:
+
+`service/run` invokes `python`, while stop scripts match that exact command;
+changing only the launcher to `python3` could leave processes running.
+
+Evidence:
+
+`service/run`, `kill_me.sh`, `restart.sh`, and `uninstall.sh` coordinate
+process supervision. The app already owns local-calendar log rotation.
+
+Implementation:
+
+Verify launcher aliases and supervised logger availability on both allowed
+Venus images first. Update launcher/process patterns atomically; consider a
+separate bounded `service/log/run` only if it improves failure visibility.
+
+Files to change:
+
+- `service/run`, process lifecycle scripts, script tests, README, and
+  `docs/service-inventory.md` if supervision changes.
+
+Files to add:
+
+- Optional `service/log/run` after runtime verification.
+
+Tests:
+
+- Check shell syntax, launcher/process matching, idempotent stop, and log-run
+  rotation without starting a hardware service in CI.
+
+Expected coverage:
+
+- A launcher rename cannot break stop/uninstall; existing lifecycle tests pass.
+
+Manual validation:
+
+Log-only staged GX service start/stop on each supported Venus version.
+
+Manual test steps:
+
+1. Confirm the chosen interpreter and supervisor tools, then exercise normal
+   start, graceful stop, and uninstall on a staged GX service.
+
+Risks and dependencies:
+
+- Supervisor paths and tool availability differ by image; do not assume a
+  Python 2 alias or `svlogd` without measurement.
+
+Open questions:
+
+- Which launcher and log-supervisor tools are present on v3.75 and v3.79?
+
+Done criteria:
+
+- Launcher, stop patterns, and any optional log runner agree on both verified
+  GX images.
+- Full unittest suite passes.
+
+### P4 - Measure Focused Hardware-Free Test Coverage In CI
+
+Goal:
+
+Show which stable decision and service paths tests exercise without treating
+hardware-only paths as a misleading global percentage gate.
+
+Problem:
+
+CI runs unittests but reports no coverage, so a new test can pass while an
+important branch remains unexercised.
+
+Evidence:
+
+`.github/workflows/ci.yml` has compileall, config, Ruff, and unittest steps;
+it has no coverage command or report. `tests/` uses hardware-free stubs.
+
+Implementation:
+
+Pin one coverage tool in `requirements-dev.txt`, measure selected pure decision
+modules and active service seams first, and publish a readable CI report.
+Set a threshold only after a reviewed baseline identifies meaningful gaps.
+
+Files to change:
+
+- `.github/workflows/ci.yml`, `requirements-dev.txt`, focused tests, and
+  developer documentation.
+
+Files to add:
+
+- Narrow coverage configuration if needed; exclude bundled Victron files.
+
+Tests:
+
+- Confirm coverage discovery includes new `test_*.py` modules and that the
+  report distinguishes missed branches from Venus-only integration paths.
+
+Expected coverage:
+
+- Selected module reports guide useful tests; existing passing tests remain
+  unchanged and no hardware requirement is invented for CI.
+
+Manual validation:
+
+Hardware not needed for the CI report.
+
+Manual test steps:
+
+1. Review the first report and nominate missing branches with a reproducible
+   hardware-free test before choosing thresholds.
+
+Risks and dependencies:
+
+- A repository-wide percentage may reward tests that mirror implementation or
+  penalize hardware-only code; keep the first gate informational.
+
+Open questions:
+
+- Which decision modules deserve the first branch-level baseline?
+
+Done criteria:
+
+- CI publishes a reviewed focused coverage report without changing runtime
+  behavior or deployment dependencies.
+- Full unittest suite passes.
+
+### P5 - Ratchet Wattpilot Size And Extract One Tested Command Group
+
+Goal:
+
+Reduce controller file growth and move one cohesive command group behind a
+characterized boundary without altering charger policy.
+
+Problem:
+
+`FroniusWattpilot.py` is over 5,000 lines; a complexity rule alone does not
+limit file growth, and a broad extraction risks command-authority changes.
+
+Evidence:
+
+The controller still owns command side effects. `docs/wattpilot-architecture.md`
+requires characterization tests and small behavior-preserving refactors.
+
+Implementation:
+
+Introduce a baseline size/complexity report with explicit review exceptions,
+then select one dispatch/command group. Characterize its ordering, guards,
+Manual observation-only behavior, and fail-closed Auto/Eco path before moving
+code. Keep side-effect ownership in the controller boundary.
+
+Files to change:
+
+- `FroniusWattpilot.py`, focused Wattpilot tests, CI, `requirements-dev.txt`,
+  and `docs/wattpilot-architecture.md` if responsibilities move.
+
+Files to add:
+
+- A small size-ratchet check if Ruff function complexity cannot express it.
+
+Tests:
+
+- Characterize command acceptance, rejected commands, phase/current ordering,
+  Manual behavior, and no-grid stops with hardware-free tests before extraction.
+
+Expected coverage:
+
+- The selected command group keeps existing behavior and public contracts;
+  passing Wattpilot tests remain unchanged.
+
+Manual validation:
+
+Log-only supervised GX startup after behavior-preserving extraction; any
+control behavior change requires a separate active-charge validation task.
+
+Manual test steps:
+
+1. Confirm compatible startup and read-only status paths on an approved GX
+   baseline without forcing a charging scenario.
+
+Risks and dependencies:
+
+- A hard line-count gate could block a safety fix; keep exceptions reviewable
+  and never combine extraction with config/default changes.
+
+Open questions:
+
+- Which command group has the strongest existing characterization seam?
+
+Done criteria:
+
+- One group moves with matched before/after command-order tests and a reviewed
+  growth baseline; command safety invariants remain unchanged.
+- Full unittest suite passes.
+
+### P5 - Compact The Live Backlog And Move README Reference Detail Carefully
+
+Goal:
+
+Make the implementation queue navigable while retaining durable decisions
+and operator documentation links.
+
+Problem:
+
+`BACKLOG.md` retains thousands of completed-specification lines; README is a
+large single-page reference. Unchecked splits can lose evidence or break anchors.
+
+Evidence:
+
+The backlog audit before these new items found 3,875 lines and 90 completed
+headings. `README.md` includes operator checklists, service configuration,
+and established links from docs/scripts.
+
+Implementation:
+
+Use the backlog-maintenance audit to compact `BACKLOG.md` in place, retaining
+every identity and material safety/validation decision. In a separate doc
+batch, move selected README detail to existing `docs/` pages and preserve
+anchors, links, and the maintained `config.sample.ini` contract.
+
+Files to change:
+
+- `BACKLOG.md`, then `README.md` and selected `docs/` pages in a separate batch.
+
+Files to add:
+
+- None expected; do not create a duplicate backlog archive by default.
+
+Tests:
+
+- Compare before/after backlog audit identities and required sections; check
+  README internal/documentation links and config contract tests.
+
+Expected coverage:
+
+- Open items remain implementation-ready, completed decisions remain durable,
+  and existing operator references resolve.
+
+Manual validation:
+
+Hardware not needed for documentation structure.
+
+Manual test steps:
+
+1. Review the complete changed public documentation and linked operator flows.
+
+Risks and dependencies:
+
+- Historical validation and command boundaries must not disappear for a shorter
+  file; this work follows current reliability/security repairs.
+
+Open questions:
+
+- Which README sections are most useful as separate operator pages?
+
+Done criteria:
+
+- Backlog audit preserves identities and current queue; README links and
+  configuration contract resolve after each doc batch.
+- Full unittest suite passes.
+
 ## Suggested Implementation Order / PR Execution Queue
 
-- No open implementation items remain.
+1. P3 Support Restricted Secret References Without Exposing Configuration Backups — define safe credential ownership after the completed HTTP log repair.
+2. P3 Type-Check Stable Boundaries And Verify A GX Python CI Matrix — add useful static signal only after interpreter evidence and narrow stubs.
+3. P4 Centralize GLib Timeout Callback Exception Isolation — protect future recurring registrations while preserving one-shot semantics.
+4. P4 Simplify Helper Logging While Preserving Service Messages — reduce disabled-level cost without losing operator messages.
+5. P4 Extract Stable Unittest Runtime Stubs — lower test drift after real Paho contract coverage is established.
+6. P4 Verify The Python Launcher And Supervised Output Backstop — require measured Venus OS tool availability before deployment edits.
+7. P4 Measure Focused Hardware-Free Test Coverage In CI — establish meaningful branch evidence before setting thresholds.
+8. P5 Ratchet Wattpilot Size And Extract One Tested Command Group — characterize one command group before changing controller structure.
+9. P5 Compact The Live Backlog And Move README Reference Detail Carefully — preserve durable history and operator links while reducing navigation cost.
 
 ## Verification Plan
 

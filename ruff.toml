@@ -1,0 +1,5 @@
+extend-exclude = ["velib_python-master"]
+
+[lint]
+# The legacy tree has unused imports; add F401 across it after cleanup.
+select = ["F821", "F823"]
