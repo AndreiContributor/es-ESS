@@ -38,6 +38,8 @@ from esESSService import esESSService
 WATTPILOT_BASE_CUSTOM_NAME = "Fronius Wattpilot"
 WATTPILOT_UNAVAILABLE_STATUS_LITERAL = "Wattpilot not accessible"
 WATTPILOT_UNAVAILABLE_CUSTOM_NAME = "Wattpilot not reachable"
+VEHICLE_PHASE_CAPABILITY_AUTOMATIC = "Automatic"
+VEHICLE_PHASE_CAPABILITY_ONE_PHASE_ONLY = "OnePhaseOnly"
 COMMAND_AUTHORITY_UNAVAILABLE = (
     "Blocked: native Wattpilot command settings unavailable"
 )
@@ -126,6 +128,9 @@ class FroniusWattpilot (esESSService):
         self.charger1PhaseMapping = settings.get(
             "Charger1PhaseMapping", "L1"
         ).upper()
+        self.vehiclePhaseCapability = settings.get(
+            "VehiclePhaseCapability", VEHICLE_PHASE_CAPABILITY_AUTOMATIC
+        ).strip()
         self.siteCurrentFreshSeconds = max(
             1, int(settings.get("SiteCurrentFreshSeconds", 15))
         )
@@ -433,6 +438,14 @@ class FroniusWattpilot (esESSService):
         # as its three-phase state, so do not expose that internal value here.
         self.dbusService.add_path('/PhaseMode', 0)
         self.dbusService.add_path('/PhaseModeLiteral', 'Unknown')
+        self.dbusService.add_path(
+            '/VehiclePhaseCapability',
+            getattr(
+                self,
+                "vehiclePhaseCapability",
+                VEHICLE_PHASE_CAPABILITY_AUTOMATIC,
+            ),
+        )
         self.dbusService.add_path('/ModeLiteral', VrmEvChargerControlMode(0).name)
         self.dbusService.add_path('/StatusLiteral', VrmEvChargerStatus(0).name)
         self.dbusService.add_path('/StartStopLiteral', VrmEvChargerStartStop(0).name)
@@ -899,11 +912,18 @@ class FroniusWattpilot (esESSService):
                 self.wattpilot.mode == WattpilotControlMode.ECO
                 and self.wattpilotAutoControlAuthorityOk()
             ):
-                self.publishServiceMessage(
-                    self,
-                    "Currently not charging. Negotiating automatic phase mode."
-                )
-                self.wattpilot.set_phases(0)  # autoselect
+                if self.onePhaseOnlyVehicle():
+                    self.publishServiceMessage(
+                        self,
+                        "Currently not charging. One-phase-only vehicle policy "
+                        "will be applied by the next guarded Auto/Eco start."
+                    )
+                else:
+                    self.publishServiceMessage(
+                        self,
+                        "Currently not charging. Negotiating automatic phase mode."
+                    )
+                    self.wattpilot.set_phases(0)  # autoselect
             elif self.wattpilot.mode == WattpilotControlMode.ECO:
                 self.publishServiceMessage(
                     self,
@@ -943,12 +963,12 @@ class FroniusWattpilot (esESSService):
             if requestedCurrent <= 0 or not self.canChargeAtMinimumCurrent():
                 self.wattpilot.set_power(0)
             else:
-                if requestedCurrent > maxCurrent:
+                if requestedCurrent > maxCurrent and not self.onePhaseOnlyVehicle():
                     requestedPhaseMode = 2
                     ampPerPhase = int(round(requestedCurrent / 3.0))
                 else:
                     requestedPhaseMode = 1
-                    ampPerPhase = requestedCurrent
+                    ampPerPhase = min(requestedCurrent, maxCurrent)
 
                 ampPerPhase = min(maxCurrent, ampPerPhase)
                 ampPerPhase = self.siteLimitedTargetCurrent(
@@ -1545,6 +1565,21 @@ class FroniusWattpilot (esESSService):
         if name == "lmo":
             return True
 
+        if (
+            name == "psm"
+            and int(value) == 2
+            and self.onePhaseOnlyVehicle()
+        ):
+            if not getattr(self, "_phaseCapabilityCommandBlocked", False):
+                self.publishServiceMessage(
+                    self,
+                    "Blocked a three-phase Wattpilot command because "
+                    "VehiclePhaseCapability=OnePhaseOnly."
+                )
+            self._phaseCapabilityCommandBlocked = True
+            return False
+        self._phaseCapabilityCommandBlocked = False
+
         requestedPhase = self.currentPhaseMode
         if name == "psm":
             requestedPhase = int(value)
@@ -2090,9 +2125,14 @@ class FroniusWattpilot (esESSService):
 
         desiredPhaseMode = self.desiredPhaseModeForPvAllowance()
         onePhaseDecision = self.siteCurrentDecision(1, False)
-        threePhaseDecision = self.siteCurrentDecision(2, False)
+        threePhaseDecision = (
+            None
+            if self.onePhaseOnlyVehicle()
+            else self.siteCurrentDecision(2, False)
+        )
         self.updateSiteCurrentRecovery(1, onePhaseDecision)
-        self.updateSiteCurrentRecovery(2, threePhaseDecision)
+        if not self.onePhaseOnlyVehicle():
+            self.updateSiteCurrentRecovery(2, threePhaseDecision)
 
         if (
             desiredPhaseMode == 2
@@ -2271,6 +2311,14 @@ class FroniusWattpilot (esESSService):
         if self.chargeCompleteHold:
             self.clearBatteryAssist()
             return VrmEvChargerStatus.Charged
+
+        # A configured one-phase-only vehicle must never remain in an Auto/Eco
+        # three-phase state after startup, reconnect, or an external setting
+        # change. Reuse the guarded reduction-before-phase-switch transaction;
+        # a rejected or unsafe transition stops instead of continuing against
+        # the configured capability.
+        if self.onePhaseOnlyVehicle() and self.currentPhaseMode == 2:
+            return self.switchToOnePhaseForPvDip(reason="capability")
 
         # The Wattpilot may report a temporary 0 W allowance while it is still
         # bringing a valid new charge command online. Keep the session alive
@@ -2697,6 +2745,16 @@ class FroniusWattpilot (esESSService):
             return self.maxCurrentPerPhase
         return min(self.maxCurrentPerPhase, int(wattpilotLimit))
 
+    def onePhaseOnlyVehicle(self):
+        return (
+            getattr(
+                self,
+                "vehiclePhaseCapability",
+                VEHICLE_PHASE_CAPABILITY_AUTOMATIC,
+            )
+            == VEHICLE_PHASE_CAPABILITY_ONE_PHASE_ONLY
+        )
+
     def canChargeAtMinimumCurrent(self):
         """Return whether the reported/current configured limit can start EV charging."""
         return self.getEffectiveMaxCurrent() >= self.minCurrentPerPhase
@@ -2728,6 +2786,7 @@ class FroniusWattpilot (esESSService):
             self.allocationStepForPhase(2),
             self.phaseUpThresholdW(),
             self.getPhaseSwitchCooldownSeconds(),
+            allow_three_phase=not self.onePhaseOnlyVehicle(),
         )
 
     def maxRequestVoltageForCurrentPhase(self):
@@ -2752,6 +2811,7 @@ class FroniusWattpilot (esESSService):
             allowance,
             self.phaseUpThresholdW(),
             self.phaseDownThresholdW(),
+            allow_three_phase=not self.onePhaseOnlyVehicle(),
         )
 
     def targetCurrentForPhase(self, phaseMode, allowance):
@@ -4061,7 +4121,13 @@ class FroniusWattpilot (esESSService):
         pvTargetAmps = self.targetCurrentForPhase(1, usablePv)
         targetAmps = self.siteLimitedTargetCurrent(1, pvTargetAmps)
 
-        if reason != "grid":
+        if reason == "capability":
+            self.publishServiceMessage(
+                self,
+                "VehiclePhaseCapability=OnePhaseOnly requires a one-phase "
+                "Auto/Eco session. Preparing a controlled transition."
+            )
+        elif reason != "grid":
             self.publishServiceMessage(
                 self,
                 "PV allowance dropped below the three-phase threshold. "
@@ -4087,6 +4153,12 @@ class FroniusWattpilot (esESSService):
                 self,
                 "Grid import guard triggered, but PV supports 1-phase. "
                 "Switching to 1-phase before stopping.",
+            )
+        elif reason == "capability":
+            self.publishServiceMessage(
+                self,
+                "Switching to one phase to enforce the configured vehicle "
+                "phase capability.",
             )
         else:
             self.publishServiceMessage(
@@ -4146,6 +4218,14 @@ class FroniusWattpilot (esESSService):
         )
         self.dbusService["/ChargeComplete/ResumeElapsed"] = int(
             round(self.getChargeCompleteResumeSeconds())
+        )
+        self.publishRetained(
+            "/VehiclePhaseCapability",
+            getattr(
+                self,
+                "vehiclePhaseCapability",
+                VEHICLE_PHASE_CAPABILITY_AUTOMATIC,
+            ),
         )
         self.publishSiteCurrentTelemetry()
 

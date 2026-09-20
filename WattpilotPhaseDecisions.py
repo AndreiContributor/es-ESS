@@ -78,8 +78,12 @@ def desired_phase_mode(
     allowance_w,
     phase_up_threshold,
     phase_down_threshold,
+    allow_three_phase=True,
 ):
     """Select one-phase or three-phase using the existing hysteresis rule."""
+    if not allow_three_phase:
+        return 1
+
     if current_phase_mode == 2:
         return 2 if allowance_w >= phase_down_threshold else 1
 
@@ -239,12 +243,16 @@ def maximum_request_for_distributor_w(
     three_phase_allocation_step,
     phase_up_threshold,
     cooldown_seconds,
+    allow_three_phase=True,
 ):
     """Return the maximum PV allocation request for the current phase state."""
     if max_current < min_current:
         return 0
 
     one_phase_maximum = max_current * one_phase_allocation_step
+
+    if not allow_three_phase:
+        return one_phase_maximum
 
     if current_phase_mode == 2:
         return max_current * three_phase_allocation_step

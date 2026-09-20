@@ -736,6 +736,17 @@ class esESS:
                     one_phase_mapping,
                 )
 
+            vehicle_phase_capability = self.config[section].get(
+                "VehiclePhaseCapability", "Automatic"
+            ).strip()
+            if vehicle_phase_capability not in ("Automatic", "OnePhaseOnly"):
+                invalid(
+                    section,
+                    "VehiclePhaseCapability",
+                    "must be Automatic or OnePhaseOnly",
+                    vehicle_phase_capability,
+                )
+
             phase_start = integer(section, "ThreePhasePvSurplusStartW", 4200)
             phase_stop = integer(section, "ThreePhasePvSurplusStopW", 4140)
             if (
@@ -1372,6 +1383,15 @@ class esESS:
             self.config["Common"]["ConfigVersion"] = "{0}".format(version)
             self._setConfigDefault(
                 "Shelly3EMSiteCurrent", "TransientFailureGraceSeconds", "0"
+            )
+
+        version = 17
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+            self._setConfigDefault(
+                "FroniusWattpilot", "VehiclePhaseCapability", "Automatic"
             )
 
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 

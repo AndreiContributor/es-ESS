@@ -177,6 +177,10 @@ class WattpilotSessionPathTests(unittest.TestCase):
         self.assertEqual(controller.dbusService["/Session/Time"], 0)
         self.assertEqual(controller.dbusService["/Ac/Energy/Forward"], 0)
         self.assertEqual(controller.dbusService["/ChargingTime"], 0)
+        self.assertEqual(
+            controller.dbusService["/VehiclePhaseCapability"],
+            "Automatic",
+        )
         self.assertTrue(controller.dbusService.registered)
 
     def test_session_energy_matches_ac_energy_when_wattpilot_energy_is_valid(self):

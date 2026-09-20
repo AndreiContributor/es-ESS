@@ -122,6 +122,9 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller = self.fwp.FroniusWattpilot.__new__(self.fwp.FroniusWattpilot)
         controller.minCurrentPerPhase = 6
         controller.maxCurrentPerPhase = 16
+        controller.vehiclePhaseCapability = (
+            self.fwp.VEHICLE_PHASE_CAPABILITY_AUTOMATIC
+        )
         controller.threePhasePvSurplusStartW = 4200
         controller.threePhasePvSurplusStopW = 4140
         controller.phaseSwitchCandidateMode = 0
@@ -396,6 +399,70 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.wattpilot.set_start_stop.assert_called_once_with(
             self.fwp.WattpilotStartStop.On
         )
+
+    def test_one_phase_only_vehicle_starts_on_one_phase_with_strong_pv(self):
+        controller = self._controller()
+        controller.vehiclePhaseCapability = (
+            self.fwp.VEHICLE_PHASE_CAPABILITY_ONE_PHASE_ONLY
+        )
+        controller.surplusSince = 100
+        self._set_allowance(controller, 8000, 400)
+
+        with patch.object(self.fwp.time, "time", return_value=400):
+            controller.handleNotChargingState()
+
+        self.assertEqual(controller.currentPhaseMode, 1)
+        controller.wattpilot.set_phases.assert_called_once_with(1)
+        controller.wattpilot.set_power.assert_called_once_with(16)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.On
+        )
+
+    def test_one_phase_only_vehicle_never_builds_phase_up_candidate(self):
+        controller = self._controller()
+        controller.vehiclePhaseCapability = (
+            self.fwp.VEHICLE_PHASE_CAPABILITY_ONE_PHASE_ONLY
+        )
+        controller.wattpilot.amp = 16
+        controller.wattpilot.power = 3.68
+        self._set_allowance(controller, 8000, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            first = controller.adjustChargeForPvAllowance()
+
+        self._set_allowance(controller, 8000, 800)
+        with patch.object(self.fwp.time, "time", return_value=800):
+            second = controller.adjustChargeForPvAllowance()
+
+        self.assertEqual(first, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(second, self.fwp.VrmEvChargerStatus.Charging)
+        self.assertEqual(controller.currentPhaseMode, 1)
+        self.assertEqual(controller.phaseSwitchCandidateMode, 0)
+        controller.wattpilot.set_phases.assert_not_called()
+
+    def test_one_phase_only_policy_reconciles_active_three_phase_auto_session(self):
+        controller = self._controller()
+        controller.vehiclePhaseCapability = (
+            self.fwp.VEHICLE_PHASE_CAPABILITY_ONE_PHASE_ONLY
+        )
+        controller.currentPhaseMode = 2
+        controller.wattpilot.amp = 6
+        controller.wattpilot.power = 4.14
+        controller.wattpilot.power1 = 1.38
+        controller.wattpilot.power2 = 1.38
+        controller.wattpilot.power3 = 1.38
+        self._set_allowance(controller, 5000, 100)
+        guard = self.fwp.SiteCurrentGuardSnapshot(True, False, 100)
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            status = controller.controlAutomaticCharging(guard)
+
+        self.assertEqual(
+            status,
+            self.fwp.VrmEvChargerStatus.SwitchingTo1Phase,
+        )
+        self.assertEqual(controller.currentPhaseMode, 1)
+        controller.wattpilot.set_phases.assert_called_once_with(1)
 
     def test_restart_after_a_stop_waits_for_min_on_off_seconds(self):
         controller = self._controller()

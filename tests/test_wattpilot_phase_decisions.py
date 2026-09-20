@@ -36,6 +36,20 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
             1,
         )
 
+    def test_one_phase_capability_overrides_allowance_and_remembered_mode(self):
+        self.assertEqual(
+            decisions.desired_phase_mode(
+                1, 12000, 4200, 4140, allow_three_phase=False
+            ),
+            1,
+        )
+        self.assertEqual(
+            decisions.desired_phase_mode(
+                2, 12000, 4200, 4140, allow_three_phase=False
+            ),
+            1,
+        )
+
     def test_target_current_for_phase_respects_minimum_maximum_and_effective_limit(self):
         self.assertEqual(
             decisions.target_current_for_phase(1, 1379, 230, 690, 6, 16),
@@ -271,6 +285,34 @@ class WattpilotPhaseDecisionTests(unittest.TestCase):
                 1, 5, 6, 230, 690, 4200, 0
             ),
             0,
+        )
+
+    def test_one_phase_capability_never_requests_phase_up_probe(self):
+        self.assertEqual(
+            decisions.maximum_request_for_distributor_w(
+                1,
+                16,
+                6,
+                230,
+                690,
+                4200,
+                0,
+                allow_three_phase=False,
+            ),
+            3680,
+        )
+        self.assertEqual(
+            decisions.maximum_request_for_distributor_w(
+                2,
+                16,
+                6,
+                230,
+                690,
+                4200,
+                0,
+                allow_three_phase=False,
+            ),
+            3680,
         )
 
     def test_shared_phase_timing_waits_for_stability_then_cooldown_then_switch(self):

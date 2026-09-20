@@ -78,6 +78,9 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         controller = self.fwp.FroniusWattpilot.__new__(self.fwp.FroniusWattpilot)
         controller.minCurrentPerPhase = 6
         controller.maxCurrentPerPhase = 16
+        controller.vehiclePhaseCapability = (
+            self.fwp.VEHICLE_PHASE_CAPABILITY_AUTOMATIC
+        )
         controller.currentPhaseMode = 1
         controller.powerTransitionUntil = 0
         controller.mode = self.fwp.VrmEvChargerControlMode.Auto
@@ -551,6 +554,39 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
             controller.dbusService["/StartStopLiteral"],
             self.fwp.VrmEvChargerStartStop.Start.name,
         )
+
+    def test_one_phase_only_direct_current_is_capped_without_phase_up(self):
+        controller = self._controller()
+        controller.vehiclePhaseCapability = (
+            self.fwp.VEHICLE_PHASE_CAPABILITY_ONE_PHASE_ONLY
+        )
+
+        self.assertTrue(controller._froniusHandleChangedValue("/SetCurrent", 18))
+
+        controller.wattpilot.set_phases.assert_called_once_with(1)
+        controller.wattpilot.set_power.assert_called_once_with(16)
+
+    def test_one_phase_only_final_guard_rejects_three_phase_command(self):
+        controller = self._controller()
+        controller.vehiclePhaseCapability = (
+            self.fwp.VEHICLE_PHASE_CAPABILITY_ONE_PHASE_ONLY
+        )
+
+        self.assertFalse(controller.allowWattpilotCommand("psm", 2))
+        self.assertIn(
+            "VehiclePhaseCapability=OnePhaseOnly",
+            controller.serviceMessages[-1],
+        )
+
+    def test_one_phase_only_setting_does_not_control_manual_mode(self):
+        controller = self._controller()
+        controller.vehiclePhaseCapability = (
+            self.fwp.VEHICLE_PHASE_CAPABILITY_ONE_PHASE_ONLY
+        )
+        controller.mode = self.fwp.VrmEvChargerControlMode.Manual
+        controller.wattpilot.mode = self.fwp.WattpilotControlMode.Default
+
+        self.assertTrue(controller.allowWattpilotCommand("psm", 2))
 
     def test_direct_current_write_reports_rejected_phase_transition(self):
         controller = self._controller()
