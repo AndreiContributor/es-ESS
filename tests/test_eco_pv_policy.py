@@ -329,6 +329,39 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self._fresh_grid(controller, timestamp)
         self._fresh_site(controller, timestamp)
 
+    def test_phase_down_failure_reports_the_limit_that_blocked_continuation(self):
+        for pv_target, site_target, expected_stop in (
+            (5, 5, "pv"),
+            (8, 5, "site"),
+            (8, 8, "command"),
+        ):
+            with self.subTest(expected_stop=expected_stop):
+                controller = self._controller()
+                controller.allowanceIsFresh = Mock(return_value=True)
+                controller.rawPvOverheadW = Mock(return_value=None)
+                controller.allowance = 2000
+                controller.targetCurrentForPhase = Mock(return_value=pv_target)
+                controller.siteLimitedTargetCurrent = Mock(return_value=site_target)
+                controller.commandSiteSafePhaseTransition = Mock(return_value=False)
+                controller.forceStopForNoAllowance = Mock()
+                controller.forceStopForSiteCurrentLimit = Mock()
+                controller.publishServiceMessage = Mock()
+
+                status = controller.switchToOnePhaseForPvDip()
+
+                self.assertEqual(status, self.fwp.VrmEvChargerStatus.StopCharging)
+                if expected_stop == "site":
+                    controller.forceStopForSiteCurrentLimit.assert_called_once()
+                    controller.forceStopForNoAllowance.assert_not_called()
+                else:
+                    controller.forceStopForNoAllowance.assert_called_once()
+                    controller.forceStopForSiteCurrentLimit.assert_not_called()
+                if expected_stop == "command":
+                    self.assertIn(
+                        "fallback command was rejected",
+                        controller.publishServiceMessage.call_args.args[1],
+                    )
+
     def test_one_phase_start_waits_for_the_stable_pv_timer(self):
         controller = self._controller()
         controller.surplusSince = 100

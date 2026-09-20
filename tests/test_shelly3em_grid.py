@@ -4,6 +4,7 @@ import configparser
 import importlib.util
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -214,6 +215,91 @@ class Shelly3EMGridTests(unittest.TestCase):
         service.connectionErrors = 3
         service.queryShelly()
         self.assertEqual(service.dbusService["/Connected"], 0)
+
+    def test_authenticated_poll_uses_clean_url_and_does_not_log_credentials(self):
+        service = self._service()
+        service.shellyUsername = "synthetic-user"
+        service.shellyPassword = "synthetic-password"
+        self.module.requests.get = Mock(
+            side_effect=self.module.requests.exceptions.ConnectionError(
+                "synthetic-password in diagnostic"
+            )
+        )
+
+        service.queryShelly()
+
+        self.module.requests.get.assert_called_once_with(
+            url="http://shelly.local/status",
+            timeout=0.5,
+            auth=("synthetic-user", "synthetic-password"),
+        )
+        warning = self.module.w.call_args.args[1]
+        self.assertIn("ConnectionError", warning)
+        self.assertNotIn("synthetic-user", warning)
+        self.assertNotIn("synthetic-password", warning)
+
+    def test_non_finite_phase_sample_follows_failure_threshold_without_partial_publish(self):
+        service = self._service()
+        service.connectionErrors = 3
+        self.module.requests.get = Mock(
+            return_value=FakeResponse(
+                {
+                    "total_power": 900,
+                    "emeters": [
+                        {"voltage": 230, "current": 1, "power": 100, "total": 1000, "total_returned": 50},
+                        {"voltage": float("nan"), "current": 2, "power": 500, "total": 2000, "total_returned": 60},
+                        {"voltage": 232, "current": 3, "power": 300, "total": 3000, "total_returned": 70},
+                    ],
+                }
+            )
+        )
+
+        service.queryShelly()
+
+        self.assertEqual(service.dbusService["/Connected"], 0)
+        self.assertIsNone(service.dbusService["/Ac/Power"])
+        self.assertIsNone(service.dbusService["/Ac/L1/Power"])
+
+    def test_counter_persistence_uses_one_locked_snapshot_for_both_values(self):
+        service = self._service()
+        service.energyForwarded = 12
+        service.energyReversed = 34
+        persisted = []
+
+        def persist(name, value):
+            persisted.append((name, value))
+            service.energyForwarded = 56
+            service.energyReversed = 78
+
+        service._persistCounter = persist
+        service.persistCounters()
+
+        self.assertEqual(
+            persisted,
+            [("energyForwarded3EM", 12), ("energyReversed3EM", 34)],
+        )
+
+    def test_counter_persistence_waits_for_a_concurrent_counter_update(self):
+        service = self._service()
+        started = threading.Event()
+        persisted = threading.Event()
+        service._persistCounter = lambda *_args: persisted.set()
+
+        def run_persistence():
+            started.set()
+            service.persistCounters()
+
+        with service._counterLock:
+            worker = threading.Thread(target=run_persistence)
+            worker.start()
+            self.assertTrue(started.wait(1))
+            self.assertFalse(persisted.wait(0.05))
+            service.energyForwarded = 12
+            service.energyReversed = 34
+
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(persisted.is_set())
 
     def test_partial_payload_uses_existing_failure_threshold_without_partial_publish(self):
         service = self._service()

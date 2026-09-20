@@ -151,6 +151,29 @@ class SolarOverheadDistributorTests(unittest.TestCase):
             1,
         )
 
+    def test_daily_rollover_registers_integer_initial_and_followup_intervals(self):
+        service = self._service()
+        service.config["SolarOverheadDistributor"]["UpdateInterval"] = "5000"
+        service.registerWorkerThread = Mock()
+        service.registerSingleThread = Mock()
+        consumer = SimpleNamespace(
+            consumerKey="load", isInitialized=True, _moveEnergyData=Mock()
+        )
+        service._knownSolarOverheadConsumers["load"] = consumer
+
+        with patch.object(self.sod.time, "time", return_value=100.125):
+            service.initWorkerThreads()
+        first_interval = service.registerSingleThread.call_args.args[1]
+        self.assertIsInstance(first_interval, int)
+        self.assertGreater(first_interval, 0)
+        service.registerSingleThread.reset_mock()
+
+        service._moveEnergyData()
+        service.registerSingleThread.assert_called_once_with(
+            service._moveEnergyData, 86400000
+        )
+        consumer._moveEnergyData.assert_called_once()
+
     def test_update_distribution_with_none_grid_value_zeroes_allowance(self):
         service = self._service(grid=(None, -100, -200), battery_power=0)
         consumer = StubConsumer()

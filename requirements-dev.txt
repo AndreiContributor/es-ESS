@@ -1,0 +1,5 @@
+# Reproducible Python 3.12 host/CI checks. Do not install this file on a GX.
+paho-mqtt==2.1.0
+requests==2.34.2
+ruff==0.16.7
+websocket-client==1.9.2

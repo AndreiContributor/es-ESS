@@ -7,6 +7,7 @@ import dbus.service # type: ignore
 import inspect
 import pprint
 import math
+import threading
 import tempfile
 from time import time
 import requests # type: ignore
@@ -36,6 +37,7 @@ class Shelly3EMGrid(esESSService):
         self.connectionErrors = 0
         self.energyForwarded = 0
         self.energyReversed = 0
+        self._counterLock = threading.RLock()
         self.lastMeasurement = time()
 
         if (self.metering == "Net"):
@@ -142,11 +144,13 @@ class Shelly3EMGrid(esESSService):
     def queryShelly(self):
         measurementTime = time()
         try:
-            URL = "http://%s:%s@%s/status" % (self.shellyUsername, self.shellyPassword, self.shellyHost)
-            URL = URL.replace(":@", "")
+            URL = "http://%s/status" % self.shellyHost
+            request_options = {}
+            if self.shellyUsername or self.shellyPassword:
+                request_options["auth"] = (self.shellyUsername, self.shellyPassword)
             
             #timeout should be half the poll frequency, so there is time to process.
-            meter_r = requests.get(url = URL, timeout=(self.pollFrequencyMs/2000))
+            meter_r = requests.get(url=URL, timeout=(self.pollFrequencyMs/2000), **request_options)
             meter_data = meter_r.json()
             if not isinstance(meter_data, dict):
                 raise ValueError("response is not a JSON object")
@@ -168,6 +172,38 @@ class Shelly3EMGrid(esESSService):
                 for index in range(3):
                     phase_values[index]['total'] = emeters[index]['total']
                     phase_values[index]['total_returned'] = emeters[index]['total_returned']
+
+            required_values = [total_power]
+            for phase in phase_values:
+                required_values.extend(phase.values())
+            if any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                for value in required_values
+            ):
+                raise ValueError("meter data contains a non-finite or non-numeric measurement")
+
+            if self.metering == "Default":
+                energy_forward = sum(value['total'] for value in phase_values) / 1000.0
+                energy_reverse = sum(value['total_returned'] for value in phase_values) / 1000.0
+                if not math.isfinite(energy_forward) or not math.isfinite(energy_reverse):
+                    raise ValueError("meter data contains a non-finite energy total")
+            else:
+                # Calculate and commit a coherent pair before any D-Bus write.
+                duration = max(0.0, measurementTime - self.lastMeasurement) * 1000.0
+                with self._counterLock:
+                    energy_forwarded = self.energyForwarded
+                    energy_reversed = self.energyReversed
+                    delta = abs(total_power) * (duration / (3600.0 * 1000.0))
+                    if total_power >= 0:
+                        energy_forwarded += delta
+                    else:
+                        energy_reversed += delta
+                    if not math.isfinite(energy_forwarded) or not math.isfinite(energy_reversed):
+                        raise ValueError("net energy counter became non-finite")
+                    self.energyForwarded = energy_forwarded
+                    self.energyReversed = energy_reversed
 
             self.dbusService['/Connected'] = 1
             self.connectionErrors = 0
@@ -192,19 +228,9 @@ class Shelly3EMGrid(esESSService):
                 self.dbusService['/Ac/L2/Energy/Reverse'] = (phase_values[1]['total_returned']/1000)
                 self.dbusService['/Ac/L3/Energy/Reverse'] = (phase_values[2]['total_returned']/1000)
 
-                self.dbusService['/Ac/Energy/Forward'] = sum(value['total'] for value in phase_values)/1000.0
-                self.dbusService['/Ac/Energy/Reverse'] = sum(value['total_returned'] for value in phase_values)/1000.0
+                self.dbusService['/Ac/Energy/Forward'] = energy_forward
+                self.dbusService['/Ac/Energy/Reverse'] = energy_reverse
             else:
-                #Net metering. We use our own counters and keep track of correct saldating.
-                duration = max(0.0, measurementTime - self.lastMeasurement) * 1000.0
-
-                if (total_power >=0):
-                    #Consumption
-                    self.energyForwarded += total_power * (duration/(3600.0*1000.0))
-                else:
-                    #FeedIn
-                    self.energyReversed += (total_power * -1) * (duration/(3600.0*1000.0))
-
                 self.dbusService['/Ac/L1/Energy/Forward'] = None
                 self.dbusService['/Ac/L2/Energy/Forward'] = None
                 self.dbusService['/Ac/L3/Energy/Forward'] = None
@@ -212,19 +238,19 @@ class Shelly3EMGrid(esESSService):
                 self.dbusService['/Ac/L2/Energy/Reverse'] = None
                 self.dbusService['/Ac/L3/Energy/Reverse'] = None
 
-                self.dbusService['/Ac/Energy/Forward'] = round(self.energyForwarded / 1000.0, 2)
-                self.dbusService['/Ac/Energy/Reverse'] = round(self.energyReversed / 1000.0, 2)
+                self.dbusService['/Ac/Energy/Forward'] = round(energy_forwarded / 1000.0, 2)
+                self.dbusService['/Ac/Energy/Reverse'] = round(energy_reversed / 1000.0, 2)
 
-                d(self, "Duration: {dur} -> Counters: F/R: {f}/{r}".format(f=self.energyForwarded, r=self.energyReversed, dur=duration))
+                d(self, "Duration: {dur} -> Counters: F/R: {f}/{r}".format(f=energy_forwarded, r=energy_reversed, dur=duration))
         except requests.exceptions.Timeout as ex:
-            w(self, "Shelly 3EM did not response fast enough to sustain a poll frequency of {0} ms. Please adjust. After 3 failures, null will be published.".format(self.pollFrequencyMs))
+            w(self, "Shelly 3EM did not respond fast enough for a {0} ms poll interval. After more than three failures, null will be published.".format(self.pollFrequencyMs))
             self.connError()
 
         except requests.exceptions.RequestException as ex:
-            w(self, "Shelly 3EM request failed: {0}".format(ex))
+            w(self, "Shelly 3EM request failed ({0}).".format(type(ex).__name__))
             self.connError()
 
-        except (KeyError, IndexError, TypeError, ValueError) as ex:
+        except (KeyError, IndexError, TypeError, ValueError, OverflowError) as ex:
             e(self, "Shelly 3EM returned an invalid or incomplete payload: {0}".format(ex))
             self.connError()
         
@@ -256,10 +282,13 @@ class Shelly3EMGrid(esESSService):
         self.dbusService['/Ac/L3/Power'] = None
 
     def persistCounters(self):
-        i(self, "Saving energy counters to disk. F/R: {0}/{1}".format(self.energyForwarded, self.energyReversed))
+        with self._counterLock:
+            energy_forwarded = self.energyForwarded
+            energy_reversed = self.energyReversed
+        i(self, "Saving energy counters to disk. F/R: {0}/{1}".format(energy_forwarded, energy_reversed))
 
-        self._persistCounter("energyForwarded3EM", self.energyForwarded)
-        self._persistCounter("energyReversed3EM", self.energyReversed)
+        self._persistCounter("energyForwarded3EM", energy_forwarded)
+        self._persistCounter("energyReversed3EM", energy_reversed)
 
     def _persistCounter(self, filename, value):
         runtime_path = self._runtimeDataPath()

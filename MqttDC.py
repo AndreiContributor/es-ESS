@@ -112,7 +112,7 @@ class DCLoad:
     def initDbusService(self):
         self.rootService.publishServiceMessage(self.rootService, "Initializing dbus-service for sensor: {0}".format(self.key))
         self.serviceType = "com.victronenergy.dcsystem"
-        self.serviceName = self.serviceType + Globals.esEssTagService + "_MqttDC_" + str(self.key)
+        self.serviceName = self.serviceType + "." + Globals.esEssTagService + "_MqttDC_" + str(self.key)
         self.dbusService = VeDbusService(self.serviceName, bus=dbusConnection(), register=False)
         
         #Mgmt-Infos
@@ -138,13 +138,12 @@ class DCLoad:
         self.dbusService.register()
 
     def publishOnDbus(self):
-        if (self.dbusService is not None):
-            self.dbusService["/Dc/0/Power"] = self.value
-            self.dbusService["/CustomName"] = self.customName
-        
-        if (self.voltageTopic is not None):
+        if self.dbusService is None:
+            return
+        self.dbusService["/Dc/0/Power"] = self.value
+        self.dbusService["/CustomName"] = self.customName
+        if self.voltageTopic is not None:
             self.dbusService["/Dc/0/Voltage"] = self.voltage
-        
-        if (self.currentTopic is not None):
+        if self.currentTopic is not None:
             self.dbusService["/Dc/0/Current"] = self.current
 

@@ -104,7 +104,7 @@ It owns:
 - Sending direct Wattpilot protocol updates such as `amp`, `frc`, `psm`, and
   `lmo` when the controller asks for them.
 - Returning the common guarded-send acceptance result from the phase, current,
-  and start/stop command helpers so the controller does not publish a
+  start/stop, and mode command helpers so the controller does not publish a
   transition for a command rejected before transport.
 - Enforcing a controller-installed compatibility callback at the common
   `setValue` transport boundary. Authentication and status requests remain
@@ -202,6 +202,14 @@ It owns:
   owns command side effects, D-Bus/MQTT publication, service messages, and
   mutable timers.
 - Wattpilot command issuing through the `Wattpilot` client.
+- A pending Auto/Eco-to-Manual constraint release owned by the controller.
+  A requested `/Mode` transition queues the release only after the guarded
+  mode command is accepted. The normal controller cycle dispatches automatic
+  phase and effective-maximum current release only when the client is connected
+  and live `lmo` explicitly confirms Manual/default mode. A rejected stage
+  remains pending; an accepted
+  phase stage is not repeated solely because the current stage failed. Missing
+  mode telemetry and still-ECO telemetry never authorize this release.
 - A final common command guard that applies exact firmware validation first,
   then rejects positive Auto/Eco current, start, or phase commands without
   fresh and sufficient physical site-current headroom. Safe zero-current,
@@ -612,6 +620,8 @@ Future Wattpilot changes must preserve these invariants:
   tested. The approved exception is a one-time release when leaving Auto/Eco
   for Manual/default mode: es-ESS may clear its previous Auto/Eco phase and
   current commands so the Manual session is not left constrained by PV control.
+  The release requires a connected client, explicit Manual/default telemetry,
+  and successful guarded dispatch; rejected stages remain pending for retry.
 - Normal Manual/default startup is command-free even while Wattpilot telemetry
   is still arriving. es-ESS may infer the reported phase from finite live power,
   but it must not issue `psm`, `amp`, or `frc`; idle automatic-phase

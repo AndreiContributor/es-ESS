@@ -62,6 +62,8 @@ requests. Both MQTT clients start with non-blocking initial connections and
 bounded reconnect backoff, so broker boot ordering does not terminate es-ESS.
 Successful main-broker connections and reconnects republish the retained
 runtime identity/status metadata before restoring main subscriptions.
+Subscription registration and reconnect snapshots share one lock; broker calls
+run after the snapshot is taken so registration cannot invalidate an iteration.
 
 Logging bootstrap makes one bounded, read-only `GetValue` query to
 `com.victronenergy.settings` `/Settings/System/TimeZone`. That named Venus
@@ -110,6 +112,21 @@ validated Venus OS baseline. Dependency updates require a new provenance audit,
 updated hashes and contract tests, the full hardware-free suite, and log-only
 GX startup/D-Bus registration validation on every supported Venus OS release.
 
+## Python Dependency Ownership
+
+`requirements-dev.txt` pins the Python 3.12 host/CI packages used for linting
+and the hardware-free Paho client contract test. It also lists the Python HTTP
+and WebSocket packages for reproducible developer setup. These versions are
+not automatically approved for GX deployment; the validated Venus OS runtime
+allowlist and operator checks remain authoritative.
+
+The GX environment must provide `paho-mqtt` for MQTT, `requests` for HTTP
+polling, and the Venus OS `gi`/`dbus` bindings. Wattpilot additionally needs
+`websocket-client`, whose installation is documented in README. The Victron
+`velib_python` files are the separately verified repository bundle above, not
+a pip dependency. GX startup checks should confirm the required imports after
+each supported firmware installation or rollback.
+
 ## Module Layout
 
 The active service modules intentionally remain in the repository root for now.
@@ -148,7 +165,7 @@ adds config, docs, and tests for the new active behavior.
 
 | Service | Module | Observed behavior if re-enabled | Current runtime status |
 | --- | --- | --- | --- |
-| `MqttDC` | `MqttDC.py` | Reads `MqttDC:*` sections, subscribes to MQTT power, voltage, and current topics, and publishes `com.victronenergy.dcsystem` D-Bus services. | Intentionally unavailable: commented out in `es-ESS.py` and absent from the maintained sample and active-service README table. Legacy user flags are ignored and preserved for compatibility. |
+| `MqttDC` | `MqttDC.py` | Reads `MqttDC:*` sections, subscribes to MQTT power, voltage, and current topics, and would publish `com.victronenergy.dcsystem.<instance>` D-Bus services. | Intentionally unavailable: commented out in `es-ESS.py` and absent from the maintained sample and active-service README table. Legacy user flags are ignored and preserved for compatibility. |
 | `ChargeCurrentReducer` | `ChargeCurrentReducer.py` | Reads battery and grid D-Bus values and writes local Venus MQTT grid-setpoint commands to reduce battery charge current. | Intentionally unavailable: commented out in `es-ESS.py` and absent from the maintained sample and active-service README table. It requires a separate safety and shared-setpoint-ownership implementation before reactivation. |
 | `FroniusSmartmeterRS485` | `FroniusSmartmeterRS485.py` | Creates a grid-meter D-Bus service and has experimental Modbus RTU setup in `initFinalize()`; its worker is commented out. | Intentionally unavailable: commented out in `es-ESS.py` and absent from the maintained sample and active-service README table. Legacy user flags are ignored and preserved for compatibility. |
 | `Grid2Bat` | none in this checkout | No module is present in this checkout. | Unavailable: its commented runtime hook is retained as historical context, but the stale sample flag was removed. Legacy user flags are ignored and preserved for compatibility. |
@@ -274,6 +291,12 @@ HTTP polling services use the `requests` library and publish `Connected=0` or
 null values after their existing consecutive-failure thresholds. Timeouts,
 connection/request failures, and malformed or incomplete required payloads all
 feed the same threshold; one transient failure retains the current debounce:
+
+Active Shelly grid and PM pollers pass configured credentials through HTTP
+authentication without placing them in request URLs. They log request-error
+types without exception text and reject missing or non-finite numeric readings
+before publishing a partial D-Bus update. The Shelly 3EM Net counters take one
+lock-protected snapshot before persisting the forward/reverse pair.
 
 - `FroniusSmartmeterJSON` polls the Fronius inverter meter JSON API.
 - `Shelly3EMGrid` polls the Shelly 3EM `/status` endpoint.

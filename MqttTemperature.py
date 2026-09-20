@@ -142,13 +142,12 @@ class TemperatureSensor:
         self.dbusService.register()
 
     def publishOnDbus(self):
-        if (self.dbusService is not None):
-            self.dbusService["/Temperature"] = self.value
-            self.dbusService["/CustomName"] = self.customName
-        
-        if (self.humidityTopic is not None):
+        if self.dbusService is None:
+            return
+        self.dbusService["/Temperature"] = self.value
+        self.dbusService["/CustomName"] = self.customName
+        if self.humidityTopic is not None:
             self.dbusService["/Humidity"] = self.humidity
-        
-        if (self.pressureTopic is not None):
+        if self.pressureTopic is not None:
             self.dbusService["/Pressure"] = self.pressure
 

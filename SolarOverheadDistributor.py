@@ -218,7 +218,7 @@ class SolarOverheadDistributor(esESSService):
       self.registerWorkerThread(self.dumpReservationBms, 2000)
       self.registerWorkerThread(self._validateNpcConsumerStates, 15 * 60 * 1000)
       self.registerWorkerThread(self._persistEnergyStats, 5 * 60 * 1000)
-      self.registerSingleThread(self._moveEnergyData, (86400 - time.time() % 86400) * 1000)
+      self.registerSingleThread(self._moveEnergyData, max(1, int((86400 - time.time() % 86400) * 1000)))
 
    def initFinalize(self):
       #Service is operable already. Need to parse Http/Mqtt consumer and throw them over to mqtt-based processing. 
