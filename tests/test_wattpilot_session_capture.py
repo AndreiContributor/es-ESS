@@ -57,17 +57,28 @@ class RepeatingProxy:
 
 
 class MappingBus:
+    def __init__(
+        self,
+        phase="1 phase",
+        vehicle_phase_capability="Automatic",
+        power=2300,
+    ):
+        self.phase = phase
+        self.vehicle_phase_capability = vehicle_phase_capability
+        self.power = power
+
     def get_object(self, _service, path):
         values = {
             "/Connected": 1,
             "/ModeLiteral": "Auto",
             "/ControlStateLiteral": "Charging 1 phase",
-            "/PhaseModeLiteral": "1 phase",
+            "/PhaseModeLiteral": self.phase,
+            "/VehiclePhaseCapability": self.vehicle_phase_capability,
             "/StatusLiteral": "Charging",
             "/SetCurrent": 10,
             "/Current": 10,
             "/PvAllowance": 2400,
-            "/Ac/Power": 2300,
+            "/Ac/Power": self.power,
             "/TelemetryHealthy": 1,
             "/CommandAuthorityOk": 1,
             "/SiteCurrentSource": "Shelly3EMGen3",
@@ -103,6 +114,9 @@ def sample(epoch, power, phase="1 phase", **values):
         "read_seconds": values.pop("read_seconds", 0.05),
         "ev_power_w": power,
         "phase_mode": phase,
+        "vehicle_phase_capability": values.pop(
+            "vehicle_phase_capability", "Automatic"
+        ),
         "telemetry_healthy": values.pop("telemetry_healthy", 1),
         "command_authority_ok": values.pop("command_authority_ok", 1),
         "site_source_connected": values.pop("site_source_connected", 1),
@@ -197,6 +211,35 @@ class WattpilotSessionCaptureTests(unittest.TestCase):
         self.assertEqual(result["one_phase_seconds"], 15)
         self.assertEqual(result["three_phase_seconds"], 5)
 
+    def test_one_phase_policy_counts_three_phase_charging_as_unsafe_evidence(self):
+        samples = [
+            sample(
+                0,
+                4200,
+                phase="3 phases",
+                vehicle_phase_capability="OnePhaseOnly",
+            ),
+            sample(
+                10,
+                4200,
+                phase="3 phases",
+                vehicle_phase_capability="OnePhaseOnly",
+            ),
+        ]
+
+        result = self.capture.analyze_samples(
+            samples, requested_interval=10, max_gap_seconds=30
+        )
+
+        self.assertEqual(
+            result["safety_sample_counts"]["one_phase_policy_three_phase"],
+            2,
+        )
+        self.assertEqual(
+            result["safety_seconds"]["one_phase_policy_three_phase"],
+            10,
+        )
+
     def test_transition_tracker_does_not_call_baseline_or_new_trip_a_phase_change(self):
         events = []
         tracker = self.capture.TransitionTracker(
@@ -256,6 +299,10 @@ class WattpilotSessionCaptureTests(unittest.TestCase):
         )
         self.assertEqual(
             ev_fields["charger_one_phase_mapping"], "/Charger1PhaseMapping"
+        )
+        self.assertEqual(
+            ev_fields["vehicle_phase_capability"],
+            "/VehiclePhaseCapability",
         )
         self.assertEqual(
             system_fields["venus_consumption_l3_power_w"],
@@ -320,9 +367,45 @@ class WattpilotSessionCaptureTests(unittest.TestCase):
         self.assertIn("actual timestamp integration", summary)
         self.assertIn("Source observed:          Shelly3EMGen3", summary)
         self.assertIn("One-phase mapping:        L3", summary)
+        self.assertIn("Vehicle phase capability: Automatic", summary)
         self.assertIn("Selected-source L3 current", summary)
         self.assertIn("Venus consumption L3 power", summary)
         self.assertIn("D-Bus read failures: 0", summary)
+
+    def test_short_capture_marks_one_phase_policy_violation_as_anomaly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "current.log"
+            output = root / "capture"
+            log.write_text("existing history\n", encoding="utf-8")
+            args = self.capture.build_parser().parse_args(
+                [
+                    "--duration",
+                    "0.04",
+                    "--interval",
+                    "0.01",
+                    "--max-gap",
+                    "0.1",
+                    "--output-dir",
+                    str(output),
+                    "--log-file",
+                    str(log),
+                ]
+            )
+
+            bus = MappingBus(
+                phase="3 phases",
+                vehicle_phase_capability="OnePhaseOnly",
+                power=4200,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = self.capture.run_capture(args, bus=bus)
+
+            summary = (output / "summary.txt").read_text(encoding="utf-8")
+
+        self.assertEqual(result, 0)
+        self.assertIn("Result: ANOMALY", summary)
+        self.assertIn("one phase policy three phase", summary)
 
     def test_public_source_keeps_capture_command_free(self):
         source = SCRIPT_PATH.read_text(encoding="utf-8")

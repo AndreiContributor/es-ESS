@@ -233,7 +233,7 @@ configuration value as `%%`.
 | [Common]                 | LogRetentionDays     | Number of local calendar days retained, including the active `current.log`. Must be greater than `0`. | Integer       | 10                           |
 | [Common]                 | NumberOfThreads      | Number of Threads to use. 3-XX depending on enabled service count.                                     | Integer       | 5                            |
 | [Common]                 | ServiceMessageCount  | Number of ServiceMessages to publish on Mqtt. See [Service Messages](#service-messages)                | Integer       | 20                           |
-| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 15                           |
+| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 17                           |
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
 | [Common]                 | BatteryMaxChargeInWh | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
@@ -280,6 +280,9 @@ configuration errors are logged at CRITICAL level and startup exits with status
   `6..32 A`, with the maximum greater than or equal to the minimum.
 - `ThreePhasePvSurplusStartW` must be greater than
   `ThreePhasePvSurplusStopW` so phase-switch hysteresis is not inverted.
+- `VehiclePhaseCapability` must be exactly `Automatic` or `OnePhaseOnly`.
+  The latter is an explicit operator policy for vehicles that must never be
+  switched to three phases by es-ESS in Auto/Eco mode.
 - `BatteryAssistSocMin` must be within `0..100`. When battery assist is enabled,
   `BatteryAssistMaxSeconds` must be greater than `0`.
 - `BatterySocFreshSeconds` must be greater than `0`; it limits the age of
@@ -848,6 +851,7 @@ or force-state commands.
 | [FroniusWattpilot] | SiteCurrentSource | Mandatory site-current provider. `VenusSystem` preserves the calculated Victron consumption-current source; `Shelly3EMGen3` selects the explicitly configured dedicated meter. The selected source never falls back automatically. | String | VenusSystem |
 | [FroniusWattpilot] | SiteMaxCurrent | Mandatory Auto/Eco whole-site limit in amperes, applied independently to physical L1, L2, and L3. Must be within `6..100 A`; the `20 A` default is not universal and must be configured for the site's protective device and wiring. This protects the site supply calculation, not a lower-rated downstream branch. | Integer (A per phase) | 20 |
 | [FroniusWattpilot] | Charger1PhaseMapping | Physical site phase used by Wattpilot one-phase charging after any electrician-installed phase rotation. Allowed values are `L1`, `L2`, or `L3`. | String | L1 |
+| [FroniusWattpilot] | VehiclePhaseCapability | Auto/Eco vehicle phase policy. `Automatic` preserves normal one-/three-phase selection. `OnePhaseOnly` limits starts, distributor requests, current commands, and phase switching to one phase; Manual mode remains user-controlled. | String | Automatic |
 | [FroniusWattpilot] | SiteCurrentFreshSeconds | Positive maximum age of whole-site L1/L2/L3 current and, during an active charge, Wattpilot phase-current telemetry. Each eligible controller cycle live-reads the site-current paths once and reuses that timestamped safety result through command dispatch, so valid unchanged values remain fresh while failed, missing, invalid, stale, or dispatch-expired data fails Auto/Eco closed. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | SiteCurrentRecoverySeconds | Non-negative continuous safe-headroom time before a stopped charge may restart. A running same-phase current increase takes this fast path when fresh assigned PV covers the next ampere plus one extra allocation step. With only the next full step assigned, a separate slow current timer requires at least 600 seconds or the longer `MinPhaseSwitchSeconds` duration. Both paths release only 1 A, rebuild their timer after a sent increase, and leave reductions immediate. | Integer (seconds) | 30 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. Must be greater than `ThreePhasePvSurplusStopW`. The maintained 4500 W default is above the typical 3-phase 6 A electrical floor while matching observed Wattpilot-app-style behavior more closely than a very conservative 5000 W threshold. | Integer (W) | 4500 |
@@ -904,7 +908,7 @@ snapshot itself continues to poll at `PollFrequencyMs`.
 In `Auto` / Wattpilot `ECO` mode, es-ESS follows this PV-start policy with an
 optional running-session grid fallback:
 
-- A new charge starts only after a fresh, distributor-assigned **real PV allowance** has continuously met the electrical minimum for `MinOnOffSeconds`. It starts on one phase when allowance is below the phase-up threshold, or directly on three phases when allowance already meets the full phase-up threshold. Battery assist cannot create either start.
+- A new charge starts only after a fresh, distributor-assigned **real PV allowance** has continuously met the electrical minimum for `MinOnOffSeconds`. With `VehiclePhaseCapability=Automatic`, it starts on one phase when allowance is below the phase-up threshold, or directly on three phases when allowance already meets the full phase-up threshold. `OnePhaseOnly` always starts on one phase and never requests surplus for a three-phase probe. Battery assist cannot create either start.
 - Auto/Eco also requires fresh whole-site current on physical L1/L2/L3. One-phase charging uses `Charger1PhaseMapping`; three-phase charging receives one equal current command capped by the smallest available phase headroom. Site-current reductions and stops take priority over allowance grace, battery assist, and grid fallback. There is no overload grace above `SiteMaxCurrent`.
 - If the selected asynchronous Shelly site-current poll fails, its command-free worker immediately withdraws the Wattpilot distributor request and logs one sanitized failure transition. With `TransientFailureGraceSeconds=0`, or for authentication, HTTP/device, or payload errors, the existing strict fail-closed stop applies immediately. With an opt-in `1..5` second value, only a transport connection failure may retain the last complete still-fresh sample for an already-running charge. During that short `Degraded` interval, starts, current increases, and phase-up are blocked; equal/lower current, phase-down, zero current, and Force Off remain available subject to physical headroom. Grace expiry invalidates the cached sample and invokes the normal stop. Measured Wattpilot consumption and calculated raw overhead remain truthful diagnostics, and no positive allocation returns until a complete successful poll plus `SiteCurrentRecoverySeconds`. Recovery produces one transition record; repeated failures do not flood the log.
 - After headroom recovers, it must remain safe for `SiteCurrentRecoverySeconds`. A running same-phase increase takes the fast `SiteCurrentRecoverySeconds` path when fresh assigned PV continuously covers the next ampere plus one additional live allocation step across distinct allowance updates. The extra step absorbs normal allowance feedback after measured EV demand rises. If fresh allowance continuously covers only the next full ampere, a separate slow current timer may release that ampere after at least 600 seconds or the longer `MinPhaseSwitchSeconds` duration; this also lets an already-running charge reach the effective current maximum without requesting power for an uncommandable ampere. The slow path can still be reversed if PV falls after the increase, so it trades speed for fewer boundary retries rather than guaranteeing no reversal. Each path rises by only 1 A, rebuilds its timer after a sent increase, and restarts on a change between support levels. This adds no configuration parameter and does not share the phase-switch candidate timer. Current reductions and safety stops remain immediate. No normal increase is issued while the connected EV reports no material charging power. A PV-only reduction preserves an already-recovered site-current timer and positive distributor request when fresh physical headroom still covers the previous current; a physical-headroom reduction or selected-source fault resets recovery and withdraws demand until it is safe again. A stopped session still obeys `MinOnOffSeconds`, and a running one-phase session still needs `MinPhaseSwitchSeconds` before phase-up. A new stopped session can start directly on three phases once the normal start and site-recovery conditions are both satisfied.
@@ -912,6 +916,13 @@ optional running-session grid fallback:
 - Wattpilot may retain the previous configured current while stopped. es-ESS does not treat a lower pre-start setpoint as active EV-current reduction or reset already-stable site headroom. Phase, current, and Start commands are still individually guarded; if any is rejected, the session remains publicly stopped, no transition power is reported, and the stable-PV interval is rebuilt before retrying.
 - Every positive Auto/Eco current target passes the final firmware, ownership, mode, and site-current guard. When connected Wattpilot telemetry has explicitly confirmed the exact same `amp` setpoint since the current connection began, the controller accepts that stage as a no-op instead of retransmitting it or repeating the INFO adjustment record. This accepted no-op can satisfy the current stage of a phase-current-Start transaction. Missing, malformed, reset-after-reconnect, or different telemetry sends the command normally; rejected no-ops abort later transaction stages. Zero-current stops, changed targets, phase commands, Force Off, and Manual-mode constraint release are never suppressed by this optimization.
 - Both one-to-three and three-to-one phase changes use `MinPhaseSwitchSeconds` as their normal stability timer and minimum interval between phase commands. On the normal current-adjustment path, an active one-to-three candidate survives a shorter-than-`SurplusDropGraceSeconds` dip below the phase-up threshold only while fresh allowance remains above the effective three-phase floor; a deeper dip that requires minimum-current fallback resets it. Battery assist cannot create or preserve a phase-up candidate, and fresh assigned allowance must complete the normal phase-up conditions before any three-phase command is sent. If current must first be reduced, logs describe preparation rather than a completed phase action. The controller reports `Switching to ...`, changes remembered phase state, and begins confirmation only after the Wattpilot accepts the phase command; a rejected safety fallback stops Auto/Eco fail-closed.
+- With `VehiclePhaseCapability=OnePhaseOnly`, Auto/Eco never sends a
+  three-phase command, never builds a phase-up candidate, and caps direct
+  `/SetCurrent` requests to the effective one-phase maximum. If live telemetry
+  already reports three-phase charging after deployment or vehicle/profile
+  change, the normal guarded phase-down sequence reconciles it to one phase;
+  if that safety fallback is rejected, Auto/Eco stops fail-closed. This policy
+  does not command or constrain Manual mode.
 - A confirmed vehicle disconnect clears any pending phase-switch candidate, so reconnecting requires a new complete `MinPhaseSwitchSeconds` interval from fresh assigned PV. A transient false connection reading inside `CarDisconnectConfirmSeconds` does not reset the timer, and disconnect does not erase the cooldown from the last confirmed phase command.
 - During a PV deficit, Auto/Eco first reduces the common Wattpilot current according to available PV. If PV cannot sustain the configured minimum, the controller commands the minimum and requires fresh current telemetry before battery or grid continuation. A valid battery bridge holds that minimum-current phase mode for its bounded window; it never holds a previous higher setpoint.
 - With `AllowGridCharging=false`, loss or expiry of an eligible battery bridge reduces three-phase charging to one phase when fresh continuation PV supports it; otherwise Auto/Eco stops. `AllowanceDropGraceSeconds` starts at the original below-minimum event and is not restarted after a full battery-assist window. Stale grid telemetry and the grid-import guard can still act sooner.
@@ -1012,7 +1023,8 @@ state is published on the Wattpilot runtime-status contract:
   EVCS overview tile.
 - D-Bus paths on `com.victronenergy.evcharger.*_FroniusWattpilot`:
   `/ControlState`, `/ControlStateLiteral`, `/PhaseMode`,
-  `/PhaseModeLiteral`, `/BatteryAssistActive`, `/GridImportGuardActive`, and
+  `/PhaseModeLiteral`, `/VehiclePhaseCapability`, `/BatteryAssistActive`,
+  `/GridImportGuardActive`, and
   `/TelemetryHealthy`, plus the `/SiteCurrent*`, `/SiteHeadroom*`,
   `/SiteAllowedCurrent`, `/SiteLimitingPhase`, and site-guard diagnostic paths,
   plus `/BatteryAssist/Shortfall`, `/BatteryAssist/ShortfallPerPhase`,
@@ -1154,7 +1166,9 @@ the controller-normalized selected site-current source, source freshness and
 headroom per phase, separate Venus consumption power, controller command
 evidence, and message cadence. This makes the report follow the configured
 source, including `Shelly3EMGen3`, and records `Charger1PhaseMapping` so a
-one-phase L1/L2/L3 installation is interpreted correctly. The launcher keeps
+one-phase L1/L2/L3 installation is interpreted correctly. It also records
+`VehiclePhaseCapability` and labels any measured three-phase charging or
+phase-up evidence under `OnePhaseOnly` as an anomaly. The launcher keeps
 one Python process and one persistent system D-Bus connection instead of
 starting a D-Bus command for every value in every sample.
 
@@ -1799,7 +1813,7 @@ Additionally there are the following configuration options available:
 | ---------- | ---------|---- | ------------- |--|
 | [Common]    | NumberOfThreads |  Number of threads, es-ESS should use. | int | 5 |
 | [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 20 |
-| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 15 |
+| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 17 |
 | [Common]    | HttpRequestTimeout | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers. | double | 5 |
 
 ### Service Messages

@@ -187,6 +187,12 @@ It owns:
   target-current, distributor-request, and shared bidirectional phase timing
   decisions to
   `WattpilotPhaseDecisions.py`.
+- The configured Auto/Eco vehicle phase policy. `Automatic` preserves normal
+  one-/three-phase selection. `OnePhaseOnly` suppresses three-phase surplus
+  probes and phase-up candidates, caps current to one-phase capacity, rejects
+  a three-phase command at the final command boundary, and uses the existing
+  guarded phase-down sequence when live telemetry already reports three
+  phases. It does not constrain Manual mode.
 - Controller-owned canonical Wattpilot allocation steps. Each phase interval
   initializes its integer watts-per-ampere step from the ceiling of usable live
   voltage, permits conservative upward adjustment, and does not decrease on
@@ -356,6 +362,9 @@ It owns:
   the Wattpilot-reported effective maximum.
 - SolarOverheadDistributor maximum-request sizing, including the limited
   one-phase phase-up probe and cooldown suppression.
+- The `allow_three_phase` decision input used to suppress phase-up selection
+  and cap distributor demand at the one-phase maximum for an explicit
+  one-phase-only vehicle policy.
 - Shared one-to-three and three-to-one stability/cooldown decisions, returning
   the next controller-owned candidate timer values.
 - One-to-three short-drop grace eligibility on the normal current-adjustment
@@ -485,6 +494,12 @@ It must not issue Wattpilot commands. It is an observer and publisher only. Raw
 WebSocket callbacks should record lightweight evidence and let the normal
 controller path publish status.
 
+The separate main EV-charger service publishes the configured
+`/VehiclePhaseCapability` observation and its retained main-MQTT counterpart
+under `es-ESS/FroniusWattpilot/VehiclePhaseCapability`. This is controller
+policy telemetry, not part of the `WattpilotRuntimeStatus` namespace and not a
+writable vehicle-profile selector.
+
 ### `SolarOverheadDistributor.py`
 
 `SolarOverheadDistributor.py` is the PV surplus allocation service used by the
@@ -512,6 +527,7 @@ Future Wattpilot changes must preserve these invariants:
 - `SiteMaxCurrent` is a mandatory physical per-phase Auto/Eco limit.
   `SiteCurrentSource` must explicitly select `VenusSystem` or
   `Shelly3EMGen3`; `Charger1PhaseMapping` must be L1, L2, or L3;
+  `VehiclePhaseCapability` must be `Automatic` or `OnePhaseOnly`;
   site-current freshness must be positive and recovery time non-negative.
   Shelly channel mapping must be a one-to-one permutation of L1/L2/L3.
 - Wattpilot commands must remain blocked until `fwv` telemetry exactly matches
@@ -555,6 +571,14 @@ Future Wattpilot changes must preserve these invariants:
   EV phase current from all physical phases and receives one equal current
   command capped by the smallest headroom. Wattpilot cannot receive different
   current commands per phase.
+- `VehiclePhaseCapability=OnePhaseOnly` is an Auto/Eco command policy, not
+  vehicle auto-detection. It must prevent three-phase starts, phase-up
+  candidates, three-phase surplus probes, and positive `psm=2` dispatch at the
+  final command boundary. If live Auto/Eco telemetry is already three-phase,
+  the controller must use the normal site-current-, authority-, and
+  confirmation-guarded phase-down transaction, or stop fail-closed when the
+  fallback cannot be accepted. Manual mode remains reporting-only and
+  user-controlled.
 - Site-current reductions and stops run before allowance grace, battery assist,
   grid fallback, or transition grace. Recovery must remain continuously safe
   for `SiteCurrentRecoverySeconds`. During an already-running same-phase

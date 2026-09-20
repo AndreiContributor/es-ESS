@@ -184,7 +184,8 @@ The human and JSON reports contain:
 - runtime health: initialization/restart evidence, Wattpilot reconnects, log
   continuity, exceptions, dependencies, and compatibility;
 - sanitized configuration: enabled services and important Wattpilot safety
-  parameters, including site-current limit/mapping/freshness/recovery;
+  parameters, including vehicle phase capability and site-current
+  limit/mapping/freshness/recovery;
 - current state: optional service, mode, connectivity, authority, telemetry,
   phase, firmware, and native-setting snapshots;
 - structured connection sessions and their charging intervals: plug/first-start/
@@ -223,6 +224,9 @@ Version 4 detects or summarizes:
 - allowance freshness and `AllowanceDropGraceSeconds`, including a transient
   `0 W` allocation during three-phase charging;
 - excessive, premature, low-allowance, or unconfirmed phase switching;
+- any three-phase target or confirmed three-phase transition while
+  `VehiclePhaseCapability=OnePhaseOnly`; absence of those events is reported as
+  a dedicated pass, without claiming that the report identified a vehicle;
 - current outside configured per-phase bounds;
 - changed-current command rate, guarded equal-target no-ops, rapid direction
   reversals within one normal controller cycle, and changed-current commands

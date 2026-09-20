@@ -384,6 +384,45 @@ class EsEssDailyReportTests(unittest.TestCase):
         self.assertIn("FAIL", self._statuses(result, "phase timing"))
         self.assertIn("FAIL", self._statuses(result, "phase threshold"))
 
+    def test_one_phase_only_policy_rejects_three_phase_evidence(self):
+        lines = [
+            self._line(
+                "13:00:00",
+                "ServiceMessage: Switching to 3-phase from PV surplus.",
+            ),
+            self._line(
+                "13:00:05",
+                "ServiceMessage: Wattpilot phase telemetry confirmed 3-phase charging.",
+            ),
+        ]
+        result = self._run(
+            lines,
+            AUDIT.AuditSettings(
+                log_level="APP_DEBUG",
+                vehicle_phase_capability="OnePhaseOnly",
+            ),
+        )
+
+        self.assertIn(
+            "FAIL",
+            self._statuses(result, "vehicle phase capability"),
+        )
+        self.assertEqual(result.overall, "ANOMALY")
+
+    def test_one_phase_only_policy_passes_without_three_phase_evidence(self):
+        result = self._run(
+            [self._line("13:00:00", "Wattpilot Modelstatus: Charging")],
+            AUDIT.AuditSettings(
+                log_level="APP_DEBUG",
+                vehicle_phase_capability="OnePhaseOnly",
+            ),
+        )
+
+        self.assertIn(
+            "PASS",
+            self._statuses(result, "vehicle phase capability"),
+        )
+
     def test_phase_preparation_messages_are_not_counted_as_commands(self):
         records = self._records(
             [
@@ -747,6 +786,7 @@ MaxCurrentPerPhase=16
 SiteCurrentSource=Shelly3EMGen3
 SiteMaxCurrent=20
 Charger1PhaseMapping=L1
+VehiclePhaseCapability=OnePhaseOnly
 SiteCurrentFreshSeconds=15
 SiteCurrentRecoverySeconds=30
 ThreePhasePvSurplusStartW=4500
@@ -775,6 +815,7 @@ TransientFailureGraceSeconds=5
         self.assertEqual(warnings, [])
         self.assertEqual(settings.allowance_drop_grace_seconds, 30)
         self.assertEqual(settings.site_current_source, "Shelly3EMGen3")
+        self.assertEqual(settings.vehicle_phase_capability, "OnePhaseOnly")
         self.assertEqual(
             settings.site_current_transient_failure_grace_seconds, 5
         )

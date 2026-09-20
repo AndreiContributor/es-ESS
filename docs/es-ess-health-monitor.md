@@ -107,10 +107,12 @@ deployment, or Wattpilot validation work:
   and a read-only per-file comparison with the Venus OS system copy.
 - Disk usage for `/` and `/data`.
 - Selected config values that affect Wattpilot safety and PV policy, including
-  the mandatory site-current limit, one-phase mapping, freshness, and recovery.
+  the vehicle phase capability, mandatory site-current limit, one-phase
+  mapping, freshness, and recovery.
 - Wattpilot standard EV-charger D-Bus paths such as `/Connected`,
   `/StatusLiteral`, `/ModeLiteral`, `/StartStopLiteral`, `/Ac/Power`,
-  `/Current`, `/SetCurrent`, `/PvAllowance`, and `/PhaseModeLiteral`.
+  `/Current`, `/SetCurrent`, `/PvAllowance`, `/PhaseModeLiteral`, and
+  `/VehiclePhaseCapability`.
 - Wattpilot runtime-status contract paths such as `/ControlStateLiteral`,
   `/BatteryAssistActive`, `/GridImportGuardActive`, `/TelemetryHealthy`,
   `/CompatibilityOk`, `/CompatibilityLiteral`, `/CommandAuthorityOk`,
@@ -188,6 +190,9 @@ Healthy output normally shows:
 - `TelemetryHealthy` is `1` during Auto/Eco decisions.
 - `SiteCurrentTelemetryHealthy` is `1`, each phase age remains inside
   `SiteCurrentFreshSeconds`, and limiting phase/headroom matches live load.
+- `/VehiclePhaseCapability` matches `config.ini`. Under `OnePhaseOnly`, an
+  Auto/Eco session remains one-phase; a three-phase observation is a stop-and-
+  investigate condition. Manual operation is not constrained by this policy.
 - A configured Shelly connection grace appears as source status `Degraded`.
   During that bounded interval the last sample age continues increasing,
   positive allocation and risky commands remain blocked, and the source must
@@ -212,6 +217,10 @@ Stop the active validation and inspect logs immediately if:
 - Battery assist exceeds configured duration or shortfall expectations.
 - Auto/Eco remains active while site-current telemetry is unhealthy, the guard
   is blocked, or a physical phase has insufficient commanded headroom.
+- Auto/Eco reports three-phase charging while
+  `VehiclePhaseCapability=OnePhaseOnly`, after allowing only for the bounded
+  guarded phase-down transaction immediately following deployment or a policy
+  change.
 - Manual mode produces Wattpilot start, stop, current, or phase commands.
 
 ## Useful Environment Overrides
