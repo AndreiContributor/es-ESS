@@ -227,6 +227,34 @@ password. Do not print credential-bearing configuration in diagnostics. Python
 INI interpolation is currently enabled, so write each literal `%` in a
 configuration value as `%%`.
 
+An interactive terminal wizard is available for creating a complete
+configuration from the maintained sample:
+
+```sh
+cd /data/es-ESS
+python scripts/create-config.py
+```
+
+Use `--output /path/to/config.ini` only when a different destination is
+required. The wizard asks for common and MQTT settings, lets the operator
+select supported services, and then asks for every applicable service value.
+It also supports repeatable MQTT sensors, exporters, PV inverters, Shelly PM
+meters, and HTTP/MQTT solar-overhead consumers. Password input is hidden and
+literal percent signs are escaped for the runtime INI parser.
+
+For Wattpilot, the wizard asks for minimum and maximum charging **current** per
+phase (`6..32 A`), the one-phase-only or automatic one-/three-phase policy,
+site-current limits, PV phase-switch thresholds, battery-assist limits, and
+no-grid safeguards. es-ESS has no configurable minimum/maximum Wattpilot
+voltage setting. Manual charging remains user-controlled.
+
+Before writing, the wizard shows a credential-free summary and requests final
+confirmation. If `config.ini` already exists, it is copied to a timestamped
+owner-only backup before the new file is installed atomically. Both the new
+configuration and backup are restricted to mode `0600`. Cancelling the wizard
+does not write a partial configuration. Dormant services are deliberately not
+offered.
+
 | Section                  | Value name           |  Descripion                                                                                            | Type          | Example Value                |
 | ------------------------ | ---------------------|------------------------------------------------------------------------------------------------------- | ------------- |------------------------------|
 | [Common]                 | LogLevel             | Log level to use. The maintained diagnostic sample uses `APP_DEBUG`; use `INFO` for lower-volume normal operation when the daily-report analyzer is not required. | String | APP_DEBUG |
