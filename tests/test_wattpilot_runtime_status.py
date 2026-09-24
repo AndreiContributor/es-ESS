@@ -90,6 +90,21 @@ class FakeWattpilot:
         self.command_calls = []
         self.nativePvSurplusEnabled = False
         self.flexibleTariffEnabled = False
+        self.firmware = "42.5"
+        self.allPropsInitialized = True
+        self.allProps = {
+            "mca": 7,
+            "mci": 0,
+            "mcpd": 0,
+            "mcpea": None,
+            "fmt": 300000,
+            "su": True,
+            "sua": False,
+            "sumd": 10000,
+            "mpwst": 120000,
+            "mptwt": 600000,
+            "modelStatus": 4,
+        }
 
     def add_event_handler(self, event, callback):
         self.handlers.setdefault(event, []).append(callback)
@@ -127,6 +142,8 @@ class FroniusWattpilot:
         self.siteCurrentForcedOff = False
         self.allowance_fresh = True
         self.minimum_allowance = False
+        self.minCurrentPerPhase = 6
+        self.maxCurrentPerPhase = 16
         self.currentPhaseMode = 1
         self.pendingPhaseSwitchMode = 0
         self.batteryAssistActive = False
@@ -854,12 +871,60 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
             "ExpectedWattpilotFirmware",
             "ActualWattpilotFirmware",
             "ValidatedWattpilotAppVersion",
+            "VehicleCompatibility/Status",
+            "VehicleCompatibility/NativeMinimumCurrent",
+            "VehicleCompatibility/EffectiveMinimumCurrent",
+            "VehicleCompatibility/AllowChargePause",
+            "VehicleCompatibility/MinimumChargingIntervalSeconds",
+            "VehicleCompatibility/MinimumChargePauseDurationSeconds",
+            "VehicleCompatibility/MinimumChargePauseEndsAtMs",
+            "VehicleCompatibility/MinimumChargeTimeSeconds",
+            "VehicleCompatibility/SimulateUnpluggingShort",
+            "VehicleCompatibility/SimulateUnpluggingAlways",
+            "VehicleCompatibility/SimulateUnpluggingDurationSeconds",
+            "VehicleCompatibility/MinimumPhaseWishSwitchTimeSeconds",
+            "VehicleCompatibility/MinimumPhaseToggleWaitTimeSeconds",
+            "VehicleCompatibility/ModelStatusRaw",
+            "VehicleCompatibility/ModelStatusLiteral",
+            "VehicleCompatibility/MissingFields",
+            "VehicleCompatibility/InvalidFields",
         }
         self.assertEqual(
             set(published),
             {"{0}/{1}".format(RUNTIME_STATUS_MQTT_PREFIX, suffix) for suffix in expected_suffixes},
         )
         self.assertTrue(all(retain for _payload, retain in published.values()))
+
+    def test_vehicle_compatibility_diagnostics_are_read_only_and_partial(self):
+        controller, _reporter = self.make_controller()
+
+        self.publish(controller, "WaitingForSun")
+
+        self.assertEqual(
+            controller.dbusService["/VehicleCompatibility/NativeMinimumCurrent"],
+            7,
+        )
+        self.assertEqual(
+            controller.dbusService["/VehicleCompatibility/EffectiveMinimumCurrent"],
+            7,
+        )
+        self.assertEqual(
+            controller.dbusService["/VehicleCompatibility/AllowChargePause"],
+            -1,
+        )
+        self.assertEqual(
+            controller.dbusService["/VehicleCompatibility/MinimumChargeTimeSeconds"],
+            300,
+        )
+        self.assertEqual(
+            controller.dbusService["/VehicleCompatibility/ModelStatusLiteral"],
+            "Unknown(4)",
+        )
+        self.assertIn(
+            "acp",
+            controller.dbusService["/VehicleCompatibility/MissingFields"],
+        )
+        self.assertEqual(controller.wattpilot.command_calls, [])
 
 
 if __name__ == "__main__":

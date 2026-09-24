@@ -378,6 +378,11 @@ class Wattpilot(object):
         return self._modelStatus
 
     @property
+    def modelStatusRaw(self):
+        """Return the last well-typed raw model-status value."""
+        return self._modelStatusRaw
+
+    @property
     def carConnected(self):
         return self._carConnected
 
@@ -680,7 +685,14 @@ class Wattpilot(object):
         elif name=="cak":
             self._cak = value
         elif name=="modelStatus":
-            self._modelStatus = WattpilotModelStatus(value)
+            self._modelStatusRaw = value if type(value) is int else None
+            try:
+                self._modelStatus = WattpilotModelStatus(value)
+            except (TypeError, ValueError):
+                # New firmware may add status values before the local enum is
+                # updated. Preserve the raw diagnostic while making the
+                # controller's known-state selection fail closed.
+                self._modelStatus = None
         elif name=="lmo":
             receivedAt = time.time()
             previousMode = self._mode
@@ -906,6 +918,7 @@ class Wattpilot(object):
         self._allProps={}
         self._allPropsInitialized=False
         self._modelStatus = None
+        self._modelStatusRaw = None
         self._voltage1=None
         self._voltage2=None
         self._voltage3=None

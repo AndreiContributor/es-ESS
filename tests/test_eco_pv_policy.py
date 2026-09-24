@@ -2024,6 +2024,27 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
             self.fwp.WattpilotStartStop.Off
         )
 
+    def test_native_minimum_raises_allowance_and_current_floor(self):
+        controller = self._controller()
+        controller.wattpilot.allPropsInitialized = True
+        controller.wattpilot.allProps = {"mca": 7}
+
+        self.assertEqual(controller.getEffectiveMinCurrent(), 7)
+        self.assertEqual(controller.minimumChargePower(), 7 * 230)
+        self.assertEqual(controller.targetCurrentForPhase(1, 6 * 230), 0)
+        self.assertEqual(controller.targetCurrentForPhase(1, 7 * 230), 7)
+
+    def test_missing_native_minimum_blocks_positive_auto_commands(self):
+        controller = self._controller()
+        controller.wattpilot.allPropsInitialized = True
+        controller.wattpilot.allProps = {}
+        controller.currentPhaseMode = 1
+
+        self.assertIsNone(controller.getEffectiveMinCurrent())
+        self.assertFalse(controller.canChargeAtMinimumCurrent())
+        self.assertFalse(controller.allowWattpilotCommand("amp", 6))
+        self.assertIn("native minimum current", controller.siteCurrentGuardReason)
+
     def test_stale_raw_overhead_cannot_cause_a_phase_switch(self):
         controller = self._controller()
         controller.currentPhaseMode = 2
