@@ -203,7 +203,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "16")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
         self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["Common"]["GridSetPointMinW"], "0")
@@ -226,6 +226,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 "config.ini.v13.backup",
                 "config.ini.v14.backup",
                 "config.ini.v15.backup",
+                "config.ini.v16.backup",
                 "config.ini.v6.backup",
                 "config.ini.v7.backup",
                 "config.ini.v8.backup",
@@ -244,7 +245,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "16")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
         self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["NoBatToEV"]["UseRelay"], "-1")
@@ -275,7 +276,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "16")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "5")
         self.assertEqual(migrated["Services"]["Shelly3EMGrid"], "true")
         self.assertEqual(migrated["Services"]["ShellyPMInverter"], "true")
@@ -298,7 +299,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "16")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
         self.assertEqual(migrated["Common"]["HttpRequestTimeout"], "12")
 
     def test_version_10_removes_obsolete_phase_switch_delay(self):
@@ -314,7 +315,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "16")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
         self.assertEqual(
             migrated["FroniusWattpilot"]["MinPhaseSwitchSeconds"], "600"
         )
@@ -330,6 +331,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 "config.ini.v13.backup",
                 "config.ini.v14.backup",
                 "config.ini.v15.backup",
+                "config.ini.v16.backup",
                 "config.ini.v9.backup",
             ],
         )
@@ -347,7 +349,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "16")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
         self.assertEqual(migrated["Common"]["GridSetPointMinW"], "-50")
         self.assertEqual(migrated["Common"]["GridSetPointMaxW"], "-50")
         self.assertEqual(migrated["Mqtt"]["SslVerification"], "Insecure")
@@ -362,6 +364,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 "config.ini.v13.backup",
                 "config.ini.v14.backup",
                 "config.ini.v15.backup",
+                "config.ini.v16.backup",
             ],
         )
 
@@ -374,7 +377,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "16")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
         self.assertEqual(migrated["Common"]["LogLevel"], "APP_DEBUG")
         self.assertEqual(migrated["Common"]["LogRetentionDays"], "10")
         self.assertEqual(
@@ -385,6 +388,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 "config.ini.v13.backup",
                 "config.ini.v14.backup",
                 "config.ini.v15.backup",
+                "config.ini.v16.backup",
             ],
         )
 
@@ -410,7 +414,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "16")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
         self.assertEqual(migrated["FroniusWattpilot"]["SiteMaxCurrent"], "20")
         self.assertEqual(
             migrated["FroniusWattpilot"]["Charger1PhaseMapping"], "L1"
@@ -428,6 +432,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 "config.ini.v13.backup",
                 "config.ini.v14.backup",
                 "config.ini.v15.backup",
+                "config.ini.v16.backup",
             ],
         )
 
@@ -463,7 +468,7 @@ class ConfigMigrationTests(unittest.TestCase):
         )
 
         wattpilot = migrated["FroniusWattpilot"]
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "16")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
         self.assertNotIn("BatteryAssistMaxShortfallW", wattpilot)
         self.assertEqual(
             wattpilot["BatteryAssistMaxShortfallPerPhaseW"], "1500"
@@ -474,6 +479,7 @@ class ConfigMigrationTests(unittest.TestCase):
                 "config.ini.v13.backup",
                 "config.ini.v14.backup",
                 "config.ini.v15.backup",
+                "config.ini.v16.backup",
             ],
         )
 
@@ -488,7 +494,7 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "16")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
         self.assertEqual(
             migrated["FroniusWattpilot"]["SiteCurrentSource"],
             "VenusSystem",
@@ -504,7 +510,12 @@ class ConfigMigrationTests(unittest.TestCase):
             ["L1", "L2", "L3"],
         )
         self.assertEqual(
-            backups, ["config.ini.v14.backup", "config.ini.v15.backup"]
+            backups,
+            [
+                "config.ini.v14.backup",
+                "config.ini.v15.backup",
+                "config.ini.v16.backup",
+            ],
         )
 
     def test_version_16_adds_disabled_shelly_connection_grace(self):
@@ -518,12 +529,49 @@ class ConfigMigrationTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(migrated["Common"]["ConfigVersion"], "16")
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
         self.assertEqual(
             migrated["Shelly3EMSiteCurrent"]["TransientFailureGraceSeconds"],
             "0",
         )
-        self.assertEqual(backups, ["config.ini.v15.backup"])
+        self.assertEqual(
+            backups,
+            ["config.ini.v15.backup", "config.ini.v16.backup"],
+        )
+
+    def test_version_17_adds_automatic_vehicle_phase_capability(self):
+        migrated, backups = self._run_migration(
+            """
+            [Common]
+            ConfigVersion=16
+
+            [FroniusWattpilot]
+            MaxCurrentPerPhase=16
+            """
+        )
+
+        self.assertEqual(migrated["Common"]["ConfigVersion"], "17")
+        self.assertEqual(
+            migrated["FroniusWattpilot"]["VehiclePhaseCapability"],
+            "Automatic",
+        )
+        self.assertEqual(backups, ["config.ini.v16.backup"])
+
+    def test_version_17_preserves_explicit_one_phase_capability(self):
+        migrated, _backups = self._run_migration(
+            """
+            [Common]
+            ConfigVersion=16
+
+            [FroniusWattpilot]
+            VehiclePhaseCapability=OnePhaseOnly
+            """
+        )
+
+        self.assertEqual(
+            migrated["FroniusWattpilot"]["VehiclePhaseCapability"],
+            "OnePhaseOnly",
+        )
 
 
 class LoggingConfigurationTests(unittest.TestCase):
@@ -1020,6 +1068,7 @@ class ConfigValueValidationTests(unittest.TestCase):
             ("FroniusWattpilot", "RawOverheadFreshSeconds", "4"),
             ("FroniusWattpilot", "SiteMaxCurrent", "5"),
             ("FroniusWattpilot", "Charger1PhaseMapping", "L4"),
+            ("FroniusWattpilot", "VehiclePhaseCapability", "OnePhase"),
             ("FroniusWattpilot", "SiteCurrentFreshSeconds", "0"),
             ("FroniusWattpilot", "SiteCurrentRecoverySeconds", "-1"),
             (

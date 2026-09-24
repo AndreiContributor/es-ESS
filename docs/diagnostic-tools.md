@@ -31,8 +31,9 @@ directory on the GX device.
   target transitions, so this short monitor is optional during a six-hour
   capture.
 - Use the **charging-session capture** when start/stop behavior, phase-up or
-  phase-down behavior, energy, per-phase loading, selected site-current
-  telemetry, or message frequency must be correlated over one live session.
+  phase-down behavior, configured vehicle phase capability, energy, per-phase
+  loading, selected site-current telemetry, or message frequency must be
+  correlated over one live session.
 - Use the **daily report** after APP_DEBUG evidence covers the requested period.
   It analyzes retained history; it does not replace high-frequency live session
   sampling. It distinguishes changed-current writes from guarded no-ops,
@@ -48,8 +49,12 @@ The charging-session capture does not parse credentials or independently choose
 between `Shelly3EMGen3` and `VenusSystem`. It reads the running Wattpilot
 service's controller-normalized D-Bus contract, including `/SiteCurrentSource`,
 `/SiteCurrentL1..L3`, phase ages, headroom, source health, limiting phase, and
-`/Charger1PhaseMapping`. The values therefore follow the source actually
-initialized from `config.ini`, including an L1, L2, or L3 one-phase mapping.
+`/Charger1PhaseMapping`. It also reads the non-sensitive
+`/VehiclePhaseCapability` policy published by the controller. The values
+therefore follow the source and phase policy actually initialized from
+`config.ini`, including an L1, L2, or L3 one-phase mapping. A capture is marked
+anomalous if `OnePhaseOnly` is paired with measured three-phase charging or a
+phase-up log event.
 
 ## Commands
 

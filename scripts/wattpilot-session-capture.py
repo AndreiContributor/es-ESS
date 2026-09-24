@@ -38,6 +38,7 @@ EV_FIELDS = (
     ("mode", "/ModeLiteral"),
     ("control_state", "/ControlStateLiteral"),
     ("phase_mode", "/PhaseModeLiteral"),
+    ("vehicle_phase_capability", "/VehiclePhaseCapability"),
     ("status", "/StatusLiteral"),
     ("target_total_a", "/SetCurrent"),
     ("measured_total_a", "/Current"),
@@ -336,10 +337,11 @@ class TransitionTracker:
                 epoch,
                 "CAPTURE_BASELINE",
                 "charging={0} phase={1} target_total_a={2} "
-                "site_source={3} one_phase_mapping={4}".format(
+                "phase_capability={3} site_source={4} one_phase_mapping={5}".format(
                     int(is_charging(sample)),
                     phase,
                     sample.get("target_total_a"),
+                    sample.get("vehicle_phase_capability"),
                     sample.get("site_current_source"),
                     sample.get("charger_one_phase_mapping"),
                 ),
@@ -351,6 +353,7 @@ class TransitionTracker:
             ("connected", "CONNECTION_CHANGE"),
             ("control_state", "CONTROL_STATE_CHANGE"),
             ("phase_mode", "PHASE_STATE_CHANGE"),
+            ("vehicle_phase_capability", "VEHICLE_PHASE_CAPABILITY_CHANGE"),
             ("target_total_a", "CURRENT_TARGET_CHANGE"),
             ("telemetry_healthy", "TELEMETRY_HEALTH_CHANGE"),
             ("command_authority_ok", "COMMAND_AUTHORITY_CHANGE"),
@@ -529,6 +532,10 @@ def analyze_samples(
         "site_guard": lambda sample: is_one(sample.get("site_guard")),
         "grid_guard": lambda sample: is_one(sample.get("grid_guard")),
         "battery_assist": lambda sample: is_one(sample.get("battery_assist")),
+        "one_phase_policy_three_phase": lambda sample: (
+            sample.get("vehicle_phase_capability") == "OnePhaseOnly"
+            and sample.get("phase_mode") == "3 phases"
+        ),
     }
     for sample in charging_samples:
         for name, condition in safety_conditions.items():
@@ -675,9 +682,26 @@ def build_summary(
     stats = metrics["stats"]
     safety_counts = metrics["safety_sample_counts"]
     safety_seconds = metrics["safety_seconds"]
+    one_phase_policy_violation = (
+        safety_counts["one_phase_policy_three_phase"] > 0
+        or (
+            "OnePhaseOnly"
+            in observed_values(samples, "vehicle_phase_capability")
+            and log_evidence["phase_up_actions"]["count"] > 0
+        )
+    )
+    result_label = (
+        "ERROR"
+        if capture_error
+        else (
+            "INTERRUPTED"
+            if interrupted
+            else ("ANOMALY" if one_phase_policy_violation else "COMPLETED")
+        )
+    )
     lines = [
         "Wattpilot charging-session capture summary",
-        f"Result: {'ERROR' if capture_error else ('INTERRUPTED' if interrupted else 'COMPLETED')}",
+        f"Result: {result_label}",
         f"Requested duration: {format_duration(requested_duration)}",
         f"Actual duration:    {format_duration(actual_duration)}",
         f"Requested interval: {requested_interval:.1f} s",
@@ -695,6 +719,8 @@ def build_summary(
         [
             "",
             "Selected site-current safety source",
+            "  Vehicle phase capability: "
+            f"{format_observed(samples, 'vehicle_phase_capability')}",
             f"  Source observed:          {format_observed(samples, 'site_current_source')}",
             f"  Source status observed:   {format_observed(samples, 'site_source_status')}",
             "  Source errors observed:   "
@@ -778,6 +804,7 @@ def build_summary(
         "site_guard",
         "grid_guard",
         "battery_assist",
+        "one_phase_policy_three_phase",
     ):
         lines.append(
             f"  {name.replace('_', ' '):24s} "

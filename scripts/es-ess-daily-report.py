@@ -103,6 +103,7 @@ SNAPSHOT_DBUS_PATHS = (
     "/SiteCurrentSourceFirmware",
     "/SiteCurrentSourceLastSampleAge",
     "/Charger1PhaseMapping",
+    "/VehiclePhaseCapability",
     "/SiteCurrentL1",
     "/SiteCurrentL2",
     "/SiteCurrentL3",
@@ -356,6 +357,7 @@ class AuditSettings:
     site_max_current: int = 20
     site_current_source: str = "VenusSystem"
     charger_one_phase_mapping: str = "L1"
+    vehicle_phase_capability: str = "Automatic"
     site_current_fresh_seconds: int = 15
     site_current_recovery_seconds: int = 30
     site_current_transient_failure_grace_seconds: int = 0
@@ -1056,6 +1058,9 @@ def load_settings(path: Path) -> tuple[AuditSettings, list[str]]:
         charger_one_phase_mapping=parser.get(
             section, "Charger1PhaseMapping", fallback="L1"
         ).upper(),
+        vehicle_phase_capability=parser.get(
+            section, "VehiclePhaseCapability", fallback="Automatic"
+        ),
         site_current_fresh_seconds=_get_int(
             parser, section, "SiteCurrentFreshSeconds", 15, warnings
         ),
@@ -2583,6 +2588,33 @@ class EsEssDailyReport:
             )
 
     def check_phase_switching(self) -> None:
+        if self.settings.vehicle_phase_capability == "OnePhaseOnly":
+            phase_capability_violations = [
+                action.record
+                for action in self.phase_actions
+                if action.target_phase == 3
+            ]
+            phase_capability_violations.extend(
+                record
+                for record, phase in self.phase_confirmations
+                if phase == 3
+            )
+            if phase_capability_violations:
+                self.add(
+                    "FAIL",
+                    "vehicle phase capability",
+                    "Three-phase command or confirmation evidence was observed while "
+                    "VehiclePhaseCapability=OnePhaseOnly.",
+                    phase_capability_violations,
+                )
+            else:
+                self.add(
+                    "PASS",
+                    "vehicle phase capability",
+                    "No three-phase command or confirmation evidence was observed under "
+                    "the one-phase-only policy.",
+                )
+
         failed_messages = [
             record
             for record in self.records
@@ -3867,6 +3899,7 @@ def render_human(result: AuditResult) -> str:
         f"EnabledServices={','.join(result.configuration.enabled_services) or 'unavailable'}",
         f"Current={result.configuration.min_current_per_phase}.."
         f"{result.configuration.max_current_per_phase} A per phase",
+        f"VehiclePhaseCapability={result.configuration.vehicle_phase_capability}",
         f"SiteCurrentSource={result.configuration.site_current_source}; "
         f"limit={result.configuration.site_max_current} A per physical phase; "
         f"1-phase={result.configuration.charger_one_phase_mapping}; "
