@@ -1159,7 +1159,7 @@ for the attended command-ownership discovery procedure.
 | Daily report | `es-ess-daily-report.py` | Full-day or current-day APP_DEBUG log analysis and optional current snapshot. |
 | Current-command monitor | `wattpilot-current-command-monitor.sh` | Short live check that an unchanged positive current target is not repeatedly dispatched. |
 | Charging-session capture | `wattpilot-session-capture.sh` and `wattpilot-session-capture.py` | Six-hour read-only sampling and session analysis; the shell file is only the launcher. |
-| Setting capture | `wattpilot-setting-capture.py` | Redacted before/after native-setting observation with charger commands blocked. |
+| Setting capture | `wattpilot-setting-capture.py` | Redacted before/after native-setting observation or an allowlisted vehicle-compatibility candidate snapshot, with charger commands blocked. |
 
 ### Production health monitor
 

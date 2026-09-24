@@ -116,6 +116,22 @@ connects and records a baseline. Only after it prints its prompt should the
 operator change exactly the named setting in Solar.wattpilot, wait for the app
 to confirm it, and press Enter in SSH. JSON is then written to the named file.
 
+Before changing a setting, capture the allowlisted vehicle-compatibility
+candidates that firmware `42.5` currently reports:
+
+```sh
+python scripts/wattpilot-setting-capture.py \
+  --config config.ini \
+  --native-vehicle-profile \
+  > /data/es-ESS-validation/native-vehicle-profile.json
+```
+
+The report covers only the candidate keys for minimum current, charging-pause
+behavior and timing, simulated unplugging, phase-switch timing, and raw model
+status. `complete: true` proves only that the expected shapes were present; it
+does not prove the semantic mapping. Keep this report private and continue with
+reversible captures for each app surface before a field is used at runtime.
+
 ### 5. Capture `Use PV surplus` in both directions
 
 Example when the original state is enabled:

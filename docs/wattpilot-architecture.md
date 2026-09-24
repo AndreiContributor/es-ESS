@@ -56,9 +56,12 @@ For the separate native-PV command-ownership investigation,
 `scripts/wattpilot-setting-capture.py` authenticates with the vehicle
 disconnected, blocks every `setValue` request, compares two full-status
 snapshots around one operator-controlled app setting change, and emits only
-redacted/fingerprinted property differences. The procedure and pass/fail gates
-live in `docs/wattpilot-command-ownership-validation.md`. This is evidence
-collection only and does not widen Auto/Eco command authority.
+redacted/fingerprinted property differences. Its separate
+`--native-vehicle-profile` mode emits only an allowlisted, typed candidate
+snapshot and explicitly marks every mapping as unvalidated until reversible
+firmware-42.5 evidence exists. The procedure and pass/fail gates live in
+`docs/wattpilot-command-ownership-validation.md`. This is evidence collection
+only and does not widen Auto/Eco command authority.
 
 ## Module Responsibilities
 
