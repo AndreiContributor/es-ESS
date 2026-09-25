@@ -939,6 +939,8 @@ In `Auto` / Wattpilot `ECO` mode, es-ESS follows this PV-start policy with an
 optional running-session grid fallback:
 
 - A new charge starts only after a fresh, distributor-assigned **real PV allowance** has continuously met the electrical minimum for `MinOnOffSeconds`. With `VehiclePhaseCapability=Automatic`, it starts on one phase when allowance is below the phase-up threshold, or directly on three phases when allowance already meets the full phase-up threshold. `OnePhaseOnly` always starts on one phase and never requests surplus for a three-phase probe. Battery assist cannot create either start.
+- The effective Auto/Eco minimum is the greater of `MinCurrentPerPhase` and the valid firmware-42.5 native `mca` value, bounded by the effective maximum. Missing, invalid, or contradictory native minimum telemetry blocks positive Auto/Eco commands while zero current and Force Off remain available. Other native vehicle-profile candidates are diagnostic only and are never written by es-ESS.
+- After an accepted start, measured power must reach `StartupTelemetryRatio` of the expected demand inside `StartupGraceSeconds`, extended only by a currently reported native simulated-unplugging or minimum-pause interval. A failed activation is cleared with zero current then Force Off and enters exponential retry backoff from `ResumeRetryBackoffSeconds` up to `ResumeRetryBackoffMaxSeconds`. Manual selection or a confirmed disconnect cancels this controller-owned state without issuing profile-setting writes.
 - Auto/Eco also requires fresh whole-site current on physical L1/L2/L3. One-phase charging uses `Charger1PhaseMapping`; three-phase charging receives one equal current command capped by the smallest available phase headroom. Site-current reductions and stops take priority over allowance grace, battery assist, and grid fallback. There is no overload grace above `SiteMaxCurrent`.
 - If the selected asynchronous Shelly site-current poll fails, its command-free worker immediately withdraws the Wattpilot distributor request and logs one sanitized failure transition. With `TransientFailureGraceSeconds=0`, or for authentication, HTTP/device, or payload errors, the existing strict fail-closed stop applies immediately. With an opt-in `1..5` second value, only a transport connection failure may retain the last complete still-fresh sample for an already-running charge. During that short `Degraded` interval, starts, current increases, and phase-up are blocked; equal/lower current, phase-down, zero current, and Force Off remain available subject to physical headroom. Grace expiry invalidates the cached sample and invokes the normal stop. Measured Wattpilot consumption and calculated raw overhead remain truthful diagnostics, and no positive allocation returns until a complete successful poll plus `SiteCurrentRecoverySeconds`. Recovery produces one transition record; repeated failures do not flood the log.
 - After headroom recovers, it must remain safe for `SiteCurrentRecoverySeconds`. A running same-phase increase takes the fast `SiteCurrentRecoverySeconds` path when fresh assigned PV continuously covers the next ampere plus one additional live allocation step across distinct allowance updates. The extra step absorbs normal allowance feedback after measured EV demand rises. If fresh allowance continuously covers only the next full ampere, a separate slow current timer may release that ampere after at least 600 seconds or the longer `MinPhaseSwitchSeconds` duration; this also lets an already-running charge reach the effective current maximum without requesting power for an uncommandable ampere. The slow path can still be reversed if PV falls after the increase, so it trades speed for fewer boundary retries rather than guaranteeing no reversal. Each path rises by only 1 A, rebuilds its timer after a sent increase, and restarts on a change between support levels. This adds no configuration parameter and does not share the phase-switch candidate timer. Current reductions and safety stops remain immediate. No normal increase is issued while the connected EV reports no material charging power. A PV-only reduction preserves an already-recovered site-current timer and positive distributor request when fresh physical headroom still covers the previous current; a physical-headroom reduction or selected-source fault resets recovery and withdraws demand until it is safe again. A stopped session still obeys `MinOnOffSeconds`, and a running one-phase session still needs `MinPhaseSwitchSeconds` before phase-up. A new stopped session can start directly on three phases once the normal start and site-recovery conditions are both satisfied.
@@ -1029,6 +1031,13 @@ control therefore normally leaves less than one active-phase canonical step as
 unassigned/exported power. es-ESS does not round a partially funded ampere up,
 because doing so could intentionally consume grid or battery energy.
 
+The firmware-42.5 vehicle-compatibility fields are read-only observations.
+Supervised evidence confirmed a valid native minimum-current value, while the
+selected manufacturer profile did not expose a reversible Minimum current UI
+and the main charging-current control changed `amp`, not the native profile
+minimum. es-ESS therefore uses valid `mca` only as a conservative lower bound;
+it does not claim ownership of the app profile and never writes these fields.
+
 ### Runtime status
 
 The normal Victron EV-charger status stays compatible with VRM. More detailed
@@ -1062,7 +1071,9 @@ state is published on the Wattpilot runtime-status contract:
   plus `/CompatibilityOk`, `/CompatibilityLiteral`,
   `/ExpectedVenusOsVersion`, `/ActualVenusOsVersion`,
   `/ExpectedWattpilotFirmware`, `/ActualWattpilotFirmware`, and
-  `/ValidatedWattpilotAppVersion`.
+  `/ValidatedWattpilotAppVersion`, plus read-only
+  `/VehicleCompatibility/*` native-profile diagnostics and `/Resume/*`
+  activation/backoff diagnostics.
 - Retained MQTT topics under
   `es-ESS/FroniusWattpilot/RuntimeStatus/...` with the same value names.
 
@@ -1273,10 +1284,13 @@ and includes runtime health, sanitized configuration, current state,
 connection-session and charging-interval counts, authoritative available
 Wattpilot counter kWh, explicitly estimated one-/three-phase and physical-phase
 energy, onboarding latency, interruptions, allowance/grace and phase behavior,
-safety interventions, and rare statuses 8–11 and 13–14. Report JSON schema 4
+safety interventions, and rare statuses 8–11 and 13–14. Report JSON schema 5
 keeps total counter energy separate from sampled-power estimates and exposes
 counter resets, restarts, gaps, reconciliation error, and evidence
-completeness. Older logs without structured session records remain analyzable,
+completeness. It also counts structured start/resume outcomes and produces
+read-only configuration recommendations when current native diagnostics show a
+higher minimum-current floor, longer phase or pause timers, or failed resumes
+with disabled compatibility options. Older logs without structured session records remain analyzable,
 but their energy and connection counts are explicitly unavailable.
 `NOT_OBSERVED` rare statuses are
 informational. Interactive runs show byte-level log and D-Bus snapshot progress
@@ -1934,6 +1948,15 @@ The following D-Bus values are published on the existing
 | `/CommandAuthorityLiteral` | String | Actionable authority state, including which Solar.wattpilot setting must be changed. |
 | `/NativePvSurplusEnabled` | Integer | Strict `fup` observation: `1` enabled, `0` disabled, `-1` unavailable or malformed. |
 | `/FlexibleTariffEnabled` | Integer | Strict `ful` observation: `1` enabled, `0` disabled, `-1` unavailable or malformed. |
+| `/VehicleCompatibility/Status` | String | `Complete`, `Partial`, `Invalid`, or `Unavailable` read-only parse status for the allowlisted firmware-42.5 fields. |
+| `/VehicleCompatibility/NativeMinimumCurrent` | Integer | Native `mca` minimum current in amperes, or `-1` when unavailable/invalid. |
+| `/VehicleCompatibility/EffectiveMinimumCurrent` | Integer | Effective controller minimum after combining configured and native floors, or `-1` when positive Auto/Eco control is blocked. |
+| `/VehicleCompatibility/*` | Integer/String | Read-only charging-pause, simulated-unplugging, phase-timing, model-status, missing-field, and invalid-field diagnostics. These paths never write the Solar.wattpilot profile. |
+| `/Resume/State` | String | `Idle`, `Starting`, `Resuming`, a native-wait literal, `Charging`, or `Backoff`. |
+| `/Resume/AttemptKind` | String | `initial_start`, `resume`, or empty when no attempt is active. |
+| `/Resume/FailureCount` | Integer | Consecutive failed accepted activations for the current vehicle connection. |
+| `/Resume/BackoffRemaining` | Integer | Seconds before another Auto/Eco activation may be attempted. |
+| `/Resume/FailureReason` | String | Sanitized reason for the current backoff, or empty otherwise. |
 
 `/ControlState` and `/ControlStateLiteral` always represent the same state:
 
@@ -1954,11 +1977,12 @@ The following D-Bus values are published on the existing
 | 12 | `Stopped for site current limit` |
 
 The site-current diagnostic D-Bus values are also mirrored as retained topics
-under `es-ESS/FroniusWattpilot/...` using the same path names. The eighteen
-dedicated runtime-status values below remain under the separate
+under `es-ESS/FroniusWattpilot/...` using the same path names. The dedicated
+runtime-status values below remain under the separate
 `RuntimeStatus` prefix.
 
-All eighteen runtime-status values are mirrored to retained main-MQTT topics:
+All runtime-status values, including every `VehicleCompatibility` and `Resume`
+suffix documented above, are mirrored to retained main-MQTT topics:
 
 ```text
 es-ESS/FroniusWattpilot/RuntimeStatus/ControlState
@@ -1979,6 +2003,10 @@ es-ESS/FroniusWattpilot/RuntimeStatus/ActualVenusOsVersion
 es-ESS/FroniusWattpilot/RuntimeStatus/ExpectedWattpilotFirmware
 es-ESS/FroniusWattpilot/RuntimeStatus/ActualWattpilotFirmware
 es-ESS/FroniusWattpilot/RuntimeStatus/ValidatedWattpilotAppVersion
+es-ESS/FroniusWattpilot/RuntimeStatus/VehicleCompatibility/NativeMinimumCurrent
+es-ESS/FroniusWattpilot/RuntimeStatus/VehicleCompatibility/EffectiveMinimumCurrent
+es-ESS/FroniusWattpilot/RuntimeStatus/Resume/State
+es-ESS/FroniusWattpilot/RuntimeStatus/Resume/BackoffRemaining
 ```
 
 All runtime-status MQTT topics are retained. The status is republished

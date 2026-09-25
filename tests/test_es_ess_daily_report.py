@@ -1301,6 +1301,23 @@ NoBatToEV=false
         self.assertIn('if [ "$actual_version" = "$expected_version" ]', monitor)
         self.assertNotIn("sort -V", monitor)
 
+    def test_health_monitor_includes_vehicle_compatibility_and_resume_status(self):
+        monitor = (
+            ROOT / "scripts" / "es-ess-health-monitor.sh"
+        ).read_text(encoding="utf-8")
+
+        for expected in (
+            "ResumeRetryBackoffSeconds",
+            "/VehicleCompatibility/NativeMinimumCurrent",
+            "/VehicleCompatibility/EffectiveMinimumCurrent",
+            "/VehicleCompatibility/InvalidFields",
+            "/Resume/State",
+            "/Resume/FailureCount",
+            "/Resume/BackoffRemaining",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, monitor)
+
     def test_human_session_current_adjustments_are_compact(self):
         summary = AUDIT._summarize_current_adjustments(
             [13, 14] + [16] * 200 + [8, 6, 8, 6]

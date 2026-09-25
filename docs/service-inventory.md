@@ -199,6 +199,15 @@ the fail-closed native-controller boundary actionable without writing Wattpilot
 settings. A value of `-1` for either native setting means unavailable or
 malformed telemetry, not disabled.
 
+Firmware-42.5 native vehicle-profile candidates are published read-only below
+`/VehicleCompatibility/*`. They include parse status, native and effective
+minimum current, pause/simulated-unplugging/phase timing, raw model status, and
+explicit missing/invalid field lists. Only a valid native `mca` participates in
+control, as a conservative lower bound combined with the configured minimum;
+the service never writes these profile fields. `/Resume/*` publishes the
+controller-owned activation state, attempt kind, consecutive failure count,
+remaining retry backoff, and sanitized failure reason.
+
 The Wattpilot EV-charger service consumes one explicitly selected site-current
 provider. `VenusSystem` live-reads the subscribed physical site-current
 BusItems because unchanged D-Bus values do not emit a liveness signal.
@@ -227,10 +236,12 @@ Structured Wattpilot session statistics are log evidence rather than another
 D-Bus or MQTT control contract. Versioned INFO records describe confirmed
 connection, first start attempt, measured charging transitions, phase segments,
 and final summaries. One APP_DEBUG checkpoint per connected minute bounds
-abrupt-restart evidence loss. The daily report schema 4 consumes these records,
+abrupt-restart evidence loss. The daily report schema 5 consumes these records,
 keeps monotonic session-counter energy distinct from sampled-power estimates,
-and exposes resets, gaps, reconciliation, and completeness. No vehicle identity
-or new configuration/service flag is introduced.
+and exposes resets, gaps, reconciliation, and completeness. It also consumes
+versioned start/resume outcome records and reads the compatibility/resume D-Bus
+paths to produce advisory configuration recommendations without writing
+settings. No vehicle identity or new service flag is introduced.
 
 After the controller confirms that no vehicle is present, the runtime-status
 contract publishes `Stopped`, `/PhaseMode=0`, and

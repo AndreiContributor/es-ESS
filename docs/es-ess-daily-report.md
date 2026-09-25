@@ -185,9 +185,10 @@ The human and JSON reports contain:
   continuity, exceptions, dependencies, and compatibility;
 - sanitized configuration: enabled services and important Wattpilot safety
   parameters, including vehicle phase capability and site-current
-  limit/mapping/freshness/recovery;
+  limit/mapping/freshness/recovery plus resume retry backoff;
 - current state: optional service, mode, connectivity, authority, telemetry,
-  phase, firmware, and native-setting snapshots;
+  phase, firmware, native vehicle-compatibility fields, and resume/backoff
+  snapshots;
 - structured connection sessions and their charging intervals: plug/first-start/
   first-measured-power timing, interruptions, Auto/Manual/unknown mode, phases,
   compact current and peak-power ranges, phase segments, stop reason, command
@@ -202,11 +203,12 @@ The human and JSON reports contain:
 - rare firmware statuses 8–11 and 13–14: protocol name, occurrences, selected
   controller state, observed duration, and transition result;
 - anomalies, correctly activated safety interventions, evidence gaps,
-  recommendations, metrics, and limitations.
+  recommendations, metrics, and limitations. Recommendations are advisory and
+  are never applied by the report.
 
 ## Safety-Aware Checks
 
-Version 4 detects or summarizes:
+Version 5 detects or summarizes:
 
 - `CRITICAL`, `ERROR`, traceback, dependency, firmware, and Venus OS
   compatibility failures;
@@ -235,6 +237,13 @@ Version 4 detects or summarizes:
   charging, while allowing the documented immediate command-authority release;
 - configuration combinations inconsistent with the documented no-grid
   commissioning profile; and
+- accepted start/resume attempts that do not reach confirmed charging power,
+  successful outcomes, and bounded retry-backoff evidence; and
+- configuration recommendations when the current read-only native snapshot
+  reports a higher minimum-current floor, longer phase/pause timing, or failed
+  resumes with disabled compatibility options. Missing profile fields remain
+  unavailable and are never guessed; the main charging-current control is not
+  treated as the vehicle-profile minimum; and
 - rare charging-status entry/exit through recognized active or safety states.
 
 Wattpilot firmware may be `<unavailable>` before the initial authentication
@@ -271,7 +280,7 @@ writes. The controller emits versioned JSON after the stable marker
   start/stop, completed phase segment, and final connection summary; and
 - at most one APP_DEBUG checkpoint per connected minute.
 
-The structured event version is independent from daily-report JSON schema 4 so
+The structured event version is independent from daily-report JSON schema 5 so
 future log parsing can remain explicit. A connection may contain multiple
 charging intervals. Correlation IDs distinguish those observed intervals only;
 they never claim which vehicle was connected.

@@ -39,6 +39,8 @@ directory on the GX device.
   sampling. It distinguishes changed-current writes from guarded no-ops,
   highlights rapid current reversals and zero-power adjustments, and keeps
   bounded authenticated WebSocket recoveries separate from unresolved errors.
+  It also reports structured start/resume outcomes and makes advisory
+  configuration recommendations from read-only compatibility diagnostics.
 - Use the **setting capture** only for the command-ownership discovery procedure.
   It is not needed for ordinary charging validation, health monitoring, or
   daily reporting.
@@ -94,8 +96,10 @@ Do not run the setting capture casually. Follow the attended, vehicle-
 disconnected procedure in
 [Wattpilot command-ownership validation](wattpilot-command-ownership-validation.md).
 The `--native-vehicle-profile` mode takes one command-free, allowlisted
-candidate snapshot. It does not prove a field mapping by itself; reversible
-before/after captures are still required before runtime code may trust a field.
+candidate snapshot. It does not prove an app-screen mapping by itself. Runtime
+use requires either reversible evidence or a separately documented,
+conservative protocol rule with explicit fail-closed behavior; other fields
+remain diagnostics only.
 
 ## Privacy And Safety
 

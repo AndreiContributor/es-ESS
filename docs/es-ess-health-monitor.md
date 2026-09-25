@@ -108,7 +108,7 @@ deployment, or Wattpilot validation work:
 - Disk usage for `/` and `/data`.
 - Selected config values that affect Wattpilot safety and PV policy, including
   the vehicle phase capability, mandatory site-current limit, one-phase
-  mapping, freshness, and recovery.
+  mapping, freshness, recovery, and resume retry backoff.
 - Wattpilot standard EV-charger D-Bus paths such as `/Connected`,
   `/StatusLiteral`, `/ModeLiteral`, `/StartStopLiteral`, `/Ac/Power`,
   `/Current`, `/SetCurrent`, `/PvAllowance`, `/PhaseModeLiteral`, and
@@ -117,7 +117,8 @@ deployment, or Wattpilot validation work:
   `/BatteryAssistActive`, `/GridImportGuardActive`, `/TelemetryHealthy`,
   `/CompatibilityOk`, `/CompatibilityLiteral`, `/CommandAuthorityOk`,
   `/CommandAuthorityLiteral`, `/NativePvSurplusEnabled`,
-  `/FlexibleTariffEnabled`, and expected/actual firmware values.
+  `/FlexibleTariffEnabled`, expected/actual firmware values, read-only
+  `/VehicleCompatibility/*` fields, and `/Resume/*` activation/backoff state.
 - Wattpilot site-current paths such as `/SiteCurrentL1..L3`, sample ages,
   `/SiteHeadroomL1..L3`, `/SiteAllowedCurrent`, `/SiteLimitingPhase`, telemetry
   health, blocked reason, and recovery elapsed time.
@@ -193,6 +194,11 @@ Healthy output normally shows:
 - `/VehiclePhaseCapability` matches `config.ini`. Under `OnePhaseOnly`, an
   Auto/Eco session remains one-phase; a three-phase observation is a stop-and-
   investigate condition. Manual operation is not constrained by this policy.
+- `/VehicleCompatibility/NativeMinimumCurrent` is valid,
+  `/VehicleCompatibility/EffectiveMinimumCurrent` is at least that value, and
+  missing/invalid optional fields remain explicit instead of receiving guessed
+  defaults. `/Resume/State` should reach `Charging` after a successful
+  activation or leave `Backoff` after its bounded delay.
 - A configured Shelly connection grace appears as source status `Degraded`.
   During that bounded interval the last sample age continues increasing,
   positive allocation and risky commands remain blocked, and the source must
@@ -215,6 +221,9 @@ Stop the active validation and inspect logs immediately if:
   literal and keep the vehicle disconnected until both native settings report
   `0` and authority reports `1`.
 - Battery assist exceeds configured duration or shortfall expectations.
+- Native minimum-current diagnostics become invalid/unavailable during
+  positive Auto/Eco control, or resume failures repeat without bounded
+  backoff.
 - Auto/Eco remains active while site-current telemetry is unhealthy, the guard
   is blocked, or a physical phase has insufficient commanded headroom.
 - Auto/Eco reports three-phase charging while

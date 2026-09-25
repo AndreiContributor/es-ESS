@@ -129,8 +129,10 @@ python scripts/wattpilot-setting-capture.py \
 The report covers only the candidate keys for minimum current, charging-pause
 behavior and timing, simulated unplugging, phase-switch timing, and raw model
 status. `complete: true` proves only that the expected shapes were present; it
-does not prove the semantic mapping. Keep this report private and continue with
-reversible captures for each app surface before a field is used at runtime.
+does not by itself prove every app-screen mapping. Keep this report private.
+Runtime code may use only a field whose firmware semantics and conservative
+failure behavior are separately documented and tested; all others remain
+diagnostic until validated.
 
 ### 5. Capture `Use PV surplus` in both directions
 
@@ -253,6 +255,22 @@ recorded `all setValue requests blocked` and was protected with mode `0600`.
 
 These captures justify only the strict read-only `fup=false` and `ful=false`
 authority guard. They do not authorize writes to undocumented setting fields.
+
+### Vehicle-compatibility evidence retained
+
+A separate command-free firmware-42.5 snapshot established that native `mca`
+was present with a valid whole-ampere minimum, while several optional profile
+fields were absent. The selected manufacturer profile did not expose an
+editable Minimum current control. A reversible check of the app's main
+charging-current control changed `amp`, not `mca`, so that control must not be
+used as evidence for the vehicle-profile minimum.
+
+This evidence supports only a conservative runtime rule: valid `mca` may raise
+the Auto/Eco minimum-current floor, while missing, invalid, or contradictory
+`mca` blocks positive control. It does not support writing `mca`, identifying a
+vehicle, or claiming that every Solar.wattpilot profile exposes the same UI.
+All other allowlisted compatibility fields remain read-only diagnostics; their
+absence is published explicitly rather than replaced with guessed defaults.
 
 ### 9. Restart es-ESS without reconnecting the vehicle
 
