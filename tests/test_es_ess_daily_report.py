@@ -2331,9 +2331,69 @@ NoBatToEV=false
         self.assertEqual(len(audit.site_current_source_recoveries), 1)
         self.assertEqual(len(audit.site_current_source_grace_events), 1)
         self.assertEqual(result.metrics["site_current_source_grace_events"], 1)
+        self.assertEqual(result.metrics["site_current_source_outages"], 1)
+        self.assertEqual(
+            result.metrics["site_current_source_outages_recovered"], 1
+        )
+        self.assertEqual(
+            result.metrics["site_current_source_outage_seconds"], 10.0
+        )
         self.assertEqual(len(audit.allowances), 1)
         self.assertEqual(audit.allowances[0].watts, 0)
         self.assertIn("ATTENTION", self._statuses(result, "safety interventions"))
+        self.assertIn(
+            "ATTENTION",
+            self._statuses(result, "site-current source reliability"),
+        )
+
+    def test_site_current_outage_summary_classifies_reasons_and_unresolved_end(self):
+        result = self._run(
+            [
+                self._line(
+                    "21:47:00",
+                    "Wattpilot site-current source failure: source=Shelly3EMGen3 "
+                    "status=Invalid reason=Shelly EM.GetStatus request failed: "
+                    "ConnectTimeout last_success_age_s=1.0 consumption_w=0 "
+                    "raw_overhead_w=0 allocation_suppressed=true "
+                    "positive_charger_command_authorized=false "
+                    "transient_grace_active=false.",
+                    "WARNING",
+                ),
+                self._line(
+                    "21:47:05",
+                    "Wattpilot site-current source recovered: source=Shelly3EMGen3 "
+                    "status=Healthy last_success_age_s=0.0 consumption_w=0 "
+                    "raw_overhead_w=0; allocation remains suppressed.",
+                    "INFO",
+                ),
+                self._line(
+                    "21:47:10",
+                    "Wattpilot site-current source failure: source=Shelly3EMGen3 "
+                    "status=Invalid reason=Shelly EM.GetStatus returned HTTP 500 "
+                    "last_success_age_s=1.0 consumption_w=0 raw_overhead_w=0 "
+                    "allocation_suppressed=true "
+                    "positive_charger_command_authorized=false "
+                    "transient_grace_active=false.",
+                    "WARNING",
+                ),
+                self._line("21:47:30", "heartbeat"),
+            ]
+        )
+
+        self.assertEqual(result.metrics["site_current_source_outages"], 2)
+        self.assertEqual(
+            result.metrics["site_current_source_outages_unresolved"], 1
+        )
+        self.assertEqual(
+            result.metrics["site_current_source_outage_seconds"], 25.0
+        )
+        finding = next(
+            finding
+            for finding in result.findings
+            if finding.check == "site-current source reliability"
+        )
+        self.assertIn("ConnectTimeout=1", finding.message)
+        self.assertIn("HTTP 500=1", finding.message)
 
     def test_unreachable_wattpilot_allowance_is_parsed_without_stale_gap(self):
         records = self._records(

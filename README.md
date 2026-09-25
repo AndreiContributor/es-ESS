@@ -1292,7 +1292,9 @@ energy, onboarding latency, interruptions, allowance/grace and phase behavior,
 safety interventions, and rare statuses 8–11 and 13–14. Report JSON schema 5
 keeps total counter energy separate from sampled-power estimates and exposes
 counter resets, restarts, gaps, reconciliation error, and evidence
-completeness. It also counts structured start/resume outcomes and produces
+completeness. It pairs sanitized site-current failure/recovery transitions and
+reports outage counts, durations, reason classes, unresolved intervals, and
+charging-power correlation. It also counts structured start/resume outcomes and produces
 accurate changed-current and reversal metrics from structured final-boundary
 events when they are available, while retaining compatibility with older logs.
 It produces

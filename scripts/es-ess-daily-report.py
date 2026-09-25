@@ -260,6 +260,15 @@ MINIMUM_CURRENT_RE = re.compile(
     r"PV no longer supports the current EV setpoint\. Reducing to "
     r"(?P<amps>\d+)A on (?P<phase>[13]) phase\(s\)"
 )
+SITE_CURRENT_FAILURE_RE = re.compile(
+    r"Wattpilot site-current source failure: source=(?P<source>\S+) "
+    r"status=(?P<status>\S+) reason=(?P<reason>.*?) "
+    r"last_success_age_s="
+)
+SITE_CURRENT_RECOVERY_RE = re.compile(
+    r"Wattpilot site-current source recovered: source=(?P<source>\S+) "
+    r"status=(?P<status>\S+)"
+)
 ASSIST_RE = re.compile(
     r"Battery assist active at (?P<amps>\d+)A: "
     r"(?P<shortfall>\d+(?:\.\d+)?)W total shortfall, "
@@ -452,6 +461,16 @@ class PhaseAction:
     record: LogRecord
     target_phase: int
     reason: str
+
+
+@dataclass
+class SiteCurrentOutage:
+    failure: LogRecord
+    recovery: Optional[LogRecord]
+    source: str
+    reason_class: str
+    duration_seconds: float
+    charging_correlated: bool
 
 
 @dataclass
@@ -1423,6 +1442,7 @@ class EsEssDailyReport:
         self.site_current_source_failures: list[LogRecord] = []
         self.site_current_source_recoveries: list[LogRecord] = []
         self.site_current_source_grace_events: list[LogRecord] = []
+        self.site_current_source_outages: list[SiteCurrentOutage] = []
         self.battery_assist_limit_records: list[LogRecord] = []
         self.raw_command_records: list[LogRecord] = []
         self._manual_control_records: list[LogRecord] = []
@@ -1839,9 +1859,98 @@ class EsEssDailyReport:
             record.timestamp for record in self._manual_control_records
         ]
         self._merge_current_command_evidence()
+        self._pair_site_current_source_outages()
         self._classify_transport_timeouts()
         self._classify_current_command_evidence()
         self._classify_startup_compatibility()
+
+    @staticmethod
+    def _site_current_reason_class(reason: str) -> str:
+        for name in ("ConnectTimeout", "ReadTimeout", "ConnectionError"):
+            if name.lower() in reason.lower():
+                return name
+        http_status = re.search(r"HTTP\s+(?P<status>\d{3})", reason, re.I)
+        if http_status:
+            return "HTTP {0}".format(http_status.group("status"))
+        if "auth" in reason.lower():
+            return "Authentication"
+        if any(token in reason.lower() for token in ("payload", "json", "field")):
+            return "Payload"
+        return "Other"
+
+    def _site_current_outage_correlates_with_charging(
+        self, start: datetime, end: datetime
+    ) -> bool:
+        first = bisect_left(self._model_power_timestamps, start)
+        last = bisect_right(self._model_power_timestamps, end)
+        if any(
+            power > ZERO_POWER_THRESHOLD_W
+            for _record, power in self.model_power_samples[first:last]
+        ):
+            return True
+        power = self._model_power_at_or_before(start)
+        return bool(power is not None and power > ZERO_POWER_THRESHOLD_W)
+
+    def _pair_site_current_source_outages(self) -> None:
+        """Pair sanitized source transitions into observed outage intervals."""
+        open_failures: dict[str, tuple[LogRecord, str]] = {}
+        transitions = sorted(
+            self.site_current_source_failures
+            + self.site_current_source_recoveries,
+            key=lambda record: record.timestamp,
+        )
+        for record in transitions:
+            failure_match = SITE_CURRENT_FAILURE_RE.search(record.message)
+            if failure_match:
+                source = failure_match.group("source")
+                open_failures.setdefault(
+                    source, (record, failure_match.group("reason"))
+                )
+                continue
+
+            recovery_match = SITE_CURRENT_RECOVERY_RE.search(record.message)
+            if recovery_match is None:
+                continue
+            source = recovery_match.group("source")
+            pending = open_failures.pop(source, None)
+            if pending is None:
+                continue
+            failure, reason = pending
+            duration = max(
+                0.0, (record.timestamp - failure.timestamp).total_seconds()
+            )
+            self.site_current_source_outages.append(
+                SiteCurrentOutage(
+                    failure=failure,
+                    recovery=record,
+                    source=source,
+                    reason_class=self._site_current_reason_class(reason),
+                    duration_seconds=duration,
+                    charging_correlated=self._site_current_outage_correlates_with_charging(
+                        failure.timestamp, record.timestamp
+                    ),
+                )
+            )
+
+        observed_end = self.records[-1].timestamp if self.records else None
+        if observed_end is None:
+            return
+        for source, (failure, reason) in open_failures.items():
+            duration = max(
+                0.0, (observed_end - failure.timestamp).total_seconds()
+            )
+            self.site_current_source_outages.append(
+                SiteCurrentOutage(
+                    failure=failure,
+                    recovery=None,
+                    source=source,
+                    reason_class=self._site_current_reason_class(reason),
+                    duration_seconds=duration,
+                    charging_correlated=self._site_current_outage_correlates_with_charging(
+                        failure.timestamp, observed_end
+                    ),
+                )
+            )
 
     def _merge_current_command_evidence(self) -> None:
         """Prefer boundary events while retaining unmatched legacy evidence."""
@@ -2273,6 +2382,49 @@ class EsEssDailyReport:
                 "safety interventions",
                 "No grid, site-current, stale-telemetry, battery-assist-timeout, or authority-block intervention was observed.",
             )
+
+    def check_site_current_source_reliability(self) -> None:
+        outages = self.site_current_source_outages
+        if not outages:
+            self.add(
+                "INFO",
+                "site-current source reliability",
+                "No paired site-current source outage was observed in the available transition evidence.",
+            )
+            return
+
+        recovered = [outage for outage in outages if outage.recovery is not None]
+        unresolved = [outage for outage in outages if outage.recovery is None]
+        reason_counts: dict[str, int] = {}
+        for outage in outages:
+            reason_counts[outage.reason_class] = (
+                reason_counts.get(outage.reason_class, 0) + 1
+            )
+        reasons = ", ".join(
+            "{0}={1}".format(reason, count)
+            for reason, count in sorted(reason_counts.items())
+        )
+        total_seconds = sum(outage.duration_seconds for outage in outages)
+        max_seconds = max(outage.duration_seconds for outage in outages)
+        charging_correlated = sum(
+            1 for outage in outages if outage.charging_correlated
+        )
+        self.add(
+            "ATTENTION",
+            "site-current source reliability",
+            "Observed {0} outage(s): {1} recovered and {2} unresolved; "
+            "{3:.1f}s total observed outage time, {4:.1f}s longest; "
+            "reason classes {5}; {6} correlated with positive charging power.".format(
+                len(outages),
+                len(recovered),
+                len(unresolved),
+                total_seconds,
+                max_seconds,
+                reasons,
+                charging_correlated,
+            ),
+            [outage.failure for outage in outages],
+        )
 
     def check_charging(self) -> None:
         if not self.charge_records:
@@ -3946,6 +4098,7 @@ class EsEssDailyReport:
         self.check_battery_assist()
         self.check_grid_import()
         self.check_authority_and_manual()
+        self.check_site_current_source_reliability()
         self.check_safety_interventions()
         rare_statuses = self.build_rare_statuses()
         sessions = self.build_sessions()
@@ -4011,6 +4164,45 @@ class EsEssDailyReport:
             ),
             "site_current_source_grace_events": len(
                 self.site_current_source_grace_events
+            ),
+            "site_current_source_outages": len(
+                self.site_current_source_outages
+            ),
+            "site_current_source_outages_recovered": len(
+                [
+                    outage
+                    for outage in self.site_current_source_outages
+                    if outage.recovery is not None
+                ]
+            ),
+            "site_current_source_outages_unresolved": len(
+                [
+                    outage
+                    for outage in self.site_current_source_outages
+                    if outage.recovery is None
+                ]
+            ),
+            "site_current_source_outage_seconds": round(
+                sum(
+                    outage.duration_seconds
+                    for outage in self.site_current_source_outages
+                ),
+                3,
+            ),
+            "site_current_source_longest_outage_seconds": round(
+                max(
+                    (
+                        outage.duration_seconds
+                        for outage in self.site_current_source_outages
+                    ),
+                    default=0.0,
+                ),
+                3,
+            ),
+            "site_current_source_charging_correlated_outages": sum(
+                1
+                for outage in self.site_current_source_outages
+                if outage.charging_correlated
             ),
             "charging_sessions": len(sessions),
             "connection_sessions": (

@@ -219,6 +219,9 @@ Version 5 detects or summarizes:
 - site-current stops and stale site-current telemetry found in controller logs;
 - Auto/Eco actions while command authority is blocked;
 - stale grid or distributor-allowance evidence;
+- site-current source outage count, recovery completeness, total and longest
+  observed duration, sanitized transport/HTTP/payload reason classes, and
+  correlation with positive charging-power evidence;
 - grid-import guard activation when `AllowGridCharging=false`, distinguishing a
   correct intervention from sustained unguarded import;
 - battery assist exceeding configured shortfall/time expectations or reaching
