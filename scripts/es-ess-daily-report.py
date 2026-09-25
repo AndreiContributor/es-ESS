@@ -37,7 +37,7 @@ except ImportError:
         )
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 EXIT_PASS = 0
 EXIT_INCOMPLETE = 1
 EXIT_FAIL = 2
@@ -60,6 +60,7 @@ CURRENT_POWER_CORRELATION_SECONDS = 6
 ZERO_POWER_THRESHOLD_W = 100.0
 TRANSPORT_RECOVERY_WINDOW_SECONDS = 90
 SESSION_STATISTICS_MARKER = "Wattpilot session statistics: "
+RESUME_EVENT_MARKER = "Wattpilot resume event: "
 SESSION_EVENT_VERSION = 1
 SESSION_EVENT_NAMES = frozenset(
     {
@@ -71,6 +72,10 @@ SESSION_EVENT_NAMES = frozenset(
         "checkpoint",
         "connection_summary",
     }
+)
+RESUME_EVENT_VERSION = 1
+RESUME_EVENT_NAMES = frozenset(
+    {"attempt_started", "attempt_succeeded", "attempt_failed"}
 )
 RARE_STATUS_NAMES = {
     8: "ChargingBecauseAutomaticStopTestLadung",
@@ -130,6 +135,28 @@ SNAPSHOT_DBUS_PATHS = (
     "/ExpectedWattpilotFirmware",
     "/ActualWattpilotFirmware",
     "/ValidatedWattpilotAppVersion",
+    "/VehicleCompatibility/Status",
+    "/VehicleCompatibility/NativeMinimumCurrent",
+    "/VehicleCompatibility/EffectiveMinimumCurrent",
+    "/VehicleCompatibility/AllowChargePause",
+    "/VehicleCompatibility/MinimumChargingIntervalSeconds",
+    "/VehicleCompatibility/MinimumChargePauseDurationSeconds",
+    "/VehicleCompatibility/MinimumChargePauseEndsAtMs",
+    "/VehicleCompatibility/MinimumChargeTimeSeconds",
+    "/VehicleCompatibility/SimulateUnpluggingShort",
+    "/VehicleCompatibility/SimulateUnpluggingAlways",
+    "/VehicleCompatibility/SimulateUnpluggingDurationSeconds",
+    "/VehicleCompatibility/MinimumPhaseWishSwitchTimeSeconds",
+    "/VehicleCompatibility/MinimumPhaseToggleWaitTimeSeconds",
+    "/VehicleCompatibility/ModelStatusRaw",
+    "/VehicleCompatibility/ModelStatusLiteral",
+    "/VehicleCompatibility/MissingFields",
+    "/VehicleCompatibility/InvalidFields",
+    "/Resume/State",
+    "/Resume/AttemptKind",
+    "/Resume/FailureCount",
+    "/Resume/BackoffRemaining",
+    "/Resume/FailureReason",
 )
 READONLY_DBUS_PAIRS = frozenset(
     (DEFAULT_WATTPILOT_DBUS_SERVICE, path) for path in SNAPSHOT_DBUS_PATHS
@@ -375,6 +402,8 @@ class AuditSettings:
     grid_import_stop_w: float = 300.0
     grid_import_stop_seconds: int = 15
     startup_grace_seconds: int = 60
+    resume_retry_backoff_seconds: int = 300
+    resume_retry_backoff_max_seconds: int = 1800
 
 
 @dataclass
@@ -1118,6 +1147,12 @@ def load_settings(path: Path) -> tuple[AuditSettings, list[str]]:
         startup_grace_seconds=_get_int(
             parser, section, "StartupGraceSeconds", 60, warnings
         ),
+        resume_retry_backoff_seconds=_get_int(
+            parser, section, "ResumeRetryBackoffSeconds", 300, warnings
+        ),
+        resume_retry_backoff_max_seconds=_get_int(
+            parser, section, "ResumeRetryBackoffMaxSeconds", 1800, warnings
+        ),
     )
     return settings, warnings
 
@@ -1390,6 +1425,8 @@ class EsEssDailyReport:
         self.rare_exits: list[tuple[LogRecord, dict[str, str]]] = []
         self.session_statistics_records: list[tuple[LogRecord, dict]] = []
         self.session_statistics_errors: list[LogRecord] = []
+        self.resume_event_records: list[tuple[LogRecord, dict]] = []
+        self.resume_event_errors: list[LogRecord] = []
 
     def add(
         self,
@@ -1427,6 +1464,20 @@ class EsEssDailyReport:
                     self.session_statistics_records.append((record, payload))
                 except (TypeError, ValueError, json.JSONDecodeError):
                     self.session_statistics_errors.append(record)
+
+            if RESUME_EVENT_MARKER in message:
+                payload_text = message.split(RESUME_EVENT_MARKER, 1)[1]
+                try:
+                    payload = json.loads(payload_text)
+                    if not isinstance(payload, dict):
+                        raise ValueError("resume event is not an object")
+                    if payload.get("event_version") != RESUME_EVENT_VERSION:
+                        raise ValueError("unsupported resume event version")
+                    if payload.get("event") not in RESUME_EVENT_NAMES:
+                        raise ValueError("resume event name is missing or unsupported")
+                    self.resume_event_records.append((record, payload))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    self.resume_event_errors.append(record)
 
             allowance_match = (
                 ALLOWANCE_RE.search(message)
@@ -3681,6 +3732,138 @@ class EsEssDailyReport:
                 ),
             )
 
+    def check_resume_attempts(self) -> None:
+        if self.resume_event_errors:
+            self.add(
+                "WARN",
+                "vehicle resume evidence",
+                "Malformed or unsupported structured Wattpilot resume event(s) were ignored.",
+                self.resume_event_errors,
+            )
+
+        failures = [
+            record
+            for record, payload in self.resume_event_records
+            if payload.get("event") == "attempt_failed"
+        ]
+        successes = [
+            record
+            for record, payload in self.resume_event_records
+            if payload.get("event") == "attempt_succeeded"
+        ]
+        if failures:
+            self.add(
+                "ATTENTION",
+                "vehicle resume attempts",
+                "{0} accepted start/resume attempt(s) produced no confirmed charging power and entered bounded retry backoff; {1} later attempt(s) succeeded in the selected evidence.".format(
+                    len(failures), len(successes)
+                ),
+                failures,
+            )
+        elif successes:
+            self.add(
+                "PASS",
+                "vehicle resume attempts",
+                "{0} accepted start/resume attempt(s) reached confirmed charging power without a recorded failure.".format(
+                    len(successes)
+                ),
+                successes,
+            )
+        else:
+            self.add(
+                "NOT_OBSERVED",
+                "vehicle resume attempts",
+                "No structured vehicle start/resume outcome was observed.",
+            )
+
+    def _snapshot_integer(self, path: str) -> Optional[int]:
+        value = self.current_snapshot.dbus_values.get(path)
+        if value in (None, "", "unavailable"):
+            return None
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+    def configuration_recommendations(self) -> list[str]:
+        recommendations: list[str] = []
+        native_minimum = self._snapshot_integer(
+            "/VehicleCompatibility/NativeMinimumCurrent"
+        )
+        if (
+            native_minimum is not None
+            and native_minimum >= 6
+            and self.settings.min_current_per_phase < native_minimum
+        ):
+            recommendations.append(
+                "Set [FroniusWattpilot] MinCurrentPerPhase to at least {0} A so the configuration matches the current native vehicle-profile floor; the controller already enforces the higher effective minimum.".format(
+                    native_minimum
+                )
+            )
+
+        native_phase_wait = max(
+            value
+            for value in (
+                self._snapshot_integer(
+                    "/VehicleCompatibility/MinimumPhaseWishSwitchTimeSeconds"
+                ),
+                self._snapshot_integer(
+                    "/VehicleCompatibility/MinimumPhaseToggleWaitTimeSeconds"
+                ),
+                0,
+            )
+            if value is not None
+        )
+        if (
+            self.settings.vehicle_phase_capability.lower() == "automatic"
+            and native_phase_wait > self.settings.min_phase_switch_seconds
+        ):
+            recommendations.append(
+                "Increase [FroniusWattpilot] MinPhaseSwitchSeconds to at least {0} seconds to match the currently reported native vehicle-profile phase-switch interval.".format(
+                    native_phase_wait
+                )
+            )
+
+        failure_events = [
+            payload
+            for _record, payload in self.resume_event_records
+            if payload.get("event") == "attempt_failed"
+        ]
+        snapshot_failure_count = self._snapshot_integer("/Resume/FailureCount") or 0
+        if failure_events or snapshot_failure_count > 0:
+            allow_pause = self._snapshot_integer(
+                "/VehicleCompatibility/AllowChargePause"
+            )
+            unplug_short = self._snapshot_integer(
+                "/VehicleCompatibility/SimulateUnpluggingShort"
+            )
+            unplug_always = self._snapshot_integer(
+                "/VehicleCompatibility/SimulateUnpluggingAlways"
+            )
+            if allow_pause == 0:
+                recommendations.append(
+                    "Review the selected Solar.wattpilot vehicle profile and enable charge pauses if that profile exposes the option; resume failures were observed while native charge pauses were disabled. Do not change the main charging-current control for this recommendation."
+                )
+            if unplug_short == 0 and unplug_always == 0:
+                recommendations.append(
+                    "Review the selected Solar.wattpilot vehicle profile and enable its simulated-unplugging compatibility option if available; resume failures were observed while both reported simulated-unplugging modes were disabled."
+                )
+
+            native_pause_seconds = self._snapshot_integer(
+                "/VehicleCompatibility/MinimumChargePauseDurationSeconds"
+            )
+            if (
+                native_pause_seconds is not None
+                and native_pause_seconds > self.settings.resume_retry_backoff_seconds
+            ):
+                recommendations.append(
+                    "Increase [FroniusWattpilot] ResumeRetryBackoffSeconds to at least {0} seconds so retries do not precede the currently reported native minimum charge-pause duration.".format(
+                        native_pause_seconds
+                    )
+                )
+
+        return recommendations
+
     def run(self) -> AuditResult:
         self.collect()
         self.check_inputs()
@@ -3700,6 +3883,7 @@ class EsEssDailyReport:
         rare_statuses = self.build_rare_statuses()
         sessions = self.build_sessions()
         self.check_session_statistics(sessions)
+        self.check_resume_attempts()
 
         statuses = {finding.status for finding in self.findings}
         if "FAIL" in statuses:
@@ -3797,8 +3981,29 @@ class EsEssDailyReport:
             "rare_status_occurrences": sum(
                 summary.occurrences for summary in rare_statuses
             ),
+            "resume_attempts": len(
+                [
+                    payload
+                    for _record, payload in self.resume_event_records
+                    if payload.get("event") == "attempt_started"
+                ]
+            ),
+            "resume_successes": len(
+                [
+                    payload
+                    for _record, payload in self.resume_event_records
+                    if payload.get("event") == "attempt_succeeded"
+                ]
+            ),
+            "resume_failures": len(
+                [
+                    payload
+                    for _record, payload in self.resume_event_records
+                    if payload.get("event") == "attempt_failed"
+                ]
+            ),
         }
-        recommendations: list[str] = []
+        recommendations = self.configuration_recommendations()
         if overall == "ANOMALY":
             recommendations.append(
                 "Inspect the cited raw records before relying on unattended Auto/Eco charging."
@@ -3913,6 +4118,8 @@ def render_human(result: AuditResult) -> str:
         f"{result.configuration.min_phase_switch_seconds} s",
         f"AllowanceFresh/DropGrace={result.configuration.allowance_fresh_seconds}/"
         f"{result.configuration.allowance_drop_grace_seconds} s",
+        f"ResumeRetryBackoff={result.configuration.resume_retry_backoff_seconds}.."
+        f"{result.configuration.resume_retry_backoff_max_seconds} s",
         "BatteryAssistMax={0:.0f} W/active phase/{1} s".format(
             result.configuration.battery_assist_max_shortfall_per_phase_w,
             result.configuration.battery_assist_max_seconds,

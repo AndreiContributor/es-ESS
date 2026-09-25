@@ -48,6 +48,14 @@ class EsEssDailyReportTests(unittest.TestCase):
             level,
         )
 
+    def _resume_line(self, clock, payload, level="INFO"):
+        return self._line(
+            clock,
+            "Wattpilot resume event: "
+            + json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            level,
+        )
+
     @staticmethod
     def _session_event(event, **changes):
         payload = {
@@ -74,7 +82,7 @@ class EsEssDailyReportTests(unittest.TestCase):
         payload.update(changes)
         return payload
 
-    def _run(self, lines, settings=None, partial=False):
+    def _run(self, lines, settings=None, partial=False, current_snapshot=None):
         records = self._records(lines)
         audit_input = AUDIT.AuditInput(
             target_date=self.target_date,
@@ -96,6 +104,7 @@ class EsEssDailyReportTests(unittest.TestCase):
             records,
             settings or AUDIT.AuditSettings(log_level="APP_DEBUG"),
             audit_input,
+            current_snapshot=current_snapshot,
         ).run()
 
     @staticmethod
@@ -803,6 +812,8 @@ GridImportPositive=true
 GridImportStopW=300
 GridImportStopSeconds=15
 StartupGraceSeconds=60
+ResumeRetryBackoffSeconds=300
+ResumeRetryBackoffMaxSeconds=1800
 
 [Shelly3EMSiteCurrent]
 TransientFailureGraceSeconds=5
@@ -816,6 +827,8 @@ TransientFailureGraceSeconds=5
         self.assertEqual(settings.allowance_drop_grace_seconds, 30)
         self.assertEqual(settings.site_current_source, "Shelly3EMGen3")
         self.assertEqual(settings.vehicle_phase_capability, "OnePhaseOnly")
+        self.assertEqual(settings.resume_retry_backoff_seconds, 300)
+        self.assertEqual(settings.resume_retry_backoff_max_seconds, 1800)
         self.assertEqual(
             settings.site_current_transient_failure_grace_seconds, 5
         )
@@ -890,8 +903,96 @@ NoBatToEV=false
             ]
         )
         payload = json.loads(json.dumps(result.to_dict()))
-        self.assertEqual(payload["schema"], 4)
+        self.assertEqual(payload["schema"], 5)
         self.assertEqual(payload["inputs"]["target_date"], self.target_date)
+
+    def test_resume_failure_metrics_and_configuration_recommendations(self):
+        snapshot = AUDIT.CurrentSnapshot(
+            captured_at="2000-07-02T12:00:00",
+            service_state="/service/es-ESS: up (pid 123) 60 seconds",
+            dependencies="available",
+            dbus_values={
+                "/VehicleCompatibility/NativeMinimumCurrent": "8",
+                "/VehicleCompatibility/AllowChargePause": "0",
+                "/VehicleCompatibility/SimulateUnpluggingShort": "0",
+                "/VehicleCompatibility/SimulateUnpluggingAlways": "0",
+                "/VehicleCompatibility/MinimumChargePauseDurationSeconds": "600",
+                "/VehicleCompatibility/MinimumPhaseWishSwitchTimeSeconds": "900",
+                "/VehicleCompatibility/MinimumPhaseToggleWaitTimeSeconds": "300",
+                "/Resume/FailureCount": "1",
+            },
+            available=True,
+        )
+        lines = [
+            self._resume_line(
+                "12:00:00",
+                {
+                    "event_version": 1,
+                    "event": "attempt_started",
+                    "attempt_kind": "resume",
+                    "consecutive_failures": 0,
+                    "model_status": 4,
+                },
+            ),
+            self._resume_line(
+                "12:01:01",
+                {
+                    "event_version": 1,
+                    "event": "attempt_failed",
+                    "attempt_kind": "resume",
+                    "consecutive_failures": 1,
+                    "model_status": 4,
+                    "reason": "synthetic no-power condition",
+                    "backoff_seconds": 300,
+                },
+            ),
+        ]
+        result = self._run(
+            lines,
+            AUDIT.AuditSettings(
+                log_level="APP_DEBUG",
+                min_current_per_phase=6,
+                min_phase_switch_seconds=600,
+                vehicle_phase_capability="Automatic",
+                resume_retry_backoff_seconds=300,
+            ),
+            current_snapshot=snapshot,
+        )
+
+        self.assertEqual(result.metrics["resume_attempts"], 1)
+        self.assertEqual(result.metrics["resume_failures"], 1)
+        self.assertEqual(result.metrics["resume_successes"], 0)
+        self.assertIn("ATTENTION", self._statuses(result, "vehicle resume attempts"))
+        recommendations = "\n".join(result.recommendations)
+        self.assertIn("MinCurrentPerPhase", recommendations)
+        self.assertIn("MinPhaseSwitchSeconds", recommendations)
+        self.assertIn("charge pauses", recommendations)
+        self.assertIn("simulated-unplugging", recommendations)
+        self.assertIn("ResumeRetryBackoffSeconds", recommendations)
+        self.assertIn("main charging-current control", recommendations)
+
+    def test_successful_resume_event_is_reported_without_profile_advice(self):
+        result = self._run(
+            [
+                self._resume_line(
+                    "12:00:00",
+                    {
+                        "event_version": 1,
+                        "event": "attempt_succeeded",
+                        "attempt_kind": "initial_start",
+                        "consecutive_failures": 0,
+                        "model_status": 4,
+                        "measured_power_w": 1400,
+                    },
+                )
+            ]
+        )
+
+        self.assertEqual(result.metrics["resume_successes"], 1)
+        self.assertIn("PASS", self._statuses(result, "vehicle resume attempts"))
+        self.assertFalse(
+            any("vehicle profile" in item for item in result.recommendations)
+        )
 
     def test_partial_json_contains_coverage_contract(self):
         result = self._run(
@@ -1819,7 +1920,7 @@ NoBatToEV=false
         result = self._run(lines)
         session = result.sessions[0]
 
-        self.assertEqual(result.schema, 4)
+        self.assertEqual(result.schema, 5)
         self.assertEqual(result.metrics["connection_sessions"], 1)
         self.assertEqual(result.metrics["charging_intervals"], 2)
         self.assertEqual(result.metrics["authoritative_total_kwh"], 0.25)
