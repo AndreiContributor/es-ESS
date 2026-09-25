@@ -1,6 +1,7 @@
 """Hardware-free regressions for Wattpilot writable command boundaries."""
 
 import importlib.util
+import json
 import sys
 import types
 import unittest
@@ -233,6 +234,46 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
 
         self.assertEqual(result, self.fwp.CurrentCommandResult(True, True))
         controller.wattpilot.set_power.assert_called_once_with(0)
+
+    def test_dispatched_current_emits_structured_boundary_evidence(self):
+        controller = self._controller()
+        controller.wattpilot.amp = 7
+        controller.wattpilot.set_power.return_value = True
+
+        with patch.object(self.fwp, "i") as info_log:
+            result = controller.commandWattpilotCurrent(
+                8, reason="phase_up_wait_current"
+            )
+
+        self.assertEqual(result, self.fwp.CurrentCommandResult(True, True))
+        message = info_log.call_args.args[1]
+        self.assertTrue(message.startswith(self.fwp.CURRENT_COMMAND_EVENT_MARKER))
+        payload = json.loads(
+            message.split(self.fwp.CURRENT_COMMAND_EVENT_MARKER, 1)[1]
+        )
+        self.assertEqual(payload["event_version"], 1)
+        self.assertEqual(payload["outcome"], "dispatched")
+        self.assertEqual(payload["target_a"], 8)
+        self.assertEqual(payload["reported_a"], 7)
+        self.assertEqual(payload["phase"], 1)
+        self.assertEqual(payload["reason"], "phase_up_wait_current")
+
+    def test_confirmed_current_emits_one_structured_suppression_event(self):
+        controller = self._controller()
+        controller.wattpilot.amp = 6
+        controller.wattpilot.ampUpdatedAt = self.fwp.time.time()
+        controller.allowWattpilotCommand = Mock(return_value=True)
+
+        with patch.object(self.fwp, "d") as debug_log:
+            controller.commandWattpilotCurrent(6, reason="pv_adjustment")
+            controller.commandWattpilotCurrent(6, reason="pv_adjustment")
+
+        structured = [
+            call.args[1]
+            for call in debug_log.call_args_list
+            if call.args[1].startswith(self.fwp.CURRENT_COMMAND_EVENT_MARKER)
+        ]
+        self.assertEqual(len(structured), 1)
 
     def test_set_current_is_rejected_when_wattpilot_reports_manual_mode(self):
         controller = self._controller()

@@ -268,6 +268,14 @@ assignment and the distributor's `... Wattpilot not reachable ...` form. The
 consumer metadata must still identify the Wattpilot consumer, so temporary
 transport loss does not create a false allowance-freshness gap.
 
+Changed-current analysis accepts versioned JSON after the stable marker
+`Wattpilot current command:`. Only events whose final command-boundary outcome
+is `dispatched` count as changed-current commands; rejected and
+telemetry-confirmed no-op outcomes remain diagnostic evidence. When a matching
+legacy adjustment message appears within one second, the report counts the
+structured event once. Unmatched legacy records remain supported for older or
+mixed-version log windows.
+
 ## Structured Session Evidence
 
 `FroniusWattpilot.py` observes confirmed controller state once per normal duty

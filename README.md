@@ -656,6 +656,11 @@ surplus:
   transitions, authoritative available counter deltas, bounded sampled-power
   estimates, onboarding latency, and one APP_DEBUG checkpoint per connected
   minute for the daily report. They do not identify the vehicle.
+- The final Auto/Eco current-command boundary emits versioned, non-identifying
+  evidence for dispatched, rejected, and telemetry-confirmed no-op targets.
+  This lets the daily report count current changes made during phase-switch
+  waiting as well as changes followed by the older human-readable adjustment
+  message; matching records are deduplicated.
 - On each eligible APP_DEBUG controller cycle, the existing Wattpilot model-
   status record also shows the reported current setpoint per phase, measured
   L1/L2/L3 current and power, and measured total power. Missing or non-finite
@@ -1288,6 +1293,9 @@ safety interventions, and rare statuses 8–11 and 13–14. Report JSON schema 5
 keeps total counter energy separate from sampled-power estimates and exposes
 counter resets, restarts, gaps, reconciliation error, and evidence
 completeness. It also counts structured start/resume outcomes and produces
+accurate changed-current and reversal metrics from structured final-boundary
+events when they are available, while retaining compatibility with older logs.
+It produces
 read-only configuration recommendations when current native diagnostics show a
 higher minimum-current floor, longer phase or pause timers, or failed resumes
 with disabled compatibility options. Older logs without structured session records remain analyzable,

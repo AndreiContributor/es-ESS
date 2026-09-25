@@ -249,6 +249,10 @@ It owns:
   acceptance separately from transport dispatch. Missing, malformed,
   connection-reset, or different telemetry dispatches through the existing
   `Wattpilot.set_power()` boundary. Zero-current commands are not deduplicated.
+  The helper emits versioned JSON after `Wattpilot current command:` with the
+  sanitized target, previously reported setpoint, active phase count, reason,
+  control mode, and dispatched/rejected/confirmed-no-op outcome. Logging is
+  evidence only and does not affect acceptance or dispatch.
 - Normal same-phase PV current selection captures the allowance value,
   validity, and update timestamp atomically once for the adjustment decision.
   `WattpilotPhaseDecisions.py` evaluates the command-free upward-stability
@@ -812,7 +816,10 @@ Future Wattpilot changes must preserve these invariants:
   changing the historical findings. Configuration recommendations are advisory
   only and must be derived from sanitized configuration, read-only runtime
   diagnostics, and structured controller events; the report never applies a
-  recommendation.
+  recommendation. For changed-current and reversal analysis it prefers
+  dispatched final-boundary events and deduplicates matching legacy prose
+  within one second; unmatched legacy evidence remains usable across mixed
+  deployment windows.
 - Session statistics remain observer-only in both Manual and Auto/Eco. They may
   record the first attempted start and whether the existing command sequence
   accepted it, but they must never call a command, alter dispatch selection,

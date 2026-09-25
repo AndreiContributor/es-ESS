@@ -56,6 +56,25 @@ class EsEssDailyReportTests(unittest.TestCase):
             level,
         )
 
+    def _current_command_line(self, clock, **changes):
+        payload = {
+            "event_version": 1,
+            "event": "current_command",
+            "outcome": "dispatched",
+            "target_a": 6,
+            "reported_a": 7,
+            "phase": 1,
+            "reason": "pv_adjustment",
+            "control_mode": "Auto",
+        }
+        payload.update(changes)
+        return self._line(
+            clock,
+            "Wattpilot current command: "
+            + json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            "INFO",
+        )
+
     @staticmethod
     def _session_event(event, **changes):
         payload = {
@@ -2403,6 +2422,51 @@ NoBatToEV=false
         self.assertIn(
             "ATTENTION", self._statuses(result, "zero-power current commands")
         )
+
+    def test_structured_current_commands_fill_phase_wait_gap_and_deduplicate_legacy(self):
+        result = self._run(
+            [
+                self._current_command_line(
+                    "21:49:00", target_a=7, reported_a=6
+                ),
+                self._current_command_line(
+                    "21:49:05",
+                    target_a=8,
+                    reported_a=7,
+                    reason="phase_up_wait_current",
+                ),
+                self._line(
+                    "21:49:05",
+                    "Adjusting charge current to 8A on 1-phase.",
+                    "INFO",
+                    "200",
+                ),
+                self._current_command_line(
+                    "21:49:10", target_a=9, reported_a=8
+                ),
+            ]
+        )
+
+        self.assertEqual(result.metrics["current_adjustments"], 3)
+        self.assertEqual(result.metrics["structured_current_commands"], 3)
+        self.assertEqual(result.metrics["rapid_current_reversals"], 0)
+
+    def test_rejected_and_suppressed_current_events_are_not_changed_commands(self):
+        result = self._run(
+            [
+                self._current_command_line(
+                    "21:49:00", outcome="rejected", target_a=8
+                ),
+                self._current_command_line(
+                    "21:49:05",
+                    outcome="suppressed_confirmed",
+                    target_a=8,
+                ),
+            ]
+        )
+
+        self.assertEqual(result.metrics["current_adjustments"], 0)
+        self.assertEqual(result.metrics["structured_current_commands"], 0)
 
     def test_no_grid_commissioning_profile_rejects_conflicting_services(self):
         settings = AUDIT.AuditSettings(

@@ -61,6 +61,8 @@ ZERO_POWER_THRESHOLD_W = 100.0
 TRANSPORT_RECOVERY_WINDOW_SECONDS = 90
 SESSION_STATISTICS_MARKER = "Wattpilot session statistics: "
 RESUME_EVENT_MARKER = "Wattpilot resume event: "
+CURRENT_COMMAND_EVENT_MARKER = "Wattpilot current command: "
+CURRENT_COMMAND_EVENT_VERSION = 1
 SESSION_EVENT_VERSION = 1
 SESSION_EVENT_NAMES = frozenset(
     {
@@ -1377,6 +1379,10 @@ class EsEssDailyReport:
         self._allowance_timestamps: list[datetime] = []
         self.grid_samples: list[GridSample] = []
         self.current_adjustments: list[tuple[LogRecord, int, int]] = []
+        self.structured_current_commands: list[
+            tuple[LogRecord, int, int]
+        ] = []
+        self.current_command_event_errors: list[LogRecord] = []
         self.guarded_current_noops: list[LogRecord] = []
         self.model_power_samples: list[tuple[LogRecord, float]] = []
         self._model_power_timestamps: list[datetime] = []
@@ -1448,6 +1454,42 @@ class EsEssDailyReport:
     def collect(self) -> None:
         for record in self.records:
             message = record.message
+
+            if CURRENT_COMMAND_EVENT_MARKER in message:
+                payload_text = message.split(
+                    CURRENT_COMMAND_EVENT_MARKER, 1
+                )[1]
+                try:
+                    payload = json.loads(payload_text)
+                    if not isinstance(payload, dict):
+                        raise ValueError("current-command record is not an object")
+                    if (
+                        payload.get("event_version")
+                        != CURRENT_COMMAND_EVENT_VERSION
+                        or payload.get("event") != "current_command"
+                    ):
+                        raise ValueError("unsupported current-command record")
+                    outcome = payload.get("outcome")
+                    if outcome not in {
+                        "dispatched",
+                        "rejected",
+                        "suppressed_confirmed",
+                    }:
+                        raise ValueError("unsupported current-command outcome")
+                    target = payload.get("target_a")
+                    phase = payload.get("phase")
+                    if isinstance(target, bool) or not isinstance(target, int):
+                        raise ValueError("invalid current-command target")
+                    if phase not in (0, 1, 3):
+                        raise ValueError("invalid current-command phase")
+                    if outcome == "dispatched" and target > 0 and phase in (1, 3):
+                        self.structured_current_commands.append(
+                            (record, target, phase)
+                        )
+                        self.charge_records.append(record)
+                    self._manual_control_records.append(record)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    self.current_command_event_errors.append(record)
 
             if SESSION_STATISTICS_MARKER in message:
                 payload_text = message.split(SESSION_STATISTICS_MARKER, 1)[1]
@@ -1796,9 +1838,34 @@ class EsEssDailyReport:
         self._manual_control_timestamps = [
             record.timestamp for record in self._manual_control_records
         ]
+        self._merge_current_command_evidence()
         self._classify_transport_timeouts()
         self._classify_current_command_evidence()
         self._classify_startup_compatibility()
+
+    def _merge_current_command_evidence(self) -> None:
+        """Prefer boundary events while retaining unmatched legacy evidence."""
+        if not self.structured_current_commands:
+            return
+
+        legacy_only = []
+        for legacy in self.current_adjustments:
+            legacy_record, legacy_target, legacy_phase = legacy
+            duplicate = any(
+                target == legacy_target
+                and phase == legacy_phase
+                and abs(
+                    (record.timestamp - legacy_record.timestamp).total_seconds()
+                )
+                <= 1.0
+                for record, target, phase in self.structured_current_commands
+            )
+            if not duplicate:
+                legacy_only.append(legacy)
+        self.current_adjustments = sorted(
+            self.structured_current_commands + legacy_only,
+            key=lambda item: item[0].timestamp,
+        )
 
     def _classify_transport_timeouts(self) -> None:
         """Resolve only bounded reconnects with authentication before control."""
@@ -3920,6 +3987,12 @@ class EsEssDailyReport:
             "phase_commands": len(self.phase_actions),
             "phase_confirmations": len(self.phase_confirmations),
             "current_adjustments": len(self.current_adjustments),
+            "structured_current_commands": len(
+                self.structured_current_commands
+            ),
+            "current_command_event_errors": len(
+                self.current_command_event_errors
+            ),
             "current_adjustments_per_hour": round(
                 len(self.current_adjustments) * 3600.0 / evidence_seconds, 3
             ),
