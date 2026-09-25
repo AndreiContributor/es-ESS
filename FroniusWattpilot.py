@@ -1454,7 +1454,11 @@ class FroniusWattpilot (esESSService):
         self.clearBatteryAssistLockout("car disconnected")
         self.clearChargeCompleteHold("car disconnected")
         self.clearPowerTransitionGrace()
-        self.resetResumeState("car disconnected", clearFailures=True)
+        self.resetResumeState(
+            "car disconnected",
+            clearFailures=True,
+            clearConnection=True,
+        )
         self.clearPendingPhaseSwitch()
         self.clearPhaseSwitchCandidate()
         self.resetCanonicalAllocationSteps()
@@ -3282,7 +3286,12 @@ class FroniusWattpilot (esESSService):
             ),
         )
 
-    def resetResumeState(self, reason, clearFailures=False):
+    def resetResumeState(
+        self,
+        reason,
+        clearFailures=False,
+        clearConnection=False,
+    ):
         self.resumeAttemptActive = False
         self.resumeAttemptStartedAt = 0
         self.resumeAttemptKind = ""
@@ -3291,6 +3300,8 @@ class FroniusWattpilot (esESSService):
         self.resumeFailureReason = ""
         if clearFailures:
             self.resumeFailureCount = 0
+        if clearConnection:
+            self.vehicleHasChargedThisConnection = False
         d(self, "Wattpilot resume state reset: {0}.".format(reason))
 
     def resumeBackoffRemaining(self, now=None):

@@ -83,6 +83,10 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
         )
         controller.currentPhaseMode = 1
         controller.powerTransitionUntil = 0
+        controller.powerTransitionExpectedW = 0
+        controller.powerTransitionReason = ""
+        controller.powerTransitionTelemetryReadyAt = 0
+        controller.startupGraceSeconds = 60
         controller.mode = self.fwp.VrmEvChargerControlMode.Auto
         controller.autostart = 1
         controller.validatedVenusOsVersion = "v3.75"
@@ -136,6 +140,8 @@ class WattpilotCommandBoundaryTests(unittest.TestCase):
             energyTelemetryUpdatedAt=self.fwp.time.time(),
             firmware="42.5",
             voltage1=230,
+            voltage2=230,
+            voltage3=230,
             mode=self.fwp.WattpilotControlMode.ECO,
             nativePvSurplusEnabled=False,
             flexibleTariffEnabled=False,

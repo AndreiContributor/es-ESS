@@ -2112,6 +2112,25 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(controller.resumeStateLiteral, "Charging")
         self.assertTrue(controller.vehicleHasChargedThisConnection)
 
+    def test_confirmed_disconnect_resets_resume_connection_history(self):
+        controller = self._controller()
+        controller.vehicleHasChargedThisConnection = True
+        controller.resumeFailureCount = 2
+        controller.resumeBackoffUntil = 500
+
+        controller.resetResumeState(
+            "synthetic confirmed disconnect",
+            clearFailures=True,
+            clearConnection=True,
+        )
+
+        self.assertFalse(controller.vehicleHasChargedThisConnection)
+        self.assertEqual(controller.resumeFailureCount, 0)
+        self.assertEqual(controller.resumeBackoffUntil, 0)
+        with patch.object(self.fwp.time, "time", return_value=600):
+            controller.beginResumeAttempt()
+        self.assertEqual(controller.resumeAttemptKind, "initial_start")
+
     def test_retry_backoff_blocks_new_auto_start(self):
         controller = self._controller()
         controller.resumeBackoffUntil = 400
