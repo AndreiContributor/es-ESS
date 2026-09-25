@@ -109,6 +109,15 @@ SNAPSHOT_DBUS_PATHS = (
     "/SiteCurrentSourceDeviceModel",
     "/SiteCurrentSourceFirmware",
     "/SiteCurrentSourceLastSampleAge",
+    "/SiteCurrentSourceDiagnosticsStatus",
+    "/SiteCurrentSourceDiagnosticsError",
+    "/SiteCurrentSourceDiagnosticsLastSuccessAge",
+    "/SiteCurrentSourceWifiStatus",
+    "/SiteCurrentSourceWifiRssi",
+    "/SiteCurrentSourceWifiChannel",
+    "/SiteCurrentSourceDeviceUptime",
+    "/SiteCurrentSourceDeviceFreeMemory",
+    "/SiteCurrentSourceRpcLatency",
     "/Charger1PhaseMapping",
     "/VehiclePhaseCapability",
     "/SiteCurrentL1",
@@ -2325,6 +2334,53 @@ class EsEssDailyReport:
                 "current command authority",
                 "Current Auto mode is not accompanied by CommandAuthorityOk=1.",
             )
+
+        if self.settings.site_current_source == "Shelly3EMGen3":
+            diagnostics_status = dbus.get(
+                "/SiteCurrentSourceDiagnosticsStatus"
+            )
+            rssi_text = dbus.get("/SiteCurrentSourceWifiRssi")
+            if diagnostics_status not in (None, "unavailable", "Healthy"):
+                self.add(
+                    "ATTENTION",
+                    "current Shelly network health",
+                    "The current read-only Shelly health snapshot is {0}: {1}.".format(
+                        diagnostics_status,
+                        dbus.get("/SiteCurrentSourceDiagnosticsError", ""),
+                    ),
+                )
+            elif diagnostics_status == "Healthy" and rssi_text not in (
+                None,
+                "unavailable",
+                "-1",
+            ):
+                try:
+                    rssi = float(rssi_text)
+                except (TypeError, ValueError):
+                    self.add(
+                        "ATTENTION",
+                        "current Shelly network health",
+                        "The current Shelly Wi-Fi RSSI diagnostic is malformed.",
+                    )
+                else:
+                    status = "PASS" if rssi > -75 else "ATTENTION"
+                    quality = "usable" if status == "PASS" else "weak"
+                    self.add(
+                        status,
+                        "current Shelly network health",
+                        "Current sanitized Shelly Wi-Fi RSSI is {0:.1f} dBm ({1}); "
+                        "channel={2}, RPC latency={3} ms. This snapshot does not "
+                        "identify the network and is not charging authority.".format(
+                            rssi,
+                            quality,
+                            dbus.get(
+                                "/SiteCurrentSourceWifiChannel", "unavailable"
+                            ),
+                            dbus.get(
+                                "/SiteCurrentSourceRpcLatency", "unavailable"
+                            ),
+                        ),
+                    )
 
     def check_commissioning_profile(self) -> None:
         services = {name.lower() for name in self.settings.enabled_services}

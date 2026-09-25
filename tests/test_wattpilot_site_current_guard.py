@@ -619,10 +619,18 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
 
         controller.registerDbusSubscription = Mock(side_effect=register)
         client = Mock()
+        diagnostic_client = Mock()
         source = Mock()
+        source.read_diagnostics.return_value = {
+            "status": "Initializing",
+            "error": "",
+            "last_success_at": 0,
+        }
 
         with patch.object(
-            self.fwp, "Shelly3EMGen3Client", return_value=client
+            self.fwp,
+            "Shelly3EMGen3Client",
+            side_effect=(client, diagnostic_client),
         ) as client_class, patch.object(
             self.fwp, "Shelly3EMSiteCurrentSource", return_value=source
         ) as source_class:
@@ -635,17 +643,113 @@ class WattpilotSiteCurrentGuardTests(unittest.TestCase):
         self.assertFalse(
             any(service == "com.victronenergy.grid" for service, _path in subscriptions)
         )
-        client_class.assert_called_once_with(
-            host="192.0.2.40",
-            username="admin",
-            password="secret",
-            timeout_seconds=2.0,
-        )
+        self.assertEqual(client_class.call_count, 2)
+        for call in client_class.call_args_list:
+            self.assertEqual(
+                call.kwargs,
+                {
+                    "host": "192.0.2.40",
+                    "username": "admin",
+                    "password": "secret",
+                    "timeout_seconds": 2.0,
+                },
+            )
         source_class.assert_called_once_with(
             client=client,
+            diagnostic_client=diagnostic_client,
             phase_mapping={"A": "L3", "B": "L1", "C": "L2"},
             poll_frequency_ms=1000,
             transient_failure_grace_seconds=0,
+        )
+
+    def test_diagnostic_poll_cannot_change_site_current_safety_state(self):
+        controller = self._controller()
+        self._set_site(controller, 5, 6, 7, 100)
+        controller.siteCurrentSourceConnected = True
+        controller.siteCurrentSourceStatus = "Healthy"
+        source = Mock()
+        source.poll_diagnostics.return_value = False
+        source.read_diagnostics.return_value = {
+            "status": "Unavailable",
+            "error": "Shelly RPC request failed: ReadTimeout",
+            "wifi_status": "Unavailable",
+            "wifi_rssi": None,
+            "wifi_channel": None,
+            "uptime_seconds": None,
+            "free_memory_bytes": None,
+            "rpc_latency_ms": None,
+            "last_success_at": 90,
+        }
+        controller.siteCurrentSource = source
+
+        self.assertFalse(controller.pollSiteCurrentSourceDiagnostics())
+
+        self.assertEqual(controller.siteCurrentL1Value, 5)
+        self.assertEqual(controller.siteCurrentL2Value, 6)
+        self.assertEqual(controller.siteCurrentL3Value, 7)
+        self.assertTrue(controller.siteCurrentSourceConnected)
+        self.assertEqual(controller.siteCurrentSourceStatus, "Healthy")
+        self.assertEqual(
+            controller.siteCurrentSourceDiagnosticsStatus, "Unavailable"
+        )
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+
+    def test_health_diagnostics_are_published_without_sensitive_network_fields(self):
+        controller = self._controller()
+        retained = {}
+        controller.publishRetained = retained.__setitem__
+        controller.siteCurrentSourceDiagnosticsStatus = "Healthy"
+        controller.siteCurrentSourceDiagnosticsError = ""
+        controller.siteCurrentSourceDiagnosticsLastSuccessAt = 95
+        controller.siteCurrentSourceWifiStatus = "Got IP"
+        controller.siteCurrentSourceWifiRssi = -62.5
+        controller.siteCurrentSourceWifiChannel = 6
+        controller.siteCurrentSourceDeviceUptime = 1234
+        controller.siteCurrentSourceDeviceFreeMemory = 456789
+        controller.siteCurrentSourceRpcLatency = 27.25
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.publishSiteCurrentTelemetry()
+
+        self.assertEqual(
+            retained["/SiteCurrentSourceDiagnosticsStatus"], "Healthy"
+        )
+        self.assertEqual(retained["/SiteCurrentSourceWifiStatus"], "Got IP")
+        self.assertEqual(retained["/SiteCurrentSourceWifiRssi"], -62.5)
+        self.assertEqual(retained["/SiteCurrentSourceWifiChannel"], 6)
+        self.assertEqual(retained["/SiteCurrentSourceDeviceUptime"], 1234)
+        self.assertEqual(
+            retained["/SiteCurrentSourceDeviceFreeMemory"], 456789
+        )
+        self.assertEqual(retained["/SiteCurrentSourceRpcLatency"], 27.2)
+        self.assertEqual(
+            retained["/SiteCurrentSourceDiagnosticsLastSuccessAge"], 5
+        )
+        self.assertNotIn("/SiteCurrentSourceSsid", retained)
+        self.assertNotIn("/SiteCurrentSourceIpAddress", retained)
+        self.assertNotIn("/SiteCurrentSourceMacAddress", retained)
+
+    def test_worker_registration_keeps_health_poll_low_rate_and_separate(self):
+        controller = self._controller()
+        controller.siteCurrentSource = SimpleNamespace(
+            worker_interval_ms=1000,
+            diagnostics_worker_interval_ms=60000,
+        )
+        controller.registerWorkerThread = Mock()
+
+        controller.initWorkerThreads()
+
+        self.assertEqual(
+            controller.registerWorkerThread.call_args_list,
+            [
+                unittest.mock.call(controller.pollSiteCurrentSource, 1000),
+                unittest.mock.call(
+                    controller.pollSiteCurrentSourceDiagnostics, 60000
+                ),
+                unittest.mock.call(controller._update, 5000),
+            ],
         )
 
     def test_transient_shelly_grace_blocks_risky_commands_but_allows_reduction(self):

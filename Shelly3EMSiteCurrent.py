@@ -23,23 +23,46 @@ class Shelly3EMSiteCurrentSource(SiteCurrentSource):
         phase_mapping,
         poll_frequency_ms=1000,
         transient_failure_grace_seconds=0,
+        diagnostic_client=None,
+        diagnostic_interval_ms=60000,
         clock=None,
+        monotonic_clock=None,
     ):
         self.client = client
+        self.diagnostic_client = diagnostic_client
         self.phase_mapping = dict(phase_mapping)
         self.worker_interval_ms = int(poll_frequency_ms)
+        self.diagnostics_worker_interval_ms = int(diagnostic_interval_ms)
         self.transient_failure_grace_seconds = max(
             0.0, float(transient_failure_grace_seconds)
         )
         self._clock = clock or time.time
+        self._monotonic_clock = monotonic_clock or time.monotonic
         self._lock = threading.Lock()
         self._last_identity_at = 0
         self._snapshot = SiteCurrentSnapshot(self.source_name)
+        self._diagnostics = {
+            "status": (
+                "Initializing" if diagnostic_client is not None else "NotApplicable"
+            ),
+            "error": "",
+            "wifi_status": "Unavailable",
+            "wifi_rssi": None,
+            "wifi_channel": None,
+            "uptime_seconds": None,
+            "free_memory_bytes": None,
+            "rpc_latency_ms": None,
+            "last_success_at": 0,
+        }
 
     def read_sample(self):
         with self._lock:
             self._expire_connection_grace_locked(self._clock())
             return self._snapshot.copy()
+
+    def read_diagnostics(self):
+        with self._lock:
+            return dict(self._diagnostics)
 
     def _set_failure(self, status, error):
         with self._lock:
@@ -134,5 +157,53 @@ class Shelly3EMSiteCurrentSource(SiteCurrentSource):
             )
         return False
 
+    def poll_diagnostics(self):
+        """Refresh read-only health without touching safety-current state."""
+        if self.diagnostic_client is None:
+            return False
+        started = self._monotonic_clock()
+        now = self._clock()
+        try:
+            health = self.diagnostic_client.read_health()
+            latency_ms = max(
+                0.0, (self._monotonic_clock() - started) * 1000.0
+            )
+            diagnostics = {
+                "status": "Healthy",
+                "error": "",
+                "wifi_status": health["wifi_status"],
+                "wifi_rssi": health["wifi_rssi"],
+                "wifi_channel": health["wifi_channel"],
+                "uptime_seconds": health["uptime_seconds"],
+                "free_memory_bytes": health["free_memory_bytes"],
+                "rpc_latency_ms": latency_ms,
+                "last_success_at": now,
+            }
+            with self._lock:
+                self._diagnostics = diagnostics
+            return True
+        except (
+            Shelly3EMGen3ConnectionError,
+            Shelly3EMGen3DeviceError,
+            Shelly3EMGen3PayloadError,
+        ) as ex:
+            error = str(ex)
+        except Exception as ex:
+            error = "Unexpected Shelly diagnostics failure: {0}".format(
+                ex.__class__.__name__
+            )
+
+        with self._lock:
+            diagnostics = dict(self._diagnostics)
+            diagnostics["status"] = "Unavailable"
+            diagnostics["error"] = error
+            self._diagnostics = diagnostics
+        return False
+
     def close(self):
         self.client.close()
+        if (
+            self.diagnostic_client is not None
+            and self.diagnostic_client is not self.client
+        ):
+            self.diagnostic_client.close()

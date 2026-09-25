@@ -392,6 +392,15 @@ class FroniusWattpilot (esESSService):
         self.siteCurrentSourceDeviceModel = ""
         self.siteCurrentSourceFirmware = ""
         self.siteCurrentSourceLastSampleAt = 0
+        self.siteCurrentSourceDiagnosticsStatus = "NotApplicable"
+        self.siteCurrentSourceDiagnosticsError = ""
+        self.siteCurrentSourceDiagnosticsLastSuccessAt = 0
+        self.siteCurrentSourceWifiStatus = "Unavailable"
+        self.siteCurrentSourceWifiRssi = None
+        self.siteCurrentSourceWifiChannel = None
+        self.siteCurrentSourceDeviceUptime = None
+        self.siteCurrentSourceDeviceFreeMemory = None
+        self.siteCurrentSourceRpcLatency = None
         self._siteCurrentPollTransitionLock = threading.Lock()
         self._lastSiteCurrentPollHealthy = None
         for phase in ("L1", "L2", "L3"):
@@ -497,6 +506,24 @@ class FroniusWattpilot (esESSService):
         self.dbusService.add_path('/SiteCurrentSourceDeviceModel', '')
         self.dbusService.add_path('/SiteCurrentSourceFirmware', '')
         self.dbusService.add_path('/SiteCurrentSourceLastSampleAge', -1)
+        self.dbusService.add_path(
+            '/SiteCurrentSourceDiagnosticsStatus',
+            getattr(
+                self,
+                "siteCurrentSourceDiagnosticsStatus",
+                "NotApplicable",
+            ),
+        )
+        self.dbusService.add_path('/SiteCurrentSourceDiagnosticsError', '')
+        self.dbusService.add_path(
+            '/SiteCurrentSourceDiagnosticsLastSuccessAge', -1
+        )
+        self.dbusService.add_path('/SiteCurrentSourceWifiStatus', 'Unavailable')
+        self.dbusService.add_path('/SiteCurrentSourceWifiRssi', -1)
+        self.dbusService.add_path('/SiteCurrentSourceWifiChannel', -1)
+        self.dbusService.add_path('/SiteCurrentSourceDeviceUptime', -1)
+        self.dbusService.add_path('/SiteCurrentSourceDeviceFreeMemory', -1)
+        self.dbusService.add_path('/SiteCurrentSourceRpcLatency', -1)
         self.dbusService.add_path('/Charger1PhaseMapping', self.charger1PhaseMapping)
         for phase in ("L1", "L2", "L3"):
             self.dbusService.add_path('/SiteCurrent{0}'.format(phase), 0)
@@ -571,8 +598,17 @@ class FroniusWattpilot (esESSService):
                     source_settings.get("RequestTimeoutSeconds", 2)
                 ),
             )
+            diagnosticClient = Shelly3EMGen3Client(
+                host=source_settings["Host"],
+                username=source_settings.get("Username", "admin"),
+                password=source_settings.get("Password", ""),
+                timeout_seconds=float(
+                    source_settings.get("RequestTimeoutSeconds", 2)
+                ),
+            )
             self.siteCurrentSource = Shelly3EMSiteCurrentSource(
                 client=client,
+                diagnostic_client=diagnosticClient,
                 phase_mapping={
                     "A": source_settings.get("PhaseA", "L1").upper(),
                     "B": source_settings.get("PhaseB", "L2").upper(),
@@ -584,6 +620,9 @@ class FroniusWattpilot (esESSService):
                 transient_failure_grace_seconds=int(
                     source_settings.get("TransientFailureGraceSeconds", 0)
                 ),
+            )
+            self.recordSiteCurrentSourceDiagnostics(
+                self.siteCurrentSource.read_diagnostics()
             )
         self.overheadAvailableDbus = self.registerDbusSubscription(
             "com.victronenergy.settings.esESS_SolarOverheadDistributor",
@@ -713,6 +752,46 @@ class FroniusWattpilot (esESSService):
         self.siteCurrentSourceDeviceModel = sample.device_model
         self.siteCurrentSourceFirmware = sample.firmware
         self.siteCurrentSourceLastSampleAt = sample.last_sample_at
+
+    def recordSiteCurrentSourceDiagnostics(self, diagnostics):
+        """Copy command-free provider health without touching safety state."""
+        self.siteCurrentSourceDiagnosticsStatus = diagnostics.get(
+            "status", "Unavailable"
+        )
+        self.siteCurrentSourceDiagnosticsError = diagnostics.get("error", "")
+        self.siteCurrentSourceDiagnosticsLastSuccessAt = diagnostics.get(
+            "last_success_at", 0
+        )
+        self.siteCurrentSourceWifiStatus = diagnostics.get(
+            "wifi_status", "Unavailable"
+        )
+        self.siteCurrentSourceWifiRssi = diagnostics.get("wifi_rssi")
+        self.siteCurrentSourceWifiChannel = diagnostics.get("wifi_channel")
+        self.siteCurrentSourceDeviceUptime = diagnostics.get("uptime_seconds")
+        self.siteCurrentSourceDeviceFreeMemory = diagnostics.get(
+            "free_memory_bytes"
+        )
+        self.siteCurrentSourceRpcLatency = diagnostics.get("rpc_latency_ms")
+
+    def pollSiteCurrentSourceDiagnostics(self):
+        """Poll low-rate provider health without authorizing control."""
+        source = getattr(self, "siteCurrentSource", None)
+        pollDiagnostics = getattr(source, "poll_diagnostics", None)
+        readDiagnostics = getattr(source, "read_diagnostics", None)
+        if not callable(pollDiagnostics) or not callable(readDiagnostics):
+            return False
+        succeeded = bool(pollDiagnostics())
+        try:
+            self.recordSiteCurrentSourceDiagnostics(readDiagnostics())
+        except Exception as ex:
+            self.siteCurrentSourceDiagnosticsStatus = "Unavailable"
+            self.siteCurrentSourceDiagnosticsError = (
+                "Site-current diagnostics snapshot failed: {0}".format(
+                    ex.__class__.__name__
+                )
+            )
+            return False
+        return succeeded
 
     def _siteCurrentPollEvidence(self, sample):
         """Return non-identifying provider evidence for transition logs."""
@@ -870,6 +949,14 @@ class FroniusWattpilot (esESSService):
         interval = getattr(source, "worker_interval_ms", None)
         if interval is not None:
             self.registerWorkerThread(self.pollSiteCurrentSource, interval)
+        diagnosticsInterval = getattr(
+            source, "diagnostics_worker_interval_ms", None
+        )
+        if diagnosticsInterval is not None:
+            self.registerWorkerThread(
+                self.pollSiteCurrentSourceDiagnostics,
+                diagnosticsInterval,
+            )
         self.registerWorkerThread(self._update, 5000)
 
     def signOfLive(self):
@@ -4613,6 +4700,63 @@ class FroniusWattpilot (esESSService):
                     1,
                 )
                 if getattr(self, "siteCurrentSourceLastSampleAt", 0) > 0
+                else -1
+            ),
+            "/SiteCurrentSourceDiagnosticsStatus": getattr(
+                self, "siteCurrentSourceDiagnosticsStatus", "NotApplicable"
+            ),
+            "/SiteCurrentSourceDiagnosticsError": getattr(
+                self, "siteCurrentSourceDiagnosticsError", ""
+            ),
+            "/SiteCurrentSourceDiagnosticsLastSuccessAge": (
+                round(
+                    max(
+                        0,
+                        now
+                        - getattr(
+                            self,
+                            "siteCurrentSourceDiagnosticsLastSuccessAt",
+                            0,
+                        ),
+                    ),
+                    1,
+                )
+                if getattr(
+                    self, "siteCurrentSourceDiagnosticsLastSuccessAt", 0
+                )
+                > 0
+                else -1
+            ),
+            "/SiteCurrentSourceWifiStatus": getattr(
+                self, "siteCurrentSourceWifiStatus", "Unavailable"
+            ),
+            "/SiteCurrentSourceWifiRssi": (
+                round(self.siteCurrentSourceWifiRssi, 1)
+                if getattr(self, "siteCurrentSourceWifiRssi", None) is not None
+                else -1
+            ),
+            "/SiteCurrentSourceWifiChannel": (
+                int(self.siteCurrentSourceWifiChannel)
+                if getattr(self, "siteCurrentSourceWifiChannel", None)
+                is not None
+                else -1
+            ),
+            "/SiteCurrentSourceDeviceUptime": (
+                int(self.siteCurrentSourceDeviceUptime)
+                if getattr(self, "siteCurrentSourceDeviceUptime", None)
+                is not None
+                else -1
+            ),
+            "/SiteCurrentSourceDeviceFreeMemory": (
+                int(self.siteCurrentSourceDeviceFreeMemory)
+                if getattr(self, "siteCurrentSourceDeviceFreeMemory", None)
+                is not None
+                else -1
+            ),
+            "/SiteCurrentSourceRpcLatency": (
+                round(self.siteCurrentSourceRpcLatency, 1)
+                if getattr(self, "siteCurrentSourceRpcLatency", None)
+                is not None
                 else -1
             ),
             "/Charger1PhaseMapping": self.charger1PhaseMapping,

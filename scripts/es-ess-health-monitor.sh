@@ -220,6 +220,15 @@ print_wattpilot_dbus() {
         /SiteCurrentSourceDeviceModel \
         /SiteCurrentSourceFirmware \
         /SiteCurrentSourceLastSampleAge \
+        /SiteCurrentSourceDiagnosticsStatus \
+        /SiteCurrentSourceDiagnosticsError \
+        /SiteCurrentSourceDiagnosticsLastSuccessAge \
+        /SiteCurrentSourceWifiStatus \
+        /SiteCurrentSourceWifiRssi \
+        /SiteCurrentSourceWifiChannel \
+        /SiteCurrentSourceDeviceUptime \
+        /SiteCurrentSourceDeviceFreeMemory \
+        /SiteCurrentSourceRpcLatency \
         /Charger1PhaseMapping \
         /VehiclePhaseCapability \
         /SiteCurrentL1 \
@@ -338,6 +347,7 @@ print_interpretation_hint() {
     echo "  - VehicleCompatibility native/effective minimum values are valid and Resume/State leaves Backoff after its bounded delay."
     echo "  - TelemetryHealthy is 1 during Auto/Eco decisions."
     echo "  - SiteCurrentSource and VehiclePhaseCapability match config; SourceConnected is 1 and SourceStatus is Healthy."
+    echo "  - SiteCurrentSourceDiagnosticsStatus is Healthy; Wi-Fi RSSI, channel, and RPC latency are plausible."
     echo "  - SiteCurrentTelemetryHealthy is 1 and each SiteCurrentAge remains inside SiteCurrentFreshSeconds."
     echo "  - SiteAllowedCurrent and SiteLimitingPhase match the smallest physical phase headroom."
     echo "  - GridImportGuardActive stays 0 during normal no-grid operation."

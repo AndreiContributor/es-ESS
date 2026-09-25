@@ -157,6 +157,20 @@ Deferred dormant-service reactivation blockers:
 
 ## Completed
 
+### Completed 2026-09-25 - Improve Wattpilot Command And Shelly Network Evidence
+
+- Added versioned final-boundary current-command events so daily reporting
+  counts phase-wait adjustments and deduplicates matching legacy messages.
+- Paired sanitized site-current failure/recovery transitions into outage
+  counts, durations, reason classes, unresolved intervals, and charging-power
+  correlation without retaining private operational evidence.
+- Added an independent one-minute, read-only Shelly Wi-Fi/system health poll
+  with a separate HTTP session. Public diagnostics exclude network identity,
+  addresses, host, credentials, and raw payloads, and cannot refresh safety
+  telemetry or authorize charging.
+- Added hardware-free regressions and updated the public runtime-status,
+  architecture, service-inventory, health-monitor, and daily-report contracts.
+
 ### Completed 2026-09-16 - Close Shelly Credential And Developer-Check Gaps
 
 - The earlier operator-completed Shelly credential/counter specification below

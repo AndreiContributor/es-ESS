@@ -339,6 +339,11 @@ The optional read-only snapshot includes physical site-current values, sample
 ages, calculated headrooms, limiting phase, allowed current, guard health,
 blocked reason, and recovery elapsed time. These describe only the capture
 instant; absence from historical logs is not proof that the guard succeeded.
+For `Shelly3EMGen3`, it also includes the sanitized low-rate health status,
+Wi-Fi RSSI/channel, and RPC latency. RSSI at or below `-75 dBm`, malformed
+values, or an unavailable health worker produces an attention finding. No
+network identity or address is captured, and these values never authorize a
+charge.
 
 For live investigation, run `scripts/es-ess-health-monitor.sh`. Keep the
 structured records transition-only plus the fixed one-minute connected

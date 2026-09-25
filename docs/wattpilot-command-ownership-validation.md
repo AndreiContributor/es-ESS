@@ -393,6 +393,46 @@ telemetry remains a stop-and-inspect condition.
    does not send subsequent `frc`, `amp`, or `psm` commands.
 5. Return to the validated commissioning state before ending the window.
 
+### F. Post-change full regression for automatic vehicle phase policy
+
+Run this once after deploying changes to vehicle compatibility, resume
+handling, command evidence, or Shelly diagnostics. Keep the session attended,
+use only naturally available PV for phase transitions, and retain operational
+evidence outside the public repository.
+
+1. With the vehicle disconnected, confirm `VehiclePhaseCapability=Automatic`,
+   `AllowGridCharging=false`, `/CompatibilityOk=1`, `/CommandAuthorityOk=1`,
+   both native command competitors at `0`, and a valid effective minimum.
+2. For a selected `Shelly3EMGen3` source, wait at least 60 seconds and confirm
+   `/SiteCurrentSourceDiagnosticsStatus=Healthy`, a plausible RSSI/channel and
+   RPC latency, and no SSID, address, MAC/BSSID, host, or credential path. A
+   health-poll failure must not refresh `/SiteCurrentSourceLastSampleAge` or
+   make `/SiteCurrentTelemetryHealthy=1`.
+3. Start Auto/Eco from fresh one-phase PV. Confirm the start respects the
+   effective minimum, current follows changing allowance, structured
+   `Wattpilot current command:` dispatched events match acknowledged setpoint
+   changes, and no intentional grid import or unbounded battery discharge
+   occurs.
+4. Disconnect and reconnect normally, then confirm a permitted resume reaches
+   measured charging. If the vehicle naturally refuses a resume, confirm one
+   failed outcome, increasing `/Resume/FailureCount`, and bounded Backoff with
+   no retry before its deadline; do not induce a vehicle fault solely for this
+   check.
+5. If PV naturally remains above the phase-up threshold for the configured
+   interval, confirm `Automatic` permits one site-safe transition to three
+   phases and later a safe reduction/phase-down as PV falls. An inconclusive
+   PV window is recorded as such rather than forced.
+6. Select Manual, change the app current, and confirm only the documented
+   one-time release is possible; es-ESS must not continue sending current,
+   phase, or start/stop commands in Manual.
+7. Disconnect the vehicle, restore Auto, and finish with
+   `VehiclePhaseCapability=Automatic`, validated authority, zero EV power, and
+   no unresolved resume or site-current diagnostic state.
+8. Run the daily report for the captured window. Confirm structured current
+   counts match dispatch evidence, no false rapid reversal is reported, and
+   site-current outage/recovery totals agree with the sanitized transition
+   records.
+
 Gate-2 completion requires recorded evidence for every executed step, focused
 and full automated tests passing, no intentional grid charging, unchanged
 Manual ownership, bounded continuation-only battery assist, and a completed

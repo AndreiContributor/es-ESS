@@ -197,6 +197,13 @@ It owns:
   authentication, HTTP/device, and payload failures bypass grace. Recovery is
   logged once and positive demand resumes only from the normal controller
   cycle after fresh telemetry and site-current recovery.
+- An independent 60-second Shelly diagnostics worker uses a separate HTTP
+  session for read-only `WiFi.GetStatus` and `Sys.GetStatus` requests. It
+  allowlists Wi-Fi state/RSSI/channel and system uptime/free-memory fields,
+  measures RPC latency, and excludes SSID, BSSID/MAC, IP, host, credentials,
+  and raw payloads. Diagnostic failure changes only diagnostic paths: it never
+  updates the safety snapshot, freshness, allocation eligibility, recovery
+  timers, or a Wattpilot command.
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.

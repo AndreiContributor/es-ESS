@@ -1299,6 +1299,38 @@ NoBatToEV=false
             AUDIT.render_human(result),
         )
 
+    def test_current_shelly_network_health_uses_sanitized_snapshot(self):
+        snapshot = AUDIT.CurrentSnapshot(
+            captured_at="2000-07-02T12:00:01",
+            service_state="/service/es-ESS: up (pid 123) 10 seconds",
+            dependencies="available",
+            dbus_values={
+                "/SiteCurrentSourceDiagnosticsStatus": "Healthy",
+                "/SiteCurrentSourceWifiRssi": "-78.0",
+                "/SiteCurrentSourceWifiChannel": "6",
+                "/SiteCurrentSourceRpcLatency": "31.5",
+            },
+            available=True,
+        )
+
+        result = self._run(
+            [self._line("12:00:00", "heartbeat")],
+            AUDIT.AuditSettings(
+                log_level="APP_DEBUG",
+                site_current_source="Shelly3EMGen3",
+            ),
+            current_snapshot=snapshot,
+        )
+
+        finding = next(
+            finding
+            for finding in result.findings
+            if finding.check == "current Shelly network health"
+        )
+        self.assertEqual(finding.status, "ATTENTION")
+        self.assertIn("-78.0 dBm", finding.message)
+        self.assertNotIn("SSID", finding.message)
+
     def test_health_monitor_falls_back_to_python3(self):
         monitor = (
             ROOT / "scripts" / "es-ess-health-monitor.sh"
