@@ -888,6 +888,11 @@ class WattpilotRuntimeStatusTests(unittest.TestCase):
             "VehicleCompatibility/ModelStatusLiteral",
             "VehicleCompatibility/MissingFields",
             "VehicleCompatibility/InvalidFields",
+            "Resume/State",
+            "Resume/AttemptKind",
+            "Resume/FailureCount",
+            "Resume/BackoffRemaining",
+            "Resume/FailureReason",
         }
         self.assertEqual(
             set(published),

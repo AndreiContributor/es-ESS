@@ -261,7 +261,7 @@ offered.
 | [Common]                 | LogRetentionDays     | Number of local calendar days retained, including the active `current.log`. Must be greater than `0`. | Integer       | 10                           |
 | [Common]                 | NumberOfThreads      | Number of Threads to use. 3-XX depending on enabled service count.                                     | Integer       | 5                            |
 | [Common]                 | ServiceMessageCount  | Number of ServiceMessages to publish on Mqtt. See [Service Messages](#service-messages)                | Integer       | 20                           |
-| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 17                           |
+| [Common]                 | ConfigVersion        | Just don't touch this.                                                                                 | Integer       | 18                           |
 | [Common]                 | VRMPortalID          | Your VRMPortalID, required to publish/read some values of your local mqtt.                             | String        | VRM0815                      |
 | [Common]                 | BatteryCapacityInWh  | Your battery capacity in Watthours.                                                                    | Integer       | 28000                        |
 | [Common]                 | BatteryMaxChargeInWh | Your battery maximum charge power in W                                                                 | Integer       | 9000                         |
@@ -880,6 +880,8 @@ or force-state commands.
 | [FroniusWattpilot] | SiteMaxCurrent | Mandatory Auto/Eco whole-site limit in amperes, applied independently to physical L1, L2, and L3. Must be within `6..100 A`; the `20 A` default is not universal and must be configured for the site's protective device and wiring. This protects the site supply calculation, not a lower-rated downstream branch. | Integer (A per phase) | 20 |
 | [FroniusWattpilot] | Charger1PhaseMapping | Physical site phase used by Wattpilot one-phase charging after any electrician-installed phase rotation. Allowed values are `L1`, `L2`, or `L3`. | String | L1 |
 | [FroniusWattpilot] | VehiclePhaseCapability | Auto/Eco vehicle phase policy. `Automatic` preserves normal one-/three-phase selection. `OnePhaseOnly` limits starts, distributor requests, current commands, and phase switching to one phase; Manual mode remains user-controlled. | String | Automatic |
+| [FroniusWattpilot] | ResumeRetryBackoffSeconds | Initial delay after an accepted Auto/Eco start or resume does not produce charging power. Further failures use exponential backoff. | Integer (seconds) | 300 |
+| [FroniusWattpilot] | ResumeRetryBackoffMaxSeconds | Maximum delay between repeated Auto/Eco resume attempts. Must be at least `ResumeRetryBackoffSeconds`. | Integer (seconds) | 1800 |
 | [FroniusWattpilot] | SiteCurrentFreshSeconds | Positive maximum age of whole-site L1/L2/L3 current and, during an active charge, Wattpilot phase-current telemetry. Each eligible controller cycle live-reads the site-current paths once and reuses that timestamped safety result through command dispatch, so valid unchanged values remain fresh while failed, missing, invalid, stale, or dispatch-expired data fails Auto/Eco closed. | Integer (seconds) | 15 |
 | [FroniusWattpilot] | SiteCurrentRecoverySeconds | Non-negative continuous safe-headroom time before a stopped charge may restart. A running same-phase current increase takes this fast path when fresh assigned PV covers the next ampere plus one extra allocation step. With only the next full step assigned, a separate slow current timer requires at least 600 seconds or the longer `MinPhaseSwitchSeconds` duration. Both paths release only 1 A, rebuild their timer after a sent increase, and leave reductions immediate. | Integer (seconds) | 30 |
 | [FroniusWattpilot] | ThreePhasePvSurplusStartW | Fresh real PV allowance required before Auto/Eco may switch from 1 phase to 3 phases. Must be greater than `ThreePhasePvSurplusStopW`. The maintained 4500 W default is above the typical 3-phase 6 A electrical floor while matching observed Wattpilot-app-style behavior more closely than a very conservative 5000 W threshold. | Integer (W) | 4500 |
@@ -1841,7 +1843,7 @@ Additionally there are the following configuration options available:
 | ---------- | ---------|---- | ------------- |--|
 | [Common]    | NumberOfThreads |  Number of threads, es-ESS should use. | int | 5 |
 | [Common]    | ServiceMessageCount | Number of service messages published on mqtt | int | 20 |
-| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 17 |
+| [Common]    | ConfigVersion | Current Config Version. DO NOT TOUCH THIS, it is required to update configuration files on new releases. | int | 18 |
 | [Common]    | HttpRequestTimeout | Maximum seconds for shared HTTP requests used by SolarOverheadDistributor HTTP consumers. | double | 5 |
 
 ### Service Messages

@@ -867,6 +867,31 @@ class esESS:
                 if (value is not None and value < 0):
                     invalid(section, key, "must be greater than or equal to 0", value)
 
+            resume_backoff = integer(
+                section, "ResumeRetryBackoffSeconds", 300
+            )
+            resume_backoff_max = integer(
+                section, "ResumeRetryBackoffMaxSeconds", 1800
+            )
+            if resume_backoff is not None and resume_backoff <= 0:
+                invalid(
+                    section,
+                    "ResumeRetryBackoffSeconds",
+                    "must be greater than 0",
+                    resume_backoff,
+                )
+            if (
+                resume_backoff is not None
+                and resume_backoff_max is not None
+                and resume_backoff_max < resume_backoff
+            ):
+                invalid(
+                    section,
+                    "ResumeRetryBackoffMaxSeconds",
+                    "must be greater than or equal to ResumeRetryBackoffSeconds",
+                    resume_backoff_max,
+                )
+
         for section, key in (
             ("SolarOverheadDistributor", "UpdateInterval"),
             ("TimeToGoCalculator", "UpdateInterval"),
@@ -1392,6 +1417,18 @@ class esESS:
             self.config["Common"]["ConfigVersion"] = "{0}".format(version)
             self._setConfigDefault(
                 "FroniusWattpilot", "VehiclePhaseCapability", "Automatic"
+            )
+
+        version = 18
+        if (loadedVersion < version):
+            self._backupConfig()
+            i(self, "Upgrading configuration to v{0}".format(version))
+            self.config["Common"]["ConfigVersion"] = "{0}".format(version)
+            self._setConfigDefault(
+                "FroniusWattpilot", "ResumeRetryBackoffSeconds", "300"
+            )
+            self._setConfigDefault(
+                "FroniusWattpilot", "ResumeRetryBackoffMaxSeconds", "1800"
             )
 
         #All required configuration changes applied. Save new file, create a backup of the existing configuration. 

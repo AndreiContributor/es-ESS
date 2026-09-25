@@ -97,6 +97,11 @@ RUNTIME_STATUS_DBUS_DEFAULTS = {
     "/VehicleCompatibility/ModelStatusLiteral": "Unavailable",
     "/VehicleCompatibility/MissingFields": "",
     "/VehicleCompatibility/InvalidFields": "",
+    "/Resume/State": "Idle",
+    "/Resume/AttemptKind": "",
+    "/Resume/FailureCount": 0,
+    "/Resume/BackoffRemaining": 0,
+    "/Resume/FailureReason": "",
 }
 
 RUNTIME_STATUS_TOPIC_SUFFIXES = {
@@ -135,6 +140,11 @@ RUNTIME_STATUS_TOPIC_SUFFIXES = {
     "/VehicleCompatibility/ModelStatusLiteral": "VehicleCompatibility/ModelStatusLiteral",
     "/VehicleCompatibility/MissingFields": "VehicleCompatibility/MissingFields",
     "/VehicleCompatibility/InvalidFields": "VehicleCompatibility/InvalidFields",
+    "/Resume/State": "Resume/State",
+    "/Resume/AttemptKind": "Resume/AttemptKind",
+    "/Resume/FailureCount": "Resume/FailureCount",
+    "/Resume/BackoffRemaining": "Resume/BackoffRemaining",
+    "/Resume/FailureReason": "Resume/FailureReason",
 }
 
 _LOG = logging.getLogger(__name__)
@@ -179,6 +189,11 @@ class RuntimeStatusSnapshot:
     model_status_literal: str
     vehicle_compatibility_missing_fields: str
     vehicle_compatibility_invalid_fields: str
+    resume_state: str
+    resume_attempt_kind: str
+    resume_failure_count: int
+    resume_backoff_remaining: int
+    resume_failure_reason: str
 
     def as_dbus_values(self) -> Dict[str, Any]:
         return {
@@ -217,6 +232,11 @@ class RuntimeStatusSnapshot:
             "/VehicleCompatibility/ModelStatusLiteral": self.model_status_literal,
             "/VehicleCompatibility/MissingFields": self.vehicle_compatibility_missing_fields,
             "/VehicleCompatibility/InvalidFields": self.vehicle_compatibility_invalid_fields,
+            "/Resume/State": self.resume_state,
+            "/Resume/AttemptKind": self.resume_attempt_kind,
+            "/Resume/FailureCount": self.resume_failure_count,
+            "/Resume/BackoffRemaining": self.resume_backoff_remaining,
+            "/Resume/FailureReason": self.resume_failure_reason,
         }
 
 
@@ -618,6 +638,11 @@ class WattpilotRuntimeStatusReporter:
             model_status_literal="Unavailable",
             vehicle_compatibility_missing_fields="",
             vehicle_compatibility_invalid_fields="",
+            resume_state="Idle",
+            resume_attempt_kind="",
+            resume_failure_count=0,
+            resume_backoff_remaining=0,
+            resume_failure_reason="",
         )
 
     def _publish_mqtt(self, dbus_path: str, value: Any) -> None:
@@ -761,7 +786,30 @@ class WattpilotRuntimeStatusReporter:
             vehicle_compatibility_invalid_fields=",".join(
                 vehicle_compatibility.invalid_fields
             ),
+            resume_state=str(
+                getattr(self.controller, "resumeStateLiteral", "Idle")
+            ),
+            resume_attempt_kind=str(
+                getattr(self.controller, "resumeAttemptKind", "")
+            ),
+            resume_failure_count=int(
+                getattr(self.controller, "resumeFailureCount", 0)
+            ),
+            resume_backoff_remaining=self._resume_backoff_remaining(),
+            resume_failure_reason=str(
+                getattr(self.controller, "resumeFailureReason", "")
+            ),
         )
+
+    def _resume_backoff_remaining(self):
+        method = getattr(self.controller, "resumeBackoffRemaining", None)
+        if callable(method):
+            try:
+                return int(round(max(0.0, float(method()))))
+            except Exception:
+                return 0
+        until = _number(getattr(self.controller, "resumeBackoffUntil", 0), 0)
+        return int(round(max(0.0, until - time.time())))
 
     def _vehicle_compatibility_snapshot(self):
         wattpilot = getattr(self.controller, "wattpilot", None)

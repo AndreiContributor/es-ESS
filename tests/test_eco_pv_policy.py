@@ -12,7 +12,7 @@ import unittest
 from enum import IntEnum
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -197,6 +197,16 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         controller.powerTransitionExpectedW = 0
         controller.powerTransitionReason = ""
         controller.powerTransitionTelemetryReadyAt = 0
+        controller.resumeRetryBackoffSeconds = 300
+        controller.resumeRetryBackoffMaxSeconds = 1800
+        controller.resumeAttemptActive = False
+        controller.resumeAttemptStartedAt = 0
+        controller.resumeAttemptKind = ""
+        controller.resumeFailureCount = 0
+        controller.resumeBackoffUntil = 0
+        controller.resumeStateLiteral = "Idle"
+        controller.resumeFailureReason = ""
+        controller.vehicleHasChargedThisConnection = False
         controller.pendingPhaseSwitchMode = 0
         controller.pendingPhaseSwitchSince = 0
 
@@ -2044,6 +2054,75 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertFalse(controller.canChargeAtMinimumCurrent())
         self.assertFalse(controller.allowWattpilotCommand("amp", 6))
         self.assertIn("native minimum current", controller.siteCurrentGuardReason)
+
+    def test_failed_start_stops_zero_then_off_and_enters_backoff(self):
+        controller = self._controller()
+        command_order = Mock()
+        command_order.attach_mock(controller.wattpilot.set_power, "power")
+        command_order.attach_mock(controller.wattpilot.set_start_stop, "start_stop")
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.beginPowerTransitionGrace(1, 6, "EV start")
+        with patch.object(self.fwp.time, "time", return_value=161):
+            self.assertFalse(controller.powerTransitionGraceActive())
+
+        self.assertEqual(
+            command_order.mock_calls,
+            [
+                call.power(0),
+                call.start_stop(self.fwp.WattpilotStartStop.Off),
+            ],
+        )
+        self.assertEqual(controller.resumeFailureCount, 1)
+        self.assertEqual(controller.resumeBackoffUntil, 461)
+        self.assertEqual(controller.resumeStateLiteral, "Backoff")
+
+    def test_native_minimum_pause_extends_attempt_without_retrying(self):
+        controller = self._controller()
+        controller.wattpilot.allPropsInitialized = True
+        controller.wattpilot.allProps = {
+            "mca": 6,
+            "mcpd": 120000,
+            "modelStatus": 24,
+        }
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.beginPowerTransitionGrace(1, 6, "EV start")
+        with patch.object(self.fwp.time, "time", return_value=161):
+            self.assertTrue(controller.powerTransitionGraceActive())
+
+        self.assertEqual(controller.resumeStateLiteral, "Waiting for native charge pause")
+        self.assertEqual(controller.powerTransitionUntil, 280)
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+
+    def test_confirmed_start_resets_failures_and_marks_charging(self):
+        controller = self._controller()
+        controller.resumeFailureCount = 2
+        controller.resumeBackoffUntil = 0
+        controller.wattpilot.power = 1.2
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.beginPowerTransitionGrace(1, 6, "EV start")
+        with patch.object(self.fwp.time, "time", return_value=101):
+            self.assertTrue(controller.powerTransitionGraceActive())
+
+        self.assertFalse(controller.resumeAttemptActive)
+        self.assertEqual(controller.resumeFailureCount, 0)
+        self.assertEqual(controller.resumeStateLiteral, "Charging")
+        self.assertTrue(controller.vehicleHasChargedThisConnection)
+
+    def test_retry_backoff_blocks_new_auto_start(self):
+        controller = self._controller()
+        controller.resumeBackoffUntil = 400
+        controller.resumeStateLiteral = "Backoff"
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            self.assertFalse(controller.startFromPvAllowance())
+
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
 
     def test_stale_raw_overhead_cannot_cause_a_phase_switch(self):
         controller = self._controller()

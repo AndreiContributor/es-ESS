@@ -59,7 +59,7 @@ class ConfigWizardTests(unittest.TestCase):
         config = wizard.build()
 
         self.assertEqual(config["Common"]["VRMPortalID"], "synthetic-portal-id")
-        self.assertEqual(config["Common"]["ConfigVersion"], "17")
+        self.assertEqual(config["Common"]["ConfigVersion"], "18")
         self.assertEqual(
             set(config._sections["Services"]), set(create_config.ACTIVE_SERVICES)
         )

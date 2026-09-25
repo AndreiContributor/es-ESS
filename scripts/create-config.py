@@ -360,7 +360,7 @@ class ConfigWizard:
             ),
         )
         self.set_value(
-            section, "ConfigVersion", self.current(section, "ConfigVersion", "17")
+            section, "ConfigVersion", self.current(section, "ConfigVersion", "18")
         )
         portal = self.ask(
             "VRM portal ID (from /sbin/get-unique-id)",
@@ -1106,6 +1106,25 @@ class ConfigWizard:
                 self.current(section, "StartupTelemetryRatio", 0.80),
                 greater_than=0,
                 maximum=1,
+            ),
+        )
+        resume_backoff = self.ask_int(
+            "Vehicle resume retry backoff (seconds)",
+            self.current(section, "ResumeRetryBackoffSeconds", 300),
+            1,
+        )
+        self.set_value(
+            section,
+            "ResumeRetryBackoffSeconds",
+            resume_backoff,
+        )
+        self.set_value(
+            section,
+            "ResumeRetryBackoffMaxSeconds",
+            self.ask_int(
+                "Maximum vehicle resume retry backoff (seconds)",
+                self.current(section, "ResumeRetryBackoffMaxSeconds", 1800),
+                resume_backoff,
             ),
         )
         self.set_value(

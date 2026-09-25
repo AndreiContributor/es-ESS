@@ -224,6 +224,12 @@ class FroniusWattpilot (esESSService):
         # demand until real Wattpilot telemetry has caught up.
         self.startupGraceSeconds = int(settings.get("StartupGraceSeconds", 60))
         self.startupTelemetryRatio = float(settings.get("StartupTelemetryRatio", 0.80))
+        self.resumeRetryBackoffSeconds = int(
+            settings.get("ResumeRetryBackoffSeconds", 300)
+        )
+        self.resumeRetryBackoffMaxSeconds = int(
+            settings.get("ResumeRetryBackoffMaxSeconds", 1800)
+        )
 
         # The distributor and Wattpilot are both updated on short polling
         # intervals. A single stale 0 W allowance or transient car-state false
@@ -341,6 +347,17 @@ class FroniusWattpilot (esESSService):
         self.powerTransitionExpectedW = 0
         self.powerTransitionReason = ""
         self.powerTransitionTelemetryReadyAt = 0
+
+        # Activation/resume attempts are controller-owned observations around
+        # an accepted Auto/Eco start. Native vehicle settings remain read-only.
+        self.resumeAttemptActive = False
+        self.resumeAttemptStartedAt = 0
+        self.resumeAttemptKind = ""
+        self.resumeFailureCount = 0
+        self.resumeBackoffUntil = 0
+        self.resumeStateLiteral = "Idle"
+        self.resumeFailureReason = ""
+        self.vehicleHasChargedThisConnection = False
 
         # A command to change phases is not proof that the Wattpilot or car
         # actually changed phases. Keep a short confirmation window and fall
@@ -996,6 +1013,12 @@ class FroniusWattpilot (esESSService):
             elif not self.wattpilotAutoControlAuthorityOk():
                 self.rejectDirectWattpilotCommand(path)
                 return False
+            elif self.resumeBackoffRemaining() > 0:
+                self.publishServiceMessage(
+                    self,
+                    "Ignored /StartStop start command during vehicle retry backoff.",
+                )
+                return False
 
             self.dbusService["/StartStopLiteral"] = state.name
 
@@ -1005,6 +1028,20 @@ class FroniusWattpilot (esESSService):
                 self.recordSessionStartResult(
                     bool(accepted), None if accepted else "start"
                 )
+                if accepted:
+                    phaseMode = (
+                        self.currentPhaseMode
+                        if self.currentPhaseMode in (1, 2)
+                        else 1
+                    )
+                    current = DecisionInputs.finite_number(
+                        getattr(self.wattpilot, "amp", None)
+                    )
+                    self.beginPowerTransitionGrace(
+                        phaseMode,
+                        current or self.minimumCurrentForCalculations(),
+                        "EV start",
+                    )
             elif state == VrmEvChargerStartStop.Stop:
                 self.wattpilot.set_start_stop(WattpilotStartStop.Off)
 
@@ -1090,6 +1127,7 @@ class FroniusWattpilot (esESSService):
             return False
         self.clearBatteryAssist()
         self.clearPowerTransitionGrace()
+        self.resetResumeState("Manual mode selected", clearFailures=True)
         self.clearPendingPhaseSwitch()
         self.clearPhaseSwitchCandidate()
         self.currentPhaseMode = 0
@@ -1416,6 +1454,7 @@ class FroniusWattpilot (esESSService):
         self.clearBatteryAssistLockout("car disconnected")
         self.clearChargeCompleteHold("car disconnected")
         self.clearPowerTransitionGrace()
+        self.resetResumeState("car disconnected", clearFailures=True)
         self.clearPendingPhaseSwitch()
         self.clearPhaseSwitchCandidate()
         self.resetCanonicalAllocationSteps()
@@ -1950,6 +1989,13 @@ class FroniusWattpilot (esESSService):
 
     def handleChargingState(self, siteCurrentGuard=None):
         measuredPowerW = self.actualMeasuredPowerW()
+        if measuredPowerW > self.chargeCompletePowerThresholdW:
+            self.vehicleHasChargedThisConnection = True
+            if (
+                not getattr(self, "resumeAttemptActive", False)
+                and self.resumeBackoffRemaining() <= 0
+            ):
+                self.resumeStateLiteral = "Charging"
 
         # Near a vehicle's target SOC, it can report a Charging model state
         # while drawing only a small balancing or keep-alive load. Use a
@@ -2115,6 +2161,19 @@ class FroniusWattpilot (esESSService):
     def startFromPvAllowance(self):
         # Defend the command boundary as well as the caller. A start must not
         # race a missing/stale allowance or no-grid telemetry outage.
+        backoffRemaining = self.resumeBackoffRemaining()
+        if backoffRemaining > 0:
+            self.resumeStateLiteral = "Backoff"
+            self.reportVRMStatus(
+                VrmEvChargerStatus.WaitingForSun,
+                "Waiting for vehicle retry backoff ({0:.0f}s)".format(
+                    backoffRemaining
+                ),
+            )
+            return False
+        if self.resumeStateLiteral == "Backoff":
+            self.resumeStateLiteral = "Idle"
+
         if not self.allowanceIsFresh():
             self.publishServiceMessage(
                 self,
@@ -3205,12 +3264,150 @@ class FroniusWattpilot (esESSService):
             return 0.0
         return max(0.0, float(self.wattpilot.power) * 1000.0)
 
+    def logResumeEvent(self, event, **fields):
+        payload = {
+            "event_version": 1,
+            "event": str(event),
+            "attempt_kind": getattr(self, "resumeAttemptKind", "") or None,
+            "consecutive_failures": int(
+                getattr(self, "resumeFailureCount", 0)
+            ),
+            "model_status": self.vehicleCompatibilitySnapshot().model_status_raw,
+        }
+        payload.update(fields)
+        i(
+            self,
+            "Wattpilot resume event: {0}".format(
+                json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            ),
+        )
+
+    def resetResumeState(self, reason, clearFailures=False):
+        self.resumeAttemptActive = False
+        self.resumeAttemptStartedAt = 0
+        self.resumeAttemptKind = ""
+        self.resumeBackoffUntil = 0
+        self.resumeStateLiteral = "Idle"
+        self.resumeFailureReason = ""
+        if clearFailures:
+            self.resumeFailureCount = 0
+        d(self, "Wattpilot resume state reset: {0}.".format(reason))
+
+    def resumeBackoffRemaining(self, now=None):
+        now = time.time() if now is None else float(now)
+        return max(0.0, getattr(self, "resumeBackoffUntil", 0) - now)
+
+    def beginResumeAttempt(self, now=None):
+        now = time.time() if now is None else float(now)
+        self.resumeAttemptActive = True
+        self.resumeAttemptStartedAt = now
+        self.resumeAttemptKind = (
+            "resume"
+            if getattr(self, "vehicleHasChargedThisConnection", False)
+            else "initial_start"
+        )
+        self.resumeStateLiteral = (
+            "Resuming" if self.resumeAttemptKind == "resume" else "Starting"
+        )
+        self.resumeFailureReason = ""
+        self.logResumeEvent("attempt_started")
+
+    def nativeResumeWaitDeadline(self):
+        if (
+            not getattr(self, "resumeAttemptActive", False)
+            or getattr(self, "resumeAttemptStartedAt", 0) <= 0
+        ):
+            return 0
+        snapshot = self.vehicleCompatibilitySnapshot()
+        status = snapshot.model_status_raw
+        duration_ms = None
+        if status == 22:
+            duration_ms = snapshot.simulate_unplugging_duration_ms
+            self.resumeStateLiteral = "Waiting for simulated unplugging"
+        elif status == 24:
+            duration_ms = snapshot.minimum_charge_pause_duration_ms
+            self.resumeStateLiteral = "Waiting for native charge pause"
+        if duration_ms is None:
+            return 0
+        return (
+            self.resumeAttemptStartedAt
+            + duration_ms / 1000.0
+            + self.startupGraceSeconds
+        )
+
+    def completeResumeAttempt(self, measuredPowerW):
+        if not self.resumeAttemptActive:
+            return
+        kind = self.resumeAttemptKind
+        self.vehicleHasChargedThisConnection = True
+        self.resumeAttemptActive = False
+        self.resumeAttemptStartedAt = 0
+        self.resumeFailureCount = 0
+        self.resumeBackoffUntil = 0
+        self.resumeStateLiteral = "Charging"
+        self.resumeFailureReason = ""
+        self.logResumeEvent(
+            "attempt_succeeded",
+            attempt_kind=kind,
+            measured_power_w=int(round(measuredPowerW)),
+        )
+        self.resumeAttemptKind = ""
+
+    def handleResumeFailure(self, reason, now=None):
+        if not self.resumeAttemptActive:
+            return False
+        now = time.time() if now is None else float(now)
+        kind = self.resumeAttemptKind
+        self.resumeFailureCount += 1
+        exponential = self.resumeRetryBackoffSeconds * (
+            2 ** max(0, self.resumeFailureCount - 1)
+        )
+        backoffSeconds = min(self.resumeRetryBackoffMaxSeconds, exponential)
+        self.resumeBackoffUntil = now + backoffSeconds
+        self.resumeAttemptActive = False
+        self.resumeAttemptStartedAt = 0
+        self.resumeStateLiteral = "Backoff"
+        self.resumeFailureReason = str(reason)
+        self.clearPowerTransitionGrace(preserveResumeState=True)
+        self.clearBatteryAssist()
+        self.clearPvCurrentIncreaseCandidate()
+        self.clearPendingPhaseSwitch()
+        self.surplusSince = 0
+        self.surplusBelowMinimumSince = 0
+        self.allowanceBelowMinimumSince = 0
+
+        # Clear the retained positive current before Force Off. This is an
+        # Auto/Eco failure path; Manual mode never enters it.
+        self.wattpilot.set_power(0)
+        self.wattpilot.set_start_stop(WattpilotStartStop.Off)
+        self.lastOnOffTime = now
+        self.noAllowanceForcedOff = True
+        self.currentPhaseMode = 0
+        self.dbusService["/StartStop"] = VrmEvChargerStartStop.Stop.value
+        self.dbusService["/StartStopLiteral"] = VrmEvChargerStartStop.Stop.name
+        self.publishServiceMessage(
+            self,
+            "Wattpilot {0} produced no confirmed charging power. Waiting "
+            "{1}s before another Auto/Eco attempt.".format(kind, backoffSeconds),
+        )
+        self.logResumeEvent(
+            "attempt_failed",
+            attempt_kind=kind,
+            reason=self.resumeFailureReason,
+            backoff_seconds=int(backoffSeconds),
+        )
+        self.resumeAttemptKind = ""
+        return True
+
     def beginPowerTransitionGrace(self, phaseMode, currentA, reason):
+        now = time.time()
         voltage = self.threePhaseVoltage() if phaseMode == 2 else self.onePhaseVoltage()
         self.powerTransitionExpectedW = max(0.0, float(currentA) * voltage)
-        self.powerTransitionUntil = time.time() + self.startupGraceSeconds
+        self.powerTransitionUntil = now + self.startupGraceSeconds
         self.powerTransitionReason = reason
         self.powerTransitionTelemetryReadyAt = 0
+        if reason == "EV start":
+            self.beginResumeAttempt(now)
         self.publishServiceMessage(
             self,
             "{0} transition grace started: reporting {1:.0f}W until Wattpilot telemetry catches up.".format(
@@ -3219,11 +3416,17 @@ class FroniusWattpilot (esESSService):
             )
         )
 
-    def clearPowerTransitionGrace(self):
+    def clearPowerTransitionGrace(self, preserveResumeState=False):
         self.powerTransitionUntil = 0
         self.powerTransitionExpectedW = 0
         self.powerTransitionReason = ""
         self.powerTransitionTelemetryReadyAt = 0
+        if getattr(self, "resumeAttemptActive", False) and not preserveResumeState:
+            self.resumeAttemptActive = False
+            self.resumeAttemptStartedAt = 0
+            self.resumeAttemptKind = ""
+            if self.resumeBackoffRemaining() <= 0:
+                self.resumeStateLiteral = "Idle"
 
     def beginPhaseSwitchConfirmation(self, phaseMode):
         self.pendingPhaseSwitchMode = phaseMode
@@ -3345,10 +3548,25 @@ class FroniusWattpilot (esESSService):
 
        now = time.time()
 
+       nativeWaitDeadline = self.nativeResumeWaitDeadline()
+       if nativeWaitDeadline > self.powerTransitionUntil:
+          self.powerTransitionUntil = nativeWaitDeadline
+
        # Expiry must be checked before the telemetry-ready branch.
        # Otherwise, a valid telemetry reading without a fresh allowance
        # can keep the grace state active forever.
        if now >= self.powerTransitionUntil:
+          if (
+             self.powerTransitionReason == "EV start"
+             and self.resumeAttemptActive
+             and self.actualMeasuredPowerW()
+             < self.powerTransitionExpectedW * self.startupTelemetryRatio
+          ):
+             self.handleResumeFailure(
+                "startup telemetry remained below the expected power",
+                now,
+             )
+             return False
           self.publishServiceMessage(
              self,
              "Wattpilot transition grace expired. Returning to normal PV control.",
@@ -3366,6 +3584,9 @@ class FroniusWattpilot (esESSService):
 
        if not telemetryReady:
           return True
+
+       if self.powerTransitionReason == "EV start":
+          self.completeResumeAttempt(actualPower)
 
        # Wait for one allowance update after valid charger telemetry.
        if self.powerTransitionTelemetryReadyAt == 0:
