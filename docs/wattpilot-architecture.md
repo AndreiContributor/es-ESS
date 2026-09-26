@@ -812,6 +812,9 @@ Future Wattpilot changes must preserve these invariants:
   headroom, and one-phase mapping contract instead of assuming the Venus system
   is the selected safety source, calculate durations and energy from observed
   timestamps, and exclude long gaps rather than extrapolating missing samples.
+  Its command summary prefers dispatched structured final-boundary events,
+  deduplicates matching legacy prose within one second, and retains rejected or
+  malformed structured evidence without treating it as a dispatched command.
   The daily report may invoke only allowlisted `svstat` and D-Bus `GetValue`
   snapshots. Historical dates must stop unless APP_DEBUG (or more verbose)
   covers the complete requested window. A current-day partial report may
@@ -826,7 +829,13 @@ Future Wattpilot changes must preserve these invariants:
   recommendation. For changed-current and reversal analysis it prefers
   dispatched final-boundary events and deduplicates matching legacy prose
   within one second; unmatched legacy evidence remains usable across mixed
-  deployment windows.
+  deployment windows. Structured command reasons may classify recognized
+  zero-power start/phase transactions and protective reductions separately,
+  while missing/legacy reasons remain conservative. A WebSocket timeout or
+  peer-reset error is recovered evidence only when authentication follows
+  within the bounded window before any charger-control action. Structured
+  connection summaries correlate dispatched commands and confirmed phase
+  transitions without changing the observer or command boundaries.
 - Session statistics remain observer-only in both Manual and Auto/Eco. They may
   record the first attempted start and whether the existing command sequence
   accepted it, but they must never call a command, alter dispatch selection,

@@ -157,6 +157,21 @@ Deferred dormant-service reactivation blockers:
 
 ## Completed
 
+### Completed 2026-09-27 - Correct Wattpilot Diagnostic Evidence Classification
+
+- Daily reporting now reconstructs structured connection-session current
+  adjustments from dispatched final-boundary commands and correlates confirmed
+  phase transitions across measured-power interruptions.
+- Structured command reasons distinguish expected zero-power start/phase
+  transactions and protective reductions from unexplained current chatter.
+  Genuine rapid reversals include both commands as evidence.
+- Exact WebSocket timeout and peer-reset errors are recovered only when bounded
+  authentication-first evidence precedes every later charger-control action;
+  unresolved interruptions remain failures.
+- The six-hour capture prefers structured dispatched current-command events,
+  deduplicates matching legacy prose, and separately reports rejected or
+  malformed structured records without changing any controller behavior.
+
 ### Completed 2026-09-25 - Improve Wattpilot Command And Shelly Network Evidence
 
 - Added versioned final-boundary current-command events so daily reporting

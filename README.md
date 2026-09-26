@@ -1241,7 +1241,9 @@ duplicate implementations: the 19-line shell file launches the Python capture.
 The summary integrates energy and state durations from actual sample timestamps
 and excludes long sampling gaps rather than assuming every requested interval
 was collected.
-Controller message counts come from D-Bus/runtime/log evidence; they are not an
+Controller message counts prefer dispatched structured final-boundary events,
+deduplicate matching legacy prose, and separately expose rejected or malformed
+structured records. They remain D-Bus/runtime/log evidence rather than an
 encrypted Wattpilot WebSocket packet capture. The tool only performs D-Bus
 `GetValue` reads and does not send charger, D-Bus, MQTT, service, or config
 commands. Its arithmetic summaries do not import the optional `statistics`
@@ -1303,6 +1305,13 @@ reports outage counts, durations, reason classes, unresolved intervals, and
 charging-power correlation. It also counts structured start/resume outcomes and produces
 accurate changed-current and reversal metrics from structured final-boundary
 events when they are available, while retaining compatibility with older logs.
+Recognized zero-power start/phase-transaction setpoints and protective current
+reductions remain visible without being mislabeled as chatter. Exact WebSocket
+timeouts and connection resets are downgraded from runtime failures only when
+bounded authentication-first recovery is proven before another charger-control
+action. Structured connection summaries use dispatched current commands and
+confirmed phase transitions rather than telemetry extrema or power-gap-only
+phase segments.
 It produces
 read-only configuration recommendations when current native diagnostics show a
 higher minimum-current floor, longer phase or pause timers, or failed resumes

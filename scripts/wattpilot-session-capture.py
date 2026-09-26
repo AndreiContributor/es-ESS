@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import os
 import re
@@ -32,6 +33,8 @@ DEFAULT_SYSTEM_SERVICE = "com.victronenergy.system"
 BUS_ITEM_INTERFACE = "com.victronenergy.BusItem"
 CHARGING_POWER_THRESHOLD_W = 100.0
 PROGRESS_INTERVAL_SECONDS = 5 * 60
+CURRENT_COMMAND_EVENT_MARKER = "Wattpilot current command: "
+CURRENT_COMMAND_EVENT_VERSION = 1
 
 EV_FIELDS = (
     ("connected", "/Connected"),
@@ -163,7 +166,24 @@ LOG_TIMESTAMP_RE = re.compile(
     r"^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+)"
 )
 ADJUSTMENT_TARGET_RE = re.compile(
-    r"Adjusting charge current to (?P<amps>\d+)A"
+    r"Adjusting charge current to (?P<amps>\d+)A on (?P<phase>[13])-phase"
+)
+CONTINUATION_TARGET_RE = re.compile(
+    r"Reducing charge current from continuation PV to (?P<amps>\d+)A on "
+    r"(?P<phase>[13]) phase"
+)
+MINIMUM_TARGET_RE = re.compile(
+    r"current EV setpoint\. Reducing to (?P<amps>\d+)A on "
+    r"(?P<phase>[13]) phase"
+)
+GUARDED_NOOP_TARGET_RE = re.compile(
+    r"current setpoint already confirmed; accepting guarded no-op at "
+    r"(?P<amps>\d+)A"
+)
+EXTRA_COMMAND_EVIDENCE_NAMES = (
+    "structured_current_commands",
+    "rejected_current_commands",
+    "current_command_event_errors",
 )
 
 
@@ -613,27 +633,126 @@ def parse_log_timestamp(line: str) -> Optional[float]:
 
 def analyze_log(path: Path, duration_seconds: float) -> dict[str, Any]:
     matches: dict[str, list[float]] = defaultdict(list)
-    adjustment_targets: list[int] = []
+    legacy_current_commands: list[tuple[float, Optional[int], Optional[int]]] = []
+    legacy_guarded_noops: list[tuple[float, Optional[int]]] = []
+    structured_dispatched: list[tuple[float, int, int]] = []
+    structured_suppressed: list[tuple[float, int, int]] = []
+    structured_rejected: list[float] = []
+    structured_errors: list[float] = []
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
             timestamp = parse_log_timestamp(line)
+            timestamp_value = timestamp if timestamp is not None else math.nan
             for name, pattern in LOG_PATTERNS.items():
                 if pattern.search(line):
-                    matches[name].append(timestamp if timestamp is not None else math.nan)
-            target_match = ADJUSTMENT_TARGET_RE.search(line)
-            if target_match:
-                adjustment_targets.append(int(target_match.group("amps")))
+                    matches[name].append(timestamp_value)
 
-    results: dict[str, Any] = {}
-    for name in LOG_PATTERNS:
-        timestamps = [value for value in matches[name] if math.isfinite(value)]
+            if LOG_PATTERNS["current_adjustments"].search(line):
+                target_match = next(
+                    (
+                        match
+                        for pattern in (
+                            ADJUSTMENT_TARGET_RE,
+                            CONTINUATION_TARGET_RE,
+                            MINIMUM_TARGET_RE,
+                        )
+                        if (match := pattern.search(line)) is not None
+                    ),
+                    None,
+                )
+                legacy_current_commands.append(
+                    (
+                        timestamp_value,
+                        int(target_match.group("amps")) if target_match else None,
+                        int(target_match.group("phase")) if target_match else None,
+                    )
+                )
+
+            noop_match = GUARDED_NOOP_TARGET_RE.search(line)
+            if noop_match:
+                legacy_guarded_noops.append(
+                    (timestamp_value, int(noop_match.group("amps")))
+                )
+
+            if CURRENT_COMMAND_EVENT_MARKER not in line:
+                continue
+            try:
+                payload = json.loads(line.split(CURRENT_COMMAND_EVENT_MARKER, 1)[1])
+                if not isinstance(payload, dict):
+                    raise ValueError("current-command record is not an object")
+                if (
+                    payload.get("event_version") != CURRENT_COMMAND_EVENT_VERSION
+                    or payload.get("event") != "current_command"
+                ):
+                    raise ValueError("unsupported current-command record")
+                outcome = payload.get("outcome")
+                target = payload.get("target_a")
+                phase = payload.get("phase")
+                if outcome not in {
+                    "dispatched",
+                    "rejected",
+                    "suppressed_confirmed",
+                }:
+                    raise ValueError("unsupported current-command outcome")
+                if isinstance(target, bool) or not isinstance(target, int):
+                    raise ValueError("invalid current-command target")
+                if phase not in (0, 1, 3):
+                    raise ValueError("invalid current-command phase")
+                if outcome == "dispatched" and target > 0 and phase in (1, 3):
+                    structured_dispatched.append((timestamp_value, target, phase))
+                elif outcome == "suppressed_confirmed":
+                    structured_suppressed.append((timestamp_value, target, phase))
+                elif outcome == "rejected":
+                    structured_rejected.append(timestamp_value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                structured_errors.append(timestamp_value)
+
+    def same_time(first: float, second: float) -> bool:
+        return (
+            math.isfinite(first)
+            and math.isfinite(second)
+            and abs(first - second) <= 1.0
+        )
+
+    legacy_current_only = [
+        event
+        for event in legacy_current_commands
+        if not any(
+            event[1] is not None
+            and event[2] is not None
+            and event[1] == structured[1]
+            and event[2] == structured[2]
+            and same_time(event[0], structured[0])
+            for structured in structured_dispatched
+        )
+    ]
+    merged_current = sorted(
+        structured_dispatched + legacy_current_only,
+        key=lambda item: item[0] if math.isfinite(item[0]) else math.inf,
+    )
+    legacy_noops_only = [
+        event
+        for event in legacy_guarded_noops
+        if not any(
+            event[1] == structured[1]
+            and same_time(event[0], structured[0])
+            for structured in structured_suppressed
+        )
+    ]
+    merged_noops = sorted(
+        structured_suppressed + legacy_noops_only,
+        key=lambda item: item[0] if math.isfinite(item[0]) else math.inf,
+    )
+
+    def metric(timestamps: list[float]) -> dict[str, Any]:
+        finite_timestamps = [value for value in timestamps if math.isfinite(value)]
         intervals = [
             current - previous
-            for previous, current in zip(timestamps, timestamps[1:])
+            for previous, current in zip(finite_timestamps, finite_timestamps[1:])
             if current >= previous
         ]
-        count = len(matches[name])
-        results[name] = {
+        count = len(timestamps)
+        return {
             "count": count,
             "rate_per_hour": (
                 count * 3600.0 / duration_seconds if duration_seconds > 0 else 0.0
@@ -642,6 +761,22 @@ def analyze_log(path: Path, duration_seconds: float) -> dict[str, Any]:
                 arithmetic_mean(intervals) if intervals else None
             ),
         }
+
+    results: dict[str, Any] = {}
+    for name in LOG_PATTERNS:
+        results[name] = metric(matches[name])
+    results["current_adjustments"] = metric([event[0] for event in merged_current])
+    results["guarded_current_noops"] = metric([event[0] for event in merged_noops])
+    results["structured_current_commands"] = metric(
+        [event[0] for event in structured_dispatched]
+    )
+    results["rejected_current_commands"] = metric(structured_rejected)
+    results["current_command_event_errors"] = metric(structured_errors)
+    adjustment_targets = [
+        (target, phase)
+        for _timestamp, target, phase in merged_current
+        if target is not None and phase is not None
+    ]
     results["consecutive_same_adjustment_candidates"] = sum(
         previous == current
         for previous, current in zip(
@@ -775,7 +910,7 @@ def build_summary(
             "Controller command evidence",
         ]
     )
-    for name in LOG_PATTERNS:
+    for name in (*LOG_PATTERNS, *EXTRA_COMMAND_EVIDENCE_NAMES):
         lines.append(command_line(name, log_evidence))
     lines.append(
         "  consecutive same-target adjustment candidates "

@@ -33,12 +33,16 @@ directory on the GX device.
 - Use the **charging-session capture** when start/stop behavior, phase-up or
   phase-down behavior, configured vehicle phase capability, energy, per-phase
   loading, selected site-current telemetry, or message frequency must be
-  correlated over one live session.
+  correlated over one live session. Its controller-command summary prefers
+  dispatched structured events, deduplicates matching legacy prose, and keeps
+  rejected or malformed command evidence separately visible.
 - Use the **daily report** after APP_DEBUG evidence covers the requested period.
   It analyzes retained history; it does not replace high-frequency live session
   sampling. It distinguishes changed-current writes from guarded no-ops,
-  highlights rapid current reversals and zero-power adjustments, and keeps
-  bounded authenticated WebSocket recoveries separate from unresolved errors.
+  highlights unexplained rapid current reversals and zero-power adjustments,
+  keeps explicit protective/start-transaction reasons visible, and separates
+  bounded authenticated WebSocket timeout/reset recoveries from unresolved
+  errors.
   It also reports structured start/resume outcomes and makes advisory
   configuration recommendations from read-only compatibility diagnostics.
 - Use the **setting capture** only for the command-ownership discovery procedure.
