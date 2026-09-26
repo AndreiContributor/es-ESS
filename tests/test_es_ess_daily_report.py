@@ -378,7 +378,10 @@ class EsEssDailyReportTests(unittest.TestCase):
         audit.collect()
 
         self.assertEqual(
-            [(amps, phases) for _record, amps, phases in audit.current_adjustments],
+            [
+                (event.target_a, event.phase)
+                for event in audit.current_adjustments
+            ],
             [(6, 3), (7, 1)],
         )
 
@@ -528,6 +531,59 @@ class EsEssDailyReportTests(unittest.TestCase):
         self.assertEqual(result.metrics["wattpilot_transport_timeouts"], 1)
         self.assertEqual(
             result.metrics["wattpilot_transport_timeouts_recovered"], 1
+        )
+
+    def test_recovered_transport_reset_is_visible_without_runtime_failure(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:10:00", "[Errno 104] Connection reset by peer - goodbye", "ERROR"
+                ),
+                self._line("15:10:40", "Authentication successful", "INFO"),
+            ]
+        )
+
+        self.assertIn("PASS", self._statuses(result, "runtime errors"))
+        self.assertIn(
+            "INFO", self._statuses(result, "Wattpilot transport recovery")
+        )
+        self.assertEqual(result.metrics["wattpilot_transport_timeouts"], 0)
+        self.assertEqual(result.metrics["wattpilot_transport_interruptions"], 1)
+        self.assertEqual(
+            result.metrics["wattpilot_transport_interruptions_recovered"], 1
+        )
+
+    def test_transport_reset_without_bounded_authentication_is_failure(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:10:00", "[Errno 104] Connection reset by peer - goodbye", "ERROR"
+                ),
+                self._line("15:12:00", "Authentication successful", "INFO"),
+            ]
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+        self.assertEqual(
+            result.metrics["wattpilot_transport_interruptions_recovered"], 0
+        )
+
+    def test_transport_reset_with_command_before_authentication_is_failure(self):
+        result = self._run(
+            [
+                self._line(
+                    "15:10:00", "[Errno 104] Connection reset by peer - goodbye", "ERROR"
+                ),
+                self._current_command_line(
+                    "15:10:20", target_a=7, reported_a=6
+                ),
+                self._line("15:10:40", "Authentication successful", "INFO"),
+            ]
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "runtime errors"))
+        self.assertEqual(
+            result.metrics["wattpilot_transport_interruptions_recovered"], 0
         )
 
     def test_transport_timeout_without_bounded_authentication_is_failure(self):
@@ -1927,6 +1983,14 @@ NoBatToEV=false
                     onboarding_latency_seconds=20,
                 ),
             ),
+            self._line(
+                "20:00:25",
+                "ServiceMessage: Allocated 2000W allowance to Fronius Wattpilot - "
+                "Charging 1 phase (35, Wattpilot); this allocation is not a device command.",
+            ),
+            self._current_command_line(
+                "20:00:30", target_a=7, reported_a=6, phase=1
+            ),
             self._session_line(
                 "20:01:00",
                 self._session_event(
@@ -1944,6 +2008,18 @@ NoBatToEV=false
                     phase_mode=3,
                     onboarding_latency_seconds=20,
                 ),
+            ),
+            self._line(
+                "20:01:11",
+                "ServiceMessage: Allocated 6000W allowance to Fronius Wattpilot - "
+                "Charging 3 phase (35, Wattpilot); this allocation is not a device command.",
+            ),
+            self._current_command_line(
+                "20:01:12", target_a=8, reported_a=7, phase=3
+            ),
+            self._line(
+                "20:01:15",
+                "ServiceMessage: Wattpilot phase telemetry confirmed 3-phase charging.",
             ),
             self._session_line(
                 "20:02:00",
@@ -2000,6 +2076,9 @@ NoBatToEV=false
         self.assertEqual(session.estimated_energy_by_phase_kwh["L1"], 0.14)
         self.assertEqual(session.onboarding_latency_seconds, 20)
         self.assertEqual((session.power_min_w, session.power_max_w), (1200, 7000))
+        self.assertEqual(session.current_adjustments_a, [7, 8])
+        self.assertEqual(len(session.phase_switches), 1)
+        self.assertIn("3-phase telemetry confirmed", session.phase_switches[0])
         self.assertTrue(session.evidence_complete)
         self.assertEqual(result.overall, "GOOD")
 
@@ -2511,6 +2590,13 @@ NoBatToEV=false
         self.assertIn(
             "ATTENTION", self._statuses(result, "current command reversals")
         )
+        reversal = next(
+            finding
+            for finding in result.findings
+            if finding.check == "current command reversals"
+        )
+        self.assertTrue(any("21:49:05" in item for item in reversal.evidence))
+        self.assertTrue(any("21:49:10" in item for item in reversal.evidence))
         self.assertIn(
             "ATTENTION", self._statuses(result, "zero-power current commands")
         )
@@ -2542,6 +2628,60 @@ NoBatToEV=false
         self.assertEqual(result.metrics["current_adjustments"], 3)
         self.assertEqual(result.metrics["structured_current_commands"], 3)
         self.assertEqual(result.metrics["rapid_current_reversals"], 0)
+
+    def test_expected_zero_power_start_command_is_informational(self):
+        result = self._run(
+            [
+                self._line(
+                    "21:49:00",
+                    "Wattpilot Modelstatus: Ready; charge telemetry (read-only): "
+                    "reported_setpoint=6.00A/phase, L1=0.00A/0W, "
+                    "L2=0.00A/0W, L3=0.00A/0W, total=0W",
+                ),
+                self._current_command_line(
+                    "21:49:02",
+                    target_a=7,
+                    reported_a=6,
+                    reason="auto_pv_start",
+                ),
+            ]
+        )
+
+        self.assertIn("PASS", self._statuses(result, "zero-power current commands"))
+        self.assertIn(
+            "INFO", self._statuses(result, "expected zero-power setup commands")
+        )
+        self.assertEqual(result.metrics["zero_power_current_adjustments"], 1)
+        self.assertEqual(
+            result.metrics["zero_power_current_adjustments_expected"], 1
+        )
+        self.assertEqual(
+            result.metrics["zero_power_current_adjustments_unexpected"], 0
+        )
+
+    def test_site_limit_reduction_is_not_actionable_reversal(self):
+        result = self._run(
+            [
+                self._current_command_line(
+                    "21:48:55", target_a=9, reported_a=8
+                ),
+                self._current_command_line(
+                    "21:49:00", target_a=10, reported_a=9
+                ),
+                self._current_command_line(
+                    "21:49:05",
+                    target_a=9,
+                    reported_a=10,
+                    reason="site_current_limit",
+                ),
+            ]
+        )
+
+        self.assertEqual(result.metrics["rapid_current_reversals"], 0)
+        self.assertIn("PASS", self._statuses(result, "current command reversals"))
+        self.assertIn(
+            "INFO", self._statuses(result, "protective current reversals")
+        )
 
     def test_rejected_and_suppressed_current_events_are_not_changed_commands(self):
         result = self._run(

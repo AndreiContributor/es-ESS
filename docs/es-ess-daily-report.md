@@ -212,9 +212,10 @@ Version 5 detects or summarizes:
 
 - `CRITICAL`, `ERROR`, traceback, dependency, firmware, and Venus OS
   compatibility failures;
-- Wattpilot WebSocket timeouts, keeping unresolved or command-before-recovery
-  events as failures while reporting a bounded authentication-first recovery
-  as visible transport lifecycle evidence;
+- recognized Wattpilot WebSocket timeout and connection-reset interruptions,
+  keeping unresolved or command-before-recovery events as failures while
+  reporting a bounded authentication-first recovery as visible transport
+  lifecycle evidence;
 - repeated service initializations or Wattpilot reconnect lifecycle events;
 - site-current stops and stale site-current telemetry found in controller logs;
 - Auto/Eco actions while command authority is blocked;
@@ -235,7 +236,9 @@ Version 5 detects or summarizes:
 - current outside configured per-phase bounds;
 - changed-current command rate, guarded equal-target no-ops, rapid direction
   reversals within one normal controller cycle, and changed-current commands
-  correlated with recent zero-power Wattpilot telemetry;
+  correlated with recent zero-power Wattpilot telemetry. Structured reasons
+  distinguish expected pre-start/phase-transition setpoints and protective
+  reductions from unexplained zero-power commands or PV chatter;
 - raw or interpreted start/stop/current/phase commands while Manual mode owns
   charging, while allowing the documented immediate command-authority release;
 - configuration combinations inconsistent with the documented no-grid
@@ -258,13 +261,13 @@ version, missing confirmation, incomplete sequence, or intervening control or
 connection-lifecycle event remains a compatibility failure and produces an
 `ANOMALY`.
 
-An exact WebSocket `Connection timed out - goodbye` error is not hidden. It is
-classified as recovered lifecycle evidence only when `Authentication
-successful` follows within 90 seconds and no charger-control action occurs
-between the timeout and authentication. Missing or late authentication, a
-command during the unvalidated interval, any other error, a traceback, or a
-service failure remains a runtime failure. Multiple recovered timeouts in one
-window produce `ATTENTION`.
+An exact WebSocket `Connection timed out - goodbye` or `Connection reset by
+peer - goodbye` error is not hidden. It is classified as recovered lifecycle
+evidence only when `Authentication successful` follows within 90 seconds and
+no charger-control action occurs between the interruption and authentication.
+Missing or late authentication, a command during the unvalidated interval,
+any unrecognized error, a traceback, or a service failure remains a runtime
+failure. Multiple recovered interruptions in one window produce `ATTENTION`.
 
 Allowance parsing accepts both the normal `... Wattpilot - Charging ...`
 assignment and the distributor's `... Wattpilot not reachable ...` form. The
@@ -277,7 +280,13 @@ is `dispatched` count as changed-current commands; rejected and
 telemetry-confirmed no-op outcomes remain diagnostic evidence. When a matching
 legacy adjustment message appears within one second, the report counts the
 structured event once. Unmatched legacy records remain supported for older or
-mixed-version log windows.
+mixed-version log windows. The structured reason is retained: zero-power
+`auto_pv_start` and phase-transition target writes are reported as expected
+transaction setup, while unexplained zero-power writes remain `ATTENTION`.
+Rapid reversals whose reducing command explicitly identifies a site-current,
+minimum-current, continuation-PV, or phase-transition reduction remain visible
+as informational protective actions. Other rapid reversals retain
+`ATTENTION`, with both sides of the reversal included as evidence.
 
 ## Structured Session Evidence
 
@@ -295,6 +304,12 @@ The structured event version is independent from daily-report JSON schema 5 so
 future log parsing can remain explicit. A connection may contain multiple
 charging intervals. Correlation IDs distinguish those observed intervals only;
 they never claim which vehicle was connected.
+
+The connection-session summary obtains its current-adjustment list from actual
+dispatched command evidence rather than mislabelling sampled telemetry extrema.
+It also correlates controller phase confirmations inside the connection window,
+so a phase transition that temporarily stops measured power between charging
+intervals remains visible.
 
 The Wattpilot `wh` session counter is cumulative. The report accepts only
 non-negative monotonic deltas and marks decreases/resets rather than subtracting
