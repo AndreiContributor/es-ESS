@@ -2112,6 +2112,43 @@ class EcoPvPolicyRegressionTests(unittest.TestCase):
         self.assertEqual(controller.resumeStateLiteral, "Charging")
         self.assertTrue(controller.vehicleHasChargedThisConnection)
 
+    def test_manual_charging_does_not_claim_auto_resume_state(self):
+        controller = self._controller()
+        controller.mode = self.fwp.VrmEvChargerControlMode.Manual
+        controller.wattpilot.power = 4.1
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.handleChargingState()
+
+        self.assertTrue(controller.vehicleHasChargedThisConnection)
+        self.assertEqual(controller.resumeStateLiteral, "Idle")
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+
+    def test_ordinary_auto_stop_returns_resume_state_to_idle(self):
+        controller = self._controller()
+        controller.resumeStateLiteral = "Charging"
+        controller.vehicleHasChargedThisConnection = True
+        controller.wattpilot.startState = self.fwp.WattpilotStartStop.On
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.forceStopForNoAllowance()
+
+        self.assertEqual(controller.resumeStateLiteral, "Idle")
+        self.assertTrue(controller.vehicleHasChargedThisConnection)
+
+    def test_ordinary_auto_stop_preserves_resume_backoff(self):
+        controller = self._controller()
+        controller.resumeStateLiteral = "Backoff"
+        controller.resumeBackoffUntil = 400
+        controller.wattpilot.startState = self.fwp.WattpilotStartStop.On
+
+        with patch.object(self.fwp.time, "time", return_value=100):
+            controller.forceStopForNoAllowance()
+
+        self.assertEqual(controller.resumeStateLiteral, "Backoff")
+        self.assertEqual(controller.resumeBackoffUntil, 400)
+
     def test_confirmed_disconnect_resets_resume_connection_history(self):
         controller = self._controller()
         controller.vehicleHasChargedThisConnection = True
