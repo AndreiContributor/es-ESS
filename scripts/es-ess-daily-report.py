@@ -15,6 +15,7 @@ from bisect import bisect_left, bisect_right
 import configparser
 import importlib.util
 import json
+from math import isfinite
 import re
 import shutil
 import subprocess
@@ -56,6 +57,8 @@ VERBOSE_LOG_LEVELS = frozenset({"APP_DEBUG", "DEBUG", "TRACE"})
 FULL_DAY_BOUNDARY_TOLERANCE = timedelta(minutes=10)
 HEARTBEAT_GAP_SECONDS = 180
 CURRENT_REVERSAL_WINDOW_SECONDS = 6
+INFORMATIONAL_REVERSAL_MAX_COUNT = 2
+INFORMATIONAL_REVERSAL_MAX_RATIO = 0.01
 CURRENT_POWER_CORRELATION_SECONDS = 6
 ZERO_POWER_THRESHOLD_W = 100.0
 TRANSPORT_RECOVERY_WINDOW_SECONDS = 90
@@ -63,6 +66,24 @@ SESSION_STATISTICS_MARKER = "Wattpilot session statistics: "
 RESUME_EVENT_MARKER = "Wattpilot resume event: "
 CURRENT_COMMAND_EVENT_MARKER = "Wattpilot current command: "
 CURRENT_COMMAND_EVENT_VERSION = 1
+ALLOWANCE_GRACE_EVENT_MARKER = "Wattpilot allowance grace: "
+ALLOWANCE_GRACE_EVENT_VERSION = 1
+ALLOWANCE_GRACE_EVENT_NAMES = frozenset({"started", "resolved"})
+ALLOWANCE_GRACE_OUTCOMES = frozenset(
+    {
+        "recovered",
+        "continuation_available",
+        "phase_down",
+        "grid_phase_down",
+        "capability_phase_down",
+        "stop",
+        "charge_inactive",
+        "minimum_unavailable",
+        "resume_failure",
+        "authority_stop",
+        "site_current_stop",
+    }
+)
 SESSION_EVENT_VERSION = 1
 SESSION_EVENT_NAMES = frozenset(
     {
@@ -320,6 +341,7 @@ WATTPILOT_RECOVERABLE_TRANSPORT_RE = re.compile(
 EXPECTED_ZERO_POWER_COMMAND_REASONS = frozenset(
     {"auto_pv_start", "phase_transition_target"}
 )
+PROTECTIVE_ZERO_POWER_COMMAND_REASONS = frozenset({"site_current_limit"})
 PROTECTIVE_CURRENT_REDUCTION_REASONS = frozenset(
     {
         "continuation_pv_reduction",
@@ -483,7 +505,17 @@ class CurrentCommandEvent:
     target_a: int
     phase: int
     reason: Optional[str] = None
+    reported_a: Optional[float] = None
     structured: bool = False
+
+
+@dataclass
+class AllowanceGraceEvent:
+    record: LogRecord
+    event: str
+    configured_seconds: int
+    outcome: Optional[str] = None
+    elapsed_seconds: Optional[float] = None
 
 
 @dataclass
@@ -546,6 +578,7 @@ class ChargingSession:
     reconciliation_error_percent: Optional[float] = None
     partial_start: bool = False
     partial_end: bool = False
+    sampled_energy_complete: bool = False
     evidence_complete: bool = False
 
 
@@ -1434,13 +1467,22 @@ class EsEssDailyReport:
         self.model_power_samples: list[tuple[LogRecord, float]] = []
         self._model_power_timestamps: list[datetime] = []
         self.rapid_current_reversals: list[tuple[LogRecord, LogRecord]] = []
+        self.actionable_current_reversals: list[
+            tuple[LogRecord, LogRecord]
+        ] = []
+        self.informational_current_reversals: list[
+            tuple[LogRecord, LogRecord]
+        ] = []
         self.protective_current_reversals: list[tuple[LogRecord, LogRecord]] = []
         self.expected_zero_power_current_adjustments: list[LogRecord] = []
+        self.protective_zero_power_current_adjustments: list[LogRecord] = []
         self.unexpected_zero_power_current_adjustments: list[LogRecord] = []
         self.assist_samples: list[
             tuple[LogRecord, float, float | None, int | None, float]
         ] = []
         self.grace_starts: list[tuple[LogRecord, int]] = []
+        self.allowance_grace_events: list[AllowanceGraceEvent] = []
+        self.allowance_grace_event_errors: list[LogRecord] = []
         self.phase_actions: list[PhaseAction] = []
         self.phase_confirmations: list[tuple[LogRecord, int]] = []
         self.phase_up_waits: list[tuple[LogRecord, float, int]] = []
@@ -1507,6 +1549,59 @@ class EsEssDailyReport:
         for record in self.records:
             message = record.message
 
+            if ALLOWANCE_GRACE_EVENT_MARKER in message:
+                payload_text = message.split(
+                    ALLOWANCE_GRACE_EVENT_MARKER, 1
+                )[1]
+                try:
+                    payload = json.loads(payload_text)
+                    if not isinstance(payload, dict):
+                        raise ValueError("allowance-grace record is not an object")
+                    if (
+                        payload.get("event_version")
+                        != ALLOWANCE_GRACE_EVENT_VERSION
+                        or payload.get("event") not in ALLOWANCE_GRACE_EVENT_NAMES
+                    ):
+                        raise ValueError("unsupported allowance-grace record")
+                    configured_seconds = payload.get("configured_seconds")
+                    if (
+                        isinstance(configured_seconds, bool)
+                        or not isinstance(configured_seconds, int)
+                        or configured_seconds < 0
+                    ):
+                        raise ValueError("invalid allowance-grace duration")
+                    event_name = payload["event"]
+                    outcome = payload.get("outcome")
+                    elapsed_seconds = payload.get("elapsed_seconds")
+                    if event_name == "started":
+                        if outcome is not None or elapsed_seconds is not None:
+                            raise ValueError("invalid allowance-grace start")
+                    else:
+                        if outcome not in ALLOWANCE_GRACE_OUTCOMES:
+                            raise ValueError("invalid allowance-grace outcome")
+                        if (
+                            isinstance(elapsed_seconds, bool)
+                            or not isinstance(elapsed_seconds, (int, float))
+                            or not isfinite(float(elapsed_seconds))
+                            or float(elapsed_seconds) < 0
+                        ):
+                            raise ValueError("invalid allowance-grace elapsed time")
+                    self.allowance_grace_events.append(
+                        AllowanceGraceEvent(
+                            record=record,
+                            event=event_name,
+                            configured_seconds=configured_seconds,
+                            outcome=outcome,
+                            elapsed_seconds=(
+                                float(elapsed_seconds)
+                                if elapsed_seconds is not None
+                                else None
+                            ),
+                        )
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    self.allowance_grace_event_errors.append(record)
+
             if CURRENT_COMMAND_EVENT_MARKER in message:
                 payload_text = message.split(
                     CURRENT_COMMAND_EVENT_MARKER, 1
@@ -1531,12 +1626,20 @@ class EsEssDailyReport:
                     target = payload.get("target_a")
                     phase = payload.get("phase")
                     reason = payload.get("reason")
+                    reported = payload.get("reported_a")
                     if isinstance(target, bool) or not isinstance(target, int):
                         raise ValueError("invalid current-command target")
                     if phase not in (0, 1, 3):
                         raise ValueError("invalid current-command phase")
                     if reason is not None and not isinstance(reason, str):
                         raise ValueError("invalid current-command reason")
+                    if reported is not None and (
+                        isinstance(reported, bool)
+                        or not isinstance(reported, (int, float))
+                        or not isfinite(float(reported))
+                        or float(reported) < 0
+                    ):
+                        raise ValueError("invalid current-command reported current")
                     if outcome == "dispatched" and target > 0 and phase in (1, 3):
                         self.structured_current_commands.append(
                             CurrentCommandEvent(
@@ -1544,6 +1647,11 @@ class EsEssDailyReport:
                                 target_a=target,
                                 phase=phase,
                                 reason=reason or None,
+                                reported_a=(
+                                    float(reported)
+                                    if reported is not None
+                                    else None
+                                ),
                                 structured=True,
                             )
                         )
@@ -2066,7 +2174,7 @@ class EsEssDailyReport:
         return power
 
     def _classify_current_command_evidence(self) -> None:
-        directions: list[tuple[CurrentCommandEvent, int]] = []
+        directions: list[tuple[CurrentCommandEvent, int, int]] = []
         for previous, current in zip(
             self.current_adjustments, self.current_adjustments[1:]
         ):
@@ -2075,11 +2183,16 @@ class EsEssDailyReport:
             if current.target_a == previous.target_a:
                 continue
             direction = 1 if current.target_a > previous.target_a else -1
-            directions.append((current, direction))
+            directions.append(
+                (current, direction, abs(current.target_a - previous.target_a))
+            )
 
+        reversal_candidates: list[
+            tuple[CurrentCommandEvent, CurrentCommandEvent, int, int]
+        ] = []
         for previous, current in zip(directions, directions[1:]):
-            previous_event, previous_direction = previous
-            current_event, current_direction = current
+            previous_event, previous_direction, previous_delta = previous
+            current_event, current_direction, current_delta = current
             if (
                 current_event.phase == previous_event.phase
                 and current_direction != previous_direction
@@ -2097,6 +2210,41 @@ class EsEssDailyReport:
                     self.protective_current_reversals.append(pair)
                 else:
                     self.rapid_current_reversals.append(pair)
+                    reversal_candidates.append(
+                        (
+                            previous_event,
+                            current_event,
+                            previous_delta,
+                            current_delta,
+                        )
+                    )
+
+        informational_cohort = bool(reversal_candidates) and (
+            len(reversal_candidates) <= INFORMATIONAL_REVERSAL_MAX_COUNT
+            and len(reversal_candidates) / len(self.current_adjustments)
+            <= INFORMATIONAL_REVERSAL_MAX_RATIO
+            and all(
+                previous_event.structured
+                and current_event.structured
+                and previous_delta == 1
+                and current_delta == 1
+                for (
+                    previous_event,
+                    current_event,
+                    previous_delta,
+                    current_delta,
+                ) in reversal_candidates
+            )
+        )
+        classified_reversals = [
+            (previous_event.record, current_event.record)
+            for previous_event, current_event, _previous_delta, _current_delta
+            in reversal_candidates
+        ]
+        if informational_cohort:
+            self.informational_current_reversals.extend(classified_reversals)
+        else:
+            self.actionable_current_reversals.extend(classified_reversals)
 
         for event in self.current_adjustments:
             power = self._model_power_at_or_before(event.record.timestamp)
@@ -2107,6 +2255,15 @@ class EsEssDailyReport:
                 and event.reason in EXPECTED_ZERO_POWER_COMMAND_REASONS
             ):
                 self.expected_zero_power_current_adjustments.append(event.record)
+            elif (
+                event.structured
+                and event.reason in PROTECTIVE_ZERO_POWER_COMMAND_REASONS
+                and event.reported_a is not None
+                and event.target_a < event.reported_a
+            ):
+                self.protective_zero_power_current_adjustments.append(
+                    event.record
+                )
             else:
                 self.unexpected_zero_power_current_adjustments.append(event.record)
 
@@ -2607,10 +2764,10 @@ class EsEssDailyReport:
             )
             return
 
-        if self.rapid_current_reversals:
+        if self.actionable_current_reversals:
             evidence = [
                 record
-                for pair in self.rapid_current_reversals
+                for pair in self.actionable_current_reversals
                 for record in pair
             ]
             self.add(
@@ -2619,7 +2776,7 @@ class EsEssDailyReport:
                 "Observed {0} current-command direction reversal(s) within {1} seconds. "
                 "Inspect whether short-lived allowance changes caused unnecessary charger "
                 "writes.".format(
-                    len(self.rapid_current_reversals),
+                    len(self.actionable_current_reversals),
                     CURRENT_REVERSAL_WINDOW_SECONDS,
                 ),
                 evidence,
@@ -2628,7 +2785,28 @@ class EsEssDailyReport:
             self.add(
                 "PASS",
                 "current command reversals",
-                "No rapid current-command direction reversal was observed.",
+                "No actionable rapid current-command direction reversal was observed.",
+            )
+
+        if self.informational_current_reversals:
+            evidence = [
+                record
+                for pair in self.informational_current_reversals
+                for record in pair
+            ]
+            self.add(
+                "INFO",
+                "isolated current command reversals",
+                "Observed {0} isolated structured 1 A reversal(s) among {1} "
+                "dispatched current commands ({2:.2f}%). They remain visible but "
+                "do not meet the actionable chatter threshold.".format(
+                    len(self.informational_current_reversals),
+                    len(self.current_adjustments),
+                    len(self.informational_current_reversals)
+                    / len(self.current_adjustments)
+                    * 100.0,
+                ),
+                evidence,
             )
 
         if self.protective_current_reversals:
@@ -2666,7 +2844,10 @@ class EsEssDailyReport:
                 (
                     "No unexplained changed-current command was correlated with recent "
                     "zero-power telemetry."
-                    if self.expected_zero_power_current_adjustments
+                    if (
+                        self.expected_zero_power_current_adjustments
+                        or self.protective_zero_power_current_adjustments
+                    )
                     else "No changed-current command was correlated with recent zero-power "
                     "telemetry."
                 ),
@@ -2682,6 +2863,18 @@ class EsEssDailyReport:
                     len(self.expected_zero_power_current_adjustments)
                 ),
                 self.expected_zero_power_current_adjustments,
+            )
+
+        if self.protective_zero_power_current_adjustments:
+            self.add(
+                "INFO",
+                "protective zero-power current reductions",
+                "Observed {0} structured site-current command(s) that reduced the "
+                "reported setpoint while charging power was zero. Protective reductions "
+                "remain permitted before measured power appears.".format(
+                    len(self.protective_zero_power_current_adjustments)
+                ),
+                self.protective_zero_power_current_adjustments,
             )
 
         if self.guarded_current_noops:
@@ -2811,6 +3004,88 @@ class EsEssDailyReport:
         return [lockout]
 
     def check_allowance_grace(self) -> None:
+        if self.allowance_grace_event_errors:
+            self.add(
+                "WARN",
+                "allowance drop grace evidence",
+                "Malformed or unsupported structured allowance-grace event(s) were ignored.",
+                self.allowance_grace_event_errors,
+            )
+
+        if self.allowance_grace_events:
+            pending: Optional[AllowanceGraceEvent] = None
+            passed: list[LogRecord] = []
+            premature: list[LogRecord] = []
+            unresolved: list[LogRecord] = []
+            mismatched: list[LogRecord] = []
+            outcomes: dict[str, int] = {}
+
+            for event in self.allowance_grace_events:
+                if event.configured_seconds != self.settings.allowance_drop_grace_seconds:
+                    mismatched.append(event.record)
+                if event.event == "started":
+                    if pending is not None:
+                        unresolved.append(pending.record)
+                    pending = event
+                    continue
+
+                if pending is None:
+                    unresolved.append(event.record)
+                    continue
+
+                outcome = event.outcome or "unknown"
+                outcomes[outcome] = outcomes.get(outcome, 0) + 1
+                if (
+                    outcome in {"phase_down", "stop"}
+                    and event.elapsed_seconds is not None
+                    and event.elapsed_seconds + 0.001 < pending.configured_seconds
+                ):
+                    premature.extend([pending.record, event.record])
+                else:
+                    passed.extend([pending.record, event.record])
+                pending = None
+
+            if pending is not None:
+                unresolved.append(pending.record)
+
+            if mismatched:
+                self.add(
+                    "WARN",
+                    "allowance drop grace configuration",
+                    "Structured allowance-grace duration disagreed with the selected configuration.",
+                    mismatched,
+                )
+            if premature:
+                self.add(
+                    "FAIL",
+                    "allowance drop grace",
+                    "A structured phase-down or stop outcome occurred before the configured "
+                    "allowance grace elapsed.",
+                    premature,
+                )
+            if unresolved:
+                self.add(
+                    "WARN",
+                    "allowance drop grace",
+                    "One or more structured allowance-grace starts or outcomes could not be paired.",
+                    unresolved,
+                )
+            if passed:
+                outcome_summary = ", ".join(
+                    "{0}={1}".format(name, outcomes[name])
+                    for name in sorted(outcomes)
+                )
+                self.add(
+                    "PASS",
+                    "allowance drop grace",
+                    "Validated {0} structured allowance-grace outcome(s): {1}.".format(
+                        len(passed) // 2,
+                        outcome_summary,
+                    ),
+                    passed,
+                )
+            return
+
         if not self.grace_starts:
             zero_three_phase = [
                 event
@@ -3644,6 +3919,13 @@ class EsEssDailyReport:
                 and not partial_start
                 and not partial_end
             )
+            sampled_energy_complete = bool(
+                starts
+                and summaries
+                and not partial_start
+                and not partial_end
+                and gap_seconds == 0
+            )
             counter_reset_count = int(
                 max(
                     0,
@@ -3848,10 +4130,11 @@ class EsEssDailyReport:
                     reconciliation_error_percent=reconciliation_percent,
                     partial_start=partial_start,
                     partial_end=partial_end,
+                    sampled_energy_complete=sampled_energy_complete,
                     evidence_complete=(
                         counter_complete
                         and counter_reset_count == 0
-                        and gap_seconds == 0
+                        and sampled_energy_complete
                     ),
                 )
             )
@@ -4062,27 +4345,51 @@ class EsEssDailyReport:
             )
             return
 
-        incomplete = [session for session in sessions if not session.evidence_complete]
+        incomplete_counters = [
+            session for session in sessions if not session.counter_complete
+        ]
+        incomplete_sampled_energy = [
+            session for session in sessions if not session.sampled_energy_complete
+        ]
         resets = [session for session in sessions if session.counter_reset_count > 0]
         missing = [
             session for session in sessions if session.counter_missing_samples > 0
         ]
         gaps = [session for session in sessions if session.integration_gap_seconds > 0]
-        if incomplete:
+        if incomplete_counters:
             self.add(
                 "WARN",
-                "session statistics completeness",
-                "{0} of {1} structured connection session(s) have partial, reset, restart, or sampled-power-gap evidence; their estimated splits or counter energy are not labelled complete.".format(
-                    len(incomplete), len(sessions)
+                "session counter completeness",
+                "{0} of {1} structured connection session(s) lack complete authoritative "
+                "Wattpilot counter evidence.".format(
+                    len(incomplete_counters), len(sessions)
                 ),
             )
         else:
             self.add(
                 "PASS",
-                "session statistics completeness",
-                "All {0} structured connection session(s) have continuous counter and sampled-power evidence.".format(
+                "session counter completeness",
+                "All {0} structured connection session(s) have complete authoritative "
+                "Wattpilot counter evidence.".format(
                     len(sessions)
                 ),
+            )
+        if incomplete_sampled_energy:
+            self.add(
+                "WARN",
+                "sampled energy completeness",
+                "{0} of {1} structured connection session(s) have partial boundaries or "
+                "sampled-power gaps. Authoritative counter totals may still be complete, "
+                "but per-mode and per-phase energy remain estimates.".format(
+                    len(incomplete_sampled_energy), len(sessions)
+                ),
+            )
+        else:
+            self.add(
+                "PASS",
+                "sampled energy completeness",
+                "All {0} structured connection session(s) have continuous sampled-power "
+                "evidence for their estimated energy splits.".format(len(sessions)),
             )
         if resets:
             self.add(
@@ -4294,7 +4601,27 @@ class EsEssDailyReport:
                     if event.watts <= 0 and event.phase == 3
                 ]
             ),
-            "allowance_grace_events": len(self.grace_starts),
+            "allowance_grace_events": (
+                len(
+                    [
+                        event
+                        for event in self.allowance_grace_events
+                        if event.event == "started"
+                    ]
+                )
+                if self.allowance_grace_events
+                else len(self.grace_starts)
+            ),
+            "allowance_grace_structured_outcomes": len(
+                [
+                    event
+                    for event in self.allowance_grace_events
+                    if event.event == "resolved"
+                ]
+            ),
+            "allowance_grace_event_errors": len(
+                self.allowance_grace_event_errors
+            ),
             "phase_commands": len(self.phase_actions),
             "phase_confirmations": len(self.phase_confirmations),
             "current_adjustments": len(self.current_adjustments),
@@ -4308,8 +4635,15 @@ class EsEssDailyReport:
                 len(self.current_adjustments) * 3600.0 / evidence_seconds, 3
             ),
             "rapid_current_reversals": len(self.rapid_current_reversals),
+            "rapid_current_reversals_actionable": len(
+                self.actionable_current_reversals
+            ),
+            "rapid_current_reversals_informational": len(
+                self.informational_current_reversals
+            ),
             "zero_power_current_adjustments": len(
                 self.expected_zero_power_current_adjustments
+                + self.protective_zero_power_current_adjustments
                 + self.unexpected_zero_power_current_adjustments
             ),
             "zero_power_current_adjustments_expected": len(
@@ -4317,6 +4651,9 @@ class EsEssDailyReport:
             ),
             "zero_power_current_adjustments_unexpected": len(
                 self.unexpected_zero_power_current_adjustments
+            ),
+            "zero_power_current_adjustments_protective": len(
+                self.protective_zero_power_current_adjustments
             ),
             "guarded_current_noops": len(self.guarded_current_noops),
             "battery_assist_samples": len(self.assist_samples),
@@ -4396,6 +4733,15 @@ class EsEssDailyReport:
             "complete_energy_sessions": len(
                 [session for session in sessions if session.counter_complete]
             ),
+            "complete_counter_sessions": len(
+                [session for session in sessions if session.counter_complete]
+            ),
+            "complete_sampled_energy_sessions": len(
+                [session for session in sessions if session.sampled_energy_complete]
+            ),
+            "complete_combined_evidence_sessions": len(
+                [session for session in sessions if session.evidence_complete]
+            ),
             "complete_session_counter_kwh": (
                 sum(
                     session.authoritative_energy_kwh or 0.0
@@ -4459,6 +4805,16 @@ class EsEssDailyReport:
             if self.audit_input.partial_window:
                 recommendations.append(
                     "Use this partial result for current evidence only, then rerun with --date yesterday after the calendar day closes."
+                )
+            elif (
+                sessions
+                and all(session.counter_complete for session in sessions)
+                and any(not session.sampled_energy_complete for session in sessions)
+            ):
+                recommendations.append(
+                    "Authoritative Wattpilot counter energy is complete; resolve the cited "
+                    "sampled-power gaps only if complete per-mode or per-phase estimates are "
+                    "required."
                 )
             else:
                 recommendations.append(
@@ -4660,7 +5016,8 @@ def render_human(result: AuditResult) -> str:
             lines.append(
                 "  onboarding latency={0}; first start={1} ({2}, accepted={3}); "
                 "power range={4}; command rejections={5}; partial start/end={6}/{7}; "
-                "complete={8}".format(
+                "counter complete={8}; sampled energy complete={9}; combined evidence "
+                "complete={10}".format(
                     (
                         _format_duration(session.onboarding_latency_seconds)
                         if session.onboarding_latency_seconds is not None
@@ -4680,6 +5037,8 @@ def render_human(result: AuditResult) -> str:
                     session.command_rejections,
                     session.partial_start,
                     session.partial_end,
+                    session.counter_complete,
+                    session.sampled_energy_complete,
                     session.evidence_complete,
                 )
             )

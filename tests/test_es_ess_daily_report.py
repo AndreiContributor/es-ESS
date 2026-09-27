@@ -75,6 +75,22 @@ class EsEssDailyReportTests(unittest.TestCase):
             "INFO",
         )
 
+    def _allowance_grace_line(self, clock, event, **changes):
+        payload = {
+            "event_version": 1,
+            "event": event,
+            "configured_seconds": 30,
+            "phase": 1,
+            "control_mode": "Auto",
+        }
+        payload.update(changes)
+        return self._line(
+            clock,
+            "Wattpilot allowance grace: "
+            + json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            "INFO",
+        )
+
     @staticmethod
     def _session_event(event, **changes):
         payload = {
@@ -192,6 +208,66 @@ class EsEssDailyReportTests(unittest.TestCase):
         self.assertIn("PASS", self._statuses(result, "allowance drop grace"))
         self.assertNotIn("FAIL", self._statuses(result, "allowance drop grace"))
         self.assertEqual(result.metrics["zero_watt_three_phase_assignments"], 1)
+
+    def test_structured_allowance_grace_recovery_is_authoritative(self):
+        result = self._run(
+            [
+                self._allowance_grace_line("08:00:00", "started"),
+                self._allowance_grace_line(
+                    "08:00:12",
+                    "resolved",
+                    outcome="recovered",
+                    elapsed_seconds=12,
+                ),
+            ],
+            AUDIT.AuditSettings(
+                log_level="APP_DEBUG",
+                allowance_drop_grace_seconds=30,
+            ),
+        )
+
+        self.assertIn("PASS", self._statuses(result, "allowance drop grace"))
+        self.assertEqual(result.metrics["allowance_grace_events"], 1)
+        self.assertEqual(result.metrics["allowance_grace_structured_outcomes"], 1)
+
+    def test_structured_allowance_grace_rejects_premature_normal_stop(self):
+        result = self._run(
+            [
+                self._allowance_grace_line("08:00:00", "started"),
+                self._allowance_grace_line(
+                    "08:00:10",
+                    "resolved",
+                    outcome="stop",
+                    elapsed_seconds=10,
+                ),
+            ],
+            AUDIT.AuditSettings(
+                log_level="APP_DEBUG",
+                allowance_drop_grace_seconds=30,
+            ),
+        )
+
+        self.assertIn("FAIL", self._statuses(result, "allowance drop grace"))
+
+    def test_structured_allowance_grace_accepts_early_safety_stop(self):
+        result = self._run(
+            [
+                self._allowance_grace_line("08:00:00", "started"),
+                self._allowance_grace_line(
+                    "08:00:04",
+                    "resolved",
+                    outcome="site_current_stop",
+                    elapsed_seconds=4,
+                ),
+            ],
+            AUDIT.AuditSettings(
+                log_level="APP_DEBUG",
+                allowance_drop_grace_seconds=30,
+            ),
+        )
+
+        self.assertIn("PASS", self._statuses(result, "allowance drop grace"))
+        self.assertNotIn("FAIL", self._statuses(result, "allowance drop grace"))
 
     def test_premature_phase_down_before_grace_is_failure(self):
         lines = [
@@ -2079,6 +2155,8 @@ NoBatToEV=false
         self.assertEqual(session.current_adjustments_a, [7, 8])
         self.assertEqual(len(session.phase_switches), 1)
         self.assertIn("3-phase telemetry confirmed", session.phase_switches[0])
+        self.assertTrue(session.counter_complete)
+        self.assertTrue(session.sampled_energy_complete)
         self.assertTrue(session.evidence_complete)
         self.assertEqual(result.overall, "GOOD")
 
@@ -2119,10 +2197,63 @@ NoBatToEV=false
         self.assertEqual(session.observed_counter_energy_kwh, 0.05)
         self.assertEqual(session.counter_reset_count, 1)
         self.assertEqual(session.integration_coverage_percent, 50)
+        self.assertFalse(session.sampled_energy_complete)
         self.assertFalse(session.evidence_complete)
         self.assertEqual(result.overall, "INCOMPLETE")
         self.assertIn(
-            "WARN", self._statuses(result, "session statistics completeness")
+            "WARN", self._statuses(result, "session counter completeness")
+        )
+        self.assertIn(
+            "WARN", self._statuses(result, "sampled energy completeness")
+        )
+
+    def test_complete_counter_is_separate_from_sampled_energy_gap(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "20:10:00",
+                    self._session_event("connection_start", mode="Auto"),
+                ),
+                self._session_line(
+                    "20:11:00",
+                    self._session_event(
+                        "connection_summary",
+                        end_reason="vehicle_disconnected",
+                        counter_energy_wh=500,
+                        counter_complete=True,
+                        estimated_energy_by_mode_wh={
+                            "one_phase": 480,
+                            "three_phase": 0,
+                        },
+                        estimated_energy_by_phase_wh={
+                            "L1": 480,
+                            "L2": 0,
+                            "L3": 0,
+                        },
+                        integration_coverage_seconds=55,
+                        integration_gap_seconds=5,
+                    ),
+                ),
+            ]
+        )
+        session = result.sessions[0]
+
+        self.assertTrue(session.counter_complete)
+        self.assertFalse(session.sampled_energy_complete)
+        self.assertFalse(session.evidence_complete)
+        self.assertEqual(session.authoritative_energy_kwh, 0.5)
+        self.assertIn(
+            "PASS", self._statuses(result, "session counter completeness")
+        )
+        self.assertIn(
+            "WARN", self._statuses(result, "sampled energy completeness")
+        )
+        self.assertEqual(result.metrics["complete_counter_sessions"], 1)
+        self.assertEqual(result.metrics["complete_sampled_energy_sessions"], 0)
+        self.assertEqual(result.metrics["complete_combined_evidence_sessions"], 0)
+        self.assertIn(
+            "Authoritative Wattpilot counter energy is complete",
+            "\n".join(result.recommendations),
         )
 
     def test_structured_missing_counter_samples_are_explicitly_incomplete(self):
@@ -2240,6 +2371,8 @@ NoBatToEV=false
         self.assertIn("estimated energy", report)
         self.assertIn("onboarding latency", report)
         self.assertIn("physical phase", report)
+        self.assertIn("counter complete=True", report)
+        self.assertIn("sampled energy complete=True", report)
 
     def test_structured_unknown_fields_and_secrets_are_not_copied_to_json(self):
         result = self._run(
@@ -2657,6 +2790,103 @@ NoBatToEV=false
         )
         self.assertEqual(
             result.metrics["zero_power_current_adjustments_unexpected"], 0
+        )
+
+    def test_zero_power_site_limit_reduction_is_protective(self):
+        result = self._run(
+            [
+                self._line(
+                    "21:49:00",
+                    "Wattpilot Modelstatus: Ready; charge telemetry (read-only): "
+                    "reported_setpoint=11.00A/phase, L1=0.00A/0W, "
+                    "L2=0.00A/0W, L3=0.00A/0W, total=0W",
+                ),
+                self._current_command_line(
+                    "21:49:02",
+                    target_a=10,
+                    reported_a=11,
+                    reason="site_current_limit",
+                ),
+            ]
+        )
+
+        self.assertIn("PASS", self._statuses(result, "zero-power current commands"))
+        self.assertIn(
+            "INFO",
+            self._statuses(result, "protective zero-power current reductions"),
+        )
+        self.assertEqual(
+            result.metrics["zero_power_current_adjustments_protective"], 1
+        )
+        self.assertEqual(
+            result.metrics["zero_power_current_adjustments_unexpected"], 0
+        )
+
+    def test_zero_power_site_limit_increase_remains_attention(self):
+        result = self._run(
+            [
+                self._line(
+                    "21:49:00",
+                    "Wattpilot Modelstatus: Ready; charge telemetry (read-only): "
+                    "reported_setpoint=10.00A/phase, L1=0.00A/0W, "
+                    "L2=0.00A/0W, L3=0.00A/0W, total=0W",
+                ),
+                self._current_command_line(
+                    "21:49:02",
+                    target_a=11,
+                    reported_a=10,
+                    reason="site_current_limit",
+                ),
+            ]
+        )
+
+        self.assertIn(
+            "ATTENTION", self._statuses(result, "zero-power current commands")
+        )
+        self.assertEqual(
+            result.metrics["zero_power_current_adjustments_protective"], 0
+        )
+
+    def test_two_isolated_one_amp_reversals_among_240_commands_are_informational(self):
+        lines = [
+            self._line(
+                "21:49:00",
+                "Wattpilot Modelstatus: Charging; charge telemetry (read-only): "
+                "reported_setpoint=8.00A/phase, L1=8.00A/1840W, "
+                "L2=0.00A/0W, L3=0.00A/0W, total=1840W",
+            )
+        ]
+        lines.extend(
+            self._current_command_line(
+                "21:49:00", target_a=8, reported_a=7, phase=1
+            )
+            for _ in range(237)
+        )
+        lines.extend(
+            [
+                self._current_command_line(
+                    "21:49:01", target_a=9, reported_a=8, phase=1
+                ),
+                self._current_command_line(
+                    "21:49:02", target_a=8, reported_a=9, phase=1
+                ),
+                self._current_command_line(
+                    "21:49:03", target_a=9, reported_a=8, phase=1
+                ),
+            ]
+        )
+
+        result = self._run(lines)
+
+        self.assertEqual(result.metrics["current_adjustments"], 240)
+        self.assertEqual(result.metrics["rapid_current_reversals"], 2)
+        self.assertEqual(result.metrics["rapid_current_reversals_actionable"], 0)
+        self.assertEqual(
+            result.metrics["rapid_current_reversals_informational"], 2
+        )
+        self.assertIn("PASS", self._statuses(result, "current command reversals"))
+        self.assertIn(
+            "INFO", self._statuses(result, "isolated current command reversals")
         )
 
     def test_site_limit_reduction_is_not_actionable_reversal(self):

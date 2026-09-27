@@ -228,7 +228,8 @@ Version 5 detects or summarizes:
 - battery assist exceeding configured shortfall/time expectations or reaching
   its limit;
 - allowance freshness and `AllowanceDropGraceSeconds`, including a transient
-  `0 W` allocation during three-phase charging;
+  `0 W` allocation during three-phase charging and structured start/resolution
+  outcomes from current deployments;
 - excessive, premature, low-allowance, or unconfirmed phase switching;
 - any three-phase target or confirmed three-phase transition while
   `VehiclePhaseCapability=OnePhaseOnly`; absence of those events is reported as
@@ -237,8 +238,9 @@ Version 5 detects or summarizes:
 - changed-current command rate, guarded equal-target no-ops, rapid direction
   reversals within one normal controller cycle, and changed-current commands
   correlated with recent zero-power Wattpilot telemetry. Structured reasons
-  distinguish expected pre-start/phase-transition setpoints and protective
-  reductions from unexplained zero-power commands or PV chatter;
+  distinguish expected pre-start/phase-transition setpoints, proven
+  site-current reductions, and low-rate isolated 1 A reversals from
+  unexplained zero-power commands or actionable PV chatter;
 - raw or interpreted start/stop/current/phase commands while Manual mode owns
   charging, while allowing the documented immediate command-authority release;
 - configuration combinations inconsistent with the documented no-grid
@@ -282,11 +284,23 @@ legacy adjustment message appears within one second, the report counts the
 structured event once. Unmatched legacy records remain supported for older or
 mixed-version log windows. The structured reason is retained: zero-power
 `auto_pv_start` and phase-transition target writes are reported as expected
-transaction setup, while unexplained zero-power writes remain `ATTENTION`.
+transaction setup. A zero-power `site_current_limit` event is protective only
+when its structured `reported_a` proves the target is a reduction; increases,
+missing values, and legacy-only evidence remain `ATTENTION`.
 Rapid reversals whose reducing command explicitly identifies a site-current,
 minimum-current, continuation-PV, or phase-transition reduction remain visible
-as informational protective actions. Other rapid reversals retain
-`ATTENTION`, with both sides of the reversal included as evidence.
+as informational protective actions. A cohort of at most two structured 1 A
+reversals is also informational when it represents no more than one percent of
+all dispatched current commands in the report. Denser, larger, or legacy-only
+reversals retain `ATTENTION`, with both sides included as evidence. The total,
+actionable, and informational reversal counts remain separate metrics.
+
+Current deployments also emit versioned JSON after `Wattpilot allowance
+grace:`. The report pairs each structured start with its recovery,
+continuation, phase-down, normal-stop, inactive-charge, resume-failure,
+authority, or site-current outcome. A normal phase-down or stop before the
+configured duration is a failure; explicitly higher-priority outcomes may act
+earlier. Older prose-only windows retain the conservative inference path.
 
 ## Structured Session Evidence
 
@@ -315,7 +329,11 @@ The Wattpilot `wh` session counter is cumulative. The report accepts only
 non-negative monotonic deltas and marks decreases/resets rather than subtracting
 or joining incompatible counter segments. A service restart while connected
 creates a partial session because energy delivered while the process was not
-observing cannot be reconstructed.
+observing cannot be reconstructed. Counter completeness is reported separately
+from sampled-energy completeness: a continuous counter may provide an
+authoritative session total even when a sampling gap prevents complete
+one-/three-phase or physical-phase estimates. The combined evidence flag remains
+available for compatibility.
 
 L1/L2/L3 and one-/three-phase values are trapezoidal integrations of fresh
 sampled Wattpilot power. The component does not extrapolate across stale input,

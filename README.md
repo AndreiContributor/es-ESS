@@ -661,6 +661,10 @@ surplus:
   This lets the daily report count current changes made during phase-switch
   waiting as well as changes followed by the older human-readable adjustment
   message; matching records are deduplicated.
+- The allowance-stop debounce emits versioned, non-identifying start and
+  resolution evidence. Recovery, continuation availability, phase-down,
+  normal stop, and higher-priority safety outcomes remain observable without
+  changing the grace timer or issuing another command.
 - On each eligible APP_DEBUG controller cycle, the existing Wattpilot model-
   status record also shows the reported current setpoint per phase, measured
   L1/L2/L3 current and power, and measured total power. Missing or non-finite
@@ -1298,15 +1302,22 @@ connection-session and charging-interval counts, authoritative available
 Wattpilot counter kWh, explicitly estimated one-/three-phase and physical-phase
 energy, onboarding latency, interruptions, allowance/grace and phase behavior,
 safety interventions, and rare statuses 8–11 and 13–14. Report JSON schema 5
-keeps total counter energy separate from sampled-power estimates and exposes
-counter resets, restarts, gaps, reconciliation error, and evidence
-completeness. It pairs sanitized site-current failure/recovery transitions and
+keeps authoritative counter completeness separate from sampled-power estimate
+completeness and exposes counter resets, restarts, gaps, reconciliation error,
+and their combined evidence status. It pairs sanitized site-current
+failure/recovery transitions and
 reports outage counts, durations, reason classes, unresolved intervals, and
 charging-power correlation. It also counts structured start/resume outcomes and produces
 accurate changed-current and reversal metrics from structured final-boundary
 events when they are available, while retaining compatibility with older logs.
 Recognized zero-power start/phase-transaction setpoints and protective current
-reductions remain visible without being mislabeled as chatter. Exact WebSocket
+reductions remain visible without being mislabeled as chatter. A zero-power
+`site_current_limit` command is protective only when structured evidence proves
+that it reduced the reported setpoint. At most two isolated structured 1 A
+reversals representing no more than one percent of dispatched current commands
+are informational; denser, larger, or legacy-only reversals retain attention.
+Structured allowance-grace outcomes replace inference when available, while
+older prose remains supported. Exact WebSocket
 timeouts and connection resets are downgraded from runtime failures only when
 bounded authentication-first recovery is proven before another charger-control
 action. Structured connection summaries use dispatched current commands and
@@ -1980,7 +1991,7 @@ The following D-Bus values are published on the existing
 | `/VehicleCompatibility/NativeMinimumCurrent` | Integer | Native `mca` minimum current in amperes, or `-1` when unavailable/invalid. |
 | `/VehicleCompatibility/EffectiveMinimumCurrent` | Integer | Effective controller minimum after combining configured and native floors, or `-1` when positive Auto/Eco control is blocked. |
 | `/VehicleCompatibility/*` | Integer/String | Read-only charging-pause, simulated-unplugging, phase-timing, model-status, missing-field, and invalid-field diagnostics. These paths never write the Solar.wattpilot profile. |
-| `/Resume/State` | String | `Idle`, `Starting`, `Resuming`, a native-wait literal, `Charging`, or `Backoff`. |
+| `/Resume/State` | String | `Idle`, `Starting`, `Resuming`, a native-wait literal, `Charging`, or `Backoff`. `Charging` describes confirmed Auto/Eco activation only; Manual charging does not claim the controller-owned resume state, and an ordinary Auto/Eco stop returns it to `Idle` without erasing connection history or active backoff. |
 | `/Resume/AttemptKind` | String | `initial_start`, `resume`, or empty when no attempt is active. |
 | `/Resume/FailureCount` | Integer | Consecutive failed accepted activations for the current vehicle connection. |
 | `/Resume/BackoffRemaining` | Integer | Seconds before another Auto/Eco activation may be attempted. |

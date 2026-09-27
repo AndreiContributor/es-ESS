@@ -39,8 +39,11 @@ directory on the GX device.
 - Use the **daily report** after APP_DEBUG evidence covers the requested period.
   It analyzes retained history; it does not replace high-frequency live session
   sampling. It distinguishes changed-current writes from guarded no-ops,
-  highlights unexplained rapid current reversals and zero-power adjustments,
-  keeps explicit protective/start-transaction reasons visible, and separates
+  highlights actionable rapid current reversals and unexplained zero-power
+  adjustments, keeps low-rate structured 1 A reversals and proven protective
+  reductions visible as information, consumes structured allowance-grace
+  outcomes when available, separates authoritative counter completeness from
+  sampled energy-split completeness, and separates
   bounded authenticated WebSocket timeout/reset recoveries from unresolved
   errors.
   It also reports structured start/resume outcomes and makes advisory

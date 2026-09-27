@@ -157,6 +157,23 @@ Deferred dormant-service reactivation blockers:
 
 ## Completed
 
+### Completed 2026-09-27 - Refine Wattpilot Grace, Current, And Energy Evidence
+
+- Added transition-only structured allowance-grace start and resolution
+  records without changing timers, commands, Manual ownership, or fail-closed
+  safety ordering. The daily report prefers those outcomes while retaining the
+  older prose inference path.
+- A zero-power site-current command is informational only when structured
+  telemetry proves that it reduced the reported setpoint. Small isolated 1 A
+  reversal cohorts are separated from actionable chatter by explicit count and
+  rate bounds while all reversals remain counted.
+- Authoritative Wattpilot counter completeness is reported separately from
+  sampled mode/phase estimate completeness and the compatible combined flag.
+- Live Manual-to-Auto regression exposed and closed a stale resume observer
+  label: Manual power no longer claims Auto/Eco `Charging`, and ordinary
+  guarded Auto/Eco stops publish `Idle` without clearing connection history or
+  retry backoff.
+
 ### Completed 2026-09-27 - Correct Wattpilot Diagnostic Evidence Classification
 
 - Daily reporting now reconstructs structured connection-session current

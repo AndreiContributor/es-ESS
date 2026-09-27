@@ -260,6 +260,11 @@ It owns:
   sanitized target, previously reported setpoint, active phase count, reason,
   control mode, and dispatched/rejected/confirmed-no-op outcome. Logging is
   evidence only and does not affect acceptance or dispatch.
+- Versioned allowance-stop-grace transition evidence. The controller logs one
+  sanitized start and one resolution outcome for recovery, continuation,
+  phase-down, normal stop, or a higher-priority cancellation. This evidence
+  does not change the existing timer, branch selection, command order, or
+  Manual-mode boundary.
 - Normal same-phase PV current selection captures the allowance value,
   validity, and update timestamp atomically once for the adjustment decision.
   `WattpilotPhaseDecisions.py` evaluates the command-free upward-stability
@@ -280,7 +285,11 @@ It owns:
   extend that deadline only by their validated read-only duration. Failure
   clears current before Force Off and applies bounded exponential retry
   backoff. Manual selection and confirmed disconnect cancel/reset this state.
-  Structured resume records contain no vehicle identity.
+  Structured resume records contain no vehicle identity. The public resume
+  state reports `Charging` only for confirmed Auto/Eco charging; Manual power
+  remains outside this observer state, and an ordinary guarded Auto/Eco stop
+  returns it to `Idle` while preserving connection history and any active
+  backoff.
 - Running phase-transition dispatch. The controller may first reduce current
   and wait for fresh Wattpilot telemetry, but it changes remembered phase state
   and publishes a `Switching to ...` service message only after `set_phases()`
@@ -830,8 +839,12 @@ Future Wattpilot changes must preserve these invariants:
   dispatched final-boundary events and deduplicates matching legacy prose
   within one second; unmatched legacy evidence remains usable across mixed
   deployment windows. Structured command reasons may classify recognized
-  zero-power start/phase transactions and protective reductions separately,
-  while missing/legacy reasons remain conservative. A WebSocket timeout or
+  zero-power start/phase transactions and proven protective reductions
+  separately, while missing/legacy reasons remain conservative. Isolated
+  structured 1 A reversals may be informational only under a bounded count and
+  rate; the total remains visible. Structured allowance-grace outcomes take
+  precedence over prose inference. Authoritative counter completeness remains
+  separate from sampled energy-split completeness. A WebSocket timeout or
   peer-reset error is recovered evidence only when authentication follows
   within the bounded window before any charger-control action. Structured
   connection summaries correlate dispatched commands and confirmed phase
