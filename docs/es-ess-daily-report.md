@@ -185,9 +185,10 @@ The human and JSON reports contain:
   continuity, exceptions, dependencies, and compatibility;
 - sanitized configuration: enabled services and important Wattpilot safety
   parameters, including vehicle phase capability and site-current
-  limit/mapping/freshness/recovery;
+  limit/mapping/freshness/recovery plus resume retry backoff;
 - current state: optional service, mode, connectivity, authority, telemetry,
-  phase, firmware, and native-setting snapshots;
+  phase, firmware, native vehicle-compatibility fields, and resume/backoff
+  snapshots;
 - structured connection sessions and their charging intervals: plug/first-start/
   first-measured-power timing, interruptions, Auto/Manual/unknown mode, phases,
   compact current and peak-power ranges, phase segments, stop reason, command
@@ -202,27 +203,33 @@ The human and JSON reports contain:
 - rare firmware statuses 8–11 and 13–14: protocol name, occurrences, selected
   controller state, observed duration, and transition result;
 - anomalies, correctly activated safety interventions, evidence gaps,
-  recommendations, metrics, and limitations.
+  recommendations, metrics, and limitations. Recommendations are advisory and
+  are never applied by the report.
 
 ## Safety-Aware Checks
 
-Version 4 detects or summarizes:
+Version 5 detects or summarizes:
 
 - `CRITICAL`, `ERROR`, traceback, dependency, firmware, and Venus OS
   compatibility failures;
-- Wattpilot WebSocket timeouts, keeping unresolved or command-before-recovery
-  events as failures while reporting a bounded authentication-first recovery
-  as visible transport lifecycle evidence;
+- recognized Wattpilot WebSocket timeout and connection-reset interruptions,
+  keeping unresolved or command-before-recovery events as failures while
+  reporting a bounded authentication-first recovery as visible transport
+  lifecycle evidence;
 - repeated service initializations or Wattpilot reconnect lifecycle events;
 - site-current stops and stale site-current telemetry found in controller logs;
 - Auto/Eco actions while command authority is blocked;
 - stale grid or distributor-allowance evidence;
+- site-current source outage count, recovery completeness, total and longest
+  observed duration, sanitized transport/HTTP/payload reason classes, and
+  correlation with positive charging-power evidence;
 - grid-import guard activation when `AllowGridCharging=false`, distinguishing a
   correct intervention from sustained unguarded import;
 - battery assist exceeding configured shortfall/time expectations or reaching
   its limit;
 - allowance freshness and `AllowanceDropGraceSeconds`, including a transient
-  `0 W` allocation during three-phase charging;
+  `0 W` allocation during three-phase charging and structured start/resolution
+  outcomes from current deployments;
 - excessive, premature, low-allowance, or unconfirmed phase switching;
 - any three-phase target or confirmed three-phase transition while
   `VehiclePhaseCapability=OnePhaseOnly`; absence of those events is reported as
@@ -230,11 +237,21 @@ Version 4 detects or summarizes:
 - current outside configured per-phase bounds;
 - changed-current command rate, guarded equal-target no-ops, rapid direction
   reversals within one normal controller cycle, and changed-current commands
-  correlated with recent zero-power Wattpilot telemetry;
+  correlated with recent zero-power Wattpilot telemetry. Structured reasons
+  distinguish expected pre-start/phase-transition setpoints, proven
+  site-current reductions, and low-rate isolated 1 A reversals from
+  unexplained zero-power commands or actionable PV chatter;
 - raw or interpreted start/stop/current/phase commands while Manual mode owns
   charging, while allowing the documented immediate command-authority release;
 - configuration combinations inconsistent with the documented no-grid
   commissioning profile; and
+- accepted start/resume attempts that do not reach confirmed charging power,
+  successful outcomes, and bounded retry-backoff evidence; and
+- configuration recommendations when the current read-only native snapshot
+  reports a higher minimum-current floor, longer phase/pause timing, or failed
+  resumes with disabled compatibility options. Missing profile fields remain
+  unavailable and are never guessed; the main charging-current control is not
+  treated as the vehicle-profile minimum; and
 - rare charging-status entry/exit through recognized active or safety states.
 
 Wattpilot firmware may be `<unavailable>` before the initial authentication
@@ -246,18 +263,44 @@ version, missing confirmation, incomplete sequence, or intervening control or
 connection-lifecycle event remains a compatibility failure and produces an
 `ANOMALY`.
 
-An exact WebSocket `Connection timed out - goodbye` error is not hidden. It is
-classified as recovered lifecycle evidence only when `Authentication
-successful` follows within 90 seconds and no charger-control action occurs
-between the timeout and authentication. Missing or late authentication, a
-command during the unvalidated interval, any other error, a traceback, or a
-service failure remains a runtime failure. Multiple recovered timeouts in one
-window produce `ATTENTION`.
+An exact WebSocket `Connection timed out - goodbye` or `Connection reset by
+peer - goodbye` error is not hidden. It is classified as recovered lifecycle
+evidence only when `Authentication successful` follows within 90 seconds and
+no charger-control action occurs between the interruption and authentication.
+Missing or late authentication, a command during the unvalidated interval,
+any unrecognized error, a traceback, or a service failure remains a runtime
+failure. Multiple recovered interruptions in one window produce `ATTENTION`.
 
 Allowance parsing accepts both the normal `... Wattpilot - Charging ...`
 assignment and the distributor's `... Wattpilot not reachable ...` form. The
 consumer metadata must still identify the Wattpilot consumer, so temporary
 transport loss does not create a false allowance-freshness gap.
+
+Changed-current analysis accepts versioned JSON after the stable marker
+`Wattpilot current command:`. Only events whose final command-boundary outcome
+is `dispatched` count as changed-current commands; rejected and
+telemetry-confirmed no-op outcomes remain diagnostic evidence. When a matching
+legacy adjustment message appears within one second, the report counts the
+structured event once. Unmatched legacy records remain supported for older or
+mixed-version log windows. The structured reason is retained: zero-power
+`auto_pv_start` and phase-transition target writes are reported as expected
+transaction setup. A zero-power `site_current_limit` event is protective only
+when its structured `reported_a` proves the target is a reduction; increases,
+missing values, and legacy-only evidence remain `ATTENTION`.
+Rapid reversals whose reducing command explicitly identifies a site-current,
+minimum-current, continuation-PV, or phase-transition reduction remain visible
+as informational protective actions. A cohort of at most two structured 1 A
+reversals is also informational when it represents no more than one percent of
+all dispatched current commands in the report. Denser, larger, or legacy-only
+reversals retain `ATTENTION`, with both sides included as evidence. The total,
+actionable, and informational reversal counts remain separate metrics.
+
+Current deployments also emit versioned JSON after `Wattpilot allowance
+grace:`. The report pairs each structured start with its recovery,
+continuation, phase-down, normal-stop, inactive-charge, resume-failure,
+authority, or site-current outcome. A normal phase-down or stop before the
+configured duration is a failure; explicitly higher-priority outcomes may act
+earlier. Older prose-only windows retain the conservative inference path.
 
 ## Structured Session Evidence
 
@@ -271,16 +314,26 @@ writes. The controller emits versioned JSON after the stable marker
   start/stop, completed phase segment, and final connection summary; and
 - at most one APP_DEBUG checkpoint per connected minute.
 
-The structured event version is independent from daily-report JSON schema 4 so
+The structured event version is independent from daily-report JSON schema 5 so
 future log parsing can remain explicit. A connection may contain multiple
 charging intervals. Correlation IDs distinguish those observed intervals only;
 they never claim which vehicle was connected.
+
+The connection-session summary obtains its current-adjustment list from actual
+dispatched command evidence rather than mislabelling sampled telemetry extrema.
+It also correlates controller phase confirmations inside the connection window,
+so a phase transition that temporarily stops measured power between charging
+intervals remains visible.
 
 The Wattpilot `wh` session counter is cumulative. The report accepts only
 non-negative monotonic deltas and marks decreases/resets rather than subtracting
 or joining incompatible counter segments. A service restart while connected
 creates a partial session because energy delivered while the process was not
-observing cannot be reconstructed.
+observing cannot be reconstructed. Counter completeness is reported separately
+from sampled-energy completeness: a continuous counter may provide an
+authoritative session total even when a sampling gap prevents complete
+one-/three-phase or physical-phase estimates. The combined evidence flag remains
+available for compatibility.
 
 L1/L2/L3 and one-/three-phase values are trapezoidal integrations of fresh
 sampled Wattpilot power. The component does not extrapolate across stale input,
@@ -319,6 +372,11 @@ The optional read-only snapshot includes physical site-current values, sample
 ages, calculated headrooms, limiting phase, allowed current, guard health,
 blocked reason, and recovery elapsed time. These describe only the capture
 instant; absence from historical logs is not proof that the guard succeeded.
+For `Shelly3EMGen3`, it also includes the sanitized low-rate health status,
+Wi-Fi RSSI/channel, and RPC latency. RSSI at or below `-75 dBm`, malformed
+values, or an unavailable health worker produces an attention finding. No
+network identity or address is captured, and these values never authorize a
+charge.
 
 For live investigation, run `scripts/es-ess-health-monitor.sh`. Keep the
 structured records transition-only plus the fixed one-minute connected

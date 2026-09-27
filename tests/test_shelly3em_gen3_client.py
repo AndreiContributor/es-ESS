@@ -159,6 +159,62 @@ class Shelly3EMGen3ClientTests(unittest.TestCase):
                 with self.assertRaises(Shelly3EMGen3DeviceError):
                     client.read_currents()
 
+    def test_reads_only_sanitized_wifi_and_system_health(self):
+        client, session = self._client(
+            [
+                {
+                    "status": "got ip",
+                    "ssid": "private-network",
+                    "sta_ip": "192.0.2.99",
+                    "rssi": -61,
+                    "channel": 6,
+                },
+                {
+                    "uptime": 12345,
+                    "ram_free": 456789,
+                    "mac": "00:11:22:33:44:55",
+                },
+            ]
+        )
+
+        health = client.read_health()
+
+        self.assertEqual(
+            health,
+            {
+                "wifi_status": "Got IP",
+                "wifi_rssi": -61.0,
+                "wifi_channel": 6,
+                "uptime_seconds": 12345.0,
+                "free_memory_bytes": 456789.0,
+            },
+        )
+        self.assertNotIn("ssid", health)
+        self.assertNotIn("sta_ip", health)
+        self.assertNotIn("mac", health)
+        self.assertEqual(session.get.call_count, 2)
+        self.assertTrue(
+            session.get.call_args_list[0].args[0].endswith(
+                "/rpc/WiFi.GetStatus"
+            )
+        )
+        self.assertTrue(
+            session.get.call_args_list[1].args[0].endswith(
+                "/rpc/Sys.GetStatus"
+            )
+        )
+
+    def test_health_rejects_invalid_numeric_fields(self):
+        client, _session = self._client(
+            [
+                {"status": "got ip", "rssi": -61, "channel": 6},
+                {"uptime": -1, "ram_free": 100},
+            ]
+        )
+
+        with self.assertRaises(Shelly3EMGen3PayloadError):
+            client.read_health()
+
     def test_missing_negative_nonfinite_and_wrong_component_are_rejected(self):
         for payload in (
             em_status(a_current=None),

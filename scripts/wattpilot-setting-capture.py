@@ -23,7 +23,25 @@ from pathlib import Path
 
 VALIDATED_FIRMWARE = "42.5"
 DEFAULT_CONFIG_PATH = "/data/es-ESS/config.ini"
-DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_TIMEOUT_SECONDS = 90.0
+
+# These names are discovery candidates only until a reversible firmware-42.5
+# capture confirms each Solar.wattpilot surface.  The runtime controller must
+# not import or otherwise trust this table.
+NATIVE_VEHICLE_FIELD_CANDIDATES = {
+    "mca": ("minimum_current", "A", "current"),
+    "acp": ("allow_charge_pause", "boolean", "bool"),
+    "mci": ("minimum_charging_interval", "ms", "milliseconds"),
+    "mcpd": ("minimum_charge_pause_duration", "ms", "milliseconds"),
+    "mcpea": ("minimum_charge_pause_ends_at", "ms", "optional_milliseconds"),
+    "fmt": ("minimum_charge_time", "ms", "milliseconds"),
+    "su": ("simulate_unplugging_short", "boolean", "bool"),
+    "sua": ("simulate_unplugging_always", "boolean", "bool"),
+    "sumd": ("simulate_unplugging_duration", "ms", "milliseconds"),
+    "mpwst": ("minimum_phase_wish_switch_time", "ms", "milliseconds"),
+    "mptwt": ("minimum_phase_toggle_wait_time", "ms", "milliseconds"),
+    "modelStatus": ("model_status", "enum", "model_status"),
+}
 
 SENSITIVE_KEY_PARTS = (
     "access",
@@ -186,6 +204,72 @@ def validate_capture_state(client):
         )
 
 
+def _validate_candidate_value(kind, value):
+    if kind == "bool":
+        return type(value) is bool
+    if kind == "current":
+        return type(value) is int and 6 <= value <= 32
+    if kind == "milliseconds":
+        return type(value) is int and value >= 0
+    if kind == "optional_milliseconds":
+        return value is None or (type(value) is int and value >= 0)
+    if kind == "model_status":
+        return type(value) is int and 0 <= value <= 255
+    return False
+
+
+def capture_native_vehicle_profile(client):
+    """Return a command-free, allowlisted firmware-field evidence snapshot."""
+    validate_capture_state(client)
+    properties = getattr(client, "allProps", {})
+    fields = []
+    missing = []
+    invalid = []
+
+    for key, (semantic_name, unit, kind) in NATIVE_VEHICLE_FIELD_CANDIDATES.items():
+        if key not in properties:
+            missing.append(key)
+            fields.append(
+                {
+                    "key": key,
+                    "name": semantic_name,
+                    "unit": unit,
+                    "present": False,
+                    "type_valid": False,
+                }
+            )
+            continue
+
+        value = properties[key]
+        type_valid = _validate_candidate_value(kind, value)
+        if not type_valid:
+            invalid.append(key)
+        fields.append(
+            {
+                "key": key,
+                "name": semantic_name,
+                "unit": unit,
+                "present": True,
+                "type": type(value).__name__,
+                "type_valid": type_valid,
+                "value": safe_report_value(key, value),
+            }
+        )
+
+    return {
+        "schema": 1,
+        "capture_type": "native_vehicle_compatibility_candidates",
+        "firmware": str(client.firmware),
+        "vehicle_connected": False,
+        "command_policy": "all setValue requests blocked",
+        "mapping_status": "candidate_only_requires_reversible_validation",
+        "complete": not missing and not invalid,
+        "missing_keys": missing,
+        "invalid_keys": invalid,
+        "fields": fields,
+    }
+
+
 def capture_setting_change(
     client,
     full_status_event,
@@ -248,7 +332,7 @@ def _operator_confirmation(label):
 
 
 def _ensure_logging_compatibility():
-    """Provide the custom levels expected by Helper outside es-ESS.py startup."""
+    """Provide Helper levels and prevent dependency raw-frame disclosure."""
     if not hasattr(logging, "appDebug"):
         logging.appDebug = logging.debug
     if not hasattr(logging.Logger, "appDebug"):
@@ -258,8 +342,14 @@ def _ensure_logging_compatibility():
     if not hasattr(logging.Logger, "trace"):
         logging.Logger.trace = logging.Logger.debug
 
+    # websocket-client may include the complete undecodable frame in its own
+    # ERROR message before Wattpilot's sanitized malformed-frame handler runs.
+    # The capture utility handles reconnect/timeouts itself, so suppress that
+    # dependency logger rather than leaking status payloads to the terminal.
+    logging.getLogger("websocket").setLevel(logging.CRITICAL)
 
-def run_capture(config_path, label, timeout_seconds):
+
+def _connect_read_only(config_path, timeout_seconds):
     project_root = Path(__file__).resolve().parents[1]
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
@@ -281,9 +371,15 @@ def run_capture(config_path, label, timeout_seconds):
     )
 
     client.connect()
+    if not full_status_event.wait(timeout_seconds):
+        client.disconnect(auto_reconnect=False)
+        raise CaptureError("Timed out waiting for the initial full Wattpilot status.")
+    return client, full_status_event
+
+
+def run_capture(config_path, label, timeout_seconds):
+    client, full_status_event = _connect_read_only(config_path, timeout_seconds)
     try:
-        if not full_status_event.wait(timeout_seconds):
-            raise CaptureError("Timed out waiting for the initial full Wattpilot status.")
         return capture_setting_change(
             client,
             full_status_event,
@@ -291,6 +387,14 @@ def run_capture(config_path, label, timeout_seconds):
             lambda: _operator_confirmation(label),
             timeout_seconds,
         )
+    finally:
+        client.disconnect(auto_reconnect=False)
+
+
+def run_native_profile_capture(config_path, timeout_seconds):
+    client, _full_status_event = _connect_read_only(config_path, timeout_seconds)
+    try:
+        return capture_native_vehicle_profile(client)
     finally:
         client.disconnect(auto_reconnect=False)
 
@@ -303,7 +407,16 @@ def parse_args(argv=None):
         )
     )
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--label", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--label")
+    mode.add_argument(
+        "--native-vehicle-profile",
+        action="store_true",
+        help=(
+            "Capture an allowlisted read-only snapshot of native vehicle-"
+            "compatibility field candidates."
+        ),
+    )
     parser.add_argument(
         "--timeout",
         type=float,
@@ -319,7 +432,10 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     try:
-        report = run_capture(args.config, args.label, args.timeout)
+        if args.native_vehicle_profile:
+            report = run_native_profile_capture(args.config, args.timeout)
+        else:
+            report = run_capture(args.config, args.label, args.timeout)
     except CaptureError as ex:
         print("Capture failed: {0}".format(ex), file=sys.stderr)
         return 1

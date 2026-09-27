@@ -12,7 +12,7 @@ that answers the question being investigated.
 | Is an unchanged positive current target being dispatched repeatedly? | Current-command monitor | About 1–2 minutes after charging stabilizes | `wattpilot-current-command-monitor.sh` |
 | Was one complete live charging session healthy, including starts, stops, phase changes, per-phase power/current, selected site-current health, and command cadence? | Charging-session capture | Six hours by default | `wattpilot-session-capture.sh` and `wattpilot-session-capture.py` |
 | Was a completed day healthy across restarts, charging sessions, safety guards, energy evidence, and unusual states? | Daily report | A completed APP_DEBUG day, or an explicitly incomplete current-day report | `es-ess-daily-report.py` |
-| Which native Wattpilot property changes when one Solar.wattpilot setting is changed manually? | Setting capture | A short attended before/after experiment with the vehicle disconnected and es-ESS stopped | `wattpilot-setting-capture.py` |
+| Which native Wattpilot property changes when one Solar.wattpilot setting is changed manually, or which allowlisted vehicle-compatibility candidates are present? | Setting capture | A short attended experiment with the vehicle disconnected and es-ESS stopped | `wattpilot-setting-capture.py` |
 
 The two charging-session files are one tool, not duplicate implementations.
 The small POSIX-shell file is the operator-friendly Venus OS launcher. It
@@ -33,12 +33,21 @@ directory on the GX device.
 - Use the **charging-session capture** when start/stop behavior, phase-up or
   phase-down behavior, configured vehicle phase capability, energy, per-phase
   loading, selected site-current telemetry, or message frequency must be
-  correlated over one live session.
+  correlated over one live session. Its controller-command summary prefers
+  dispatched structured events, deduplicates matching legacy prose, and keeps
+  rejected or malformed command evidence separately visible.
 - Use the **daily report** after APP_DEBUG evidence covers the requested period.
   It analyzes retained history; it does not replace high-frequency live session
   sampling. It distinguishes changed-current writes from guarded no-ops,
-  highlights rapid current reversals and zero-power adjustments, and keeps
-  bounded authenticated WebSocket recoveries separate from unresolved errors.
+  highlights actionable rapid current reversals and unexplained zero-power
+  adjustments, keeps low-rate structured 1 A reversals and proven protective
+  reductions visible as information, consumes structured allowance-grace
+  outcomes when available, separates authoritative counter completeness from
+  sampled energy-split completeness, and separates
+  bounded authenticated WebSocket timeout/reset recoveries from unresolved
+  errors.
+  It also reports structured start/resume outcomes and makes advisory
+  configuration recommendations from read-only compatibility diagnostics.
 - Use the **setting capture** only for the command-ownership discovery procedure.
   It is not needed for ordinary charging validation, health monitoring, or
   daily reporting.
@@ -93,6 +102,11 @@ python /data/es-ESS/scripts/es-ess-daily-report.py --date yesterday
 Do not run the setting capture casually. Follow the attended, vehicle-
 disconnected procedure in
 [Wattpilot command-ownership validation](wattpilot-command-ownership-validation.md).
+The `--native-vehicle-profile` mode takes one command-free, allowlisted
+candidate snapshot. It does not prove an app-screen mapping by itself. Runtime
+use requires either reversible evidence or a separately documented,
+conservative protocol rule with explicit fail-closed behavior; other fields
+remain diagnostics only.
 
 ## Privacy And Safety
 

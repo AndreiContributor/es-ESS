@@ -157,6 +157,52 @@ Deferred dormant-service reactivation blockers:
 
 ## Completed
 
+### Completed 2026-09-27 - Refine Wattpilot Grace, Current, And Energy Evidence
+
+- Added transition-only structured allowance-grace start and resolution
+  records without changing timers, commands, Manual ownership, or fail-closed
+  safety ordering. The daily report prefers those outcomes while retaining the
+  older prose inference path.
+- A zero-power site-current command is informational only when structured
+  telemetry proves that it reduced the reported setpoint. Small isolated 1 A
+  reversal cohorts are separated from actionable chatter by explicit count and
+  rate bounds while all reversals remain counted.
+- Authoritative Wattpilot counter completeness is reported separately from
+  sampled mode/phase estimate completeness and the compatible combined flag.
+- Live Manual-to-Auto regression exposed and closed a stale resume observer
+  label: Manual power no longer claims Auto/Eco `Charging`, and ordinary
+  guarded Auto/Eco stops publish `Idle` without clearing connection history or
+  retry backoff.
+
+### Completed 2026-09-27 - Correct Wattpilot Diagnostic Evidence Classification
+
+- Daily reporting now reconstructs structured connection-session current
+  adjustments from dispatched final-boundary commands and correlates confirmed
+  phase transitions across measured-power interruptions.
+- Structured command reasons distinguish expected zero-power start/phase
+  transactions and protective reductions from unexplained current chatter.
+  Genuine rapid reversals include both commands as evidence.
+- Exact WebSocket timeout and peer-reset errors are recovered only when bounded
+  authentication-first evidence precedes every later charger-control action;
+  unresolved interruptions remain failures.
+- The six-hour capture prefers structured dispatched current-command events,
+  deduplicates matching legacy prose, and separately reports rejected or
+  malformed structured records without changing any controller behavior.
+
+### Completed 2026-09-25 - Improve Wattpilot Command And Shelly Network Evidence
+
+- Added versioned final-boundary current-command events so daily reporting
+  counts phase-wait adjustments and deduplicates matching legacy messages.
+- Paired sanitized site-current failure/recovery transitions into outage
+  counts, durations, reason classes, unresolved intervals, and charging-power
+  correlation without retaining private operational evidence.
+- Added an independent one-minute, read-only Shelly Wi-Fi/system health poll
+  with a separate HTTP session. Public diagnostics exclude network identity,
+  addresses, host, credentials, and raw payloads, and cannot refresh safety
+  telemetry or authorize charging.
+- Added hardware-free regressions and updated the public runtime-status,
+  architecture, service-inventory, health-monitor, and daily-report contracts.
+
 ### Completed 2026-09-16 - Close Shelly Credential And Developer-Check Gaps
 
 - The earlier operator-completed Shelly credential/counter specification below
@@ -3794,6 +3840,33 @@ Completion record:
   ramp remain unchanged. The full test suite passes with 576 tests and 322
   subtests.
 
+### Completed 2026-09-25 - P1 Add Read-Only Vehicle Compatibility And Resume Backoff
+
+Completion record:
+
+- Added a command-free firmware-42.5 vehicle-profile capture mode and a pure
+  typed parser for native minimum current, pause, simulated-unplugging,
+  phase-timing, and raw model-status fields. Missing/invalid values remain
+  explicit and es-ESS never writes these settings.
+- Supervised private evidence confirmed a valid native `mca` value. The
+  selected manufacturer profile did not expose an editable Minimum current
+  field, and the main charging-current control changed `amp`, not `mca`.
+  Public files retain only this generic technical conclusion.
+- Positive Auto/Eco allowance/start/current calculations now enforce the
+  greater of configured and valid native minimum current. Unavailable,
+  invalid, or contradictory native minimum telemetry fails positive control
+  closed while zero current and Force Off remain available.
+- Added accepted-start/resume outcome detection, native wait-state deadline
+  extensions, zero-current-before-Off failure handling, bounded exponential
+  retry backoff, structured events, and retained D-Bus/MQTT diagnostics.
+  Manual mode remains user-controlled.
+- Daily-report JSON schema 5 counts resume outcomes and emits advisory
+  configuration recommendations from sanitized configuration and read-only
+  runtime diagnostics. It never applies settings.
+- Configuration migration advanced to version 18. Syntax compilation, Ruff,
+  focused regressions, and the complete 724-test hardware-free suite pass.
+  The final supervised Automatic-phase regression remains listed below.
+
 ### P3 - Support Restricted Secret References Without Exposing Configuration Backups
 
 Goal:
@@ -4476,6 +4549,16 @@ evidence rather than an open backlog requirement.
   invariants remain in `docs/wattpilot-architecture.md`.
 
 ## Outstanding Manual Validation
+
+- P1 vehicle compatibility/resume final regression: deploy the reviewed branch
+  on the validated GX/Wattpilot baseline with
+  `VehiclePhaseCapability=Automatic`. Confirm read-only
+  `/VehicleCompatibility/*` and `/Resume/*` diagnostics, effective minimum
+  current, an ordinary successful Auto/Eco activation, safe one-/three-phase
+  behavior when naturally available, retry/backoff behavior during a
+  supervised refused resume, no intentional grid use, and unchanged Manual
+  ownership. Keep raw evidence private and do not force a site overload,
+  telemetry outage, or phase change solely for the test.
 
 - Manual release after Auto/Eco: during an ordinary supervised charging session
   on an already validated GX/charger baseline, request Manual through the normal

@@ -116,6 +116,24 @@ connects and records a baseline. Only after it prints its prompt should the
 operator change exactly the named setting in Solar.wattpilot, wait for the app
 to confirm it, and press Enter in SSH. JSON is then written to the named file.
 
+Before changing a setting, capture the allowlisted vehicle-compatibility
+candidates that firmware `42.5` currently reports:
+
+```sh
+python scripts/wattpilot-setting-capture.py \
+  --config config.ini \
+  --native-vehicle-profile \
+  > /data/es-ESS-validation/native-vehicle-profile.json
+```
+
+The report covers only the candidate keys for minimum current, charging-pause
+behavior and timing, simulated unplugging, phase-switch timing, and raw model
+status. `complete: true` proves only that the expected shapes were present; it
+does not by itself prove every app-screen mapping. Keep this report private.
+Runtime code may use only a field whose firmware semantics and conservative
+failure behavior are separately documented and tested; all others remain
+diagnostic until validated.
+
 ### 5. Capture `Use PV surplus` in both directions
 
 Example when the original state is enabled:
@@ -238,6 +256,22 @@ recorded `all setValue requests blocked` and was protected with mode `0600`.
 These captures justify only the strict read-only `fup=false` and `ful=false`
 authority guard. They do not authorize writes to undocumented setting fields.
 
+### Vehicle-compatibility evidence retained
+
+A separate command-free firmware-42.5 snapshot established that native `mca`
+was present with a valid whole-ampere minimum, while several optional profile
+fields were absent. The selected manufacturer profile did not expose an
+editable Minimum current control. A reversible check of the app's main
+charging-current control changed `amp`, not `mca`, so that control must not be
+used as evidence for the vehicle-profile minimum.
+
+This evidence supports only a conservative runtime rule: valid `mca` may raise
+the Auto/Eco minimum-current floor, while missing, invalid, or contradictory
+`mca` blocks positive control. It does not support writing `mca`, identifying a
+vehicle, or claiming that every Solar.wattpilot profile exposes the same UI.
+All other allowlisted compatibility fields remain read-only diagnostics; their
+absence is published explicitly rather than replaced with guessed defaults.
+
 ### 9. Restart es-ESS without reconnecting the vehicle
 
 ```sh
@@ -358,6 +392,46 @@ telemetry remains a stop-and-inspect condition.
 4. Change Manual charging current in the app and confirm es-ESS reports it but
    does not send subsequent `frc`, `amp`, or `psm` commands.
 5. Return to the validated commissioning state before ending the window.
+
+### F. Post-change full regression for automatic vehicle phase policy
+
+Run this once after deploying changes to vehicle compatibility, resume
+handling, command evidence, or Shelly diagnostics. Keep the session attended,
+use only naturally available PV for phase transitions, and retain operational
+evidence outside the public repository.
+
+1. With the vehicle disconnected, confirm `VehiclePhaseCapability=Automatic`,
+   `AllowGridCharging=false`, `/CompatibilityOk=1`, `/CommandAuthorityOk=1`,
+   both native command competitors at `0`, and a valid effective minimum.
+2. For a selected `Shelly3EMGen3` source, wait at least 60 seconds and confirm
+   `/SiteCurrentSourceDiagnosticsStatus=Healthy`, a plausible RSSI/channel and
+   RPC latency, and no SSID, address, MAC/BSSID, host, or credential path. A
+   health-poll failure must not refresh `/SiteCurrentSourceLastSampleAge` or
+   make `/SiteCurrentTelemetryHealthy=1`.
+3. Start Auto/Eco from fresh one-phase PV. Confirm the start respects the
+   effective minimum, current follows changing allowance, structured
+   `Wattpilot current command:` dispatched events match acknowledged setpoint
+   changes, and no intentional grid import or unbounded battery discharge
+   occurs.
+4. Disconnect and reconnect normally, then confirm a permitted resume reaches
+   measured charging. If the vehicle naturally refuses a resume, confirm one
+   failed outcome, increasing `/Resume/FailureCount`, and bounded Backoff with
+   no retry before its deadline; do not induce a vehicle fault solely for this
+   check.
+5. If PV naturally remains above the phase-up threshold for the configured
+   interval, confirm `Automatic` permits one site-safe transition to three
+   phases and later a safe reduction/phase-down as PV falls. An inconclusive
+   PV window is recorded as such rather than forced.
+6. Select Manual, change the app current, and confirm only the documented
+   one-time release is possible; es-ESS must not continue sending current,
+   phase, or start/stop commands in Manual.
+7. Disconnect the vehicle, restore Auto, and finish with
+   `VehiclePhaseCapability=Automatic`, validated authority, zero EV power, and
+   no unresolved resume or site-current diagnostic state.
+8. Run the daily report for the captured window. Confirm structured current
+   counts match dispatch evidence, no false rapid reversal is reported, and
+   site-current outage/recovery totals agree with the sanitized transition
+   records.
 
 Gate-2 completion requires recorded evidence for every executed step, focused
 and full automated tests passing, no intentional grid charging, unchanged

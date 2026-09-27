@@ -190,7 +190,7 @@ print_config() {
         return
     fi
 
-    grep -E '^(FroniusWattpilot|SolarOverheadDistributor|SiteCurrentSource|AllowGridCharging|MinCurrentPerPhase|MaxCurrentPerPhase|VehiclePhaseCapability|SiteMaxCurrent|Charger1PhaseMapping|SiteCurrentFreshSeconds|SiteCurrentRecoverySeconds|ThreePhasePvSurplusStartW|ThreePhasePvSurplusStopW|MinOnOffSeconds|MinPhaseSwitchSeconds|BatteryAssistEnabled|BatteryAssistSocMin|BatteryAssistMaxSeconds|BatteryAssistMaxShortfallPerPhaseW|BatterySocFreshSeconds|BatteryAssistRecoverySeconds|GridImportPositive)=' "$CONFIG_FILE" 2>/dev/null || echo "No selected config values found"
+    grep -E '^(FroniusWattpilot|SolarOverheadDistributor|SiteCurrentSource|AllowGridCharging|MinCurrentPerPhase|MaxCurrentPerPhase|VehiclePhaseCapability|ResumeRetryBackoffSeconds|ResumeRetryBackoffMaxSeconds|SiteMaxCurrent|Charger1PhaseMapping|SiteCurrentFreshSeconds|SiteCurrentRecoverySeconds|ThreePhasePvSurplusStartW|ThreePhasePvSurplusStopW|MinOnOffSeconds|MinPhaseSwitchSeconds|BatteryAssistEnabled|BatteryAssistSocMin|BatteryAssistMaxSeconds|BatteryAssistMaxShortfallPerPhaseW|BatterySocFreshSeconds|BatteryAssistRecoverySeconds|GridImportPositive)=' "$CONFIG_FILE" 2>/dev/null || echo "No selected config values found"
 }
 
 print_wattpilot_dbus() {
@@ -220,6 +220,15 @@ print_wattpilot_dbus() {
         /SiteCurrentSourceDeviceModel \
         /SiteCurrentSourceFirmware \
         /SiteCurrentSourceLastSampleAge \
+        /SiteCurrentSourceDiagnosticsStatus \
+        /SiteCurrentSourceDiagnosticsError \
+        /SiteCurrentSourceDiagnosticsLastSuccessAge \
+        /SiteCurrentSourceWifiStatus \
+        /SiteCurrentSourceWifiRssi \
+        /SiteCurrentSourceWifiChannel \
+        /SiteCurrentSourceDeviceUptime \
+        /SiteCurrentSourceDeviceFreeMemory \
+        /SiteCurrentSourceRpcLatency \
         /Charger1PhaseMapping \
         /VehiclePhaseCapability \
         /SiteCurrentL1 \
@@ -247,7 +256,26 @@ print_wattpilot_dbus() {
         /ActualVenusOsVersion \
         /ExpectedWattpilotFirmware \
         /ActualWattpilotFirmware \
-        /ValidatedWattpilotAppVersion
+        /ValidatedWattpilotAppVersion \
+        /VehicleCompatibility/Status \
+        /VehicleCompatibility/NativeMinimumCurrent \
+        /VehicleCompatibility/EffectiveMinimumCurrent \
+        /VehicleCompatibility/AllowChargePause \
+        /VehicleCompatibility/MinimumChargePauseDurationSeconds \
+        /VehicleCompatibility/SimulateUnpluggingShort \
+        /VehicleCompatibility/SimulateUnpluggingAlways \
+        /VehicleCompatibility/SimulateUnpluggingDurationSeconds \
+        /VehicleCompatibility/MinimumPhaseWishSwitchTimeSeconds \
+        /VehicleCompatibility/MinimumPhaseToggleWaitTimeSeconds \
+        /VehicleCompatibility/ModelStatusRaw \
+        /VehicleCompatibility/ModelStatusLiteral \
+        /VehicleCompatibility/MissingFields \
+        /VehicleCompatibility/InvalidFields \
+        /Resume/State \
+        /Resume/AttemptKind \
+        /Resume/FailureCount \
+        /Resume/BackoffRemaining \
+        /Resume/FailureReason
     do
         print_kv "$path" "$(dbus_get "$path")"
     done
@@ -316,8 +344,10 @@ print_interpretation_hint() {
     echo "  - CompatibilityOk is 1, or CompatibilityLiteral reports validated firmware."
     echo "  - CommandAuthorityOk is 1 before Auto/Eco charging."
     echo "  - NativePvSurplusEnabled and FlexibleTariffEnabled are both 0."
+    echo "  - VehicleCompatibility native/effective minimum values are valid and Resume/State leaves Backoff after its bounded delay."
     echo "  - TelemetryHealthy is 1 during Auto/Eco decisions."
     echo "  - SiteCurrentSource and VehiclePhaseCapability match config; SourceConnected is 1 and SourceStatus is Healthy."
+    echo "  - SiteCurrentSourceDiagnosticsStatus is Healthy; Wi-Fi RSSI, channel, and RPC latency are plausible."
     echo "  - SiteCurrentTelemetryHealthy is 1 and each SiteCurrentAge remains inside SiteCurrentFreshSeconds."
     echo "  - SiteAllowedCurrent and SiteLimitingPhase match the smallest physical phase headroom."
     echo "  - GridImportGuardActive stays 0 during normal no-grid operation."
@@ -332,6 +362,7 @@ print_interpretation_hint() {
     echo "  - The selected site-current source is unavailable, invalid, or unexpectedly changes identity."
     echo "  - Auto/Eco is charging while SiteCurrentGuardBlocked is 1, telemetry is stale, or a physical phase has insufficient headroom."
     echo "  - Battery assist exceeds configured duration/shortfall expectations."
+    echo "  - VehicleCompatibility is Invalid/Unavailable during positive Auto/Eco control or resume failures repeat without bounded backoff."
     echo "  - Manual mode produces Wattpilot start/stop/current/phase commands."
 }
 

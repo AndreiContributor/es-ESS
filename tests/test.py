@@ -1,6 +1,7 @@
 """Hardware-free regression coverage for Wattpilot PV-control behavior."""
 
 import importlib.util
+import json
 import sys
 import types
 import unittest
@@ -378,6 +379,68 @@ class WattpilotControlRegressionTests(unittest.TestCase):
             self.assertTrue(controller.allowanceStopGraceActive())
         with patch.object(self.fwp.time, "time", return_value=115):
             self.assertFalse(controller.allowanceStopGraceActive())
+
+    def test_allowance_grace_logs_start_and_recovery_without_commands(self):
+        controller = self._controller()
+        controller.wattpilot.power = 2.0
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
+        controller.allowance = 0
+        messages = []
+
+        with patch.object(
+            self.fwp,
+            "i",
+            side_effect=lambda _service, message: messages.append(message),
+        ):
+            with patch.object(self.fwp.time, "time", return_value=100):
+                self.assertTrue(controller.allowanceStopGraceActive())
+            controller.allowance = 1400
+            controller.allowanceUpdatedAt = 110
+            with patch.object(self.fwp.time, "time", return_value=110):
+                self.assertFalse(controller.allowanceStopGraceActive())
+
+        structured = [
+            json.loads(message.split(self.fwp.ALLOWANCE_GRACE_EVENT_MARKER, 1)[1])
+            for message in messages
+            if self.fwp.ALLOWANCE_GRACE_EVENT_MARKER in message
+        ]
+        self.assertEqual([item["event"] for item in structured], ["started", "resolved"])
+        self.assertEqual(structured[1]["outcome"], "recovered")
+        self.assertEqual(structured[1]["elapsed_seconds"], 10)
+        self.assertEqual(controller.allowanceBelowMinimumSince, 0)
+        controller.wattpilot.set_power.assert_not_called()
+        controller.wattpilot.set_phases.assert_not_called()
+        controller.wattpilot.set_start_stop.assert_not_called()
+
+    def test_allowance_grace_logs_stop_only_when_existing_fallback_runs(self):
+        controller = self._controller()
+        controller.wattpilot.power = 2.0
+        controller.wattpilot.modelStatus = SimpleNamespace(value=3)
+        controller.allowance = 0
+        messages = []
+
+        with patch.object(
+            self.fwp,
+            "i",
+            side_effect=lambda _service, message: messages.append(message),
+        ):
+            with patch.object(self.fwp.time, "time", return_value=100):
+                self.assertTrue(controller.allowanceStopGraceActive())
+            with patch.object(self.fwp.time, "time", return_value=115):
+                self.assertFalse(controller.allowanceStopGraceActive())
+                controller.forceStopForNoAllowance()
+
+        structured = [
+            json.loads(message.split(self.fwp.ALLOWANCE_GRACE_EVENT_MARKER, 1)[1])
+            for message in messages
+            if self.fwp.ALLOWANCE_GRACE_EVENT_MARKER in message
+        ]
+        self.assertEqual([item["event"] for item in structured], ["started", "resolved"])
+        self.assertEqual(structured[1]["outcome"], "stop")
+        self.assertEqual(structured[1]["elapsed_seconds"], 15)
+        controller.wattpilot.set_start_stop.assert_called_once_with(
+            self.fwp.WattpilotStartStop.Off
+        )
 
     def test_protocol_defined_charging_statuses_are_active_for_connection_debounce(self):
         for model_status_value in (8, 9, 10, 11, 13, 14):

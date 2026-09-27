@@ -15,6 +15,7 @@ from bisect import bisect_left, bisect_right
 import configparser
 import importlib.util
 import json
+from math import isfinite
 import re
 import shutil
 import subprocess
@@ -37,7 +38,7 @@ except ImportError:
         )
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 EXIT_PASS = 0
 EXIT_INCOMPLETE = 1
 EXIT_FAIL = 2
@@ -56,10 +57,33 @@ VERBOSE_LOG_LEVELS = frozenset({"APP_DEBUG", "DEBUG", "TRACE"})
 FULL_DAY_BOUNDARY_TOLERANCE = timedelta(minutes=10)
 HEARTBEAT_GAP_SECONDS = 180
 CURRENT_REVERSAL_WINDOW_SECONDS = 6
+INFORMATIONAL_REVERSAL_MAX_COUNT = 2
+INFORMATIONAL_REVERSAL_MAX_RATIO = 0.01
 CURRENT_POWER_CORRELATION_SECONDS = 6
 ZERO_POWER_THRESHOLD_W = 100.0
 TRANSPORT_RECOVERY_WINDOW_SECONDS = 90
 SESSION_STATISTICS_MARKER = "Wattpilot session statistics: "
+RESUME_EVENT_MARKER = "Wattpilot resume event: "
+CURRENT_COMMAND_EVENT_MARKER = "Wattpilot current command: "
+CURRENT_COMMAND_EVENT_VERSION = 1
+ALLOWANCE_GRACE_EVENT_MARKER = "Wattpilot allowance grace: "
+ALLOWANCE_GRACE_EVENT_VERSION = 1
+ALLOWANCE_GRACE_EVENT_NAMES = frozenset({"started", "resolved"})
+ALLOWANCE_GRACE_OUTCOMES = frozenset(
+    {
+        "recovered",
+        "continuation_available",
+        "phase_down",
+        "grid_phase_down",
+        "capability_phase_down",
+        "stop",
+        "charge_inactive",
+        "minimum_unavailable",
+        "resume_failure",
+        "authority_stop",
+        "site_current_stop",
+    }
+)
 SESSION_EVENT_VERSION = 1
 SESSION_EVENT_NAMES = frozenset(
     {
@@ -71,6 +95,10 @@ SESSION_EVENT_NAMES = frozenset(
         "checkpoint",
         "connection_summary",
     }
+)
+RESUME_EVENT_VERSION = 1
+RESUME_EVENT_NAMES = frozenset(
+    {"attempt_started", "attempt_succeeded", "attempt_failed"}
 )
 RARE_STATUS_NAMES = {
     8: "ChargingBecauseAutomaticStopTestLadung",
@@ -102,6 +130,15 @@ SNAPSHOT_DBUS_PATHS = (
     "/SiteCurrentSourceDeviceModel",
     "/SiteCurrentSourceFirmware",
     "/SiteCurrentSourceLastSampleAge",
+    "/SiteCurrentSourceDiagnosticsStatus",
+    "/SiteCurrentSourceDiagnosticsError",
+    "/SiteCurrentSourceDiagnosticsLastSuccessAge",
+    "/SiteCurrentSourceWifiStatus",
+    "/SiteCurrentSourceWifiRssi",
+    "/SiteCurrentSourceWifiChannel",
+    "/SiteCurrentSourceDeviceUptime",
+    "/SiteCurrentSourceDeviceFreeMemory",
+    "/SiteCurrentSourceRpcLatency",
     "/Charger1PhaseMapping",
     "/VehiclePhaseCapability",
     "/SiteCurrentL1",
@@ -130,6 +167,28 @@ SNAPSHOT_DBUS_PATHS = (
     "/ExpectedWattpilotFirmware",
     "/ActualWattpilotFirmware",
     "/ValidatedWattpilotAppVersion",
+    "/VehicleCompatibility/Status",
+    "/VehicleCompatibility/NativeMinimumCurrent",
+    "/VehicleCompatibility/EffectiveMinimumCurrent",
+    "/VehicleCompatibility/AllowChargePause",
+    "/VehicleCompatibility/MinimumChargingIntervalSeconds",
+    "/VehicleCompatibility/MinimumChargePauseDurationSeconds",
+    "/VehicleCompatibility/MinimumChargePauseEndsAtMs",
+    "/VehicleCompatibility/MinimumChargeTimeSeconds",
+    "/VehicleCompatibility/SimulateUnpluggingShort",
+    "/VehicleCompatibility/SimulateUnpluggingAlways",
+    "/VehicleCompatibility/SimulateUnpluggingDurationSeconds",
+    "/VehicleCompatibility/MinimumPhaseWishSwitchTimeSeconds",
+    "/VehicleCompatibility/MinimumPhaseToggleWaitTimeSeconds",
+    "/VehicleCompatibility/ModelStatusRaw",
+    "/VehicleCompatibility/ModelStatusLiteral",
+    "/VehicleCompatibility/MissingFields",
+    "/VehicleCompatibility/InvalidFields",
+    "/Resume/State",
+    "/Resume/AttemptKind",
+    "/Resume/FailureCount",
+    "/Resume/BackoffRemaining",
+    "/Resume/FailureReason",
 )
 READONLY_DBUS_PAIRS = frozenset(
     (DEFAULT_WATTPILOT_DBUS_SERVICE, path) for path in SNAPSHOT_DBUS_PATHS
@@ -231,6 +290,15 @@ MINIMUM_CURRENT_RE = re.compile(
     r"PV no longer supports the current EV setpoint\. Reducing to "
     r"(?P<amps>\d+)A on (?P<phase>[13]) phase\(s\)"
 )
+SITE_CURRENT_FAILURE_RE = re.compile(
+    r"Wattpilot site-current source failure: source=(?P<source>\S+) "
+    r"status=(?P<status>\S+) reason=(?P<reason>.*?) "
+    r"last_success_age_s="
+)
+SITE_CURRENT_RECOVERY_RE = re.compile(
+    r"Wattpilot site-current source recovered: source=(?P<source>\S+) "
+    r"status=(?P<status>\S+)"
+)
 ASSIST_RE = re.compile(
     r"Battery assist active at (?P<amps>\d+)A: "
     r"(?P<shortfall>\d+(?:\.\d+)?)W total shortfall, "
@@ -266,8 +334,21 @@ MODEL_POWER_RE = re.compile(
     r"total=(?P<power>-?\d+(?:\.\d+)?)W",
     re.IGNORECASE,
 )
-WATTPILOT_TRANSPORT_TIMEOUT_RE = re.compile(
-    r"\bConnection timed out - goodbye\b", re.IGNORECASE
+WATTPILOT_RECOVERABLE_TRANSPORT_RE = re.compile(
+    r"\b(?P<kind>Connection timed out|Connection reset by peer) - goodbye\b",
+    re.IGNORECASE,
+)
+EXPECTED_ZERO_POWER_COMMAND_REASONS = frozenset(
+    {"auto_pv_start", "phase_transition_target"}
+)
+PROTECTIVE_ZERO_POWER_COMMAND_REASONS = frozenset({"site_current_limit"})
+PROTECTIVE_CURRENT_REDUCTION_REASONS = frozenset(
+    {
+        "continuation_pv_reduction",
+        "minimum_current_fallback",
+        "phase_transition_reduction",
+        "site_current_limit",
+    }
 )
 RARE_ENTER_RE = re.compile(
     r"Wattpilot special charging model status entered: "
@@ -375,6 +456,8 @@ class AuditSettings:
     grid_import_stop_w: float = 300.0
     grid_import_stop_seconds: int = 15
     startup_grace_seconds: int = 60
+    resume_retry_backoff_seconds: int = 300
+    resume_retry_backoff_max_seconds: int = 1800
 
 
 @dataclass
@@ -417,10 +500,39 @@ class GridSample:
 
 
 @dataclass
+class CurrentCommandEvent:
+    record: LogRecord
+    target_a: int
+    phase: int
+    reason: Optional[str] = None
+    reported_a: Optional[float] = None
+    structured: bool = False
+
+
+@dataclass
+class AllowanceGraceEvent:
+    record: LogRecord
+    event: str
+    configured_seconds: int
+    outcome: Optional[str] = None
+    elapsed_seconds: Optional[float] = None
+
+
+@dataclass
 class PhaseAction:
     record: LogRecord
     target_phase: int
     reason: str
+
+
+@dataclass
+class SiteCurrentOutage:
+    failure: LogRecord
+    recovery: Optional[LogRecord]
+    source: str
+    reason_class: str
+    duration_seconds: float
+    charging_correlated: bool
 
 
 @dataclass
@@ -466,6 +578,7 @@ class ChargingSession:
     reconciliation_error_percent: Optional[float] = None
     partial_start: bool = False
     partial_end: bool = False
+    sampled_energy_complete: bool = False
     evidence_complete: bool = False
 
 
@@ -1118,6 +1231,12 @@ def load_settings(path: Path) -> tuple[AuditSettings, list[str]]:
         startup_grace_seconds=_get_int(
             parser, section, "StartupGraceSeconds", 60, warnings
         ),
+        resume_retry_backoff_seconds=_get_int(
+            parser, section, "ResumeRetryBackoffSeconds", 300, warnings
+        ),
+        resume_retry_backoff_max_seconds=_get_int(
+            parser, section, "ResumeRetryBackoffMaxSeconds", 1800, warnings
+        ),
     )
     return settings, warnings
 
@@ -1341,16 +1460,29 @@ class EsEssDailyReport:
         self.allowances: list[AllowanceEvent] = []
         self._allowance_timestamps: list[datetime] = []
         self.grid_samples: list[GridSample] = []
-        self.current_adjustments: list[tuple[LogRecord, int, int]] = []
+        self.current_adjustments: list[CurrentCommandEvent] = []
+        self.structured_current_commands: list[CurrentCommandEvent] = []
+        self.current_command_event_errors: list[LogRecord] = []
         self.guarded_current_noops: list[LogRecord] = []
         self.model_power_samples: list[tuple[LogRecord, float]] = []
         self._model_power_timestamps: list[datetime] = []
-        self.rapid_current_reversals: list[LogRecord] = []
-        self.zero_power_current_adjustments: list[LogRecord] = []
+        self.rapid_current_reversals: list[tuple[LogRecord, LogRecord]] = []
+        self.actionable_current_reversals: list[
+            tuple[LogRecord, LogRecord]
+        ] = []
+        self.informational_current_reversals: list[
+            tuple[LogRecord, LogRecord]
+        ] = []
+        self.protective_current_reversals: list[tuple[LogRecord, LogRecord]] = []
+        self.expected_zero_power_current_adjustments: list[LogRecord] = []
+        self.protective_zero_power_current_adjustments: list[LogRecord] = []
+        self.unexpected_zero_power_current_adjustments: list[LogRecord] = []
         self.assist_samples: list[
             tuple[LogRecord, float, float | None, int | None, float]
         ] = []
         self.grace_starts: list[tuple[LogRecord, int]] = []
+        self.allowance_grace_events: list[AllowanceGraceEvent] = []
+        self.allowance_grace_event_errors: list[LogRecord] = []
         self.phase_actions: list[PhaseAction] = []
         self.phase_confirmations: list[tuple[LogRecord, int]] = []
         self.phase_up_waits: list[tuple[LogRecord, float, int]] = []
@@ -1375,13 +1507,16 @@ class EsEssDailyReport:
         ] = []
         self.restart_records: list[LogRecord] = []
         self.reconnect_records: list[LogRecord] = []
-        self.transport_timeout_records: list[LogRecord] = []
-        self.resolved_transport_timeouts: list[tuple[LogRecord, LogRecord]] = []
+        self.transport_interruption_records: list[tuple[LogRecord, str]] = []
+        self.resolved_transport_interruptions: list[
+            tuple[LogRecord, LogRecord, str]
+        ] = []
         self.stale_telemetry_records: list[LogRecord] = []
         self.site_current_stop_records: list[LogRecord] = []
         self.site_current_source_failures: list[LogRecord] = []
         self.site_current_source_recoveries: list[LogRecord] = []
         self.site_current_source_grace_events: list[LogRecord] = []
+        self.site_current_source_outages: list[SiteCurrentOutage] = []
         self.battery_assist_limit_records: list[LogRecord] = []
         self.raw_command_records: list[LogRecord] = []
         self._manual_control_records: list[LogRecord] = []
@@ -1390,6 +1525,8 @@ class EsEssDailyReport:
         self.rare_exits: list[tuple[LogRecord, dict[str, str]]] = []
         self.session_statistics_records: list[tuple[LogRecord, dict]] = []
         self.session_statistics_errors: list[LogRecord] = []
+        self.resume_event_records: list[tuple[LogRecord, dict]] = []
+        self.resume_event_errors: list[LogRecord] = []
 
     def add(
         self,
@@ -1412,6 +1549,117 @@ class EsEssDailyReport:
         for record in self.records:
             message = record.message
 
+            if ALLOWANCE_GRACE_EVENT_MARKER in message:
+                payload_text = message.split(
+                    ALLOWANCE_GRACE_EVENT_MARKER, 1
+                )[1]
+                try:
+                    payload = json.loads(payload_text)
+                    if not isinstance(payload, dict):
+                        raise ValueError("allowance-grace record is not an object")
+                    if (
+                        payload.get("event_version")
+                        != ALLOWANCE_GRACE_EVENT_VERSION
+                        or payload.get("event") not in ALLOWANCE_GRACE_EVENT_NAMES
+                    ):
+                        raise ValueError("unsupported allowance-grace record")
+                    configured_seconds = payload.get("configured_seconds")
+                    if (
+                        isinstance(configured_seconds, bool)
+                        or not isinstance(configured_seconds, int)
+                        or configured_seconds < 0
+                    ):
+                        raise ValueError("invalid allowance-grace duration")
+                    event_name = payload["event"]
+                    outcome = payload.get("outcome")
+                    elapsed_seconds = payload.get("elapsed_seconds")
+                    if event_name == "started":
+                        if outcome is not None or elapsed_seconds is not None:
+                            raise ValueError("invalid allowance-grace start")
+                    else:
+                        if outcome not in ALLOWANCE_GRACE_OUTCOMES:
+                            raise ValueError("invalid allowance-grace outcome")
+                        if (
+                            isinstance(elapsed_seconds, bool)
+                            or not isinstance(elapsed_seconds, (int, float))
+                            or not isfinite(float(elapsed_seconds))
+                            or float(elapsed_seconds) < 0
+                        ):
+                            raise ValueError("invalid allowance-grace elapsed time")
+                    self.allowance_grace_events.append(
+                        AllowanceGraceEvent(
+                            record=record,
+                            event=event_name,
+                            configured_seconds=configured_seconds,
+                            outcome=outcome,
+                            elapsed_seconds=(
+                                float(elapsed_seconds)
+                                if elapsed_seconds is not None
+                                else None
+                            ),
+                        )
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    self.allowance_grace_event_errors.append(record)
+
+            if CURRENT_COMMAND_EVENT_MARKER in message:
+                payload_text = message.split(
+                    CURRENT_COMMAND_EVENT_MARKER, 1
+                )[1]
+                try:
+                    payload = json.loads(payload_text)
+                    if not isinstance(payload, dict):
+                        raise ValueError("current-command record is not an object")
+                    if (
+                        payload.get("event_version")
+                        != CURRENT_COMMAND_EVENT_VERSION
+                        or payload.get("event") != "current_command"
+                    ):
+                        raise ValueError("unsupported current-command record")
+                    outcome = payload.get("outcome")
+                    if outcome not in {
+                        "dispatched",
+                        "rejected",
+                        "suppressed_confirmed",
+                    }:
+                        raise ValueError("unsupported current-command outcome")
+                    target = payload.get("target_a")
+                    phase = payload.get("phase")
+                    reason = payload.get("reason")
+                    reported = payload.get("reported_a")
+                    if isinstance(target, bool) or not isinstance(target, int):
+                        raise ValueError("invalid current-command target")
+                    if phase not in (0, 1, 3):
+                        raise ValueError("invalid current-command phase")
+                    if reason is not None and not isinstance(reason, str):
+                        raise ValueError("invalid current-command reason")
+                    if reported is not None and (
+                        isinstance(reported, bool)
+                        or not isinstance(reported, (int, float))
+                        or not isfinite(float(reported))
+                        or float(reported) < 0
+                    ):
+                        raise ValueError("invalid current-command reported current")
+                    if outcome == "dispatched" and target > 0 and phase in (1, 3):
+                        self.structured_current_commands.append(
+                            CurrentCommandEvent(
+                                record=record,
+                                target_a=target,
+                                phase=phase,
+                                reason=reason or None,
+                                reported_a=(
+                                    float(reported)
+                                    if reported is not None
+                                    else None
+                                ),
+                                structured=True,
+                            )
+                        )
+                        self.charge_records.append(record)
+                    self._manual_control_records.append(record)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    self.current_command_event_errors.append(record)
+
             if SESSION_STATISTICS_MARKER in message:
                 payload_text = message.split(SESSION_STATISTICS_MARKER, 1)[1]
                 try:
@@ -1427,6 +1675,20 @@ class EsEssDailyReport:
                     self.session_statistics_records.append((record, payload))
                 except (TypeError, ValueError, json.JSONDecodeError):
                     self.session_statistics_errors.append(record)
+
+            if RESUME_EVENT_MARKER in message:
+                payload_text = message.split(RESUME_EVENT_MARKER, 1)[1]
+                try:
+                    payload = json.loads(payload_text)
+                    if not isinstance(payload, dict):
+                        raise ValueError("resume event is not an object")
+                    if payload.get("event_version") != RESUME_EVENT_VERSION:
+                        raise ValueError("unsupported resume event version")
+                    if payload.get("event") not in RESUME_EVENT_NAMES:
+                        raise ValueError("resume event name is missing or unsupported")
+                    self.resume_event_records.append((record, payload))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    self.resume_event_errors.append(record)
 
             allowance_match = (
                 ALLOWANCE_RE.search(message)
@@ -1473,10 +1735,10 @@ class EsEssDailyReport:
                 current_match = MINIMUM_CURRENT_RE.search(message)
             if current_match:
                 self.current_adjustments.append(
-                    (
-                        record,
-                        int(current_match.group("amps")),
-                        int(current_match.group("phase")),
+                    CurrentCommandEvent(
+                        record=record,
+                        target_a=int(current_match.group("amps")),
+                        phase=int(current_match.group("phase")),
                     )
                 )
                 self.charge_records.append(record)
@@ -1650,9 +1912,13 @@ class EsEssDailyReport:
             ):
                 self.reconnect_records.append(record)
 
-            transport_timeout = WATTPILOT_TRANSPORT_TIMEOUT_RE.search(message)
-            if transport_timeout:
-                self.transport_timeout_records.append(record)
+            transport_interruption = WATTPILOT_RECOVERABLE_TRANSPORT_RE.search(
+                message
+            )
+            if transport_interruption:
+                self.transport_interruption_records.append(
+                    (record, transport_interruption.group("kind").lower())
+                )
 
             raw_command = bool(
                 (
@@ -1700,7 +1966,7 @@ class EsEssDailyReport:
             if (
                 (
                     record.level in ("ERROR", "CRITICAL")
-                    and transport_timeout is None
+                    and transport_interruption is None
                 )
                 or "Traceback (most recent call last)" in message
                 or "ModuleNotFoundError" in message
@@ -1745,22 +2011,137 @@ class EsEssDailyReport:
         self._manual_control_timestamps = [
             record.timestamp for record in self._manual_control_records
         ]
-        self._classify_transport_timeouts()
+        self._merge_current_command_evidence()
+        self._pair_site_current_source_outages()
+        self._classify_transport_interruptions()
         self._classify_current_command_evidence()
         self._classify_startup_compatibility()
 
-    def _classify_transport_timeouts(self) -> None:
+    @staticmethod
+    def _site_current_reason_class(reason: str) -> str:
+        for name in ("ConnectTimeout", "ReadTimeout", "ConnectionError"):
+            if name.lower() in reason.lower():
+                return name
+        http_status = re.search(r"HTTP\s+(?P<status>\d{3})", reason, re.I)
+        if http_status:
+            return "HTTP {0}".format(http_status.group("status"))
+        if "auth" in reason.lower():
+            return "Authentication"
+        if any(token in reason.lower() for token in ("payload", "json", "field")):
+            return "Payload"
+        return "Other"
+
+    def _site_current_outage_correlates_with_charging(
+        self, start: datetime, end: datetime
+    ) -> bool:
+        first = bisect_left(self._model_power_timestamps, start)
+        last = bisect_right(self._model_power_timestamps, end)
+        if any(
+            power > ZERO_POWER_THRESHOLD_W
+            for _record, power in self.model_power_samples[first:last]
+        ):
+            return True
+        power = self._model_power_at_or_before(start)
+        return bool(power is not None and power > ZERO_POWER_THRESHOLD_W)
+
+    def _pair_site_current_source_outages(self) -> None:
+        """Pair sanitized source transitions into observed outage intervals."""
+        open_failures: dict[str, tuple[LogRecord, str]] = {}
+        transitions = sorted(
+            self.site_current_source_failures
+            + self.site_current_source_recoveries,
+            key=lambda record: record.timestamp,
+        )
+        for record in transitions:
+            failure_match = SITE_CURRENT_FAILURE_RE.search(record.message)
+            if failure_match:
+                source = failure_match.group("source")
+                open_failures.setdefault(
+                    source, (record, failure_match.group("reason"))
+                )
+                continue
+
+            recovery_match = SITE_CURRENT_RECOVERY_RE.search(record.message)
+            if recovery_match is None:
+                continue
+            source = recovery_match.group("source")
+            pending = open_failures.pop(source, None)
+            if pending is None:
+                continue
+            failure, reason = pending
+            duration = max(
+                0.0, (record.timestamp - failure.timestamp).total_seconds()
+            )
+            self.site_current_source_outages.append(
+                SiteCurrentOutage(
+                    failure=failure,
+                    recovery=record,
+                    source=source,
+                    reason_class=self._site_current_reason_class(reason),
+                    duration_seconds=duration,
+                    charging_correlated=self._site_current_outage_correlates_with_charging(
+                        failure.timestamp, record.timestamp
+                    ),
+                )
+            )
+
+        observed_end = self.records[-1].timestamp if self.records else None
+        if observed_end is None:
+            return
+        for source, (failure, reason) in open_failures.items():
+            duration = max(
+                0.0, (observed_end - failure.timestamp).total_seconds()
+            )
+            self.site_current_source_outages.append(
+                SiteCurrentOutage(
+                    failure=failure,
+                    recovery=None,
+                    source=source,
+                    reason_class=self._site_current_reason_class(reason),
+                    duration_seconds=duration,
+                    charging_correlated=self._site_current_outage_correlates_with_charging(
+                        failure.timestamp, observed_end
+                    ),
+                )
+            )
+
+    def _merge_current_command_evidence(self) -> None:
+        """Prefer boundary events while retaining unmatched legacy evidence."""
+        if not self.structured_current_commands:
+            return
+
+        legacy_only = []
+        for legacy in self.current_adjustments:
+            duplicate = any(
+                structured.target_a == legacy.target_a
+                and structured.phase == legacy.phase
+                and abs(
+                    (
+                        structured.record.timestamp - legacy.record.timestamp
+                    ).total_seconds()
+                )
+                <= 1.0
+                for structured in self.structured_current_commands
+            )
+            if not duplicate:
+                legacy_only.append(legacy)
+        self.current_adjustments = sorted(
+            self.structured_current_commands + legacy_only,
+            key=lambda item: item.record.timestamp,
+        )
+
+    def _classify_transport_interruptions(self) -> None:
         """Resolve only bounded reconnects with authentication before control."""
         control_records = self._manual_control_records
-        for timeout in self.transport_timeout_records:
-            deadline = timeout.timestamp + timedelta(
+        for interruption, kind in self.transport_interruption_records:
+            deadline = interruption.timestamp + timedelta(
                 seconds=TRANSPORT_RECOVERY_WINDOW_SECONDS
             )
             authentication = next(
                 (
                     record
                     for record in self.authentication_records
-                    if timeout.timestamp < record.timestamp <= deadline
+                    if interruption.timestamp < record.timestamp <= deadline
                 ),
                 None,
             )
@@ -1768,7 +2149,7 @@ class EsEssDailyReport:
                 (
                     record
                     for record in control_records
-                    if timeout.timestamp < record.timestamp
+                    if interruption.timestamp < record.timestamp
                     and (
                         authentication is None
                         or record.timestamp < authentication.timestamp
@@ -1777,9 +2158,11 @@ class EsEssDailyReport:
                 None,
             )
             if authentication is None or command_before_recovery is not None:
-                self.failure_records.append(timeout)
+                self.failure_records.append(interruption)
                 continue
-            self.resolved_transport_timeouts.append((timeout, authentication))
+            self.resolved_transport_interruptions.append(
+                (interruption, authentication, kind)
+            )
 
     def _model_power_at_or_before(self, timestamp: datetime) -> Optional[float]:
         index = bisect_right(self._model_power_timestamps, timestamp) - 1
@@ -1791,38 +2174,98 @@ class EsEssDailyReport:
         return power
 
     def _classify_current_command_evidence(self) -> None:
-        directions: list[tuple[LogRecord, int]] = []
+        directions: list[tuple[CurrentCommandEvent, int, int]] = []
         for previous, current in zip(
             self.current_adjustments, self.current_adjustments[1:]
         ):
-            previous_record, previous_amps, _previous_phase = previous
-            current_record, current_amps, _current_phase = current
-            if current_amps == previous_amps:
+            if previous.phase != current.phase:
                 continue
-            direction = 1 if current_amps > previous_amps else -1
-            directions.append((current_record, direction))
+            if current.target_a == previous.target_a:
+                continue
+            direction = 1 if current.target_a > previous.target_a else -1
+            directions.append(
+                (current, direction, abs(current.target_a - previous.target_a))
+            )
 
+        reversal_candidates: list[
+            tuple[CurrentCommandEvent, CurrentCommandEvent, int, int]
+        ] = []
         for previous, current in zip(directions, directions[1:]):
-            previous_record, previous_direction = previous
-            current_record, current_direction = current
+            previous_event, previous_direction, previous_delta = previous
+            current_event, current_direction, current_delta = current
             if (
-                current_direction != previous_direction
+                current_event.phase == previous_event.phase
+                and current_direction != previous_direction
                 and (
-                    current_record.timestamp - previous_record.timestamp
+                    current_event.record.timestamp - previous_event.record.timestamp
                 ).total_seconds()
                 <= CURRENT_REVERSAL_WINDOW_SECONDS
             ):
-                self.rapid_current_reversals.append(current_record)
+                pair = (previous_event.record, current_event.record)
+                if (
+                    current_direction < 0
+                    and current_event.reason
+                    in PROTECTIVE_CURRENT_REDUCTION_REASONS
+                ):
+                    self.protective_current_reversals.append(pair)
+                else:
+                    self.rapid_current_reversals.append(pair)
+                    reversal_candidates.append(
+                        (
+                            previous_event,
+                            current_event,
+                            previous_delta,
+                            current_delta,
+                        )
+                    )
 
-        self.zero_power_current_adjustments = [
-            record
-            for record, _amps, _phase in self.current_adjustments
-            if (
-                (power := self._model_power_at_or_before(record.timestamp))
-                is not None
-                and power <= ZERO_POWER_THRESHOLD_W
+        informational_cohort = bool(reversal_candidates) and (
+            len(reversal_candidates) <= INFORMATIONAL_REVERSAL_MAX_COUNT
+            and len(reversal_candidates) / len(self.current_adjustments)
+            <= INFORMATIONAL_REVERSAL_MAX_RATIO
+            and all(
+                previous_event.structured
+                and current_event.structured
+                and previous_delta == 1
+                and current_delta == 1
+                for (
+                    previous_event,
+                    current_event,
+                    previous_delta,
+                    current_delta,
+                ) in reversal_candidates
             )
+        )
+        classified_reversals = [
+            (previous_event.record, current_event.record)
+            for previous_event, current_event, _previous_delta, _current_delta
+            in reversal_candidates
         ]
+        if informational_cohort:
+            self.informational_current_reversals.extend(classified_reversals)
+        else:
+            self.actionable_current_reversals.extend(classified_reversals)
+
+        for event in self.current_adjustments:
+            power = self._model_power_at_or_before(event.record.timestamp)
+            if power is None or power > ZERO_POWER_THRESHOLD_W:
+                continue
+            if (
+                event.structured
+                and event.reason in EXPECTED_ZERO_POWER_COMMAND_REASONS
+            ):
+                self.expected_zero_power_current_adjustments.append(event.record)
+            elif (
+                event.structured
+                and event.reason in PROTECTIVE_ZERO_POWER_COMMAND_REASONS
+                and event.reported_a is not None
+                and event.target_a < event.reported_a
+            ):
+                self.protective_zero_power_current_adjustments.append(
+                    event.record
+                )
+            else:
+                self.unexpected_zero_power_current_adjustments.append(event.record)
 
     def _classify_startup_compatibility(self) -> None:
         """Resolve only the proven fail-closed pre-authentication startup gap."""
@@ -2007,22 +2450,29 @@ class EsEssDailyReport:
                 "No Wattpilot reconnect event was observed.",
             )
 
-        if self.resolved_transport_timeouts:
+        if self.resolved_transport_interruptions:
             evidence = []
-            for timeout, authentication in self.resolved_transport_timeouts:
-                evidence.extend((timeout, authentication))
+            kinds: dict[str, int] = {}
+            for interruption, authentication, kind in self.resolved_transport_interruptions:
+                evidence.extend((interruption, authentication))
+                kinds[kind] = kinds.get(kind, 0) + 1
             status = (
                 "ATTENTION"
-                if len(self.resolved_transport_timeouts) > 1
+                if len(self.resolved_transport_interruptions) > 1
                 else "INFO"
+            )
+            kind_summary = ", ".join(
+                f"{kind}={count}" for kind, count in sorted(kinds.items())
             )
             self.add(
                 status,
                 "Wattpilot transport recovery",
-                "Observed {0} WebSocket timeout(s) followed by authentication within "
-                "{1} seconds and before any charger control action. These recovered "
+                "Observed {0} recoverable WebSocket interruption(s) ({1}) followed by "
+                "authentication within "
+                "{2} seconds and before any charger control action. These recovered "
                 "events remain visible but are not runtime failures.".format(
-                    len(self.resolved_transport_timeouts),
+                    len(self.resolved_transport_interruptions),
+                    kind_summary,
                     TRANSPORT_RECOVERY_WINDOW_SECONDS,
                 ),
                 evidence,
@@ -2099,6 +2549,53 @@ class EsEssDailyReport:
                 "Current Auto mode is not accompanied by CommandAuthorityOk=1.",
             )
 
+        if self.settings.site_current_source == "Shelly3EMGen3":
+            diagnostics_status = dbus.get(
+                "/SiteCurrentSourceDiagnosticsStatus"
+            )
+            rssi_text = dbus.get("/SiteCurrentSourceWifiRssi")
+            if diagnostics_status not in (None, "unavailable", "Healthy"):
+                self.add(
+                    "ATTENTION",
+                    "current Shelly network health",
+                    "The current read-only Shelly health snapshot is {0}: {1}.".format(
+                        diagnostics_status,
+                        dbus.get("/SiteCurrentSourceDiagnosticsError", ""),
+                    ),
+                )
+            elif diagnostics_status == "Healthy" and rssi_text not in (
+                None,
+                "unavailable",
+                "-1",
+            ):
+                try:
+                    rssi = float(rssi_text)
+                except (TypeError, ValueError):
+                    self.add(
+                        "ATTENTION",
+                        "current Shelly network health",
+                        "The current Shelly Wi-Fi RSSI diagnostic is malformed.",
+                    )
+                else:
+                    status = "PASS" if rssi > -75 else "ATTENTION"
+                    quality = "usable" if status == "PASS" else "weak"
+                    self.add(
+                        status,
+                        "current Shelly network health",
+                        "Current sanitized Shelly Wi-Fi RSSI is {0:.1f} dBm ({1}); "
+                        "channel={2}, RPC latency={3} ms. This snapshot does not "
+                        "identify the network and is not charging authority.".format(
+                            rssi,
+                            quality,
+                            dbus.get(
+                                "/SiteCurrentSourceWifiChannel", "unavailable"
+                            ),
+                            dbus.get(
+                                "/SiteCurrentSourceRpcLatency", "unavailable"
+                            ),
+                        ),
+                    )
+
     def check_commissioning_profile(self) -> None:
         services = {name.lower() for name in self.settings.enabled_services}
         if "froniuswattpilot" not in services:
@@ -2156,6 +2653,49 @@ class EsEssDailyReport:
                 "No grid, site-current, stale-telemetry, battery-assist-timeout, or authority-block intervention was observed.",
             )
 
+    def check_site_current_source_reliability(self) -> None:
+        outages = self.site_current_source_outages
+        if not outages:
+            self.add(
+                "INFO",
+                "site-current source reliability",
+                "No paired site-current source outage was observed in the available transition evidence.",
+            )
+            return
+
+        recovered = [outage for outage in outages if outage.recovery is not None]
+        unresolved = [outage for outage in outages if outage.recovery is None]
+        reason_counts: dict[str, int] = {}
+        for outage in outages:
+            reason_counts[outage.reason_class] = (
+                reason_counts.get(outage.reason_class, 0) + 1
+            )
+        reasons = ", ".join(
+            "{0}={1}".format(reason, count)
+            for reason, count in sorted(reason_counts.items())
+        )
+        total_seconds = sum(outage.duration_seconds for outage in outages)
+        max_seconds = max(outage.duration_seconds for outage in outages)
+        charging_correlated = sum(
+            1 for outage in outages if outage.charging_correlated
+        )
+        self.add(
+            "ATTENTION",
+            "site-current source reliability",
+            "Observed {0} outage(s): {1} recovered and {2} unresolved; "
+            "{3:.1f}s total observed outage time, {4:.1f}s longest; "
+            "reason classes {5}; {6} correlated with positive charging power.".format(
+                len(outages),
+                len(recovered),
+                len(unresolved),
+                total_seconds,
+                max_seconds,
+                reasons,
+                charging_correlated,
+            ),
+            [outage.failure for outage in outages],
+        )
+
     def check_charging(self) -> None:
         if not self.charge_records:
             self.add(
@@ -2193,10 +2733,10 @@ class EsEssDailyReport:
             return
 
         invalid = [
-            record
-            for record, amps, _phase in self.current_adjustments
-            if amps < self.settings.min_current_per_phase
-            or amps > self.settings.max_current_per_phase
+            event.record
+            for event in self.current_adjustments
+            if event.target_a < self.settings.min_current_per_phase
+            or event.target_a > self.settings.max_current_per_phase
         ]
         if invalid:
             self.add(
@@ -2207,7 +2747,7 @@ class EsEssDailyReport:
                 invalid,
             )
         else:
-            amps = [value for _record, value, _phase in self.current_adjustments]
+            amps = [event.target_a for event in self.current_adjustments]
             self.add(
                 "PASS",
                 "current limits",
@@ -2224,41 +2764,117 @@ class EsEssDailyReport:
             )
             return
 
-        if self.rapid_current_reversals:
+        if self.actionable_current_reversals:
+            evidence = [
+                record
+                for pair in self.actionable_current_reversals
+                for record in pair
+            ]
             self.add(
                 "ATTENTION",
                 "current command reversals",
                 "Observed {0} current-command direction reversal(s) within {1} seconds. "
                 "Inspect whether short-lived allowance changes caused unnecessary charger "
                 "writes.".format(
-                    len(self.rapid_current_reversals),
+                    len(self.actionable_current_reversals),
                     CURRENT_REVERSAL_WINDOW_SECONDS,
                 ),
-                self.rapid_current_reversals,
+                evidence,
             )
         else:
             self.add(
                 "PASS",
                 "current command reversals",
-                "No rapid current-command direction reversal was observed.",
+                "No actionable rapid current-command direction reversal was observed.",
             )
 
-        if self.zero_power_current_adjustments:
+        if self.informational_current_reversals:
+            evidence = [
+                record
+                for pair in self.informational_current_reversals
+                for record in pair
+            ]
+            self.add(
+                "INFO",
+                "isolated current command reversals",
+                "Observed {0} isolated structured 1 A reversal(s) among {1} "
+                "dispatched current commands ({2:.2f}%). They remain visible but "
+                "do not meet the actionable chatter threshold.".format(
+                    len(self.informational_current_reversals),
+                    len(self.current_adjustments),
+                    len(self.informational_current_reversals)
+                    / len(self.current_adjustments)
+                    * 100.0,
+                ),
+                evidence,
+            )
+
+        if self.protective_current_reversals:
+            evidence = [
+                record
+                for pair in self.protective_current_reversals
+                for record in pair
+            ]
+            self.add(
+                "INFO",
+                "protective current reversals",
+                "Observed {0} rapid direction reversal(s) whose reducing command had an "
+                "explicit protective or transition reason. They remain visible but do not "
+                "count as current-command chatter.".format(
+                    len(self.protective_current_reversals)
+                ),
+                evidence,
+            )
+
+        if self.unexpected_zero_power_current_adjustments:
             self.add(
                 "ATTENTION",
                 "zero-power current commands",
                 "Observed {0} changed-current command(s) while the most recent read-only "
-                "Wattpilot telemetry reported no material charging power. Startup and phase "
-                "transitions may be valid explanations; inspect the cited records.".format(
-                    len(self.zero_power_current_adjustments)
+                "Wattpilot telemetry reported no material charging power without a recognized "
+                "start or phase-transition reason. Inspect the cited records.".format(
+                    len(self.unexpected_zero_power_current_adjustments)
                 ),
-                self.zero_power_current_adjustments,
+                self.unexpected_zero_power_current_adjustments,
             )
         else:
             self.add(
                 "PASS",
                 "zero-power current commands",
-                "No changed-current command was correlated with recent zero-power telemetry.",
+                (
+                    "No unexplained changed-current command was correlated with recent "
+                    "zero-power telemetry."
+                    if (
+                        self.expected_zero_power_current_adjustments
+                        or self.protective_zero_power_current_adjustments
+                    )
+                    else "No changed-current command was correlated with recent zero-power "
+                    "telemetry."
+                ),
+            )
+
+        if self.expected_zero_power_current_adjustments:
+            self.add(
+                "INFO",
+                "expected zero-power setup commands",
+                "Observed {0} changed-current command(s) at zero power with an explicit "
+                "Auto/Eco start or phase-transition reason. Wattpilot transactions set phase "
+                "and current before charging power is expected.".format(
+                    len(self.expected_zero_power_current_adjustments)
+                ),
+                self.expected_zero_power_current_adjustments,
+            )
+
+        if self.protective_zero_power_current_adjustments:
+            self.add(
+                "INFO",
+                "protective zero-power current reductions",
+                "Observed {0} structured site-current command(s) that reduced the "
+                "reported setpoint while charging power was zero. Protective reductions "
+                "remain permitted before measured power appears.".format(
+                    len(self.protective_zero_power_current_adjustments)
+                ),
+                self.protective_zero_power_current_adjustments,
             )
 
         if self.guarded_current_noops:
@@ -2325,7 +2941,7 @@ class EsEssDailyReport:
             )
 
         command_records = [record for record, _stable in self.start_records]
-        command_records.extend(record for record, _amps, _phase in self.current_adjustments)
+        command_records.extend(event.record for event in self.current_adjustments)
         command_records.extend(
             action.record for action in self.phase_actions if action.target_phase == 3
         )
@@ -2388,6 +3004,88 @@ class EsEssDailyReport:
         return [lockout]
 
     def check_allowance_grace(self) -> None:
+        if self.allowance_grace_event_errors:
+            self.add(
+                "WARN",
+                "allowance drop grace evidence",
+                "Malformed or unsupported structured allowance-grace event(s) were ignored.",
+                self.allowance_grace_event_errors,
+            )
+
+        if self.allowance_grace_events:
+            pending: Optional[AllowanceGraceEvent] = None
+            passed: list[LogRecord] = []
+            premature: list[LogRecord] = []
+            unresolved: list[LogRecord] = []
+            mismatched: list[LogRecord] = []
+            outcomes: dict[str, int] = {}
+
+            for event in self.allowance_grace_events:
+                if event.configured_seconds != self.settings.allowance_drop_grace_seconds:
+                    mismatched.append(event.record)
+                if event.event == "started":
+                    if pending is not None:
+                        unresolved.append(pending.record)
+                    pending = event
+                    continue
+
+                if pending is None:
+                    unresolved.append(event.record)
+                    continue
+
+                outcome = event.outcome or "unknown"
+                outcomes[outcome] = outcomes.get(outcome, 0) + 1
+                if (
+                    outcome in {"phase_down", "stop"}
+                    and event.elapsed_seconds is not None
+                    and event.elapsed_seconds + 0.001 < pending.configured_seconds
+                ):
+                    premature.extend([pending.record, event.record])
+                else:
+                    passed.extend([pending.record, event.record])
+                pending = None
+
+            if pending is not None:
+                unresolved.append(pending.record)
+
+            if mismatched:
+                self.add(
+                    "WARN",
+                    "allowance drop grace configuration",
+                    "Structured allowance-grace duration disagreed with the selected configuration.",
+                    mismatched,
+                )
+            if premature:
+                self.add(
+                    "FAIL",
+                    "allowance drop grace",
+                    "A structured phase-down or stop outcome occurred before the configured "
+                    "allowance grace elapsed.",
+                    premature,
+                )
+            if unresolved:
+                self.add(
+                    "WARN",
+                    "allowance drop grace",
+                    "One or more structured allowance-grace starts or outcomes could not be paired.",
+                    unresolved,
+                )
+            if passed:
+                outcome_summary = ", ".join(
+                    "{0}={1}".format(name, outcomes[name])
+                    for name in sorted(outcomes)
+                )
+                self.add(
+                    "PASS",
+                    "allowance drop grace",
+                    "Validated {0} structured allowance-grace outcome(s): {1}.".format(
+                        len(passed) // 2,
+                        outcome_summary,
+                    ),
+                    passed,
+                )
+            return
+
         if not self.grace_starts:
             zero_three_phase = [
                 event
@@ -2922,7 +3620,7 @@ class EsEssDailyReport:
             record for record, _stable_seconds in self.start_records
         ]
         auto_control_records.extend(
-            record for record, _amps, _phase in self.current_adjustments
+            event.record for event in self.current_adjustments
         )
         auto_control_records.extend(action.record for action in self.phase_actions)
         auto_control_records.extend(
@@ -3221,6 +3919,13 @@ class EsEssDailyReport:
                 and not partial_start
                 and not partial_end
             )
+            sampled_energy_complete = bool(
+                starts
+                and summaries
+                and not partial_start
+                and not partial_end
+                and gap_seconds == 0
+            )
             counter_reset_count = int(
                 max(
                     0,
@@ -3296,15 +4001,20 @@ class EsEssDailyReport:
                 stop_reason = self._stop_reason(stop_record) or stop_reason
             if not stop_reason:
                 stop_reason = "not observable in selected window"
-            current_values = []
-            for key in ("current_min_a", "current_max_a"):
-                value = final_payload.get(key)
-                try:
-                    parsed = float(value)
-                except (TypeError, ValueError):
-                    continue
-                if parsed == parsed and abs(parsed) != float("inf"):
-                    current_values.append(int(parsed) if parsed.is_integer() else parsed)
+            current_values = [
+                event.target_a
+                for event in self.current_adjustments
+                if start <= event.record.timestamp <= end
+            ]
+            confirmed_phase_switches = [
+                "{0} -> {1}-phase telemetry confirmed".format(
+                    record.timestamp.isoformat(), phase
+                )
+                for record, phase in self.phase_confirmations
+                if start <= record.timestamp <= end
+            ]
+            if confirmed_phase_switches:
+                phase_switches = confirmed_phase_switches
             rare = sorted(
                 {
                     int(data["status"])
@@ -3420,10 +4130,11 @@ class EsEssDailyReport:
                     reconciliation_error_percent=reconciliation_percent,
                     partial_start=partial_start,
                     partial_end=partial_end,
+                    sampled_energy_complete=sampled_energy_complete,
                     evidence_complete=(
                         counter_complete
                         and counter_reset_count == 0
-                        and gap_seconds == 0
+                        and sampled_energy_complete
                     ),
                 )
             )
@@ -3472,9 +4183,9 @@ class EsEssDailyReport:
                     if start <= _record.timestamp <= end
                 }
                 | {
-                    phase
-                    for _record, _amps, phase in self.current_adjustments
-                    if start <= _record.timestamp <= end
+                    event.phase
+                    for event in self.current_adjustments
+                    if start <= event.record.timestamp <= end
                 }
                 | {
                     event.phase
@@ -3483,9 +4194,9 @@ class EsEssDailyReport:
                 }
             )
             currents = [
-                amps
-                for record, amps, _phase in self.current_adjustments
-                if start <= record.timestamp <= end
+                event.target_a
+                for event in self.current_adjustments
+                if start <= event.record.timestamp <= end
             ]
             switches = [
                 f"{action.record.timestamp.isoformat()} -> {action.target_phase} phase ({action.reason})"
@@ -3634,27 +4345,51 @@ class EsEssDailyReport:
             )
             return
 
-        incomplete = [session for session in sessions if not session.evidence_complete]
+        incomplete_counters = [
+            session for session in sessions if not session.counter_complete
+        ]
+        incomplete_sampled_energy = [
+            session for session in sessions if not session.sampled_energy_complete
+        ]
         resets = [session for session in sessions if session.counter_reset_count > 0]
         missing = [
             session for session in sessions if session.counter_missing_samples > 0
         ]
         gaps = [session for session in sessions if session.integration_gap_seconds > 0]
-        if incomplete:
+        if incomplete_counters:
             self.add(
                 "WARN",
-                "session statistics completeness",
-                "{0} of {1} structured connection session(s) have partial, reset, restart, or sampled-power-gap evidence; their estimated splits or counter energy are not labelled complete.".format(
-                    len(incomplete), len(sessions)
+                "session counter completeness",
+                "{0} of {1} structured connection session(s) lack complete authoritative "
+                "Wattpilot counter evidence.".format(
+                    len(incomplete_counters), len(sessions)
                 ),
             )
         else:
             self.add(
                 "PASS",
-                "session statistics completeness",
-                "All {0} structured connection session(s) have continuous counter and sampled-power evidence.".format(
+                "session counter completeness",
+                "All {0} structured connection session(s) have complete authoritative "
+                "Wattpilot counter evidence.".format(
                     len(sessions)
                 ),
+            )
+        if incomplete_sampled_energy:
+            self.add(
+                "WARN",
+                "sampled energy completeness",
+                "{0} of {1} structured connection session(s) have partial boundaries or "
+                "sampled-power gaps. Authoritative counter totals may still be complete, "
+                "but per-mode and per-phase energy remain estimates.".format(
+                    len(incomplete_sampled_energy), len(sessions)
+                ),
+            )
+        else:
+            self.add(
+                "PASS",
+                "sampled energy completeness",
+                "All {0} structured connection session(s) have continuous sampled-power "
+                "evidence for their estimated energy splits.".format(len(sessions)),
             )
         if resets:
             self.add(
@@ -3681,6 +4416,138 @@ class EsEssDailyReport:
                 ),
             )
 
+    def check_resume_attempts(self) -> None:
+        if self.resume_event_errors:
+            self.add(
+                "WARN",
+                "vehicle resume evidence",
+                "Malformed or unsupported structured Wattpilot resume event(s) were ignored.",
+                self.resume_event_errors,
+            )
+
+        failures = [
+            record
+            for record, payload in self.resume_event_records
+            if payload.get("event") == "attempt_failed"
+        ]
+        successes = [
+            record
+            for record, payload in self.resume_event_records
+            if payload.get("event") == "attempt_succeeded"
+        ]
+        if failures:
+            self.add(
+                "ATTENTION",
+                "vehicle resume attempts",
+                "{0} accepted start/resume attempt(s) produced no confirmed charging power and entered bounded retry backoff; {1} later attempt(s) succeeded in the selected evidence.".format(
+                    len(failures), len(successes)
+                ),
+                failures,
+            )
+        elif successes:
+            self.add(
+                "PASS",
+                "vehicle resume attempts",
+                "{0} accepted start/resume attempt(s) reached confirmed charging power without a recorded failure.".format(
+                    len(successes)
+                ),
+                successes,
+            )
+        else:
+            self.add(
+                "NOT_OBSERVED",
+                "vehicle resume attempts",
+                "No structured vehicle start/resume outcome was observed.",
+            )
+
+    def _snapshot_integer(self, path: str) -> Optional[int]:
+        value = self.current_snapshot.dbus_values.get(path)
+        if value in (None, "", "unavailable"):
+            return None
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+    def configuration_recommendations(self) -> list[str]:
+        recommendations: list[str] = []
+        native_minimum = self._snapshot_integer(
+            "/VehicleCompatibility/NativeMinimumCurrent"
+        )
+        if (
+            native_minimum is not None
+            and native_minimum >= 6
+            and self.settings.min_current_per_phase < native_minimum
+        ):
+            recommendations.append(
+                "Set [FroniusWattpilot] MinCurrentPerPhase to at least {0} A so the configuration matches the current native vehicle-profile floor; the controller already enforces the higher effective minimum.".format(
+                    native_minimum
+                )
+            )
+
+        native_phase_wait = max(
+            value
+            for value in (
+                self._snapshot_integer(
+                    "/VehicleCompatibility/MinimumPhaseWishSwitchTimeSeconds"
+                ),
+                self._snapshot_integer(
+                    "/VehicleCompatibility/MinimumPhaseToggleWaitTimeSeconds"
+                ),
+                0,
+            )
+            if value is not None
+        )
+        if (
+            self.settings.vehicle_phase_capability.lower() == "automatic"
+            and native_phase_wait > self.settings.min_phase_switch_seconds
+        ):
+            recommendations.append(
+                "Increase [FroniusWattpilot] MinPhaseSwitchSeconds to at least {0} seconds to match the currently reported native vehicle-profile phase-switch interval.".format(
+                    native_phase_wait
+                )
+            )
+
+        failure_events = [
+            payload
+            for _record, payload in self.resume_event_records
+            if payload.get("event") == "attempt_failed"
+        ]
+        snapshot_failure_count = self._snapshot_integer("/Resume/FailureCount") or 0
+        if failure_events or snapshot_failure_count > 0:
+            allow_pause = self._snapshot_integer(
+                "/VehicleCompatibility/AllowChargePause"
+            )
+            unplug_short = self._snapshot_integer(
+                "/VehicleCompatibility/SimulateUnpluggingShort"
+            )
+            unplug_always = self._snapshot_integer(
+                "/VehicleCompatibility/SimulateUnpluggingAlways"
+            )
+            if allow_pause == 0:
+                recommendations.append(
+                    "Review the selected Solar.wattpilot vehicle profile and enable charge pauses if that profile exposes the option; resume failures were observed while native charge pauses were disabled. Do not change the main charging-current control for this recommendation."
+                )
+            if unplug_short == 0 and unplug_always == 0:
+                recommendations.append(
+                    "Review the selected Solar.wattpilot vehicle profile and enable its simulated-unplugging compatibility option if available; resume failures were observed while both reported simulated-unplugging modes were disabled."
+                )
+
+            native_pause_seconds = self._snapshot_integer(
+                "/VehicleCompatibility/MinimumChargePauseDurationSeconds"
+            )
+            if (
+                native_pause_seconds is not None
+                and native_pause_seconds > self.settings.resume_retry_backoff_seconds
+            ):
+                recommendations.append(
+                    "Increase [FroniusWattpilot] ResumeRetryBackoffSeconds to at least {0} seconds so retries do not precede the currently reported native minimum charge-pause duration.".format(
+                        native_pause_seconds
+                    )
+                )
+
+        return recommendations
+
     def run(self) -> AuditResult:
         self.collect()
         self.check_inputs()
@@ -3696,10 +4563,12 @@ class EsEssDailyReport:
         self.check_battery_assist()
         self.check_grid_import()
         self.check_authority_and_manual()
+        self.check_site_current_source_reliability()
         self.check_safety_interventions()
         rare_statuses = self.build_rare_statuses()
         sessions = self.build_sessions()
         self.check_session_statistics(sessions)
+        self.check_resume_attempts()
 
         statuses = {finding.status for finding in self.findings}
         if "FAIL" in statuses:
@@ -3732,28 +4601,127 @@ class EsEssDailyReport:
                     if event.watts <= 0 and event.phase == 3
                 ]
             ),
-            "allowance_grace_events": len(self.grace_starts),
+            "allowance_grace_events": (
+                len(
+                    [
+                        event
+                        for event in self.allowance_grace_events
+                        if event.event == "started"
+                    ]
+                )
+                if self.allowance_grace_events
+                else len(self.grace_starts)
+            ),
+            "allowance_grace_structured_outcomes": len(
+                [
+                    event
+                    for event in self.allowance_grace_events
+                    if event.event == "resolved"
+                ]
+            ),
+            "allowance_grace_event_errors": len(
+                self.allowance_grace_event_errors
+            ),
             "phase_commands": len(self.phase_actions),
             "phase_confirmations": len(self.phase_confirmations),
             "current_adjustments": len(self.current_adjustments),
+            "structured_current_commands": len(
+                self.structured_current_commands
+            ),
+            "current_command_event_errors": len(
+                self.current_command_event_errors
+            ),
             "current_adjustments_per_hour": round(
                 len(self.current_adjustments) * 3600.0 / evidence_seconds, 3
             ),
             "rapid_current_reversals": len(self.rapid_current_reversals),
+            "rapid_current_reversals_actionable": len(
+                self.actionable_current_reversals
+            ),
+            "rapid_current_reversals_informational": len(
+                self.informational_current_reversals
+            ),
             "zero_power_current_adjustments": len(
-                self.zero_power_current_adjustments
+                self.expected_zero_power_current_adjustments
+                + self.protective_zero_power_current_adjustments
+                + self.unexpected_zero_power_current_adjustments
+            ),
+            "zero_power_current_adjustments_expected": len(
+                self.expected_zero_power_current_adjustments
+            ),
+            "zero_power_current_adjustments_unexpected": len(
+                self.unexpected_zero_power_current_adjustments
+            ),
+            "zero_power_current_adjustments_protective": len(
+                self.protective_zero_power_current_adjustments
             ),
             "guarded_current_noops": len(self.guarded_current_noops),
             "battery_assist_samples": len(self.assist_samples),
             "grid_samples": len(self.grid_samples),
             "service_initializations": len(self.restart_records),
             "wattpilot_reconnect_events": len(self.reconnect_records),
-            "wattpilot_transport_timeouts": len(self.transport_timeout_records),
+            "wattpilot_transport_timeouts": len(
+                [
+                    event
+                    for event, kind in self.transport_interruption_records
+                    if kind == "connection timed out"
+                ]
+            ),
             "wattpilot_transport_timeouts_recovered": len(
-                self.resolved_transport_timeouts
+                [
+                    event
+                    for event, _authentication, kind
+                    in self.resolved_transport_interruptions
+                    if kind == "connection timed out"
+                ]
+            ),
+            "wattpilot_transport_interruptions": len(
+                self.transport_interruption_records
+            ),
+            "wattpilot_transport_interruptions_recovered": len(
+                self.resolved_transport_interruptions
             ),
             "site_current_source_grace_events": len(
                 self.site_current_source_grace_events
+            ),
+            "site_current_source_outages": len(
+                self.site_current_source_outages
+            ),
+            "site_current_source_outages_recovered": len(
+                [
+                    outage
+                    for outage in self.site_current_source_outages
+                    if outage.recovery is not None
+                ]
+            ),
+            "site_current_source_outages_unresolved": len(
+                [
+                    outage
+                    for outage in self.site_current_source_outages
+                    if outage.recovery is None
+                ]
+            ),
+            "site_current_source_outage_seconds": round(
+                sum(
+                    outage.duration_seconds
+                    for outage in self.site_current_source_outages
+                ),
+                3,
+            ),
+            "site_current_source_longest_outage_seconds": round(
+                max(
+                    (
+                        outage.duration_seconds
+                        for outage in self.site_current_source_outages
+                    ),
+                    default=0.0,
+                ),
+                3,
+            ),
+            "site_current_source_charging_correlated_outages": sum(
+                1
+                for outage in self.site_current_source_outages
+                if outage.charging_correlated
             ),
             "charging_sessions": len(sessions),
             "connection_sessions": (
@@ -3764,6 +4732,15 @@ class EsEssDailyReport:
             ),
             "complete_energy_sessions": len(
                 [session for session in sessions if session.counter_complete]
+            ),
+            "complete_counter_sessions": len(
+                [session for session in sessions if session.counter_complete]
+            ),
+            "complete_sampled_energy_sessions": len(
+                [session for session in sessions if session.sampled_energy_complete]
+            ),
+            "complete_combined_evidence_sessions": len(
+                [session for session in sessions if session.evidence_complete]
             ),
             "complete_session_counter_kwh": (
                 sum(
@@ -3797,8 +4774,29 @@ class EsEssDailyReport:
             "rare_status_occurrences": sum(
                 summary.occurrences for summary in rare_statuses
             ),
+            "resume_attempts": len(
+                [
+                    payload
+                    for _record, payload in self.resume_event_records
+                    if payload.get("event") == "attempt_started"
+                ]
+            ),
+            "resume_successes": len(
+                [
+                    payload
+                    for _record, payload in self.resume_event_records
+                    if payload.get("event") == "attempt_succeeded"
+                ]
+            ),
+            "resume_failures": len(
+                [
+                    payload
+                    for _record, payload in self.resume_event_records
+                    if payload.get("event") == "attempt_failed"
+                ]
+            ),
         }
-        recommendations: list[str] = []
+        recommendations = self.configuration_recommendations()
         if overall == "ANOMALY":
             recommendations.append(
                 "Inspect the cited raw records before relying on unattended Auto/Eco charging."
@@ -3807,6 +4805,16 @@ class EsEssDailyReport:
             if self.audit_input.partial_window:
                 recommendations.append(
                     "Use this partial result for current evidence only, then rerun with --date yesterday after the calendar day closes."
+                )
+            elif (
+                sessions
+                and all(session.counter_complete for session in sessions)
+                and any(not session.sampled_energy_complete for session in sessions)
+            ):
+                recommendations.append(
+                    "Authoritative Wattpilot counter energy is complete; resolve the cited "
+                    "sampled-power gaps only if complete per-mode or per-phase estimates are "
+                    "required."
                 )
             else:
                 recommendations.append(
@@ -3913,6 +4921,8 @@ def render_human(result: AuditResult) -> str:
         f"{result.configuration.min_phase_switch_seconds} s",
         f"AllowanceFresh/DropGrace={result.configuration.allowance_fresh_seconds}/"
         f"{result.configuration.allowance_drop_grace_seconds} s",
+        f"ResumeRetryBackoff={result.configuration.resume_retry_backoff_seconds}.."
+        f"{result.configuration.resume_retry_backoff_max_seconds} s",
         "BatteryAssistMax={0:.0f} W/active phase/{1} s".format(
             result.configuration.battery_assist_max_shortfall_per_phase_w,
             result.configuration.battery_assist_max_seconds,
@@ -3950,7 +4960,7 @@ def render_human(result: AuditResult) -> str:
             f"source={session.source}"
         )
         phase_change_label = (
-            "observed phase-segment transitions"
+            "confirmed phase transitions"
             if session.source.startswith("structured")
             else "phase commands"
         )
@@ -4006,7 +5016,8 @@ def render_human(result: AuditResult) -> str:
             lines.append(
                 "  onboarding latency={0}; first start={1} ({2}, accepted={3}); "
                 "power range={4}; command rejections={5}; partial start/end={6}/{7}; "
-                "complete={8}".format(
+                "counter complete={8}; sampled energy complete={9}; combined evidence "
+                "complete={10}".format(
                     (
                         _format_duration(session.onboarding_latency_seconds)
                         if session.onboarding_latency_seconds is not None
@@ -4026,6 +5037,8 @@ def render_human(result: AuditResult) -> str:
                     session.command_rejections,
                     session.partial_start,
                     session.partial_end,
+                    session.counter_complete,
+                    session.sampled_energy_complete,
                     session.evidence_complete,
                 )
             )

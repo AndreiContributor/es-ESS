@@ -56,9 +56,13 @@ For the separate native-PV command-ownership investigation,
 `scripts/wattpilot-setting-capture.py` authenticates with the vehicle
 disconnected, blocks every `setValue` request, compares two full-status
 snapshots around one operator-controlled app setting change, and emits only
-redacted/fingerprinted property differences. The procedure and pass/fail gates
-live in `docs/wattpilot-command-ownership-validation.md`. This is evidence
-collection only and does not widen Auto/Eco command authority.
+redacted/fingerprinted property differences. Its separate
+`--native-vehicle-profile` mode emits only an allowlisted, typed candidate
+snapshot and explicitly marks every mapping as unvalidated until reversible
+firmware-42.5 evidence or a separately documented conservative protocol rule
+exists. The procedure and pass/fail gates live in
+`docs/wattpilot-command-ownership-validation.md`. This is evidence collection
+only and does not widen Auto/Eco command authority.
 
 ## Module Responsibilities
 
@@ -126,6 +130,25 @@ they may update local transport state and emit registered events, but reconnect
 ownership stays in the connection worker loop rather than recursively entering
 `run_forever()` from a close callback.
 
+### `WattpilotVehicleCompatibility.py`
+
+`WattpilotVehicleCompatibility.py` is the command-free parser for the
+allowlisted firmware-42.5 vehicle-compatibility observations.
+
+It owns:
+
+- Strict type/range parsing of the native minimum current, charge-pause,
+  simulated-unplugging, phase-timing, and raw model-status fields.
+- Explicit complete, partial, invalid, and unavailable diagnostics, including
+  missing and invalid field names.
+- The effective minimum-current calculation that takes the greater of the
+  configured minimum and valid native `mca`, then rejects a result above the
+  effective maximum.
+
+It must not own Wattpilot writes, vehicle identity, controller timers, D-Bus or
+MQTT publication, or start/resume decisions. A missing optional profile field
+remains visible as unavailable; the parser does not invent a setting value.
+
 ### `FroniusWattpilot.py`
 
 `FroniusWattpilot.py` is the current Wattpilot integration and controller
@@ -174,6 +197,13 @@ It owns:
   authentication, HTTP/device, and payload failures bypass grace. Recovery is
   logged once and positive demand resumes only from the normal controller
   cycle after fresh telemetry and site-current recovery.
+- An independent 60-second Shelly diagnostics worker uses a separate HTTP
+  session for read-only `WiFi.GetStatus` and `Sys.GetStatus` requests. It
+  allowlists Wi-Fi state/RSSI/channel and system uptime/free-memory fields,
+  measures RPC latency, and excludes SSID, BSSID/MAC, IP, host, credentials,
+  and raw payloads. Diagnostic failure changes only diagnostic paths: it never
+  updates the safety snapshot, freshness, allocation eligibility, recovery
+  timers, or a Wattpilot command.
 - Optional battery-assist rules for an already-running charge, delegating
   assist eligibility, timeout, lockout, and recovery decisions to
   `WattpilotSafetyDecisions.py`.
@@ -226,6 +256,15 @@ It owns:
   acceptance separately from transport dispatch. Missing, malformed,
   connection-reset, or different telemetry dispatches through the existing
   `Wattpilot.set_power()` boundary. Zero-current commands are not deduplicated.
+  The helper emits versioned JSON after `Wattpilot current command:` with the
+  sanitized target, previously reported setpoint, active phase count, reason,
+  control mode, and dispatched/rejected/confirmed-no-op outcome. Logging is
+  evidence only and does not affect acceptance or dispatch.
+- Versioned allowance-stop-grace transition evidence. The controller logs one
+  sanitized start and one resolution outcome for recovery, continuation,
+  phase-down, normal stop, or a higher-priority cancellation. This evidence
+  does not change the existing timer, branch selection, command order, or
+  Manual-mode boundary.
 - Normal same-phase PV current selection captures the allowance value,
   validity, and update timestamp atomically once for the adjustment decision.
   `WattpilotPhaseDecisions.py` evaluates the command-free upward-stability
@@ -235,6 +274,22 @@ It owns:
   guarded phase, current, and Start commands in that order and begins public
   transition grace only after all three are accepted. A rejection leaves the
   session stopped and rebuilds the stable-PV interval.
+- Native minimum-current enforcement. Every positive Auto/Eco allowance,
+  start, and current calculation uses the greater of the configured minimum
+  and the valid firmware-reported `mca` floor. Missing, invalid, or
+  contradictory native minimum telemetry blocks positive commands in the
+  production controller; zero current and Force Off remain available.
+- Accepted Auto/Eco activation outcome tracking. A start must reach the
+  configured fraction of expected measured power within transition grace.
+  Firmware-reported simulated-unplugging or minimum-pause model states may
+  extend that deadline only by their validated read-only duration. Failure
+  clears current before Force Off and applies bounded exponential retry
+  backoff. Manual selection and confirmed disconnect cancel/reset this state.
+  Structured resume records contain no vehicle identity. The public resume
+  state reports `Charging` only for confirmed Auto/Eco charging; Manual power
+  remains outside this observer state, and an ordinary guarded Auto/Eco stop
+  returns it to `Idle` while preserving connection history and any active
+  backoff.
 - Running phase-transition dispatch. The controller may first reduce current
   and wait for fresh Wattpilot telemetry, but it changes remembered phase state
   and publishes a `Switching to ...` service message only after `set_phases()`
@@ -735,8 +790,17 @@ Future Wattpilot changes must preserve these invariants:
   expires. Explicit grid fallback follows the same minimum-current-first rule.
   Once the applicable fallback ends, one-phase continuation PV authorizes
   phase-down; otherwise Auto/Eco stops.
-- Current limits must respect configured per-phase bounds and the
-  Wattpilot-reported effective limit.
+- Current limits must respect configured per-phase bounds, the valid native
+  minimum-current floor, and the Wattpilot-reported effective maximum. Missing
+  or invalid native minimum telemetry fails positive Auto/Eco control closed.
+- Native vehicle-profile compatibility fields are read-only. They may inform
+  diagnostics, the conservative minimum-current floor, and the deadline of an
+  already accepted activation, but es-ESS must not write or silently reconfigure
+  them.
+- A start/resume accepted by the protocol is not proof of charging. If measured
+  power never confirms activation, Auto/Eco must clear the retained current,
+  Force Off, and wait through bounded retry backoff. Manual mode remains
+  command-free apart from the documented one-time constraint release.
 - Wattpilot minimum, allocation increment, maximum request, and
   allowance-to-current conversion must share one conservative canonical
   integer watts-per-ampere step for each active phase interval. A higher live
@@ -757,6 +821,9 @@ Future Wattpilot changes must preserve these invariants:
   headroom, and one-phase mapping contract instead of assuming the Venus system
   is the selected safety source, calculate durations and energy from observed
   timestamps, and exclude long gaps rather than extrapolating missing samples.
+  Its command summary prefers dispatched structured final-boundary events,
+  deduplicates matching legacy prose within one second, and retains rejected or
+  malformed structured evidence without treating it as a dispatched command.
   The daily report may invoke only allowlisted `svstat` and D-Bus `GetValue`
   snapshots. Historical dates must stop unless APP_DEBUG (or more verbose)
   covers the complete requested window. A current-day partial report may
@@ -765,7 +832,23 @@ Future Wattpilot changes must preserve these invariants:
   than infer a successful safety action from silence. Progress output belongs
   on stderr so JSON stdout remains machine-readable. Snapshot commands must be
   time-bounded and may skip remaining paths after repeated timeouts without
-  changing the historical findings.
+  changing the historical findings. Configuration recommendations are advisory
+  only and must be derived from sanitized configuration, read-only runtime
+  diagnostics, and structured controller events; the report never applies a
+  recommendation. For changed-current and reversal analysis it prefers
+  dispatched final-boundary events and deduplicates matching legacy prose
+  within one second; unmatched legacy evidence remains usable across mixed
+  deployment windows. Structured command reasons may classify recognized
+  zero-power start/phase transactions and proven protective reductions
+  separately, while missing/legacy reasons remain conservative. Isolated
+  structured 1 A reversals may be informational only under a bounded count and
+  rate; the total remains visible. Structured allowance-grace outcomes take
+  precedence over prose inference. Authoritative counter completeness remains
+  separate from sampled energy-split completeness. A WebSocket timeout or
+  peer-reset error is recovered evidence only when authentication follows
+  within the bounded window before any charger-control action. Structured
+  connection summaries correlate dispatched commands and confirmed phase
+  transitions without changing the observer or command boundaries.
 - Session statistics remain observer-only in both Manual and Auto/Eco. They may
   record the first attempted start and whether the existing command sequence
   accepted it, but they must never call a command, alter dispatch selection,

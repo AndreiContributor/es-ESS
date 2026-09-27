@@ -5,6 +5,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import logging
 import sys
 import tempfile
 import threading
@@ -113,6 +114,51 @@ class WattpilotSettingCaptureTests(unittest.TestCase):
         with self.assertRaisesRegex(self.capture.CaptureError, "not ready"):
             self.capture.validate_capture_state(client)
 
+    def test_native_vehicle_profile_is_allowlisted_typed_and_command_free(self):
+        client = FakeClient()
+        client.allProps.update(
+            {
+                "mca": 7,
+                "acp": True,
+                "mci": 0,
+                "mcpd": 60000,
+                "mcpea": None,
+                "fmt": 300000,
+                "su": False,
+                "sua": False,
+                "sumd": 15000,
+                "mpwst": 120000,
+                "mptwt": 600000,
+                "modelStatus": 4,
+                "sse": "private-serial",
+            }
+        )
+
+        report = self.capture.capture_native_vehicle_profile(client)
+
+        self.assertTrue(report["complete"])
+        self.assertEqual(
+            report["mapping_status"],
+            "candidate_only_requires_reversible_validation",
+        )
+        fields = {item["key"]: item for item in report["fields"]}
+        self.assertEqual(fields["mca"]["value"], 7)
+        self.assertEqual(fields["mcpd"]["unit"], "ms")
+        self.assertTrue(fields["mcpea"]["type_valid"])
+        self.assertNotIn("sse", fields)
+        self.assertNotIn("private-serial", json.dumps(report))
+
+    def test_native_vehicle_profile_reports_missing_and_invalid_candidates(self):
+        client = FakeClient()
+        client.allProps.update({"mca": 5, "acp": "true"})
+
+        report = self.capture.capture_native_vehicle_profile(client)
+
+        self.assertFalse(report["complete"])
+        self.assertIn("mca", report["invalid_keys"])
+        self.assertIn("acp", report["invalid_keys"])
+        self.assertIn("mci", report["missing_keys"])
+
     def test_capture_requests_status_and_returns_redacted_reversible_diff(self):
         event = threading.Event()
         client = FakeClient(event)
@@ -162,6 +208,16 @@ class WattpilotSettingCaptureTests(unittest.TestCase):
 
         self.assertEqual(host, "192.0.2.1")
         self.assertEqual(password, "p%ssword")
+
+    def test_capture_suppresses_dependency_raw_frame_logging(self):
+        websocket_logger = logging.getLogger("websocket")
+        previous_level = websocket_logger.level
+        try:
+            websocket_logger.setLevel(logging.NOTSET)
+            self.capture._ensure_logging_compatibility()
+            self.assertEqual(websocket_logger.level, logging.CRITICAL)
+        finally:
+            websocket_logger.setLevel(previous_level)
 
     def test_run_capture_installs_deny_all_guard_and_disconnects(self):
         instances = []
@@ -233,6 +289,68 @@ class WattpilotSettingCaptureTests(unittest.TestCase):
         self.assertFalse(client.disconnect_auto_reconnect)
         self.assertEqual(report["changed_property_count"], 1)
 
+    def test_native_profile_run_installs_deny_all_guard_and_disconnects(self):
+        instances = []
+        capture_fields = self.capture.NATIVE_VEHICLE_FIELD_CANDIDATES
+
+        class FakeEventType:
+            WP_FULL_STATUS_FINISHED = object()
+
+        class FakeLiveClient(FakeClient):
+            def __init__(self, host, password):
+                super().__init__()
+                self.host = host
+                self.password = password
+                self.handler = None
+                self.command_guard = None
+                self.disconnected = False
+                for key, (_name, _unit, kind) in capture_fields.items():
+                    if kind == "bool":
+                        self.allProps[key] = False
+                    elif kind == "optional_milliseconds":
+                        self.allProps[key] = None
+                    elif kind == "current":
+                        self.allProps[key] = 6
+                    else:
+                        self.allProps[key] = 0
+                instances.append(self)
+
+            def set_command_guard(self, callback):
+                self.command_guard = callback
+
+            def add_event_handler(self, _event_type, callback):
+                self.handler = callback
+
+            def connect(self):
+                self.handler({"type": FakeEventType.WP_FULL_STATUS_FINISHED})
+
+            def disconnect(self, auto_reconnect=False):
+                self.disconnected = True
+                self.disconnect_auto_reconnect = auto_reconnect
+
+        fake_wattpilot_module = types.ModuleType("Wattpilot")
+        fake_wattpilot_module.Event = FakeEventType
+        fake_wattpilot_module.Wattpilot = FakeLiveClient
+        fake_globals_module = types.ModuleType("Globals")
+
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.ini"
+            config_path.write_text(
+                "[FroniusWattpilot]\nHost=192.0.2.2\nPassword=secret\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                sys.modules,
+                {"Globals": fake_globals_module, "Wattpilot": fake_wattpilot_module},
+            ):
+                report = self.capture.run_native_profile_capture(config_path, 0.1)
+
+        client = instances[0]
+        self.assertFalse(client.command_guard("amp", 16))
+        self.assertTrue(client.disconnected)
+        self.assertFalse(client.disconnect_auto_reconnect)
+        self.assertTrue(report["complete"])
+
     def test_script_contains_no_state_changing_wattpilot_method_calls(self):
         forbidden_calls = {
             "pairInverter",
@@ -256,6 +374,15 @@ class WattpilotSettingCaptureTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 self.capture.parse_args(["--label", "test", "--timeout", "0"])
+
+    def test_capture_mode_is_required_and_native_profile_mode_parses(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                self.capture.parse_args([])
+
+        args = self.capture.parse_args(["--native-vehicle-profile"])
+        self.assertTrue(args.native_vehicle_profile)
+        self.assertIsNone(args.label)
 
 
 if __name__ == "__main__":

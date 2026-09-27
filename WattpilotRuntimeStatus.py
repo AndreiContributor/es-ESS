@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 import RuntimeCompatibility
 import WattpilotControlState as ControlStates
+import WattpilotVehicleCompatibility as VehicleCompatibility
 
 
 CONTROL_STATE_STOPPED = 0
@@ -79,6 +80,28 @@ RUNTIME_STATUS_DBUS_DEFAULTS = {
     "/ExpectedWattpilotFirmware": RuntimeCompatibility.VALIDATED_WATTPILOT_FIRMWARE,
     "/ActualWattpilotFirmware": "Unavailable",
     "/ValidatedWattpilotAppVersion": RuntimeCompatibility.VALIDATED_WATTPILOT_APP_VERSION,
+    "/VehicleCompatibility/Status": "Unavailable",
+    "/VehicleCompatibility/NativeMinimumCurrent": -1,
+    "/VehicleCompatibility/EffectiveMinimumCurrent": -1,
+    "/VehicleCompatibility/AllowChargePause": -1,
+    "/VehicleCompatibility/MinimumChargingIntervalSeconds": -1,
+    "/VehicleCompatibility/MinimumChargePauseDurationSeconds": -1,
+    "/VehicleCompatibility/MinimumChargePauseEndsAtMs": -1,
+    "/VehicleCompatibility/MinimumChargeTimeSeconds": -1,
+    "/VehicleCompatibility/SimulateUnpluggingShort": -1,
+    "/VehicleCompatibility/SimulateUnpluggingAlways": -1,
+    "/VehicleCompatibility/SimulateUnpluggingDurationSeconds": -1,
+    "/VehicleCompatibility/MinimumPhaseWishSwitchTimeSeconds": -1,
+    "/VehicleCompatibility/MinimumPhaseToggleWaitTimeSeconds": -1,
+    "/VehicleCompatibility/ModelStatusRaw": -1,
+    "/VehicleCompatibility/ModelStatusLiteral": "Unavailable",
+    "/VehicleCompatibility/MissingFields": "",
+    "/VehicleCompatibility/InvalidFields": "",
+    "/Resume/State": "Idle",
+    "/Resume/AttemptKind": "",
+    "/Resume/FailureCount": 0,
+    "/Resume/BackoffRemaining": 0,
+    "/Resume/FailureReason": "",
 }
 
 RUNTIME_STATUS_TOPIC_SUFFIXES = {
@@ -100,6 +123,28 @@ RUNTIME_STATUS_TOPIC_SUFFIXES = {
     "/ExpectedWattpilotFirmware": "ExpectedWattpilotFirmware",
     "/ActualWattpilotFirmware": "ActualWattpilotFirmware",
     "/ValidatedWattpilotAppVersion": "ValidatedWattpilotAppVersion",
+    "/VehicleCompatibility/Status": "VehicleCompatibility/Status",
+    "/VehicleCompatibility/NativeMinimumCurrent": "VehicleCompatibility/NativeMinimumCurrent",
+    "/VehicleCompatibility/EffectiveMinimumCurrent": "VehicleCompatibility/EffectiveMinimumCurrent",
+    "/VehicleCompatibility/AllowChargePause": "VehicleCompatibility/AllowChargePause",
+    "/VehicleCompatibility/MinimumChargingIntervalSeconds": "VehicleCompatibility/MinimumChargingIntervalSeconds",
+    "/VehicleCompatibility/MinimumChargePauseDurationSeconds": "VehicleCompatibility/MinimumChargePauseDurationSeconds",
+    "/VehicleCompatibility/MinimumChargePauseEndsAtMs": "VehicleCompatibility/MinimumChargePauseEndsAtMs",
+    "/VehicleCompatibility/MinimumChargeTimeSeconds": "VehicleCompatibility/MinimumChargeTimeSeconds",
+    "/VehicleCompatibility/SimulateUnpluggingShort": "VehicleCompatibility/SimulateUnpluggingShort",
+    "/VehicleCompatibility/SimulateUnpluggingAlways": "VehicleCompatibility/SimulateUnpluggingAlways",
+    "/VehicleCompatibility/SimulateUnpluggingDurationSeconds": "VehicleCompatibility/SimulateUnpluggingDurationSeconds",
+    "/VehicleCompatibility/MinimumPhaseWishSwitchTimeSeconds": "VehicleCompatibility/MinimumPhaseWishSwitchTimeSeconds",
+    "/VehicleCompatibility/MinimumPhaseToggleWaitTimeSeconds": "VehicleCompatibility/MinimumPhaseToggleWaitTimeSeconds",
+    "/VehicleCompatibility/ModelStatusRaw": "VehicleCompatibility/ModelStatusRaw",
+    "/VehicleCompatibility/ModelStatusLiteral": "VehicleCompatibility/ModelStatusLiteral",
+    "/VehicleCompatibility/MissingFields": "VehicleCompatibility/MissingFields",
+    "/VehicleCompatibility/InvalidFields": "VehicleCompatibility/InvalidFields",
+    "/Resume/State": "Resume/State",
+    "/Resume/AttemptKind": "Resume/AttemptKind",
+    "/Resume/FailureCount": "Resume/FailureCount",
+    "/Resume/BackoffRemaining": "Resume/BackoffRemaining",
+    "/Resume/FailureReason": "Resume/FailureReason",
 }
 
 _LOG = logging.getLogger(__name__)
@@ -127,6 +172,28 @@ class RuntimeStatusSnapshot:
     expected_wattpilot_firmware: str
     actual_wattpilot_firmware: str
     validated_wattpilot_app_version: str
+    vehicle_compatibility_status: str
+    native_minimum_current: int
+    effective_minimum_current: int
+    allow_charge_pause: int
+    minimum_charging_interval_seconds: int
+    minimum_charge_pause_duration_seconds: int
+    minimum_charge_pause_ends_at_ms: int
+    minimum_charge_time_seconds: int
+    simulate_unplugging_short: int
+    simulate_unplugging_always: int
+    simulate_unplugging_duration_seconds: int
+    minimum_phase_wish_switch_time_seconds: int
+    minimum_phase_toggle_wait_time_seconds: int
+    model_status_raw: int
+    model_status_literal: str
+    vehicle_compatibility_missing_fields: str
+    vehicle_compatibility_invalid_fields: str
+    resume_state: str
+    resume_attempt_kind: str
+    resume_failure_count: int
+    resume_backoff_remaining: int
+    resume_failure_reason: str
 
     def as_dbus_values(self) -> Dict[str, Any]:
         return {
@@ -148,6 +215,28 @@ class RuntimeStatusSnapshot:
             "/ExpectedWattpilotFirmware": self.expected_wattpilot_firmware,
             "/ActualWattpilotFirmware": self.actual_wattpilot_firmware,
             "/ValidatedWattpilotAppVersion": self.validated_wattpilot_app_version,
+            "/VehicleCompatibility/Status": self.vehicle_compatibility_status,
+            "/VehicleCompatibility/NativeMinimumCurrent": self.native_minimum_current,
+            "/VehicleCompatibility/EffectiveMinimumCurrent": self.effective_minimum_current,
+            "/VehicleCompatibility/AllowChargePause": self.allow_charge_pause,
+            "/VehicleCompatibility/MinimumChargingIntervalSeconds": self.minimum_charging_interval_seconds,
+            "/VehicleCompatibility/MinimumChargePauseDurationSeconds": self.minimum_charge_pause_duration_seconds,
+            "/VehicleCompatibility/MinimumChargePauseEndsAtMs": self.minimum_charge_pause_ends_at_ms,
+            "/VehicleCompatibility/MinimumChargeTimeSeconds": self.minimum_charge_time_seconds,
+            "/VehicleCompatibility/SimulateUnpluggingShort": self.simulate_unplugging_short,
+            "/VehicleCompatibility/SimulateUnpluggingAlways": self.simulate_unplugging_always,
+            "/VehicleCompatibility/SimulateUnpluggingDurationSeconds": self.simulate_unplugging_duration_seconds,
+            "/VehicleCompatibility/MinimumPhaseWishSwitchTimeSeconds": self.minimum_phase_wish_switch_time_seconds,
+            "/VehicleCompatibility/MinimumPhaseToggleWaitTimeSeconds": self.minimum_phase_toggle_wait_time_seconds,
+            "/VehicleCompatibility/ModelStatusRaw": self.model_status_raw,
+            "/VehicleCompatibility/ModelStatusLiteral": self.model_status_literal,
+            "/VehicleCompatibility/MissingFields": self.vehicle_compatibility_missing_fields,
+            "/VehicleCompatibility/InvalidFields": self.vehicle_compatibility_invalid_fields,
+            "/Resume/State": self.resume_state,
+            "/Resume/AttemptKind": self.resume_attempt_kind,
+            "/Resume/FailureCount": self.resume_failure_count,
+            "/Resume/BackoffRemaining": self.resume_backoff_remaining,
+            "/Resume/FailureReason": self.resume_failure_reason,
         }
 
 
@@ -532,6 +621,28 @@ class WattpilotRuntimeStatusReporter:
             expected_wattpilot_firmware=RuntimeCompatibility.VALIDATED_WATTPILOT_FIRMWARE,
             actual_wattpilot_firmware="Unavailable",
             validated_wattpilot_app_version=RuntimeCompatibility.VALIDATED_WATTPILOT_APP_VERSION,
+            vehicle_compatibility_status="Unavailable",
+            native_minimum_current=-1,
+            effective_minimum_current=-1,
+            allow_charge_pause=-1,
+            minimum_charging_interval_seconds=-1,
+            minimum_charge_pause_duration_seconds=-1,
+            minimum_charge_pause_ends_at_ms=-1,
+            minimum_charge_time_seconds=-1,
+            simulate_unplugging_short=-1,
+            simulate_unplugging_always=-1,
+            simulate_unplugging_duration_seconds=-1,
+            minimum_phase_wish_switch_time_seconds=-1,
+            minimum_phase_toggle_wait_time_seconds=-1,
+            model_status_raw=-1,
+            model_status_literal="Unavailable",
+            vehicle_compatibility_missing_fields="",
+            vehicle_compatibility_invalid_fields="",
+            resume_state="Idle",
+            resume_attempt_kind="",
+            resume_failure_count=0,
+            resume_backoff_remaining=0,
+            resume_failure_reason="",
         )
 
     def _publish_mqtt(self, dbus_path: str, value: Any) -> None:
@@ -555,6 +666,8 @@ class WattpilotRuntimeStatusReporter:
         command_authority_ok, command_authority_literal = self._command_authority()
         native_pv_surplus_enabled = self._strict_bool_state("nativePvSurplusEnabled")
         flexible_tariff_enabled = self._strict_bool_state("flexibleTariffEnabled")
+        vehicle_compatibility = self._vehicle_compatibility_snapshot()
+        effective_minimum = self._effective_minimum_current(vehicle_compatibility)
         telemetry_healthy = int(
             self._telemetry_healthy() and bool(compatibility_ok)
         )
@@ -626,7 +739,118 @@ class WattpilotRuntimeStatusReporter:
                     RuntimeCompatibility.VALIDATED_WATTPILOT_APP_VERSION,
                 )
             ),
+            vehicle_compatibility_status=vehicle_compatibility.diagnostics_literal,
+            native_minimum_current=_int_or_unavailable(
+                vehicle_compatibility.minimum_current_a
+            ),
+            effective_minimum_current=_int_or_unavailable(effective_minimum),
+            allow_charge_pause=_bool_or_unavailable(
+                vehicle_compatibility.allow_charge_pause
+            ),
+            minimum_charging_interval_seconds=_milliseconds_to_seconds(
+                vehicle_compatibility.minimum_charging_interval_ms
+            ),
+            minimum_charge_pause_duration_seconds=_milliseconds_to_seconds(
+                vehicle_compatibility.minimum_charge_pause_duration_ms
+            ),
+            minimum_charge_pause_ends_at_ms=_int_or_unavailable(
+                vehicle_compatibility.minimum_charge_pause_ends_at_ms
+            ),
+            minimum_charge_time_seconds=_milliseconds_to_seconds(
+                vehicle_compatibility.minimum_charge_time_ms
+            ),
+            simulate_unplugging_short=_bool_or_unavailable(
+                vehicle_compatibility.simulate_unplugging_short
+            ),
+            simulate_unplugging_always=_bool_or_unavailable(
+                vehicle_compatibility.simulate_unplugging_always
+            ),
+            simulate_unplugging_duration_seconds=_milliseconds_to_seconds(
+                vehicle_compatibility.simulate_unplugging_duration_ms
+            ),
+            minimum_phase_wish_switch_time_seconds=_milliseconds_to_seconds(
+                vehicle_compatibility.minimum_phase_wish_switch_time_ms
+            ),
+            minimum_phase_toggle_wait_time_seconds=_milliseconds_to_seconds(
+                vehicle_compatibility.minimum_phase_toggle_wait_time_ms
+            ),
+            model_status_raw=_int_or_unavailable(
+                vehicle_compatibility.model_status_raw
+            ),
+            model_status_literal=self._model_status_literal(
+                vehicle_compatibility.model_status_raw
+            ),
+            vehicle_compatibility_missing_fields=",".join(
+                vehicle_compatibility.missing_fields
+            ),
+            vehicle_compatibility_invalid_fields=",".join(
+                vehicle_compatibility.invalid_fields
+            ),
+            resume_state=str(
+                getattr(self.controller, "resumeStateLiteral", "Idle")
+            ),
+            resume_attempt_kind=str(
+                getattr(self.controller, "resumeAttemptKind", "")
+            ),
+            resume_failure_count=int(
+                getattr(self.controller, "resumeFailureCount", 0)
+            ),
+            resume_backoff_remaining=self._resume_backoff_remaining(),
+            resume_failure_reason=str(
+                getattr(self.controller, "resumeFailureReason", "")
+            ),
         )
+
+    def _resume_backoff_remaining(self):
+        method = getattr(self.controller, "resumeBackoffRemaining", None)
+        if callable(method):
+            try:
+                return int(round(max(0.0, float(method()))))
+            except Exception:
+                return 0
+        until = _number(getattr(self.controller, "resumeBackoffUntil", 0), 0)
+        return int(round(max(0.0, until - time.time())))
+
+    def _vehicle_compatibility_snapshot(self):
+        wattpilot = getattr(self.controller, "wattpilot", None)
+        return VehicleCompatibility.parse_vehicle_compatibility(
+            getattr(wattpilot, "allProps", {}),
+            getattr(wattpilot, "firmware", None),
+            getattr(wattpilot, "allPropsInitialized", False),
+        )
+
+    def _effective_minimum_current(self, snapshot):
+        method = getattr(self.controller, "getEffectiveMinCurrent", None)
+        if callable(method):
+            try:
+                return method()
+            except Exception:
+                return None
+        maximum_method = getattr(self.controller, "getEffectiveMaxCurrent", None)
+        try:
+            maximum = (
+                maximum_method()
+                if callable(maximum_method)
+                else getattr(self.controller, "maxCurrentPerPhase", 0)
+            )
+        except Exception:
+            maximum = 0
+        return snapshot.effective_minimum_current(
+            getattr(self.controller, "minCurrentPerPhase", 6), maximum
+        )
+
+    def _model_status_literal(self, raw_value):
+        if raw_value is None:
+            return "Unavailable"
+        method = getattr(self.controller, "modelStatusName", None)
+        if callable(method):
+            try:
+                name = method(raw_value)
+                if name and name != "Unknown":
+                    return str(name)
+            except Exception:
+                pass
+        return "Unknown({0})".format(raw_value)
 
     def _control_state(
         self,
@@ -950,3 +1174,15 @@ def _finite_number_or_none(value: Any) -> Optional[float]:
 def _number(value: Any, default: float) -> float:
     number = _finite_number_or_none(value)
     return default if number is None else number
+
+
+def _int_or_unavailable(value: Any) -> int:
+    return int(value) if type(value) is int else -1
+
+
+def _bool_or_unavailable(value: Any) -> int:
+    return int(value) if type(value) is bool else -1
+
+
+def _milliseconds_to_seconds(value: Any) -> int:
+    return int(round(value / 1000.0)) if type(value) is int else -1

@@ -10,13 +10,22 @@ from WattpilotSiteCurrentSource import VenusSystemSiteCurrentSource
 
 
 class Shelly3EMSiteCurrentSourceTests(unittest.TestCase):
-    def _source(self, client, clock, grace_seconds=0):
+    def _source(
+        self,
+        client,
+        clock,
+        grace_seconds=0,
+        diagnostic_client=None,
+        monotonic_clock=None,
+    ):
         return Shelly3EMSiteCurrentSource(
             client,
             {"A": "L3", "B": "L1", "C": "L2"},
             poll_frequency_ms=1000,
             transient_failure_grace_seconds=grace_seconds,
+            diagnostic_client=diagnostic_client,
             clock=clock,
+            monotonic_clock=monotonic_clock,
         )
 
     def test_complete_poll_maps_channels_and_timestamps_all_phases(self):
@@ -159,6 +168,84 @@ class Shelly3EMSiteCurrentSourceTests(unittest.TestCase):
         first.values["L1"] = 99
 
         self.assertIsNone(source.read_sample().values["L1"])
+
+    def test_health_poll_is_separate_from_safety_current_snapshot(self):
+        current_client = Mock()
+        current_client.identify.return_value = {
+            "model": "S3EM-003CXCEU63",
+            "ver": "1.7.0",
+        }
+        current_client.read_currents.return_value = {
+            "currents": {"A": 3.0, "B": 1.0, "C": 2.0},
+            "flags": {"A": [], "B": [], "C": []},
+        }
+        diagnostic_client = Mock()
+        diagnostic_client.read_health.return_value = {
+            "wifi_status": "Got IP",
+            "wifi_rssi": -58.0,
+            "wifi_channel": 11,
+            "uptime_seconds": 200.0,
+            "free_memory_bytes": 300000.0,
+        }
+        monotonic = iter((10.0, 10.025))
+        source = self._source(
+            current_client,
+            lambda: 100.0,
+            diagnostic_client=diagnostic_client,
+            monotonic_clock=lambda: next(monotonic),
+        )
+
+        self.assertTrue(source.poll())
+        safety_before = source.read_sample()
+        self.assertTrue(source.poll_diagnostics())
+        safety_after = source.read_sample()
+        diagnostics = source.read_diagnostics()
+
+        self.assertEqual(safety_after.values, safety_before.values)
+        self.assertEqual(safety_after.updated_at, safety_before.updated_at)
+        self.assertEqual(diagnostics["status"], "Healthy")
+        self.assertEqual(diagnostics["wifi_rssi"], -58.0)
+        self.assertEqual(diagnostics["wifi_channel"], 11)
+        self.assertAlmostEqual(diagnostics["rpc_latency_ms"], 25.0)
+        self.assertEqual(diagnostics["last_success_at"], 100.0)
+
+    def test_failed_health_poll_does_not_invalidate_current_sample(self):
+        current_client = Mock()
+        diagnostic_client = Mock()
+        diagnostic_client.read_health.side_effect = (
+            Shelly3EMGen3ConnectionError("Shelly RPC request failed: Timeout")
+        )
+        source = self._source(
+            current_client,
+            lambda: 100.0,
+            diagnostic_client=diagnostic_client,
+            monotonic_clock=lambda: 10.0,
+        )
+        before = source.read_sample()
+
+        self.assertFalse(source.poll_diagnostics())
+
+        after = source.read_sample()
+        diagnostics = source.read_diagnostics()
+        self.assertEqual(after.values, before.values)
+        self.assertEqual(after.valid, before.valid)
+        self.assertEqual(after.status, before.status)
+        self.assertEqual(diagnostics["status"], "Unavailable")
+        self.assertIn("Timeout", diagnostics["error"])
+
+    def test_close_closes_both_independent_clients(self):
+        current_client = Mock()
+        diagnostic_client = Mock()
+        source = self._source(
+            current_client,
+            lambda: 100.0,
+            diagnostic_client=diagnostic_client,
+        )
+
+        source.close()
+
+        current_client.close.assert_called_once_with()
+        diagnostic_client.close.assert_called_once_with()
 
 
 class VenusSystemSiteCurrentSourceTests(unittest.TestCase):

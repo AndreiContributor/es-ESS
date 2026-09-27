@@ -37,6 +37,22 @@ def _finite_non_negative(value, field):
     return numeric
 
 
+def _optional_bounded_number(value, field, minimum, maximum):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise Shelly3EMGen3PayloadError("{0} is not a number".format(field))
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise Shelly3EMGen3PayloadError("{0} is not a number".format(field))
+    if not math.isfinite(numeric) or numeric < minimum or numeric > maximum:
+        raise Shelly3EMGen3PayloadError(
+            "{0} is outside the supported range".format(field)
+        )
+    return numeric
+
+
 def _string_list(payload, field):
     value = payload.get(field, [])
     if value is None:
@@ -172,6 +188,46 @@ class Shelly3EMGen3Client:
             "currents": currents,
             "flags": flags,
             "raw": status,
+        }
+
+    def read_health(self):
+        """Read only sanitized Wi-Fi and system health fields."""
+        wifi = self._get_json(
+            "/rpc/WiFi.GetStatus",
+            authenticated=True,
+        )
+        system = self._get_json(
+            "/rpc/Sys.GetStatus",
+            authenticated=True,
+        )
+
+        raw_status = wifi.get("status")
+        if not isinstance(raw_status, str):
+            raise Shelly3EMGen3PayloadError("wifi.status must be a string")
+        normalized_status = raw_status.strip().lower()
+        allowed_statuses = {
+            "disconnected": "Disconnected",
+            "connecting": "Connecting",
+            "connected": "Connected",
+            "got ip": "Got IP",
+        }
+        wifi_status = allowed_statuses.get(normalized_status, "Unknown")
+        rssi = _optional_bounded_number(
+            wifi.get("rssi"), "wifi.rssi", -150, 0
+        )
+        channel = _optional_bounded_number(
+            wifi.get("channel"), "wifi.channel", 0, 196
+        )
+        uptime = _finite_non_negative(system.get("uptime"), "sys.uptime")
+        free_memory = _finite_non_negative(
+            system.get("ram_free"), "sys.ram_free"
+        )
+        return {
+            "wifi_status": wifi_status,
+            "wifi_rssi": rssi,
+            "wifi_channel": int(channel) if channel is not None else None,
+            "uptime_seconds": uptime,
+            "free_memory_bytes": free_memory,
         }
 
     def close(self):

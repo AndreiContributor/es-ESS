@@ -3,6 +3,7 @@
 import importlib.util
 import contextlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -289,6 +290,49 @@ class WattpilotSessionCaptureTests(unittest.TestCase):
         self.assertEqual(result["site_poll_skips"]["count"], 1)
         self.assertEqual(result["phase_confirmations"]["count"], 1)
         self.assertEqual(result["consecutive_same_adjustment_candidates"], 1)
+
+    def test_log_analysis_prefers_structured_current_events_and_deduplicates_legacy(self):
+        def event(clock, **changes):
+            payload = {
+                "event_version": 1,
+                "event": "current_command",
+                "outcome": "dispatched",
+                "target_a": 10,
+                "reported_a": 9,
+                "phase": 3,
+                "reason": "pv_adjustment",
+                "control_mode": "Auto",
+            }
+            payload.update(changes)
+            return (
+                f"2000-01-02 {clock} (UTC+0) INFO Wattpilot current command: "
+                + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            )
+
+        log = "\n".join(
+            (
+                event("10:00:00,000"),
+                "2000-01-02 10:00:00,100 (UTC+0) INFO Adjusting charge current to 10A on 3-phase.",
+                event("10:00:05,000", outcome="suppressed_confirmed"),
+                "2000-01-02 10:00:05,100 (UTC+0) APP_DEBUG Wattpilot current setpoint already confirmed; accepting guarded no-op at 10A.",
+                event("10:00:10,000", outcome="rejected", target_a=11),
+                "2000-01-02 10:00:15,000 (UTC+0) INFO Wattpilot current command: {bad-json",
+                "2000-01-02 10:00:20,000 (UTC+0) INFO Adjusting charge current to 9A on 3-phase.",
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events.log"
+            path.write_text(log + "\n", encoding="utf-8")
+
+            result = self.capture.analyze_log(path, duration_seconds=3600)
+
+        self.assertEqual(result["current_adjustments"]["count"], 2)
+        self.assertEqual(result["current_adjustments"]["average_interval_seconds"], 20)
+        self.assertEqual(result["structured_current_commands"]["count"], 1)
+        self.assertEqual(result["guarded_current_noops"]["count"], 1)
+        self.assertEqual(result["rejected_current_commands"]["count"], 1)
+        self.assertEqual(result["current_command_event_errors"]["count"], 1)
+        self.assertEqual(result["consecutive_same_adjustment_candidates"], 0)
 
     def test_capture_fields_include_selected_source_and_separate_venus_values(self):
         ev_fields = dict(self.capture.EV_FIELDS)

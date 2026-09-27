@@ -311,6 +311,28 @@ class WattpilotClientLifecycleTests(unittest.TestCase):
         self.assertEqual(client.awattarCurrentPrice, 12.34)
         self.assertTrue(client.allPropsInitialized)
 
+    def test_unknown_model_status_is_preserved_raw_and_fails_known_enum_closed(self):
+        _install_wattpilot_client_stubs()
+        wattpilot_module = self.load_wattpilot_module(
+            "wattpilot_client_unknown_model_status_under_test"
+        )
+        client = wattpilot_module.Wattpilot("127.0.0.1", "secret")
+
+        client._Wattpilot__on_message(
+            client._wsapp,
+            json.dumps(
+                {
+                    "type": "fullStatus",
+                    "partial": False,
+                    "status": {"modelStatus": 99},
+                }
+            ),
+        )
+
+        self.assertEqual(client.modelStatusRaw, 99)
+        self.assertIsNone(client.modelStatus)
+        self.assertEqual(client.allProps["modelStatus"], 99)
+
     def test_malformed_json_is_sanitized_and_reconnects_through_the_worker(self):
         warning_messages = []
         _install_wattpilot_client_stubs(warning_messages=warning_messages)
