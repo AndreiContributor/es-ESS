@@ -2162,11 +2162,9 @@ NoBatToEV=false
 
     def test_structured_timeline_separates_connection_from_measured_charge(self):
         gap_start = datetime(
-            2000, 7, 2, 20, 0, 50, tzinfo=timezone(timedelta(hours=3))
+            2000, 7, 2, 20, 0, 50
         ).timestamp()
-        gap_end = datetime(
-            2000, 7, 2, 20, 1, 0, tzinfo=timezone(timedelta(hours=3))
-        ).timestamp()
+        gap_end = datetime(2000, 7, 2, 20, 1, 0).timestamp()
         result = self._run(
             [
                 self._session_line(
