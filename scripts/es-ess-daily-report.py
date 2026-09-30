@@ -38,7 +38,7 @@ except ImportError:
         )
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 EXIT_PASS = 0
 EXIT_INCOMPLETE = 1
 EXIT_FAIL = 2
@@ -84,7 +84,16 @@ ALLOWANCE_GRACE_OUTCOMES = frozenset(
         "site_current_stop",
     }
 )
-SESSION_EVENT_VERSION = 1
+SESSION_EVENT_VERSIONS = frozenset({1, 2})
+SESSION_INTEGRATION_GAP_REASONS = frozenset(
+    {
+        "long_sample_interval",
+        "stale_telemetry",
+        "phase_changed",
+        "phase_unavailable",
+        "phase_power_unavailable",
+    }
+)
 SESSION_EVENT_NAMES = frozenset(
     {
         "connection_start",
@@ -573,6 +582,7 @@ class ChargingSession:
     physical_phase_mapping_complete: bool = False
     integration_coverage_seconds: float = 0.0
     integration_gap_seconds: float = 0.0
+    integration_gap_summary: dict[str, dict] = field(default_factory=dict)
     integration_coverage_percent: float = 0.0
     reconciliation_error_kwh: Optional[float] = None
     reconciliation_error_percent: Optional[float] = None
@@ -1666,7 +1676,7 @@ class EsEssDailyReport:
                     payload = json.loads(payload_text)
                     if not isinstance(payload, dict):
                         raise ValueError("session record is not an object")
-                    if payload.get("event_version") != SESSION_EVENT_VERSION:
+                    if payload.get("event_version") not in SESSION_EVENT_VERSIONS:
                         raise ValueError("unsupported session event version")
                     if payload.get("event") not in SESSION_EVENT_NAMES:
                         raise ValueError("session event name is missing or unsupported")
@@ -2696,7 +2706,67 @@ class EsEssDailyReport:
             [outage.failure for outage in outages],
         )
 
-    def check_charging(self) -> None:
+    def check_charging(self, sessions: list[ChargingSession]) -> None:
+        if self.session_statistics_records:
+            interval_starts = [
+                record
+                for record, payload in self.session_statistics_records
+                if payload.get("event") == "charge_start"
+            ]
+            interval_stops = [
+                record
+                for record, payload in self.session_statistics_records
+                if payload.get("event") == "charge_stop"
+            ]
+            interval_count = sum(
+                session.charging_interval_count for session in sessions
+            )
+            if interval_count == 0:
+                self.add(
+                    "NOT_OBSERVED",
+                    "charging",
+                    "No positive sampled charging interval was observed; connection or zero-power status evidence alone does not confirm charging.",
+                )
+                return
+            first = interval_starts[0] if interval_starts else None
+            last = interval_stops[-1] if interval_stops else None
+            first_time = (
+                first.timestamp.isoformat()
+                if first is not None
+                else next(
+                    (
+                        interval.get("start")
+                        for session in sessions
+                        for interval in session.charging_intervals
+                        if interval.get("start")
+                    ),
+                    "before selected window",
+                )
+            )
+            last_time = (
+                last.timestamp.isoformat()
+                if last is not None
+                else next(
+                    (
+                        interval.get("end")
+                        for session in reversed(sessions)
+                        for interval in reversed(session.charging_intervals)
+                        if interval.get("end")
+                    ),
+                    "after selected window",
+                )
+            )
+            evidence = [record for record in (first, last) if record is not None]
+            self.add(
+                "PASS",
+                "charging",
+                "Positive sampled charging power was observed in {0} structured interval(s), from {1} through {2}.".format(
+                    interval_count, first_time, last_time
+                ),
+                evidence,
+            )
+            return
+
         if not self.charge_records:
             self.add(
                 "NOT_OBSERVED",
@@ -3790,6 +3860,52 @@ class EsEssDailyReport:
         return result
 
     @staticmethod
+    def _session_gap_summary(
+        final_payload: dict,
+        baseline_payload: dict,
+        lower_epoch: float,
+        upper_epoch: float,
+    ) -> dict[str, dict]:
+        values = final_payload.get("integration_gap_summary", {})
+        baseline = baseline_payload.get("integration_gap_summary", {})
+        if not isinstance(values, dict) or not isinstance(baseline, dict):
+            return {}
+        result = {}
+        for reason, details in values.items():
+            if reason not in SESSION_INTEGRATION_GAP_REASONS or not isinstance(
+                details, dict
+            ):
+                continue
+            baseline_details = baseline.get(reason, {})
+            if not isinstance(baseline_details, dict):
+                baseline_details = {}
+            seconds = max(
+                0.0,
+                EsEssDailyReport._session_number(details, "seconds")
+                - EsEssDailyReport._session_number(baseline_details, "seconds"),
+            )
+            intervals = max(
+                0,
+                int(EsEssDailyReport._session_number(details, "intervals"))
+                - int(EsEssDailyReport._session_number(baseline_details, "intervals")),
+            )
+            first = EsEssDailyReport._session_number(details, "first_start_epoch", -1)
+            last = EsEssDailyReport._session_number(details, "last_end_epoch", -1)
+            if seconds <= 0 or intervals < 1 or first < 0 or last < first:
+                continue
+            first = max(first, lower_epoch)
+            last = min(last, upper_epoch)
+            if last < first:
+                continue
+            result[reason] = {
+                "seconds": seconds,
+                "intervals": int(intervals),
+                "first_start_epoch": first,
+                "last_end_epoch": last,
+            }
+        return result
+
+    @staticmethod
     def _epoch_iso(value, tzinfo) -> Optional[str]:
         try:
             epoch = float(value)
@@ -3906,6 +4022,31 @@ class EsEssDailyReport:
             estimated_by_phase_wh = mapping_delta("estimated_energy_by_phase_wh")
             coverage_seconds = scalar_delta("integration_coverage_seconds")
             gap_seconds = scalar_delta("integration_gap_seconds")
+            gap_summary = self._session_gap_summary(
+                final_payload,
+                baseline_payload,
+                first_record.timestamp.timestamp(),
+                last_record.timestamp.timestamp(),
+            )
+            gap_bounds_complete = bool(
+                starts
+                and summaries
+                and not start_payload.get("partial_start")
+                and not end_payload.get("partial_end")
+            )
+            for details in gap_summary.values():
+                first_gap = details.pop("first_start_epoch")
+                last_gap = details.pop("last_end_epoch")
+                details["first_start"] = (
+                    self._epoch_iso(first_gap, first_record.timestamp.tzinfo)
+                    if gap_bounds_complete
+                    else None
+                )
+                details["last_end"] = (
+                    self._epoch_iso(last_gap, first_record.timestamp.tzinfo)
+                    if gap_bounds_complete
+                    else None
+                )
             covered_total = coverage_seconds + gap_seconds
             coverage_percent = (
                 coverage_seconds / covered_total * 100.0 if covered_total > 0 else 0.0
@@ -3997,7 +4138,7 @@ class EsEssDailyReport:
                 None,
             )
             stop_reason = end_payload.get("end_reason")
-            if stop_record is not None:
+            if not summaries and stop_record is not None:
                 stop_reason = self._stop_reason(stop_record) or stop_reason
             if not stop_reason:
                 stop_reason = "not observable in selected window"
@@ -4121,6 +4262,7 @@ class EsEssDailyReport:
                     ),
                     integration_coverage_seconds=coverage_seconds,
                     integration_gap_seconds=gap_seconds,
+                    integration_gap_summary=gap_summary,
                     integration_coverage_percent=coverage_percent,
                     reconciliation_error_kwh=(
                         reconciliation_wh / 1000.0
@@ -4554,7 +4696,6 @@ class EsEssDailyReport:
         self.check_failures()
         self.check_runtime_health()
         self.check_commissioning_profile()
-        self.check_charging()
         self.check_current_bounds()
         self.check_current_command_activity()
         self.check_allowance()
@@ -4567,6 +4708,7 @@ class EsEssDailyReport:
         self.check_safety_interventions()
         rare_statuses = self.build_rare_statuses()
         sessions = self.build_sessions()
+        self.check_charging(sessions)
         self.check_session_statistics(sessions)
         self.check_resume_attempts()
 
@@ -4950,14 +5092,17 @@ def render_human(result: AuditResult) -> str:
     for note in result.current_snapshot.notes:
         lines.append(f"NOTE: {note}")
 
-    lines.extend(["", "Charging sessions", "-----------------"])
+    lines.extend(["", "Connections and charging intervals", "----------------------------------"])
     if not result.sessions:
         lines.append("No charging session was reconstructed from this window.")
     for index, session in enumerate(result.sessions, 1):
+        session_label = (
+            "Connection" if session.source.startswith("structured") else "Charging session"
+        )
         lines.append(
-            f"Session {index}: {session.start} to {session.end}; mode={session.mode}; "
-            f"phases={session.phases or ['unknown']}; stop={session.stop_reason}; "
-            f"source={session.source}"
+            f"{session_label} {index}: {session.start} to {session.end}; "
+            f"mode={session.mode}; phases={session.phases or ['unknown']}; "
+            f"connection end reason={session.stop_reason}; source={session.source}"
         )
         phase_change_label = (
             "confirmed phase transitions"
@@ -5013,6 +5158,20 @@ def render_human(result: AuditResult) -> str:
                     ),
                 )
             )
+            if session.integration_gap_summary:
+                gap_text = "; ".join(
+                    "{0}={1} span(s)/{2:.1f}s ({3} to {4})".format(
+                        reason,
+                        details["intervals"],
+                        details["seconds"],
+                        details["first_start"] or "unknown start",
+                        details["last_end"] or "unknown end",
+                    )
+                    for reason, details in sorted(
+                        session.integration_gap_summary.items()
+                    )
+                )
+                lines.append(f"  sampled-power gaps: {gap_text}")
             lines.append(
                 "  onboarding latency={0}; first start={1} ({2}, accepted={3}); "
                 "power range={4}; command rejections={5}; partial start/end={6}/{7}; "
@@ -5044,12 +5203,14 @@ def render_human(result: AuditResult) -> str:
             )
             for interval in session.charging_intervals:
                 lines.append(
-                    "  interval {0}: {1} to {2}; duration={3}; phases={4}; partial={5}".format(
+                    "  charging interval {0}: {1} to {2}; duration={3}; "
+                    "phases={4}; stop reason={5}; partial={6}".format(
                         interval.get("interval_id"),
                         interval.get("start") or "before selected window",
                         interval.get("end") or "after selected window",
                         _format_duration(interval.get("duration_seconds") or 0),
                         interval.get("phase_modes") or ["unknown"],
+                        interval.get("stop_reason") or "not observed",
                         interval.get("partial", False),
                     )
                 )

@@ -236,7 +236,7 @@ Structured Wattpilot session statistics are log evidence rather than another
 D-Bus or MQTT control contract. Versioned INFO records describe confirmed
 connection, first start attempt, measured charging transitions, phase segments,
 and final summaries. One APP_DEBUG checkpoint per connected minute bounds
-abrupt-restart evidence loss. The daily report schema 5 consumes these records,
+abrupt-restart evidence loss. The daily report schema 6 consumes these records,
 keeps monotonic session-counter energy distinct from sampled-power estimates,
 and exposes resets, gaps, reconciliation, and completeness. It also consumes
 versioned start/resume outcome records and reads the compatibility/resume D-Bus

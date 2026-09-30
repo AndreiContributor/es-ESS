@@ -1054,7 +1054,7 @@ NoBatToEV=false
             ]
         )
         payload = json.loads(json.dumps(result.to_dict()))
-        self.assertEqual(payload["schema"], 5)
+        self.assertEqual(payload["schema"], 6)
         self.assertEqual(payload["inputs"]["target_date"], self.target_date)
 
     def test_resume_failure_metrics_and_configuration_recommendations(self):
@@ -2140,7 +2140,7 @@ NoBatToEV=false
         result = self._run(lines)
         session = result.sessions[0]
 
-        self.assertEqual(result.schema, 5)
+        self.assertEqual(result.schema, 6)
         self.assertEqual(result.metrics["connection_sessions"], 1)
         self.assertEqual(result.metrics["charging_intervals"], 2)
         self.assertEqual(result.metrics["authoritative_total_kwh"], 0.25)
@@ -2159,6 +2159,118 @@ NoBatToEV=false
         self.assertTrue(session.sampled_energy_complete)
         self.assertTrue(session.evidence_complete)
         self.assertEqual(result.overall, "GOOD")
+
+    def test_structured_timeline_separates_connection_from_measured_charge(self):
+        gap_start = datetime(
+            2000, 7, 2, 20, 0, 50, tzinfo=timezone(timedelta(hours=3))
+        ).timestamp()
+        gap_end = datetime(
+            2000, 7, 2, 20, 1, 0, tzinfo=timezone(timedelta(hours=3))
+        ).timestamp()
+        result = self._run(
+            [
+                self._session_line(
+                    "20:00:00",
+                    self._session_event(
+                        "connection_start", event_version=2, mode="Auto"
+                    ),
+                ),
+                self._session_line(
+                    "20:00:20",
+                    self._session_event(
+                        "charge_start",
+                        event_version=2,
+                        interval_id="charge-1",
+                        phase_mode=1,
+                    ),
+                ),
+                self._line(
+                    "20:00:30",
+                    "Stopping EV charging because whole-site phase headroom is below the configured limit.",
+                    "INFO",
+                ),
+                self._session_line(
+                    "20:01:00",
+                    self._session_event(
+                        "charge_stop",
+                        event_version=2,
+                        interval_id="charge-1",
+                        duration_seconds=40,
+                        reason="measured_power_zero",
+                    ),
+                ),
+                self._session_line(
+                    "20:02:00",
+                    self._session_event(
+                        "connection_summary",
+                        event_version=2,
+                        end_reason="vehicle_disconnected",
+                        counter_complete=True,
+                        integration_coverage_seconds=30,
+                        integration_gap_seconds=10,
+                        integration_gap_summary={
+                            "stale_telemetry": {
+                                "seconds": 10,
+                                "intervals": 1,
+                                "first_start_epoch": gap_start,
+                                "last_end_epoch": gap_end,
+                            }
+                        },
+                        charging_interval_count=1,
+                    ),
+                ),
+                self._line(
+                    "20:03:00",
+                    "Wattpilot Modelstatus: WattpilotModelStatus.ChargingBecauseForceStateOn; charge telemetry (read-only): total=0W",
+                    "APP_DEBUG",
+                ),
+            ]
+        )
+
+        session = result.sessions[0]
+        report = AUDIT.render_human(result)
+        charging_finding = next(
+            finding for finding in result.findings if finding.check == "charging"
+        )
+
+        self.assertEqual(session.stop_reason, "vehicle_disconnected")
+        self.assertEqual(session.charging_intervals[0]["stop_reason"], "measured_power_zero")
+        self.assertIn("Positive sampled charging power was observed in 1 structured interval", charging_finding.message)
+        self.assertNotIn("approximately", charging_finding.message)
+        self.assertIn("Connection 1:", report)
+        self.assertIn("connection end reason=vehicle_disconnected", report)
+        self.assertIn("charging interval charge-1:", report)
+        self.assertIn("stop reason=measured_power_zero", report)
+        self.assertIn("sampled-power gaps: stale_telemetry=1 span(s)/10.0s", report)
+
+    def test_structured_connection_without_power_is_not_reported_as_charging(self):
+        result = self._run(
+            [
+                self._session_line(
+                    "21:00:00",
+                    self._session_event("connection_start", mode="Auto"),
+                ),
+                self._session_line(
+                    "21:01:00",
+                    self._session_event(
+                        "connection_summary",
+                        end_reason="vehicle_disconnected",
+                        charging_interval_count=0,
+                    ),
+                ),
+                self._line(
+                    "21:01:05",
+                    "Wattpilot Modelstatus: WattpilotModelStatus.ChargingBecauseForceStateOn; charge telemetry (read-only): total=0W",
+                    "APP_DEBUG",
+                ),
+            ]
+        )
+
+        charging_finding = next(
+            finding for finding in result.findings if finding.check == "charging"
+        )
+        self.assertEqual(charging_finding.status, "NOT_OBSERVED")
+        self.assertIn("zero-power status evidence alone does not confirm charging", charging_finding.message)
 
     def test_structured_counter_reset_and_gap_are_explicitly_incomplete(self):
         result = self._run(
@@ -2321,6 +2433,57 @@ NoBatToEV=false
         self.assertTrue(session.partial_end)
         self.assertEqual(session.observed_counter_energy_kwh, 0.06)
         self.assertIsNone(session.authoritative_energy_kwh)
+
+    def test_checkpoint_gap_summary_is_differenced_to_selected_window(self):
+        first_epoch = datetime(2000, 7, 2, 20, 10).timestamp()
+        last_epoch = datetime(2000, 7, 2, 20, 11).timestamp()
+        result = self._run(
+            [
+                self._session_line(
+                    "20:10:00",
+                    self._session_event(
+                        "checkpoint",
+                        event_version=2,
+                        partial_start=True,
+                        partial_end=True,
+                        integration_gap_seconds=10,
+                        integration_gap_summary={
+                            "stale_telemetry": {
+                                "seconds": 10,
+                                "intervals": 1,
+                                "first_start_epoch": first_epoch - 10,
+                                "last_end_epoch": first_epoch,
+                            }
+                        },
+                    ),
+                    "APP_DEBUG",
+                ),
+                self._session_line(
+                    "20:11:00",
+                    self._session_event(
+                        "checkpoint",
+                        event_version=2,
+                        partial_start=True,
+                        partial_end=True,
+                        integration_gap_seconds=30,
+                        integration_gap_summary={
+                            "stale_telemetry": {
+                                "seconds": 30,
+                                "intervals": 3,
+                                "first_start_epoch": first_epoch - 10,
+                                "last_end_epoch": last_epoch,
+                            }
+                        },
+                    ),
+                    "APP_DEBUG",
+                ),
+            ]
+        )
+
+        gap = result.sessions[0].integration_gap_summary["stale_telemetry"]
+        self.assertEqual(gap["seconds"], 20)
+        self.assertEqual(gap["intervals"], 2)
+        self.assertEqual(result.sessions[0].integration_gap_seconds, 20)
 
     def test_malformed_structured_session_record_is_an_evidence_gap(self):
         result = self._run(
