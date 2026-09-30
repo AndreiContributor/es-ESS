@@ -11,7 +11,7 @@ from math import isfinite
 from typing import Optional
 
 
-EVENT_VERSION = 1
+EVENT_VERSION = 2
 CHECKPOINT_INTERVAL_SECONDS = 60.0
 MAX_INTEGRATION_GAP_SECONDS = 15.0
 
@@ -77,6 +77,7 @@ class WattpilotSessionStatistics:
         self.integrated_by_phase_wh = {"L1": 0.0, "L2": 0.0, "L3": 0.0}
         self.integration_coverage_seconds = 0.0
         self.integration_gap_seconds = 0.0
+        self.integration_gap_summary = {}
         self.charging = False
         self.interval_id = None
         self.interval_started_at = None
@@ -183,6 +184,28 @@ class WattpilotSessionStatistics:
             return {"L1": values[0], "L2": values[1], "L3": values[2]}
         return None
 
+    def _record_integration_gap(self, start, end, reason):
+        duration = max(0.0, float(end) - float(start))
+        if duration <= 0:
+            return
+        summary = self.integration_gap_summary.setdefault(
+            reason,
+            {
+                "seconds": 0.0,
+                "intervals": 0,
+                "first_start_epoch": round(float(start), 3),
+                "last_end_epoch": round(float(end), 3),
+            },
+        )
+        summary["seconds"] += duration
+        summary["intervals"] += 1
+        summary["first_start_epoch"] = min(
+            summary["first_start_epoch"], round(float(start), 3)
+        )
+        summary["last_end_epoch"] = max(
+            summary["last_end_epoch"], round(float(end), 3)
+        )
+
     def _integrate(self, sample):
         previous = self.last_sample
         if previous is None:
@@ -199,17 +222,34 @@ class WattpilotSessionStatistics:
             return
         if elapsed > self.max_integration_gap_seconds:
             self.integration_gap_seconds += elapsed
+            self._record_integration_gap(
+                previous.observed_at, sample.observed_at, "long_sample_interval"
+            )
             return
         if not (previous.telemetry_fresh and sample.telemetry_fresh):
             self.integration_gap_seconds += elapsed
+            self._record_integration_gap(
+                previous.observed_at, sample.observed_at, "stale_telemetry"
+            )
             return
         if previous.phase_mode != sample.phase_mode or sample.phase_mode not in (1, 3):
             self.integration_gap_seconds += elapsed
+            reason = (
+                "phase_changed"
+                if previous.phase_mode != sample.phase_mode
+                else "phase_unavailable"
+            )
+            self._record_integration_gap(previous.observed_at, sample.observed_at, reason)
             return
         previous_powers = self._physical_phase_powers(previous)
         current_powers = self._physical_phase_powers(sample)
         if previous_powers is None or current_powers is None:
             self.integration_gap_seconds += elapsed
+            self._record_integration_gap(
+                previous.observed_at,
+                sample.observed_at,
+                "phase_power_unavailable",
+            )
             return
 
         interval_wh = 0.0
@@ -398,6 +438,15 @@ class WattpilotSessionStatistics:
                 self.integration_coverage_seconds, 3
             ),
             "integration_gap_seconds": round(self.integration_gap_seconds, 3),
+            "integration_gap_summary": {
+                reason: {
+                    "seconds": round(values["seconds"], 3),
+                    "intervals": values["intervals"],
+                    "first_start_epoch": values["first_start_epoch"],
+                    "last_end_epoch": values["last_end_epoch"],
+                }
+                for reason, values in self.integration_gap_summary.items()
+            },
             "reconciliation_error_wh": (
                 round(error_wh, 6) if error_wh is not None else None
             ),

@@ -189,7 +189,10 @@ The human and JSON reports contain:
 - current state: optional service, mode, connectivity, authority, telemetry,
   phase, firmware, native vehicle-compatibility fields, and resume/backoff
   snapshots;
-- structured connection sessions and their charging intervals: plug/first-start/
+- structured connection sessions and their measured charging intervals, shown
+  separately so a connected vehicle or zero-power status is not described as
+  charging; each connection and interval has its own end reason;
+  plug/first-start/
   first-measured-power timing, interruptions, Auto/Manual/unknown mode, phases,
   compact current and peak-power ranges, phase segments, stop reason, command
   rejections, battery assist, grid guards, stale telemetry, rare statuses,
@@ -198,7 +201,9 @@ The human and JSON reports contain:
   is proven; observed-but-incomplete counter deltas after resets or restarts;
   explicitly estimated one-/three-phase and conductor splits, with the
   configured physical phase identified for one-phase operation; sampled
-  coverage, uncovered time, physical-mapping completeness, and
+  coverage, uncovered time, compact integration-gap reason/count/duration and
+  first/last observed bounds when the full connection is present,
+  physical-mapping completeness, and
   estimate-to-counter reconciliation error;
 - rare firmware statuses 8–11 and 13–14: protocol name, occurrences, selected
   controller state, observed duration, and transition result;
@@ -314,8 +319,11 @@ writes. The controller emits versioned JSON after the stable marker
   start/stop, completed phase segment, and final connection summary; and
 - at most one APP_DEBUG checkpoint per connected minute.
 
-The structured event version is independent from daily-report JSON schema 5 so
-future log parsing can remain explicit. A connection may contain multiple
+The structured event version is independent from daily-report JSON schema 6 so
+future log parsing can remain explicit. The report reads session-statistics
+event versions 1 and 2. Version 2 adds cumulative integration-gap summaries by
+reason to checkpoints and final summaries; version 1 remains
+supported without gap-cause detail. A connection may contain multiple
 charging intervals. Correlation IDs distinguish those observed intervals only;
 they never claim which vehicle was connected.
 
@@ -338,9 +346,12 @@ available for compatibility.
 L1/L2/L3 and one-/three-phase values are trapezoidal integrations of fresh
 sampled Wattpilot power. The component does not extrapolate across stale input,
 a phase transition, a non-monotonic timestamp, or a sampling gap longer than
-the accepted bound. Coverage and reconciliation fields therefore make the
-accuracy limitation measurable. These estimates are not certified meter
-counters. In one-phase mode, `Charger1PhaseMapping` selects the physical phase.
+the accepted bound. Checkpoints and connection summaries aggregate skipped
+integration spans by a fixed reason class and retain their count, duration, and
+first/last observed timestamps. They do not emit one log record per missed
+sample. Coverage and reconciliation fields therefore make the accuracy
+limitation measurable. These estimates are not certified meter counters. In
+one-phase mode, `Charger1PhaseMapping` selects the physical phase.
 Three-phase mode proves that all three conductors were used, but its individual
 L1/L2/L3 labels follow Wattpilot-reported conductor order because the existing
 configuration verifies only the one-phase conductor. A session containing a

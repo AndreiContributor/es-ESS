@@ -325,7 +325,9 @@ It owns:
   partial-start, and partial-end evidence.
 - Fresh sampled-power integration by one-/three-phase mode and physical phase,
   bounded by a maximum observation gap and accompanied by coverage and
-  counter-reconciliation fields.
+  counter-reconciliation fields. Version 2 session records also aggregate
+  skipped integration spans by a fixed reason class, with count, duration, and
+  first/last observed timestamps in checkpoints and final summaries.
 - First start-attempt and first measured-power timing, interruptions, current
   range, peak power, phase segments, minute checkpoints, and final summaries.
 - Versioned, JSON-safe record dictionaries returned to the controller.
@@ -859,7 +861,10 @@ Future Wattpilot changes must preserve these invariants:
   unobserved process gap into an authoritative total. Sampled one-/three-phase
   and L1/L2/L3 energy must remain explicitly estimated, must not extrapolate
   across stale/long-gap/phase-transition input, and must publish coverage and
-  reconciliation evidence. Correlation IDs are not vehicle identity.
+  reconciliation evidence plus bounded reason summaries for skipped spans.
+  The daily report must distinguish the vehicle connection window from
+  measured positive-power charging intervals and keep connection and interval
+  end reasons separate. Correlation IDs are not vehicle identity.
 - Keep `scripts/wattpilot-setting-capture.py` command-free. It may authenticate,
   request complete status, and compare redacted property snapshots only while
   the vehicle is disconnected. It must reject unvalidated firmware, a missing

@@ -157,6 +157,35 @@ class WattpilotSessionStatisticsTests(unittest.TestCase):
         self.assertEqual(summary["estimated_energy_wh"], 0)
         self.assertEqual(summary["integration_gap_seconds"], 30)
 
+    def test_gap_summary_groups_duration_by_reason_and_time_bounds(self):
+        statistics = WattpilotSessionStatistics(max_integration_gap_seconds=15)
+        statistics.observe(sample(0, connected=False))
+        statistics.observe(sample(5))
+        statistics.observe(sample(10, total=1000, phases=(1000, 0, 0)))
+        statistics.observe(sample(30, total=1000, phases=(1000, 0, 0)))
+        statistics.observe(
+            sample(35, total=1000, phases=(1000, 0, 0), fresh=False)
+        )
+        summary = statistics.observe(
+            sample(40, connected=False, total=0, fresh=True)
+        )[-1]
+
+        self.assertEqual(summary["event_version"], 2)
+        self.assertEqual(summary["integration_gap_summary"]["long_sample_interval"], {
+            "seconds": 20.0,
+            "intervals": 1,
+            "first_start_epoch": 10.0,
+            "last_end_epoch": 30.0,
+        })
+        self.assertEqual(summary["integration_gap_summary"]["stale_telemetry"], {
+            "seconds": 10.0,
+            "intervals": 2,
+            "first_start_epoch": 30.0,
+            "last_end_epoch": 40.0,
+        })
+        self.assertEqual(summary["integration_gap_seconds"], 30)
+        self.assertAlmostEqual(summary["estimated_energy_wh"], 0.694444, places=6)
+
     def test_phase_change_closes_segment_and_keeps_mode_splits_distinct(self):
         statistics = WattpilotSessionStatistics()
         statistics.observe(sample(0, connected=False))
