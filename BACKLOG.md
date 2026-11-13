@@ -33,9 +33,12 @@ Current integration boundaries:
 Current validated state:
 
 - Clean Venus OS `v3.79` is preferred and `v3.75` remains accepted for stored-
-  firmware rollback; Wattpilot firmware `42.5` and operator-verified
-  Solar.wattpilot app `2.1.0` complete the runtime baseline. The v3.75
-  upgrade, idle/no-vehicle, Manual charging, Manual current-change, and Manual
+  firmware rollback. Clean v3.85 is a supervised-validation candidate only; it
+  has not passed live GX/Wattpilot validation and is not approved for
+  unattended production use. The pinned `velib_python` metadata remains
+  validated only for v3.75/v3.79. Wattpilot firmware `42.5` and operator-
+  verified Solar.wattpilot app `2.1.0` complete the remaining runtime baseline.
+  The v3.75 upgrade, idle/no-vehicle, Manual charging, Manual current-change, and Manual
   recovery checks passed during supervised GX validation. Supervised Auto/Eco
   daylight validation confirmed one-phase PV charging,
   three-phase phase-up, no-grid/grid-import guard behavior, bounded battery

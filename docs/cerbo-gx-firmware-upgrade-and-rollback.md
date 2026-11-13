@@ -1,15 +1,21 @@
 # Cerbo GX Firmware Upgrade And Rollback
 
 This runbook covers a controlled Venus OS upgrade on a Cerbo GX that runs
-es-ESS, with special notes for upgrading from `v3.75` to `v3.79`. It also
+es-ESS, with the original migration procedure from `v3.75` to `v3.79` and a
+separate supervised-validation procedure for the `v3.85` candidate. It also
 covers both firmware rollback methods: booting the stored backup firmware and
 installing a specific older firmware from USB or microSD.
 
 The es-ESS checkout accepts only the clean Venus OS releases explicitly listed
-in `RuntimeCompatibility.py`. It accepts clean `v3.75` and clean `v3.79` and
-rejects beta/build-qualified releases such as `v3.79~1` as well as unvalidated
-future releases. v3.79 is the preferred target; v3.75 remains accepted so the
-same checkout can operate after a stored-firmware rollback.
+in `RuntimeCompatibility.py`. Clean `v3.75` and `v3.79` are validated releases;
+v3.79 is preferred and v3.75 remains accepted for a stored-firmware rollback.
+Clean `v3.85` is accepted as a supervised-validation candidate so a GX already
+running it can start es-ESS for controlled checks. It is not approved for
+unattended production use until the live validation below passes. Qualified
+releases such as `v3.85~1` and other unlisted versions remain rejected.
+Victron's [v3.85 release discussion](https://community.victronenergy.com/t/v3-85-released-for-venus-os/64284)
+describes it as a security-focused update; those release notes do not validate
+es-ESS's GX or Wattpilot integrations.
 
 ## Safety Notes
 
@@ -27,6 +33,9 @@ specialist setting capture, see [Diagnostic tools](diagnostic-tools.md).
 - Keep es-ESS stopped across the first v3.79 boot. Complete the read-only
   dependency, D-Bus-path, device-assignment, and telemetry checks before
   starting it with the vehicle disconnected or Wattpilot confirmed in Manual.
+- On v3.85, treat every es-ESS session as supervised validation. Keep the
+  vehicle disconnected or Wattpilot in Manual during startup checks, and do
+  not leave Auto/Eco running unattended until all v3.85 gates pass.
 - Disable automatic firmware updates. Select and install official releases
   deliberately.
 - Do not use a factory reset or recovery-image reinstall for an ordinary
@@ -323,6 +332,84 @@ to do so.
 13. Complete the remaining daylight one-phase, no-grid, phase-up, and
     phase-down tests before unattended v3.79 production use.
 
+## Supervised Venus OS v3.85 Candidate Validation
+
+The runtime gate accepts clean v3.85 to allow this supervised validation. A
+successful startup or health snapshot alone does not show that Wattpilot
+control, the pinned `velib_python` composite, or every D-Bus/MQTT integration is
+compatible. The `velib_python-master/PINNED.json` manifest remains validated
+only for v3.75 and v3.79. Keep Auto/Eco supervised until the full behavior gates
+below pass; keep the vehicle disconnected or Wattpilot in Manual for startup
+and ownership checks.
+
+If the currently deployed checkout is repeatedly exiting with
+`Unsupported Venus OS version v3.85`, stop its runit restart loop and persist
+the stopped state before deploying the reviewed candidate checkout:
+
+```sh
+svc -d /service/es-ESS
+touch /data/es-ESS/service/down
+sleep 15
+svstat /service/es-ESS
+pgrep -af '^python[[:space:]]+/data/es-ESS/es-ESS.py$' || true
+```
+
+Continue only when the service is down and no es-ESS Python process remains.
+Deploy the reviewed checkout, then verify the exact release gate and pinned
+dependency provenance while the service remains stopped:
+
+```sh
+cd /data/es-ESS
+cat /opt/victronenergy/version
+python3 -m py_compile RuntimeCompatibility.py VelibDependency.py
+python3 -c "from RuntimeCompatibility import require_validated_venus_os; print('Runtime precheck:', require_validated_venus_os())"
+python3 -c "from VelibDependency import verify_bundled_velib; print('Pinned velib validated releases:', ', '.join(verify_bundled_velib()['validated_venus_os_versions']))"
+python3 -c "import paho.mqtt.client, websocket; print('Python dependencies OK')"
+```
+
+The runtime precheck must print `v3.85`; the pin manifest must still report
+`v3.75, v3.79`. That difference is intentional and means the bundled Venus
+library compatibility on v3.85 remains unverified. Stop if any command fails.
+
+With the vehicle disconnected or Wattpilot confirmed in Manual, start es-ESS
+and inspect it before any charging test:
+
+```sh
+rm /data/es-ESS/service/down
+svc -u /service/es-ESS
+sleep 15
+svstat /service/es-ESS
+pgrep -af '^python[[:space:]]+/data/es-ESS/es-ESS.py$'
+tail -n 800 /data/log/es-ESS/current.log | grep -E 'supervised integration validation only|Wattpilot firmware compatibility confirmed: 42.5'
+tail -n 800 /data/log/es-ESS/current.log | grep -Ei 'CRITICAL|Traceback|ModuleNotFoundError|Unsupported Venus OS|CompatibilityError|UNCOUGHT|Exception' || true
+EXPECTED_VENUS_OS=v3.85 LOG_LINES=800 EVENT_LINES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh
+```
+
+Require one stable process, the v3.85 supervised-candidate warning, healthy
+dependency imports, successful D-Bus registration, recovered MQTT clients,
+healthy fresh telemetry, and no new critical error or restart loop. The health
+monitor must explicitly warn that v3.85 is a validation candidate. If any gate
+fails, stop es-ESS, restore the persistent `service/down` marker, and
+investigate or roll back.
+
+Only after these startup checks pass, repeat the complete supervised Wattpilot
+gates in **Detailed Supervised v3.79 Wattpilot Validation**, substituting the
+actual v3.85 release for the version under test. This includes Manual-mode
+observation-only behavior; disconnected and zero-allowance no-start behavior;
+PV-only one-phase start and current tracking; grid-import stop behavior;
+phase-up and phase-down guards; battery-assist limits; stale-telemetry and
+reconnection handling; and final D-Bus/MQTT and graceful-shutdown checks. Keep
+the EV attended locally and stop on any unexpected command, grid import,
+battery discharge, stale-data control, or discrepancy in the public status
+contract.
+
+Record only generic pass/fail results in public docs. Keep raw logs, timestamps,
+site identifiers, addresses, topology, and correlated telemetry in the
+operator's private diagnostic evidence. Until every required gate is complete,
+v3.85 remains a supervised candidate and is not approved for unattended
+production use. After validation, update the candidate status and the pinned
+`velib_python` compatibility evidence only from the reviewed live results.
+
 ## v3.79 Validation Status
 
 The following generic gates have been completed for official Cerbo GX v3.79
@@ -592,10 +679,11 @@ pgrep -af '^python[[:space:]]+/data/es-ESS/es-ESS.py$' || true
 
 This is the preferred and quickest firmware rollback when the intended previous
 firmware is still present in the other root filesystem. This es-ESS checkout
-supports clean `v3.75` and clean `v3.79`; the same checkout can therefore start
-after the expected v3.79-to-v3.75 rollback. For any other firmware, restore an
-es-ESS checkout whose `RuntimeCompatibility.py` explicitly supports it before
-starting services.
+accepts clean `v3.75` and `v3.79` as validated releases and clean `v3.85` as a
+supervised-validation candidate; the same checkout can therefore start after
+the expected v3.79-to-v3.75 rollback. Do not leave v3.85 unattended before its
+live gates pass. For any other firmware, restore an es-ESS checkout whose
+`RuntimeCompatibility.py` explicitly lists it before starting services.
 
 1. Open **Settings → General → Firmware → Stored backup firmware**.
 2. Verify that the stored version is the firmware you intend to boot. Do not
@@ -609,9 +697,10 @@ starting services.
 ## Roll Back Manually With USB Or microSD
 
 Use this method if the stored backup is unavailable, cannot boot, or is not the
-firmware you intend to run. This es-ESS checkout supports clean `v3.75` and
-clean `v3.79`. After installing any other firmware, restore an es-ESS checkout
-compatible with that firmware before starting es-ESS.
+firmware you intend to run. This es-ESS checkout accepts clean `v3.75` and
+`v3.79` as validated releases and clean `v3.85` for supervised validation only.
+After installing any other firmware, restore an es-ESS checkout compatible
+with that firmware before starting es-ESS.
 
 1. Download the intended official Cerbo GX `.swu` file from Victron's
    `einstein` release directory.
@@ -645,6 +734,7 @@ compatible with that firmware before starting es-ESS.
 
 - [Venus OS v3.75 release announcement](https://professional.victronenergy.com/news/detail/370/)
 - [Venus OS v3.79 release announcement](https://professional.victronenergy.com/news/detail/377/)
+- [Venus OS v3.85 release discussion](https://community.victronenergy.com/t/v3-85-released-for-venus-os/64284)
 - [Cerbo GX firmware update and rollback manual](https://www.victronenergy.com/media/pg/Cerbo_GX/en/firmware-updates.html)
 - [Official Cerbo GX `einstein` firmware archive](https://updates.victronenergy.com/feeds/venus/release/images/einstein/)
 - [Victron root access, firmware password reset, and persistent SSH-key guidance](https://www.victronenergy.com/live/ccgx%3Aroot_access)

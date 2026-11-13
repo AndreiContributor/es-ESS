@@ -14,7 +14,8 @@ LOG_FILE="${LOG_FILE:-/data/log/es-ESS/current.log}"
 SERVICE_DIR="${SERVICE_DIR:-/service/es-ESS}"
 APP_DIR="${APP_DIR:-/data/es-ESS}"
 WATTPILOT_DBUS_SERVICE="${WATTPILOT_DBUS_SERVICE:-com.victronenergy.evcharger.esESS_FroniusWattpilot}"
-EXPECTED_VENUS_OS_VERSIONS="${EXPECTED_VENUS_OS_VERSIONS:-${EXPECTED_VENUS_OS:-v3.75 v3.79}}"
+EXPECTED_VENUS_OS_VERSIONS="${EXPECTED_VENUS_OS_VERSIONS:-${EXPECTED_VENUS_OS:-v3.75 v3.79 v3.85}}"
+CANDIDATE_VENUS_OS_VERSIONS="${CANDIDATE_VENUS_OS_VERSIONS:-v3.85}"
 
 sample=0
 
@@ -131,6 +132,15 @@ print_runtime() {
     else
         print_kv "Venus OS compatibility" "WARN: expected one of $EXPECTED_VENUS_OS_VERSIONS"
     fi
+
+    for candidate_version in $CANDIDATE_VENUS_OS_VERSIONS
+    do
+        if [ "$version" = "$candidate_version" ]
+        then
+            print_kv "Venus OS validation" "WARN: $version is a supervised-validation candidate; unattended use is not approved"
+            break
+        fi
+    done
 
     if command_exists svstat
     then

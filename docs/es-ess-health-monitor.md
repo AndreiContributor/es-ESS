@@ -246,7 +246,8 @@ LOG_FILE=/data/log/es-ESS/current.log
 SERVICE_DIR=/service/es-ESS
 APP_DIR=/data/es-ESS
 WATTPILOT_DBUS_SERVICE=com.victronenergy.evcharger.esESS_FroniusWattpilot
-EXPECTED_VENUS_OS_VERSIONS="v3.75 v3.79"
+EXPECTED_VENUS_OS_VERSIONS="v3.75 v3.79 v3.85"
+CANDIDATE_VENUS_OS_VERSIONS="v3.85"
 ```
 
 `EXPECTED_VENUS_OS` remains a backward-compatible single-version override.
@@ -254,8 +255,12 @@ Override these values only when intentionally validating a different layout or
 one specific release:
 
 ```sh
-EXPECTED_VENUS_OS=v3.79 LOG_LINES=800 EVENT_LINES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh
+EXPECTED_VENUS_OS=v3.85 LOG_LINES=800 EVENT_LINES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh
 ```
+
+When the actual release is v3.85, the monitor reports that it is a supervised-
+validation candidate. A healthy startup snapshot does not complete Wattpilot
+behavior validation or approve unattended production use.
 
 ## Related Documentation
 

@@ -77,29 +77,36 @@ Your system needs to match the following requirements in order to use es-ESS:
 
 ## Supported runtime versions
 
-This checkout deliberately fails closed outside its explicitly approved runtime
-versions. It accepts only the clean Venus OS v3.75 and v3.79 releases. v3.79 is
-the preferred target, while v3.75 remains accepted for a fast stored-firmware
-rollback. The v3.75 upgrade, idle/no-vehicle, Manual charging, Manual
-current-change, Manual recovery, and supervised Auto/Eco PV-surplus daylight
-checks passed on Cerbo GX build `20260624163305`. The v3.79 migration target is
-official Cerbo GX build `20260826152305` and requires the supervised validation
-in the firmware runbook before unattended production use:
+This checkout deliberately fails closed outside its explicitly listed runtime
+versions. Clean Venus OS v3.75 and v3.79 are the validated releases. v3.79 is
+the preferred validated target, while v3.75 remains accepted for a fast stored-
+firmware rollback. Clean v3.85 is also accepted as a **supervised validation
+candidate** so the integration can be checked on a GX running that release. It
+has not passed live GX/Wattpilot validation and is not approved for unattended
+production use. Keep the Wattpilot in Manual or the vehicle disconnected until
+the supervised validation gates in the firmware runbook pass. The v3.75
+upgrade, idle/no-vehicle, Manual charging, Manual current-change, Manual
+recovery, and supervised Auto/Eco PV-surplus daylight checks passed on Cerbo GX
+build `20260624163305`. The v3.79 migration target is official Cerbo GX build
+`20260826152305` and still requires the documented supervised validation
+before unattended production use:
 
 | Component | Approved version | Runtime enforcement |
 | --- | --- | --- |
-| Venus OS on the GX device | `v3.75` or `v3.79` | One of these exact clean releases is required before es-ESS constructs services, connects MQTT, or writes the grid setpoint. A missing or different version exits with status 1. Qualifiers such as `v3.79~1` and future releases such as `v3.80` do not match the explicit allowlist. |
+| Venus OS on the GX device | Validated: `v3.75`, `v3.79`; supervised candidate: `v3.85` | An exact clean release is required before es-ESS constructs services, connects MQTT, or writes the grid setpoint. v3.85 is accepted only to enable supervised validation and is not production-validated. Missing, qualified, or other versions exit with status 1. Qualifiers such as `v3.79~1` and `v3.85~1`, plus releases such as `v3.80` or `v3.81`, do not match. |
 | Victron `velib_python` | Pinned bundled composite | `VelibDependency.py` verifies the canonical SHA-256 hashes in `velib_python-master/PINNED.json` and makes that repository-relative directory the only permitted import source. Startup fails before D-Bus registration if the pin is missing, modified, or mixed with the Venus OS system copy. |
 | Fronius Wattpilot firmware | `42.5` | Read from Wattpilot `fwv` telemetry. Until it matches exactly, every es-ESS Wattpilot `setValue` command is blocked and Auto/Eco reports a compatibility fault. Other es-ESS services may continue. |
 | Fronius Solar.wattpilot mobile app | `2.1.0` | Commissioning baseline only. The app version is not exposed to es-ESS and cannot be checked automatically. |
 
 The compatibility constants and version comparison live in
-`RuntimeCompatibility.py`. Do not change them merely to bypass a failed start.
-First validate Manual-mode ownership, command names and values, PV-only starts,
-current limits, phase switching, grid-import stops, battery-assist bounds,
-telemetry freshness, reconnection, D-Bus/MQTT contracts, and graceful shutdown
-on the proposed new versions. Then update the baseline and tests in the same
-change.
+`RuntimeCompatibility.py`. The v3.85 candidate entry only clears the early
+startup gate; it does not certify the Venus API, bundled `velib_python`, or
+Wattpilot control behavior. Before unattended v3.85 operation, complete the
+firmware runbook's supervised checks for Manual-mode ownership, command names
+and values, PV-only starts, current limits, phase switching, grid-import stops,
+battery-assist bounds, telemetry freshness, reconnection, D-Bus/MQTT contracts,
+and graceful shutdown. The bundled `velib_python` manifest remains validated
+only for v3.75 and v3.79 until separate v3.85 evidence is recorded.
 
 For preparation, online/offline upgrade steps, post-update checks, and both
 stored-firmware and manual rollback procedures, see
@@ -371,7 +378,7 @@ If power, state of charge, or the active state-of-charge limit is temporarily
 unavailable, the calculator skips that cycle without replacing the last valid
 diagnostic value. Calculation resumes automatically when all inputs recover.
 
-On the supported Venus OS v3.75 and v3.79 releases, `dbus-systemcalc-py` owns
+On the validated Venus OS v3.75 and v3.79 releases, `dbus-systemcalc-py` owns
 `/Dc/Battery/TimeToGo` and reads the value from `/TimeToGo` on the selected
 battery service. TimeToGoCalculator does not own either D-Bus service and does
 not inject a value into that system path. VRM time-to-go therefore remains
@@ -1056,7 +1063,10 @@ it does not claim ownership of the app profile and never writes these fields.
 ### Runtime status
 
 The normal Victron EV-charger status stays compatible with VRM. More detailed
-state is published on the Wattpilot runtime-status contract:
+state is published on the Wattpilot runtime-status contract. The
+`/ExpectedVenusOsVersion` value lists releases accepted by the startup gate;
+v3.85 is present only as a supervised-validation candidate, not as a claim of
+production validation:
 
 - When the Wattpilot transport is unreachable, es-ESS sets the standard charger
   `/Connected` path to `0`, keeps `/Status` VRM-compatible as `Disconnected`,

@@ -156,6 +156,11 @@ class VelibPinContractTests(unittest.TestCase):
             list(RuntimeCompatibility.VALIDATED_VENUS_OS_VERSIONS),
             manifest["validated_venus_os_versions"],
         )
+        self.assertNotIn(
+            "v3.85",
+            manifest["validated_venus_os_versions"],
+            "The Venus OS candidate must not be presented as live-validated.",
+        )
         self.assertEqual(
             EXPECTED_PROVENANCE,
             {

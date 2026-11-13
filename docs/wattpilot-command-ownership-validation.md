@@ -19,8 +19,9 @@ boundary of every diagnostic script.
 
 ## Safety boundaries
 
-- Use an explicitly supported clean Venus OS release (`v3.75` or `v3.79`),
-  Wattpilot firmware `42.5`, and operator-verified
+- Use a validated clean Venus OS release (`v3.75` or `v3.79`), or use clean
+  `v3.85` only under the supervised candidate procedure in the firmware
+  runbook. Require Wattpilot firmware `42.5` and operator-verified
   Solar.wattpilot app `2.1.0` only.
 - Keep the vehicle physically disconnected throughout setting discovery.
 - Keep flexible-tariff charging disabled when the vehicle is connected.
@@ -45,7 +46,8 @@ call added to the script.
 
 Before changing anything, record:
 
-- Venus OS version and build (either clean `v3.75` or clean `v3.79`);
+- Venus OS version and build (validated clean `v3.75`/`v3.79`, or supervised
+  candidate `v3.85`);
 - Wattpilot firmware: `42.5`;
 - Solar.wattpilot app version: `2.1.0`;
 - vehicle physically disconnected;

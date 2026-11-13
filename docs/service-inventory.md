@@ -43,10 +43,12 @@ sections and settings that already have runtime defaults remain compatible when
 absent.
 
 Before constructing the runtime at all, `RuntimeCompatibility.py` also requires
-the GX device to report an explicitly supported clean Venus OS release:
-`v3.75` or `v3.79`. v3.79 is preferred and v3.75 remains available for
-stored-firmware rollback. A missing, qualified, or different version exits with
-status 1 before services, MQTT, or grid-setpoint writes begin. The Wattpilot service
+the GX device to report an explicitly listed clean Venus OS release. v3.75 and
+v3.79 are validated; v3.79 is preferred and v3.75 remains available for
+stored-firmware rollback. v3.85 is accepted only as a supervised-validation
+candidate, not for unattended production use. A missing, qualified, or other
+version exits with status 1 before services, MQTT, or grid-setpoint writes
+begin. The Wattpilot service
 separately requires firmware `42.5` from
 `fwv` telemetry before its common `setValue` command boundary opens. The
 Solar.wattpilot app `2.1.0` baseline is operator-verified because the app version
@@ -198,6 +200,10 @@ The runtime-status contract also exposes `/CommandAuthorityOk`,
 the fail-closed native-controller boundary actionable without writing Wattpilot
 settings. A value of `-1` for either native setting means unavailable or
 malformed telemetry, not disabled.
+
+`/ExpectedVenusOsVersion` reports the exact startup-gate release list. It
+includes v3.85 while that version is a supervised-validation candidate; the
+path does not claim live production validation.
 
 Firmware-42.5 native vehicle-profile candidates are published read-only below
 `/VehicleCompatibility/*`. They include parse status, native and effective

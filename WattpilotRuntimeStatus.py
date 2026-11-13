@@ -75,7 +75,7 @@ RUNTIME_STATUS_DBUS_DEFAULTS = {
     "/CommandAuthorityLiteral": "Unverified",
     "/NativePvSurplusEnabled": -1,
     "/FlexibleTariffEnabled": -1,
-    "/ExpectedVenusOsVersion": RuntimeCompatibility.VALIDATED_VENUS_OS_VERSIONS_LITERAL,
+    "/ExpectedVenusOsVersion": RuntimeCompatibility.SUPPORTED_VENUS_OS_VERSIONS_LITERAL,
     "/ActualVenusOsVersion": "Unavailable",
     "/ExpectedWattpilotFirmware": RuntimeCompatibility.VALIDATED_WATTPILOT_FIRMWARE,
     "/ActualWattpilotFirmware": "Unavailable",
@@ -616,7 +616,7 @@ class WattpilotRuntimeStatusReporter:
             command_authority_literal="Unverified",
             native_pv_surplus_enabled=-1,
             flexible_tariff_enabled=-1,
-            expected_venus_os_version=RuntimeCompatibility.VALIDATED_VENUS_OS_VERSIONS_LITERAL,
+            expected_venus_os_version=RuntimeCompatibility.SUPPORTED_VENUS_OS_VERSIONS_LITERAL,
             actual_venus_os_version="Unavailable",
             expected_wattpilot_firmware=RuntimeCompatibility.VALIDATED_WATTPILOT_FIRMWARE,
             actual_wattpilot_firmware="Unavailable",
@@ -713,7 +713,7 @@ class WattpilotRuntimeStatusReporter:
                 getattr(
                     self.controller,
                     "validatedVenusOsVersion",
-                    RuntimeCompatibility.VALIDATED_VENUS_OS_VERSIONS_LITERAL,
+                    RuntimeCompatibility.SUPPORTED_VENUS_OS_VERSIONS_LITERAL,
                 )
             ),
             actual_venus_os_version=str(
