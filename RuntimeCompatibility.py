@@ -17,15 +17,15 @@ import os
 
 # Keep validated releases and supervised validation candidates explicit.
 # Exact comparison remains intentional: beta/build qualifiers are not accepted.
-# v3.79 remains the preferred validated release; v3.75 is retained for stored-
-# firmware rollback. v3.85 is accepted only to enable supervised integration
-# validation and is not approved for unattended production use.
-VALIDATED_VENUS_OS_VERSION = "v3.79"
+# v3.85 is the preferred validated release; v3.75 and v3.79 remain accepted
+# for deployments and stored-firmware rollback.
+VALIDATED_VENUS_OS_VERSION = "v3.85"
 VALIDATED_VENUS_OS_VERSIONS = (
     "v3.75",
+    "v3.79",
     VALIDATED_VENUS_OS_VERSION,
 )
-VENUS_OS_CANDIDATE_VERSIONS = ("v3.85",)
+VENUS_OS_CANDIDATE_VERSIONS = ()
 SUPPORTED_VENUS_OS_VERSIONS = (
     VALIDATED_VENUS_OS_VERSIONS + VENUS_OS_CANDIDATE_VERSIONS
 )
@@ -92,12 +92,7 @@ def read_venus_os_version(paths=None):
 
 
 def require_validated_venus_os(actual=None, paths=None):
-    """Return an explicitly accepted release or fail before es-ESS changes GX state.
-
-    The v3.85 candidate is accepted to permit supervised integration
-    validation. Acceptance here does not mean that v3.85 is production-
-    validated.
-    """
+    """Return a validated release before es-ESS changes GX state."""
     detected = actual if actual is not None else read_venus_os_version(paths)
     if not version_matches_any(detected, SUPPORTED_VENUS_OS_VERSIONS):
         raise CompatibilityError(

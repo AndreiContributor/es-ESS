@@ -112,13 +112,11 @@ safety-sensitive.
   D-Bus/MQTT runtime-status contract.
 - Do not add shared 16 A cable/current-limiting logic.
 - Preserve exact runtime version checks in `RuntimeCompatibility.py`: clean
-  Venus OS `v3.75` and `v3.79` are validated; clean `v3.85` is accepted only as
-  a supervised-validation candidate and is not approved for unattended use
-  until the documented live GX/Wattpilot checks pass. Wattpilot firmware
+  Venus OS `v3.75`, `v3.79`, and `v3.85` are validated; `v3.85` is preferred
+  and the earlier releases remain accepted for rollback. Wattpilot firmware
   `42.5` and operator-verified Solar.wattpilot app `2.1.0` remain required.
-  v3.79 is the preferred validated release and v3.75 remains accepted for
-  stored-firmware rollback. Keep the bundled `velib_python` manifest's
-  validated-version metadata separate; do not claim v3.85 compatibility there
+  Keep the bundled `velib_python` manifest's validated-version metadata
+  separate; do not claim v3.85 compatibility there
   without matching live validation. Do not widen the candidate set or promote a
   candidate to validated without explicit integration validation and matching
   tests.

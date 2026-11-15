@@ -7,12 +7,12 @@ import RuntimeCompatibility as compatibility
 
 class RuntimeCompatibilityTests(unittest.TestCase):
     def test_preferred_and_rollback_releases_are_explicit(self):
-        self.assertEqual("v3.79", compatibility.VALIDATED_VENUS_OS_VERSION)
+        self.assertEqual("v3.85", compatibility.VALIDATED_VENUS_OS_VERSION)
         self.assertEqual(
-            ("v3.75", "v3.79"),
+            ("v3.75", "v3.79", "v3.85"),
             compatibility.VALIDATED_VENUS_OS_VERSIONS,
         )
-        self.assertEqual(("v3.85",), compatibility.VENUS_OS_CANDIDATE_VERSIONS)
+        self.assertEqual((), compatibility.VENUS_OS_CANDIDATE_VERSIONS)
         self.assertEqual(
             ("v3.75", "v3.79", "v3.85"),
             compatibility.SUPPORTED_VENUS_OS_VERSIONS,
@@ -55,7 +55,7 @@ class RuntimeCompatibilityTests(unittest.TestCase):
                 "v3.79",
             )
 
-    def test_validated_and_candidate_venus_versions_are_accepted(self):
+    def test_validated_venus_versions_are_accepted(self):
         for actual in (
             "3.75",
             "v3.75",

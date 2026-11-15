@@ -15,7 +15,7 @@ SERVICE_DIR="${SERVICE_DIR:-/service/es-ESS}"
 APP_DIR="${APP_DIR:-/data/es-ESS}"
 WATTPILOT_DBUS_SERVICE="${WATTPILOT_DBUS_SERVICE:-com.victronenergy.evcharger.esESS_FroniusWattpilot}"
 EXPECTED_VENUS_OS_VERSIONS="${EXPECTED_VENUS_OS_VERSIONS:-${EXPECTED_VENUS_OS:-v3.75 v3.79 v3.85}}"
-CANDIDATE_VENUS_OS_VERSIONS="${CANDIDATE_VENUS_OS_VERSIONS:-v3.85}"
+CANDIDATE_VENUS_OS_VERSIONS="${CANDIDATE_VENUS_OS_VERSIONS:-}"
 
 sample=0
 
@@ -200,7 +200,7 @@ print_config() {
         return
     fi
 
-    grep -E '^(FroniusWattpilot|SolarOverheadDistributor|SiteCurrentSource|AllowGridCharging|MinCurrentPerPhase|MaxCurrentPerPhase|VehiclePhaseCapability|ResumeRetryBackoffSeconds|ResumeRetryBackoffMaxSeconds|SiteMaxCurrent|Charger1PhaseMapping|SiteCurrentFreshSeconds|SiteCurrentRecoverySeconds|ThreePhasePvSurplusStartW|ThreePhasePvSurplusStopW|MinOnOffSeconds|MinPhaseSwitchSeconds|BatteryAssistEnabled|BatteryAssistSocMin|BatteryAssistMaxSeconds|BatteryAssistMaxShortfallPerPhaseW|BatterySocFreshSeconds|BatteryAssistRecoverySeconds|GridImportPositive)=' "$CONFIG_FILE" 2>/dev/null || echo "No selected config values found"
+    grep -E '^[[:space:]]*(FroniusWattpilot|SolarOverheadDistributor|SiteCurrentSource|AllowGridCharging|MinCurrentPerPhase|MaxCurrentPerPhase|VehiclePhaseCapability|ResumeRetryBackoffSeconds|ResumeRetryBackoffMaxSeconds|SiteMaxCurrent|Charger1PhaseMapping|SiteCurrentFreshSeconds|SiteCurrentRecoverySeconds|ThreePhasePvSurplusStartW|ThreePhasePvSurplusStopW|MinOnOffSeconds|MinPhaseSwitchSeconds|BatteryAssistEnabled|BatteryAssistSocMin|BatteryAssistMaxSeconds|BatteryAssistMaxShortfallPerPhaseW|BatterySocFreshSeconds|BatteryAssistRecoverySeconds|GridImportPositive)[[:space:]]*=' "$CONFIG_FILE" 2>/dev/null || echo "No selected config values found"
 }
 
 print_wattpilot_dbus() {
@@ -210,6 +210,7 @@ print_wattpilot_dbus() {
 
     for path in \
         /Connected \
+        /CarState \
         /StatusLiteral \
         /ModeLiteral \
         /StartStopLiteral \
@@ -351,6 +352,8 @@ print_interpretation_hint() {
     echo "OK signs:"
     echo "  - Service state is up."
     echo "  - Python dependencies import successfully."
+    echo "  - /Connected indicates Wattpilot transport availability."
+    echo "    /CarState and /StatusLiteral report vehicle state."
     echo "  - CompatibilityOk is 1, or CompatibilityLiteral reports validated firmware."
     echo "  - CommandAuthorityOk is 1 before Auto/Eco charging."
     echo "  - NativePvSurplusEnabled and FlexibleTariffEnabled are both 0."

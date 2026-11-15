@@ -247,7 +247,7 @@ SERVICE_DIR=/service/es-ESS
 APP_DIR=/data/es-ESS
 WATTPILOT_DBUS_SERVICE=com.victronenergy.evcharger.esESS_FroniusWattpilot
 EXPECTED_VENUS_OS_VERSIONS="v3.75 v3.79 v3.85"
-CANDIDATE_VENUS_OS_VERSIONS="v3.85"
+CANDIDATE_VENUS_OS_VERSIONS=""
 ```
 
 `EXPECTED_VENUS_OS` remains a backward-compatible single-version override.
@@ -258,9 +258,11 @@ one specific release:
 EXPECTED_VENUS_OS=v3.85 LOG_LINES=800 EVENT_LINES=120 /data/es-ESS/scripts/es-ess-health-monitor.sh
 ```
 
-When the actual release is v3.85, the monitor reports that it is a supervised-
-validation candidate. A healthy startup snapshot does not complete Wattpilot
-behavior validation or approve unattended production use.
+Clean Venus OS v3.75, v3.79, and v3.85 are validated; the monitor does not
+report v3.85 as a candidate. `/Connected` indicates the Wattpilot transport is
+available to es-ESS, while `/CarState` and `/StatusLiteral` report vehicle
+connection state. A health snapshot is a current-state check, not a substitute
+for reviewing historical charging evidence.
 
 ## Related Documentation
 

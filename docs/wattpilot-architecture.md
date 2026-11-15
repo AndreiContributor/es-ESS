@@ -68,26 +68,23 @@ only and does not widen Auto/Eco command authority.
 
 ### `RuntimeCompatibility.py`
 
-`RuntimeCompatibility.py` owns the exact runtime release gate. Its validated
-Venus OS baseline remains v3.75 and v3.79; it also accepts clean v3.85 as a
-supervised-validation candidate. v3.85 must not be treated as production-
-validated until the documented live GX and Wattpilot checks pass.
+`RuntimeCompatibility.py` owns the exact runtime release gate. Clean Venus OS
+v3.75, v3.79, and v3.85 are validated; v3.85 is the preferred release.
 
 It owns:
 
 - Exact Venus OS release checks before the application constructs services,
-  connects MQTT, or writes the Victron grid setpoint. v3.75 and v3.79 are the
-  validated releases; v3.85 is accepted only for supervised integration
-  validation.
+  connects MQTT, or writes the Victron grid setpoint. Clean v3.75, v3.79, and
+  v3.85 are validated releases.
 - Exact Wattpilot firmware compatibility (`42.5`) from `fwv` telemetry.
 - The operator-verified Solar.wattpilot mobile app baseline (`2.1.0`), which
   cannot be queried by es-ESS.
 - Version normalization that accepts an optional leading `v` but retains beta
-  or build qualifiers so an unvalidated candidate cannot match a clean release.
+  or build qualifiers so an unvalidated release cannot match a clean release.
 
-The module must not infer that a newer version is compatible. A candidate entry
-may be added only for supervised validation, with matching tests; do not mark
-that release production-validated until the live integration gates pass.
+The module must not infer that a newer version is compatible. A candidate may
+be added only for supervised validation, with matching tests; promotion to the
+validated set requires completed live integration gates and matching tests.
 
 ### `Wattpilot.py`
 
@@ -545,9 +542,8 @@ It owns:
   `/BatteryAssistActive`, `/GridImportGuardActive`, `/TelemetryHealthy`,
   `/CommandAuthorityOk`, `/CommandAuthorityLiteral`, the strict native-setting
   observations, and the expected/actual runtime compatibility paths.
-  `/ExpectedVenusOsVersion` lists exact releases accepted by the startup gate;
-  it includes v3.85 while that release is a supervised-validation candidate,
-  so it does not by itself mean the release is production-validated.
+  `/ExpectedVenusOsVersion` lists the exact validated releases accepted by the
+  startup gate, including v3.85.
 - Matching MQTT runtime-status publication under
   `es-ESS/FroniusWattpilot/RuntimeStatus`.
 - Observation of controller transitions and Wattpilot transport health.
@@ -583,8 +579,8 @@ a Wattpilot command.
 Future Wattpilot changes must preserve these invariants:
 
 - Venus OS must exactly match a listed clean release before es-ESS starts any
-  service or grid-setpoint side effect. v3.75 and v3.79 are validated; v3.85
-  is a supervised-validation candidate and is not approved for unattended use.
+  service or grid-setpoint side effect. v3.75, v3.79, and v3.85 are validated;
+  v3.85 is preferred.
 - Invalid grid-import, telemetry-freshness, battery-assist, or startup-ratio
   configuration must fail before MQTT, D-Bus, or service initialization. Zero
   remains valid only for deliberately immediate/non-negative thresholds; all

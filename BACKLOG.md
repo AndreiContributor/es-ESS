@@ -32,19 +32,18 @@ Current integration boundaries:
 
 Current validated state:
 
-- Clean Venus OS `v3.79` is preferred and `v3.75` remains accepted for stored-
-  firmware rollback. Clean v3.85 is a supervised-validation candidate only; it
-  has not passed live GX/Wattpilot validation and is not approved for
-  unattended production use. The pinned `velib_python` metadata remains
-  validated only for v3.75/v3.79. Wattpilot firmware `42.5` and operator-
-  verified Solar.wattpilot app `2.1.0` complete the remaining runtime baseline.
-  The v3.75 upgrade, idle/no-vehicle, Manual charging, Manual current-change, and Manual
-  recovery checks passed during supervised GX validation. Supervised Auto/Eco
-  daylight validation confirmed one-phase PV charging,
+- Clean Venus OS `v3.85` is the preferred validated release; `v3.75` and
+  `v3.79` remain validated for deployment and rollback. The pinned
+  `velib_python` metadata remains separately validated only for v3.75/v3.79.
+  Wattpilot firmware `42.5` and operator-verified Solar.wattpilot app `2.1.0`
+  complete the runtime baseline.
+  The v3.75 upgrade, idle/no-vehicle, Manual charging, Manual current-change,
+  and Manual recovery checks passed during supervised GX validation. Supervised
+  Auto/Eco daylight validation confirmed one-phase PV charging,
   three-phase phase-up, no-grid/grid-import guard behavior, bounded battery
   assist timeout, dynamic current reduction, and phase-down/fallback behavior.
-  The documented supervised v3.79 build validation remains required before
-  unattended production use.
+  The v3.85 live GX/Wattpilot validation is complete; other release status is
+  recorded separately in the firmware runbook.
 - Auto/Eco PV-only control, no-grid protection, bounded running-session battery
   assist, telemetry freshness, phase switching, reconnect handling, runtime
   status, configuration migration/validation, and graceful shutdown are
@@ -159,6 +158,16 @@ Deferred dormant-service reactivation blockers:
   without separate command-ownership design, configuration, and validation.
 
 ## Completed
+
+### Completed 2026-11-15 - Validate Venus OS v3.85 Runtime Support
+
+- Promoted clean v3.85 to the preferred validated runtime release while
+  retaining v3.75 and v3.79 for deployments and rollback.
+- Recorded completion of the supervised GX/Wattpilot integration gates,
+  including Manual ownership, vehicle connection reporting, Auto/Eco charging,
+  no-grid protection, phase behavior, and bounded recovery paths.
+- Kept the bundled `velib_python` version metadata separate; it remains
+  validated only for v3.75 and v3.79.
 
 ### Completed 2026-09-27 - Refine Wattpilot Grace, Current, And Energy Evidence
 
