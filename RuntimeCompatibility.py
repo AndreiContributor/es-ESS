@@ -15,16 +15,21 @@ from __future__ import annotations
 import os
 
 
-# Keep every approved release in this explicit set.
+# Keep validated releases and supervised validation candidates explicit.
 # Exact comparison remains intentional: beta/build qualifiers are not accepted.
-# v3.79 is the preferred production target. Keep v3.75 explicitly approved so
-# the same checkout remains usable after a stored-firmware rollback.
-VALIDATED_VENUS_OS_VERSION = "v3.79"
+# v3.85 is the preferred validated release; v3.75 and v3.79 remain accepted
+# for deployments and stored-firmware rollback.
+VALIDATED_VENUS_OS_VERSION = "v3.85"
 VALIDATED_VENUS_OS_VERSIONS = (
     "v3.75",
+    "v3.79",
     VALIDATED_VENUS_OS_VERSION,
 )
-VALIDATED_VENUS_OS_VERSIONS_LITERAL = ", ".join(VALIDATED_VENUS_OS_VERSIONS)
+VENUS_OS_CANDIDATE_VERSIONS = ()
+SUPPORTED_VENUS_OS_VERSIONS = (
+    VALIDATED_VENUS_OS_VERSIONS + VENUS_OS_CANDIDATE_VERSIONS
+)
+SUPPORTED_VENUS_OS_VERSIONS_LITERAL = ", ".join(SUPPORTED_VENUS_OS_VERSIONS)
 VALIDATED_WATTPILOT_FIRMWARE = "42.5"
 VALIDATED_WATTPILOT_APP_VERSION = "2.1.0"
 
@@ -87,14 +92,14 @@ def read_venus_os_version(paths=None):
 
 
 def require_validated_venus_os(actual=None, paths=None):
-    """Return the detected version or raise before es-ESS changes GX state."""
+    """Return a validated release before es-ESS changes GX state."""
     detected = actual if actual is not None else read_venus_os_version(paths)
-    if not version_matches_any(detected, VALIDATED_VENUS_OS_VERSIONS):
+    if not version_matches_any(detected, SUPPORTED_VENUS_OS_VERSIONS):
         raise CompatibilityError(
-            "Unsupported Venus OS version {0}; es-ESS supports only {1}. "
+            "Unsupported Venus OS version {0}; es-ESS accepts only {1}. "
             "No services or grid-setpoint writes were started.".format(
                 detected if detected is not None else "<unavailable>",
-                VALIDATED_VENUS_OS_VERSIONS_LITERAL,
+                SUPPORTED_VENUS_OS_VERSIONS_LITERAL,
             )
         )
     return detected

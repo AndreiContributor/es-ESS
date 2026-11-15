@@ -98,7 +98,7 @@ class FroniusWattpilot (esESSService):
 
         settings = self.config["FroniusWattpilot"]
         self.validatedVenusOsVersion = (
-            RuntimeCompatibility.VALIDATED_VENUS_OS_VERSIONS_LITERAL
+            RuntimeCompatibility.SUPPORTED_VENUS_OS_VERSIONS_LITERAL
         )
         self.validatedWattpilotFirmware = (
             RuntimeCompatibility.VALIDATED_WATTPILOT_FIRMWARE

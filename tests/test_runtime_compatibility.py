@@ -7,10 +7,15 @@ import RuntimeCompatibility as compatibility
 
 class RuntimeCompatibilityTests(unittest.TestCase):
     def test_preferred_and_rollback_releases_are_explicit(self):
-        self.assertEqual("v3.79", compatibility.VALIDATED_VENUS_OS_VERSION)
+        self.assertEqual("v3.85", compatibility.VALIDATED_VENUS_OS_VERSION)
         self.assertEqual(
-            ("v3.75", "v3.79"),
+            ("v3.75", "v3.79", "v3.85"),
             compatibility.VALIDATED_VENUS_OS_VERSIONS,
+        )
+        self.assertEqual((), compatibility.VENUS_OS_CANDIDATE_VERSIONS)
+        self.assertEqual(
+            ("v3.75", "v3.79", "v3.85"),
+            compatibility.SUPPORTED_VENUS_OS_VERSIONS,
         )
 
     def test_normalization_accepts_optional_v_prefix(self):
@@ -50,8 +55,15 @@ class RuntimeCompatibilityTests(unittest.TestCase):
                 "v3.79",
             )
 
-    def test_approved_venus_versions_are_accepted(self):
-        for actual in ("3.75", "v3.75", "3.79", "v3.79"):
+    def test_validated_venus_versions_are_accepted(self):
+        for actual in (
+            "3.75",
+            "v3.75",
+            "3.79",
+            "v3.79",
+            "3.85",
+            "v3.85",
+        ):
             with self.subTest(actual=actual):
                 self.assertEqual(
                     compatibility.require_validated_venus_os(actual=actual),
@@ -65,6 +77,10 @@ class RuntimeCompatibilityTests(unittest.TestCase):
             "v3.79~1",
             "v3.79-beta",
             "v3.80",
+            "v3.81",
+            "v3.85~1",
+            "v3.85-beta",
+            "v3.86",
             None,
         ):
             with self.subTest(actual=actual):
@@ -76,9 +92,10 @@ class RuntimeCompatibilityTests(unittest.TestCase):
 
     def test_failure_lists_every_approved_version(self):
         with self.assertRaises(compatibility.CompatibilityError) as raised:
-            compatibility.require_validated_venus_os(actual="v3.80")
+            compatibility.require_validated_venus_os(actual="v3.86")
         self.assertIn("v3.75", str(raised.exception))
         self.assertIn("v3.79", str(raised.exception))
+        self.assertIn("v3.85", str(raised.exception))
 
     def test_wattpilot_firmware_requires_exact_validated_release(self):
         self.assertTrue(compatibility.wattpilot_firmware_is_validated("42.5"))

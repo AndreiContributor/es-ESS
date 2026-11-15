@@ -2101,12 +2101,21 @@ def main(config):
   # This check must run before constructing esESS: construction and
   # initialization can start MQTT clients, services, and grid-setpoint writes.
   detectedVenusVersion = RuntimeCompatibility.require_validated_venus_os()
-  i(
-      "Main",
-      "Validated Venus OS compatibility baseline confirmed: {0}.".format(
-          detectedVenusVersion
-      ),
-  )
+  if detectedVenusVersion in RuntimeCompatibility.VENUS_OS_CANDIDATE_VERSIONS:
+      w(
+          "Main",
+          "{0} is enabled for supervised integration validation only; "
+          "do not leave es-ESS unattended on this release.".format(
+              detectedVenusVersion
+          ),
+      )
+  else:
+      i(
+          "Main",
+          "Validated Venus OS compatibility baseline confirmed: {0}.".format(
+              detectedVenusVersion
+          ),
+      )
 
   try:
       # Have a mainloop, so we can send/receive asynchronous calls to and from dbus

@@ -13,8 +13,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import VelibDependency
-import RuntimeCompatibility
-
 
 EXPECTED_PROVENANCE = {
     "vedbus.py": "c00682415ae5690112852c6ab5554e678358a818",
@@ -153,8 +151,13 @@ class VelibPinContractTests(unittest.TestCase):
         manifest = VelibDependency.verify_bundled_velib()
         self.assertEqual("bundled-composite", manifest["selection"])
         self.assertEqual(
-            list(RuntimeCompatibility.VALIDATED_VENUS_OS_VERSIONS),
+            ["v3.75", "v3.79"],
             manifest["validated_venus_os_versions"],
+        )
+        self.assertNotIn(
+            "v3.85",
+            manifest["validated_venus_os_versions"],
+            "The bundled velib pin metadata has not been validated for Venus OS v3.85.",
         )
         self.assertEqual(
             EXPECTED_PROVENANCE,

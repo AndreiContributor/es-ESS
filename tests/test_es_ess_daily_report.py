@@ -1478,9 +1478,15 @@ NoBatToEV=false
         ).read_text(encoding="utf-8")
 
         self.assertIn(
-            "EXPECTED_VENUS_OS_VERSIONS:-${EXPECTED_VENUS_OS:-v3.75 v3.79}",
+            "EXPECTED_VENUS_OS_VERSIONS:-${EXPECTED_VENUS_OS:-v3.75 v3.79 v3.85}",
             monitor,
         )
+        self.assertIn(
+            'CANDIDATE_VENUS_OS_VERSIONS="${CANDIDATE_VENUS_OS_VERSIONS:-}"',
+            monitor,
+        )
+        self.assertIn("/CarState", monitor)
+        self.assertIn("[[:space:]]*=", monitor)
         self.assertIn('if [ "$actual_version" = "$expected_version" ]', monitor)
         self.assertNotIn("sort -V", monitor)
 
